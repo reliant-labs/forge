@@ -87,7 +87,7 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // 0.13.19), and a pin of an untagged commit can generate code that only the
 // next runtime release ships. Neither shows in a version number, so generate
 // checks content: WebRuntimeContentNotices (webruntime_vocabulary.go).
-const webRuntimePublishedRange = "^0.13.23"
+const webRuntimePublishedRange = "^0.14.0"
 
 // webRuntimeDepRe matches the package's entry wherever it already appears in a
 // package.json, capturing everything up to (but not including) the value so a

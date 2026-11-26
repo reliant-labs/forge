@@ -546,12 +546,9 @@ func TestWriteLibraries_DefaultStaysTerse(t *testing.T) {
 	}
 }
 
-// TestWriteLibraries_SignaturesScopeTheGoDocGuidance: the line that told
-// readers to run `go doc .../svcerr` was followed 36 times in one wave.
-// With svcerr's API printed below it, that line must stop pointing at
-// svcerr — an output that tells a reader to go fetch what it just printed
-// is the defect, restated.
-func TestWriteLibraries_SignaturesScopeTheGoDocGuidance(t *testing.T) {
+// TestWriteLibraries_SelectionSkipsInventory: asking for one API must not
+// bury it under the Go package index or the frontend runtime inventory.
+func TestWriteLibraries_SelectionSkipsInventory(t *testing.T) {
 	t.Parallel()
 	spec := repoLibrariesSpec(t, "svcerr,tdd")
 	var buf bytes.Buffer
@@ -566,31 +563,22 @@ func TestWriteLibraries_SignaturesScopeTheGoDocGuidance(t *testing.T) {
 	if !strings.Contains(out, "func WithReason(err error, code string) error") {
 		t.Error("the section does not carry svcerr's real signatures")
 	}
-	// The terse index is still there — a reader must still be able to scan
-	// all 24 packages in one screen.
-	if !strings.Contains(out, "  validate ") {
-		t.Error("the one-line inventory was replaced rather than extended")
+	if !strings.HasPrefix(out, "FORGE LIBRARIES — "+spec.Module+"\nResolves to: "+spec.Dir+"\n\nEXPORTED SIGNATURES") {
+		t.Error("the selected API must follow the header and resolution line")
+	}
+	for _, unrelated := range []string{"  validate ", "FORGE WEB RUNTIME", "For what a package EXPORTS"} {
+		if strings.Contains(out, unrelated) {
+			t.Errorf("a selected API still prints index content: %q", unrelated)
+		}
 	}
 
-	guidance, _, _ := strings.Cut(out, "EXPORTED SIGNATURES")
-	if strings.Contains(guidance, "go doc "+forgePkgModule+"/svcerr") {
-		t.Errorf("the guidance still sends the reader to `go doc svcerr` above svcerr's own API:\n%s", guidance)
+	buf.Reset()
+	if err := writeLibraries(&buf, repoLibrariesSpec(t, ""), false); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(guidance, "go doc "+forgePkgModule+"/") {
-		t.Error("the go doc route was dropped entirely — it is still the only way to reach the 22 packages not selected")
-	}
-	// Whatever it does point at must be a package that really was left
-	// out, or the output contradicts itself.
-	for _, line := range strings.Split(guidance, "\n") {
-		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "go doc "+forgePkgModule+"/")
-		if !ok {
-			continue
-		}
-		named, _, _ := strings.Cut(rest, " ")
-		for _, p := range spec.Packages {
-			if p.Name == named && len(p.Symbols) > 0 {
-				t.Errorf("guidance points at %s, whose API is already printed below", named)
-			}
+	for _, want := range []string{"  validate ", "FORGE WEB RUNTIME", "For what a package EXPORTS"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("the no-argument index lost %q", want)
 		}
 	}
 }

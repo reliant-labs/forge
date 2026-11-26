@@ -1156,12 +1156,12 @@ func bufGenOutDirs(root string) []string {
 	return outs
 }
 
-// --- scaffold package (alias for package new) ---
+// --- scaffold package (the canonical spelling; `package new` is its older alias) ---
 
 func newPackageCmd(f *factory.Factory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "package <name>",
-		Short: "Scaffold a new internal package (alias for 'forge package new')",
+		Short: "Scaffold a new internal package (also spelled 'forge package new')",
 		Long: `Scaffold a new internal package under internal/<name>/. A name may be a
 /-separated path (credentials/vault): the package lands in
 internal/credentials/vault, is named after the last segment, and is imported,

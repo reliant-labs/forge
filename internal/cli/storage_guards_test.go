@@ -80,14 +80,14 @@ func TestStorageReserveBlocksEnvUpBeforeSideEffects(t *testing.T) {
 		t.Setenv(name, "")
 	}
 	want := errors.New("host free space below reserve")
-	old := checkBuildStorageFn
-	checkBuildStorageFn = func(path string) error {
+	old := checkHostBuildStorageFn
+	checkHostBuildStorageFn = func(path string) error {
 		if path != root {
 			t.Fatalf("checked %q instead of project %q", path, root)
 		}
 		return want
 	}
-	t.Cleanup(func() { checkBuildStorageFn = old })
+	t.Cleanup(func() { checkHostBuildStorageFn = old })
 	if err := runUp(context.Background(), upOptions{env: "dev", noBuild: true}); !errors.Is(err, want) {
 		t.Fatalf("env up was not blocked by reserve: %v", err)
 	}

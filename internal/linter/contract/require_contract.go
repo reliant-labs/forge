@@ -221,7 +221,7 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 	if !hasContract {
 		// Report on the package clause of the first file.
 		if len(pass.Files) > 0 {
-			pass.Reportf(pass.Files[0].Package,
+			reportWithHint(pass, pass.Files[0].Package, RequireContractFixHint,
 				"package %s has exported methods but no contract.go%s",
 				pass.Pkg.Name(), malformedExcludeHint(pass))
 		}

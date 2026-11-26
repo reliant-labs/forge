@@ -24,7 +24,10 @@ package cli
 //
 // WHAT IT EDITS, and only when nothing else could be the env's policy:
 //
-//  1. a literal forge.VulnExemption with the same id: its span is replaced;
+//  1. a literal forge.VulnExemption with the same id and the same scope
+//     (packages, artifacts, locations; release.ShapeVulnScopedExempt.Identity):
+//     its span is replaced. The same id with another scope is another
+//     declaration, and is added beside it;
 //  2. else the vuln_gate's `exemptions = [...]` list literal gains an
 //     element, or the VulnPolicy literal gains `exemptions = [...]`;
 //  3. else the DeliveryPolicy literal gains a `vuln_gate`;
@@ -35,7 +38,7 @@ package cli
 // the id is not already accepted somewhere it cannot see:
 //
 //   - a VulnExemption whose id, or (for this id) any field, is not a plain
-//     string literal;
+//     literal (strings, and lists of strings for the scope);
 //   - the id appearing in any other string (a reason, a computed list, an
 //     f-string), or only in comments;
 //   - more than one delivery_policy / DeliveryPolicy / vuln_gate /
@@ -62,11 +65,39 @@ import (
 
 	"kcl-lang.io/kcl-go/pkg/kcl"
 	"kcl-lang.io/kcl-go/pkg/spec/gpyrpc"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// vulnExemptionLiteral is the KCL for one exemption, on one line.
-func vulnExemptionLiteral(alias, id, reason, expires string) string {
-	return fmt.Sprintf("%s.VulnExemption {id = %s, reason = %s, expires = %s}", alias, kclQuote(id), kclQuote(reason), kclQuote(expires))
+// vulnExemptionLiteralOf is the KCL for one exemption, on one line, its
+// scope lists sorted and each written only when set.
+func vulnExemptionLiteralOf(alias string, ex release.ShapeVulnScopedExempt) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s.VulnExemption {id = %s, reason = %s, expires = %s", alias, kclQuote(ex.ID), kclQuote(ex.Reason), kclQuote(ex.Expires))
+	for _, f := range []struct {
+		key  string
+		vals []string
+	}{{"packages", ex.Packages}, {"artifacts", ex.Artifacts}, {"locations", ex.Locations}} {
+		if len(f.vals) == 0 {
+			continue
+		}
+		vals := append([]string(nil), f.vals...)
+		sort.Strings(vals)
+		for i, v := range vals {
+			vals[i] = kclQuote(v)
+		}
+		fmt.Fprintf(&b, ", %s = [%s]", f.key, strings.Join(vals, ", "))
+	}
+	b.WriteString("}")
+	return b.String()
+}
+
+// vulnExemptScopeKey is an exemption's scope, as release.ShapeVulnScopedExempt's
+// Identity spells it without the advisory: the id is compared apart, without
+// regard to case, as the rule matches it.
+func vulnExemptScopeKey(packages, artifacts, locations []string) string {
+	id := release.ShapeVulnScopedExempt{Packages: packages, Artifacts: artifacts, Locations: locations}.Identity()
+	return strings.TrimPrefix(id, "|")
 }
 
 // kclQuote is a KCL double-quoted string literal. The caller refuses what
@@ -230,11 +261,38 @@ type kclSchemaLit struct {
 	// field is the key or assignment target the literal is the value of,
 	// "" when it is nested in anything else.
 	field string
-	// literal and the three values: for a VulnExemption, whether it is
-	// id/reason/expires, each a plain string literal, and nothing else.
-	literal             bool
-	idLiteral           bool
-	id, reason, expires string
+	// literal and the values: for a VulnExemption, whether it is
+	// id/reason/expires, each a plain string literal, and optionally
+	// packages/artifacts/locations, each a list of string literals, and
+	// nothing else.
+	literal                        bool
+	idLiteral                      bool
+	id, reason, expires            string
+	packages, artifacts, locations []string
+}
+
+// scopeKey is the exemption literal's scope (vulnExemptScopeKey).
+func (l *kclSchemaLit) scopeKey() string {
+	return vulnExemptScopeKey(l.packages, l.artifacts, l.locations)
+}
+
+// kclStringList is a list literal's elements when every one is a plain
+// string literal.
+func kclStringList(n map[string]any) ([]string, bool) {
+	if kclType(n) != "List" {
+		return nil, false
+	}
+	elts, _ := n["elts"].([]any)
+	out := []string{}
+	for _, x := range elts {
+		_, en, ok := kclNode(x)
+		if !ok || kclType(en) != "StringLit" {
+			return nil, false
+		}
+		v, _ := en["value"].(string)
+		out = append(out, v)
+	}
+	return out, true
 }
 
 // kclField is one `<key> op <value>` occurrence of a field this edit cares
@@ -386,25 +444,40 @@ func walkConfig(n map[string]any, owner *kclSchemaLit, f *kclFacts, walk func(an
 // judgeExemption decides whether a VulnExemption is a plain literal.
 func (l *kclSchemaLit) judgeExemption() {
 	vals := map[string]string{}
-	plain := !l.opaque && len(l.items) == 3
+	lists := map[string][]string{}
+	plain := !l.opaque
 	for _, it := range l.items {
 		isStr := kclType(it.vn) == "StringLit"
 		if it.key == "id" && isStr && (it.op == "Override" || it.op == "Union") {
 			l.idLiteral = true
 			l.id, _ = it.vn["value"].(string)
 		}
-		if !isStr || it.op != "Override" || (it.key != "id" && it.key != "reason" && it.key != "expires") {
+		_, seenStr := vals[it.key]
+		_, seenList := lists[it.key]
+		switch {
+		case it.op != "Override" || seenStr || seenList:
 			plain = false
-			continue
-		}
-		if _, dup := vals[it.key]; dup {
+		case it.key == "id" || it.key == "reason" || it.key == "expires":
+			if !isStr {
+				plain = false
+				continue
+			}
+			vals[it.key], _ = it.vn["value"].(string)
+		case it.key == "packages" || it.key == "artifacts" || it.key == "locations":
+			v, ok := kclStringList(it.vn)
+			if !ok {
+				plain = false
+				continue
+			}
+			lists[it.key] = v
+		default:
 			plain = false
 		}
-		vals[it.key], _ = it.vn["value"].(string)
 	}
 	if plain && len(vals) == 3 {
 		l.literal = true
 		l.reason, l.expires = vals["reason"], vals["expires"]
+		l.packages, l.artifacts, l.locations = lists["packages"], lists["artifacts"], lists["locations"]
 	}
 	if l.opaque {
 		l.idLiteral = false
@@ -416,11 +489,27 @@ func (l *kclSchemaLit) judgeExemption() {
 // kclExemptEdit is one exemption being stated: what, and the schema alias
 // (`forge` in `import forge`) its literals are spelled with.
 type kclExemptEdit struct {
-	id, reason, expires, alias string
+	id, reason, expires, alias     string
+	packages, artifacts, locations []string
+}
+
+func (e *kclExemptEdit) exemption() release.ShapeVulnScopedExempt {
+	return release.ShapeVulnScopedExempt{ID: e.id, Reason: e.reason, Expires: e.expires, Packages: e.packages, Artifacts: e.artifacts, Locations: e.locations}
 }
 
 func (e *kclExemptEdit) literal(alias string) string {
-	return vulnExemptionLiteral(alias, e.id, e.reason, e.expires)
+	return vulnExemptionLiteralOf(alias, e.exemption())
+}
+
+// scopeKey is the scope being stated (vulnExemptScopeKey).
+func (e *kclExemptEdit) scopeKey() string {
+	return vulnExemptScopeKey(e.packages, e.artifacts, e.locations)
+}
+
+// sameDeclaration reports whether x is a literal of the exemption being
+// stated: the same advisory and the same scope.
+func (e *kclExemptEdit) sameDeclaration(x *kclSchemaLit) bool {
+	return x.literal && strings.EqualFold(x.id, e.id) && x.scopeKey() == e.scopeKey()
 }
 
 // refuse is the fail-closed answer: why, and the lines to add by hand.
@@ -432,11 +521,18 @@ func (e *kclExemptEdit) refuse(format string, a ...any) error {
 
 func kclLine(w map[string]any) int { l, _ := w["line"].(float64); return int(l) }
 
-// exemptInKCL returns src with the exemption stated, and whether it changed
-// anything (false when the same exemption is already there, byte for byte).
-// Any doubt is an *errVulnExemptNoAnchor, and nothing is to be written.
+// exemptInKCL returns src with the unscoped exemption stated
+// (exemptInKCLOf).
 func exemptInKCL(src, id, reason, expires string) (string, bool, error) {
-	e := &kclExemptEdit{id: id, reason: reason, expires: expires, alias: "forge"}
+	return exemptInKCLOf(src, release.ShapeVulnScopedExempt{ID: id, Reason: reason, Expires: expires})
+}
+
+// exemptInKCLOf returns src with the exemption stated, and whether it
+// changed anything (false when the same exemption is already there, byte for
+// byte). Any doubt is an *errVulnExemptNoAnchor, and nothing is to be
+// written.
+func exemptInKCLOf(src string, ex release.ShapeVulnScopedExempt) (string, bool, error) {
+	e := &kclExemptEdit{id: ex.ID, reason: ex.Reason, expires: ex.Expires, alias: "forge", packages: ex.Packages, artifacts: ex.Artifacts, locations: ex.Locations}
 	a, err := parseKCLForEdit(src)
 	if err != nil {
 		return "", false, e.refuse("forge cannot parse this file safely (%v)", err)
@@ -466,33 +562,39 @@ func exemptInKCL(src, id, reason, expires string) (string, bool, error) {
 	return ed.next, true, nil
 }
 
-// declarationsOfID finds the literal exemption of the id, if any, and
-// refuses when the id could be declared anywhere forge cannot read.
+// declarationsOfID finds the literal exemption of the id with the same
+// scope, if any, and refuses when the id could be declared anywhere forge
+// cannot read. Literals of the id with another scope are other declarations,
+// read in full, and left as they are.
 func (e *kclExemptEdit) declarationsOfID(f *kclFacts) ([]*kclSchemaLit, error) {
 	var same []*kclSchemaLit
+	ofID := map[*kclSchemaLit]bool{}
 	for _, x := range f.schemas["VulnExemption"] {
 		switch {
 		case !x.idLiteral:
 			return nil, e.refuse("the VulnExemption at line %d has a computed id, so forge cannot tell whether it already accepts %s", kclLine(x.w), e.id)
 		case strings.EqualFold(x.id, e.id) && !x.literal:
-			return nil, e.refuse("the VulnExemption of %s at line %d is not a plain literal (id, reason and expires as string literals), so forge will not rewrite it", e.id, kclLine(x.w))
+			return nil, e.refuse("the VulnExemption of %s at line %d is not a plain literal (id, reason and expires as string literals, packages, artifacts and locations as lists of them), so forge will not rewrite it", e.id, kclLine(x.w))
 		case strings.EqualFold(x.id, e.id):
-			same = append(same, x)
+			ofID[x] = true
+			if e.sameDeclaration(x) {
+				same = append(same, x)
+			}
 		}
 	}
 	if len(same) > 1 {
-		return nil, e.refuse("%s is exempted %d times (lines %d and %d)", e.id, len(same), kclLine(same[0].w), kclLine(same[1].w))
+		return nil, e.refuse("%s is exempted %d times with this scope (lines %d and %d)", e.id, len(same), kclLine(same[0].w), kclLine(same[1].w))
 	}
 	idRE := regexp.MustCompile(`(?i)(^|[^A-Za-z0-9-])` + regexp.QuoteMeta(e.id) + `($|[^A-Za-z0-9-])`)
 	for _, s := range f.strings {
-		if len(same) == 1 && s.owner == same[0] {
+		if s.owner != nil && ofID[s.owner] {
 			continue
 		}
 		if idRE.MatchString(s.text) {
 			return nil, e.refuse("%s appears in a string at line %d outside a literal VulnExemption: it may be accepted by an expression forge cannot read", e.id, kclLine(s.w))
 		}
 	}
-	if len(same) == 0 {
+	if len(ofID) == 0 {
 		for _, c := range f.comments {
 			if idRE.MatchString(c) {
 				return nil, e.refuse("%s is named only in a comment (%s): forge will not guess what it refers to", e.id, strings.TrimSpace(c))
@@ -714,8 +816,8 @@ func verifyKCLExemptEdit(e *kclExemptEdit, orig string, ed kclSplice, before *kc
 	others := func(f *kclFacts) []string {
 		var out []string
 		for _, x := range f.schemas["VulnExemption"] {
-			if !strings.EqualFold(x.id, id) {
-				out = append(out, fmt.Sprintf("%s|%v|%s|%s", x.id, x.literal, x.reason, x.expires))
+			if !e.sameDeclaration(x) {
+				out = append(out, fmt.Sprintf("%s|%v|%s|%s|%s", x.id, x.literal, x.reason, x.expires, x.scopeKey()))
 			}
 		}
 		sort.Strings(out)
@@ -726,15 +828,15 @@ func verifyKCLExemptEdit(e *kclExemptEdit, orig string, ed kclSplice, before *kc
 	}
 	n := 0
 	for _, x := range after.schemas["VulnExemption"] {
-		if strings.EqualFold(x.id, id) {
+		if e.sameDeclaration(x) {
 			n++
-			if !x.literal || x.id != id || x.reason != e.reason || x.expires != e.expires {
+			if x.id != id || x.reason != e.reason || x.expires != e.expires {
 				return fmt.Errorf("the written exemption reads back as id %q, reason %q, expires %q", x.id, x.reason, x.expires)
 			}
 		}
 	}
 	if n != 1 {
-		return fmt.Errorf("it would leave %d exemptions of %s", n, id)
+		return fmt.Errorf("it would leave %d exemptions of %s with this scope", n, id)
 	}
 	return nil
 }

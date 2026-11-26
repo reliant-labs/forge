@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -161,6 +162,15 @@ type ShapeVulnGate struct {
 	BlockKEV      bool              `json:"block_kev"`
 	FixableOnly   bool              `json:"fixable_only"`
 	Exemptions    []ShapeVulnExempt `json:"exemptions"`
+	// ScopedExemptions are the exemptions that cover their advisory only
+	// where their scope says. They are a list of their own, never entries
+	// of Exemptions, so that a reader predating scopes ignores them rather
+	// than reading each as an exemption of the advisory everywhere: an
+	// unread scoped exemption leaves the finding in the gate (fail closed).
+	// Absent when the env declares none, so such a policy encodes as it did
+	// before the field. A control plane decodes it only once it names
+	// [BundleFeatureVulnScopedExemptions].
+	ScopedExemptions []ShapeVulnScopedExempt `json:"scoped_exemptions,omitempty"`
 }
 
 // ShapeVulnExempt is one accepted advisory: time-boxed, with its reason.
@@ -168,6 +178,114 @@ type ShapeVulnExempt struct {
 	ID      string `json:"id"`
 	Reason  string `json:"reason"`
 	Expires string `json:"expires"`
+}
+
+// ShapeVulnScopedExempt is one accepted advisory, covered only where its
+// scope says: time-boxed, with its reason, as [ShapeVulnExempt].
+//
+// Packages, Artifacts and Locations are the scope. The exemption covers one
+// occurrence of a finding ([VulnOccurrence]) only when every set field names
+// it (AND across fields, OR within one). The three are what tells two
+// findings of one advisory apart: the package it matched (a CVE matched
+// against two libraries), the artifact (an image), and the path inside the
+// artifact, which is what tells two Go binaries' "stdlib" findings apart,
+// since their package name and purl are the same. With no scope it is
+// [ShapeVulnExempt], and canonically recorded as one.
+type ShapeVulnScopedExempt struct {
+	ID      string `json:"id"`
+	Reason  string `json:"reason"`
+	Expires string `json:"expires"`
+	// Packages are package names or purl prefixes ("stdlib",
+	// "pkg:golang/stdlib", "pkg:npm/lodash@4.17.20"): [VulnPackageMatches].
+	Packages []string `json:"packages,omitempty"`
+	// Artifacts are release artifact names, matched exactly.
+	Artifacts []string `json:"artifacts,omitempty"`
+	// Locations are absolute paths inside the artifact
+	// ("/usr/local/bin/grype"), matched exactly, or every path under one
+	// that ends in "/".
+	Locations []string `json:"locations,omitempty"`
+}
+
+// Scoped reports whether the exemption names a scope, so covers its advisory
+// only where the scope says.
+func (e ShapeVulnScopedExempt) Scoped() bool {
+	return len(e.Packages) > 0 || len(e.Artifacts) > 0 || len(e.Locations) > 0
+}
+
+// Exempt is the exemption without its scope.
+func (e ShapeVulnScopedExempt) Exempt() ShapeVulnExempt {
+	return ShapeVulnExempt{ID: e.ID, Reason: e.Reason, Expires: e.Expires}
+}
+
+// Identity is what makes two exemptions the same declaration: the advisory
+// and the scope, each list sorted. Two exemptions of one advisory with
+// different scopes are two declarations; the reason and expiry are not part
+// of it (a renewal edits the one declaration).
+func (e ShapeVulnScopedExempt) Identity() string {
+	return strings.Join([]string{
+		strings.TrimSpace(e.ID),
+		strings.Join(sortedNonNil(e.Packages), ","),
+		strings.Join(sortedNonNil(e.Artifacts), ","),
+		strings.Join(sortedNonNil(e.Locations), ","),
+	}, "|")
+}
+
+// VulnOccurrence is one place a finding was found: the package the advisory
+// matched, the artifact it is in, and the path inside that artifact. A
+// finding merged across artifacts, or across binaries of one artifact, has
+// one occurrence per (artifact, path). Artifact or Location is "" when the
+// source does not say.
+type VulnOccurrence struct {
+	PackageName string
+	PackagePURL string
+	Artifact    string
+	Location    string
+}
+
+// ScopeCovers reports whether the exemption's scope covers o. It does not
+// look at the advisory or the expiry: the caller has already matched the
+// exemption's id against the finding and dated it. An unscoped exemption
+// covers every occurrence. A scope field the occurrence cannot answer (an
+// empty Artifact or Location) does not cover it: an exemption is never
+// widened by what its reader does not know.
+func (e ShapeVulnScopedExempt) ScopeCovers(o VulnOccurrence) bool {
+	if len(e.Packages) > 0 && !slices.ContainsFunc(e.Packages, func(p string) bool { return VulnPackageMatches(p, o.PackageName, o.PackagePURL) }) {
+		return false
+	}
+	if len(e.Artifacts) > 0 && !slices.ContainsFunc(e.Artifacts, func(a string) bool { return o.Artifact != "" && a == o.Artifact }) {
+		return false
+	}
+	if len(e.Locations) > 0 && !slices.ContainsFunc(e.Locations, func(l string) bool { return vulnLocationMatches(l, o.Location) }) {
+		return false
+	}
+	return true
+}
+
+// VulnPackageMatches reports whether an exemption's package entry names a
+// finding's package: the package name exactly, or the purl exactly or by a
+// prefix that ends at a purl boundary ("pkg:golang/stdlib" names
+// "pkg:golang/stdlib@go1.24.1", never "pkg:golang/stdlibx@1").
+func VulnPackageMatches(entry, name, purl string) bool {
+	switch {
+	case entry == "":
+		return false
+	case entry == name:
+		return true
+	case purl == "" || !strings.HasPrefix(purl, entry):
+		return false
+	case len(purl) == len(entry) || strings.HasSuffix(entry, "@") || strings.HasSuffix(entry, "/"):
+		return true
+	}
+	return strings.ContainsRune("@?#/", rune(purl[len(entry)]))
+}
+
+// vulnLocationMatches reports whether an exemption's location entry names a
+// path: exactly, or as a directory when the entry ends in "/".
+func vulnLocationMatches(entry, path string) bool {
+	if entry == "" || path == "" {
+		return false
+	}
+	return entry == path || (strings.HasSuffix(entry, "/") && strings.HasPrefix(path, entry))
 }
 
 // ShapeBundleKinds narrows, never widens, the mandatory ingest baseline:
@@ -257,9 +375,21 @@ func (p ShapeDeliveryPolicy) canonical() ShapeDeliveryPolicy {
 	out.BundleKinds.Allow = sortedNonNil(p.BundleKinds.Allow)
 	out.BundleKinds.Deny = sortedNonNil(p.BundleKinds.Deny)
 	out.Approvals.Approvers = sortedNonNil(p.Approvals.Approvers)
+	// An exemption with no scope is canonically an entry of Exemptions,
+	// whichever list a producer put it in; each scope list is sorted.
 	ex := append([]ShapeVulnExempt{}, p.VulnGate.Exemptions...)
+	var scoped []ShapeVulnScopedExempt
+	for _, e := range p.VulnGate.ScopedExemptions {
+		if !e.Scoped() {
+			ex = append(ex, e.Exempt())
+			continue
+		}
+		e.Packages, e.Artifacts, e.Locations = sortedOrNil(e.Packages), sortedOrNil(e.Artifacts), sortedOrNil(e.Locations)
+		scoped = append(scoped, e)
+	}
 	sort.Slice(ex, func(i, j int) bool { return ex[i].ID < ex[j].ID })
-	out.VulnGate.Exemptions = ex
+	sort.Slice(scoped, func(i, j int) bool { return scoped[i].Identity() < scoped[j].Identity() })
+	out.VulnGate.Exemptions, out.VulnGate.ScopedExemptions = ex, scoped
 	// The default gate (enforce, naming nothing) is the absence of one, so a
 	// policy that spells it out hashes as one that does not.
 	if p.HealthGate != nil {
@@ -287,10 +417,42 @@ func (p ShapeDeliveryPolicy) canonical() ShapeDeliveryPolicy {
 	return out
 }
 
+// validateVulnScope is why an exemption's scope is unusable, "" when it is
+// not: the rules forge.VulnExemption's checks hold in kcl/schema.k.
+func validateVulnScope(e ShapeVulnScopedExempt) string {
+	for _, f := range []struct {
+		name string
+		vals []string
+	}{{"packages", e.Packages}, {"artifacts", e.Artifacts}, {"locations", e.Locations}} {
+		seen := map[string]bool{}
+		for _, v := range f.vals {
+			switch {
+			case v == "" || v != strings.TrimSpace(v) || strings.ContainsAny(v, "\t\r\n"):
+				return fmt.Sprintf("%s entry %q is empty, padded with spaces, or not one line", f.name, v)
+			case f.name == "locations" && !strings.HasPrefix(v, "/"):
+				return fmt.Sprintf("location %q is not an absolute path inside the artifact", v)
+			case seen[v]:
+				return fmt.Sprintf("%s names %q twice", f.name, v)
+			}
+			seen[v] = true
+		}
+	}
+	return ""
+}
+
 func sortedNonNil(in []string) []string {
 	out := append([]string{}, in...)
 	sort.Strings(out)
 	return out
+}
+
+// sortedOrNil is sortedNonNil, except that an empty list stays nil (an
+// omitempty field that is absent stays absent).
+func sortedOrNil(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	return sortedNonNil(in)
 }
 
 var (
@@ -413,6 +575,24 @@ func (p ShapeDeliveryPolicy) validate() error {
 			return bad("vuln_gate exempts %s twice", e.ID)
 		}
 		ids[e.ID] = true
+	}
+	// v is canonical (Shape.Validate), so every entry here is scoped.
+	scoped := map[string]bool{}
+	for _, e := range v.ScopedExemptions {
+		switch {
+		case !deliveryAdvisoryRE.MatchString(e.ID):
+			return bad("vuln_gate exemption %q is not an advisory ID", e.ID)
+		case strings.TrimSpace(e.Reason) == "":
+			return bad("vuln_gate exemption %s has no reason", e.ID)
+		case !deliveryDateRE.MatchString(e.Expires):
+			return bad("vuln_gate exemption %s expires %q (expected YYYY-MM-DD): an exemption is time-boxed", e.ID, e.Expires)
+		case scoped[e.Identity()]:
+			return bad("vuln_gate exempts %s twice with the same scope", e.ID)
+		}
+		if err := validateVulnScope(e); err != "" {
+			return bad("vuln_gate exemption %s: %s", e.ID, err)
+		}
+		scoped[e.Identity()] = true
 	}
 
 	deny := map[string]bool{}

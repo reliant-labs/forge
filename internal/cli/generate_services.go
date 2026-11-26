@@ -297,16 +297,12 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 			if err != nil {
 				return fmt.Errorf("failed to generate missing stubs for %s: %w", svc.Name, err)
 			}
-			// Keep the scaffold test's app.NewTest<X>/With<X>Deps references in
-			// lockstep with the collision-aware factory name pkg/app/testing.go
-			// emits. A domain package registered AFTER the scaffold test was
-			// first written (the RPC-vertical sweep's internal/<svc>) flips that
-			// name (Widget → SvcWidget); without this the frozen scaffold-once
-			// test references an undefined factory and `go vet` breaks.
+			// Keep references in handler tests in lockstep with the generated
+			// test factories, whose names can change when a domain package is added.
 			if renamed, rerr := codegen.ReconcileScaffoldTestHelperName(projectDir, res.PackageName, absServiceDir); rerr != nil {
-				return fmt.Errorf("reconcile scaffold test helper name for %s: %w", svc.Name, rerr)
+				return fmt.Errorf("reconcile test helper names for %s: %w", svc.Name, rerr)
 			} else if renamed {
-				fmt.Printf("  ✅ Re-pointed %s/handlers_scaffold_*_test.go at the collision-aware app.NewTest factory\n", relServiceDir)
+				fmt.Printf("  ✅ Updated references to renamed test helpers in %s/*_test.go\n", relServiceDir)
 			}
 			if result.AllUpToDate {
 				if webhookOnly[svc.Name] {

@@ -203,7 +203,7 @@ func newDBCmd(deps Deps) *cobra.Command {
 // actually landed.
 func withMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
-		checkMigratorConfig(cmd)
+		checkMigratorConfig()
 		m, err := openMigrator(cmd)
 		if err != nil {
 			return err
@@ -239,7 +239,7 @@ func withOptionalMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) f
 		// Before the embedded-set check: a project with no migrations yet
 		// still answers the boot config check, or its migration job could
 		// never be verified and every push of the env would be refused.
-		checkMigratorConfig(cmd)
+		checkMigratorConfig()
 		// HasMigrations, not `Source() == nil`: with migrations embedded,
 		// Source returns a concrete embed.FS value that is never nil, so the
 		// nil comparison is dead code (staticcheck SA4023).
@@ -260,11 +260,10 @@ func withOptionalMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) f
 // migratorDSN reads — so it reports whether one is wired and exits. Outside
 // the check it returns at once.
 //
-// It resolves the DSN through migratorDSN itself (the flag, including any
-// flag default, else DATABASE_URL), so the check and the migration it vouches
-// for cannot disagree about whether a DSN is wired.
-func checkMigratorConfig(cmd *cobra.Command) {
-	if _, err := migratorDSN(cmd); err == nil {
+// It resolves the DSN through migratorDSN itself, so the check and the
+// migration it vouches for cannot disagree about whether a DSN is wired.
+func checkMigratorConfig() {
+	if _, err := migratorDSN(); err == nil {
 		forgeconfig.CheckVariables()
 		return
 	}
@@ -273,7 +272,7 @@ func checkMigratorConfig(cmd *cobra.Command) {
 
 // openMigrator resolves the DSN and opens a migrator over the embedded set.
 //
-// The DSN comes from the same flag and env var the server reads, so
+// The DSN comes from the same env var the server reads, so
 // `db migrate` and the application can never be pointed at different
 // databases by accident. NO POOL TUNING is applied: migrations run once, at
 // boot, on a dedicated connection that holds locks the serving pool must not
@@ -299,7 +298,7 @@ func checkMigratorConfig(cmd *cobra.Command) {
 // its config. This narrows the migrator's credential surface to what it
 // actually consumes.
 func openMigrator(cmd *cobra.Command) (*migratekit.Migrator, error) {
-	dsn, err := migratorDSN(cmd)
+	dsn, err := migratorDSN()
 	if err != nil {
 		return nil, err
 	}
@@ -324,23 +323,22 @@ func migratorLimits(cmd *cobra.Command) (migratekit.Limits, error) {
 	return migratekit.ParseLimits(lock, statement, attempts)
 }
 
-// migratorDSN resolves the migration DSN from --database-url, else
-// DATABASE_URL. Flag beats env, matching config.Load's precedence for this
-// field. Empty is an error: a migrator with no DSN must say so rather than
-// fall back to a default and migrate something unintended.
-func migratorDSN(cmd *cobra.Command) (string, error) {
-	url, err := cmd.Flags().GetString("database-url")
-	if err != nil || url == "" {
-		// forbidigo bans reading env directly, and is right to: the typed
-		// loader is how settings should be reached. This is the ONE command
-		// that cannot use it — config.Load validates every required field in
-		// the whole config message, which is exactly the coupling this
-		// function exists to remove. DATABASE_URL is the env var the field's
-		// own (forge.v1.config) annotation declares, so the two cannot drift.
-		url = os.Getenv("DATABASE_URL") //nolint:forbidigo // see above: the typed loader validates the WHOLE config
-	}
+// migratorDSN resolves the migration DSN from DATABASE_URL, the env var the
+// database_url field's (forge.v1.config) annotation declares. There is no
+// --database-url flag, deliberately: the field is sensitive, and the server
+// registers no flag for a sensitive field either, because a secret on a
+// command line leaks through `ps` and shell history. Empty is an error: a
+// migrator with no DSN must say so rather than fall back to a default and
+// migrate something unintended.
+func migratorDSN() (string, error) {
+	// forbidigo bans reading env directly, and is right to: the typed loader
+	// is how settings should be reached. This is the ONE command that cannot
+	// use it — config.Load validates every required field in the whole
+	// config message, which is exactly the coupling this function exists to
+	// remove.
+	url := os.Getenv("DATABASE_URL") //nolint:forbidigo // see above: the typed loader validates the WHOLE config
 	if url == "" {
-		return "", fmt.Errorf("DATABASE_URL (or --database-url) is required")
+		return "", fmt.Errorf("DATABASE_URL is required")
 	}
 	return url, nil
 }

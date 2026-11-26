@@ -15,14 +15,15 @@ import (
 )
 
 // forge:section MockSource
-// forge:hash=2a2db1c2f378550556308b87f9d1603659d56d701adcf024794e3c6ea1d81147
+// forge:hash=26f216edea2fa48856018a419bdf76097c4c28c417825be30a71da5e64035832
 
 // MockSource is a test mock for the Source interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockSource.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockSource.<Method>Func not set" error.
 type MockSource struct {
 	contractkit.Recorder
 	LoadFunc func(context.Context, string, time.Time) (Data, error)
@@ -35,6 +36,28 @@ func (m *MockSource) Load(ctx context.Context, env string, since time.Time) (Dat
 		return m.LoadFunc(ctx, env, since)
 	}
 	return Data{}, contractkit.MockNotSet("MockSource", "Load")
+}
+
+// MockSourceLoadCall is one recorded call of MockSource.Load, one
+// field per parameter.
+type MockSourceLoadCall struct {
+	Ctx   context.Context
+	Env   string
+	Since time.Time
+}
+
+// LoadCalls returns every recorded Load call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Load").
+func (m *MockSource) LoadCalls() []MockSourceLoadCall {
+	var out []MockSourceLoadCall
+	for _, c := range m.Recorder.Calls("Load") {
+		var r MockSourceLoadCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Env, _ = c.Args[1].(string)
+		r.Since, _ = c.Args[2].(time.Time)
+		out = append(out, r)
+	}
+	return out
 }
 
 // Compile-time check.

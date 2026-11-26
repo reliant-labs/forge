@@ -113,7 +113,7 @@ stays real at every tier.
 <!-- @forge-only:start -->
 ## Library entry point: `pkg/tdd`
 
-The canonical entry point for table-driven tests in a forge project is the `github.com/reliant-labs/forge/pkg/tdd` library. Forge's scaffolders (`forge project new`, `forge scaffold service`, `forge package new`, `forge generate`) emit unit / contract test files (plus CRUD integration tests when entities exist) that already import it. Scaffolded per-RPC rows are self-destructing — `WantErr: connect.CodeUnimplemented` fails the moment the handler is implemented, demanding a real assertion in its place; `pkg/tdd` has no permissive any-outcome mode. Treat the helpers below as the default vocabulary for new test files; reach for hand-rolled `for _, tc := range cases` only when the shape doesn't fit.
+The canonical entry point for table-driven tests in a forge project is the `github.com/reliant-labs/forge/pkg/tdd` library. Forge's scaffolders (`forge project new`, `forge scaffold service`, `forge scaffold package`, `forge generate`) emit unit / contract test files (plus CRUD integration tests when entities exist) that already import it. Scaffolded per-RPC rows are self-destructing — `WantErr: connect.CodeUnimplemented` fails the moment the handler is implemented, demanding a real assertion in its place; `pkg/tdd` has no permissive any-outcome mode. Treat the helpers below as the default vocabulary for new test files; reach for hand-rolled `for _, tc := range cases` only when the shape doesn't fit.
 
 | Helper | Use |
 |--------|-----|
@@ -221,6 +221,8 @@ tier exactly when `deploy/` changed. Slow validates them on every run,
 A plain `if testing.Short() { t.Skip("<why>") }` is still a valid marker, and
 so is bypassing only the slow side effect under `-short`. Gate it, don't gut
 it — never weaken an assertion to fit the 60s per-package timeout.
+
+A `Slow` test still runs under `task test`'s default `-race` and 120s per-package timeout. For a test that gains nothing from race detection (e.g. a single-goroutine simulation), use `testkit.SkipUnderRace(t, why)` or run a smaller workload when `testkit.RaceEnabled()`.
 
 Two guards hold the line, because neither sees everything:
 

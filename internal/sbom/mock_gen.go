@@ -14,14 +14,15 @@ import (
 )
 
 // forge:section MockDescriber
-// forge:hash=b0f1f8ec4db063781a683a861f4544dd0726a8303093234fb3593769d04d4a1f
+// forge:hash=f3ba528b7a4fe4e4d63066b65e8ed56d126e2021203fc3b12796b66bc26edc93
 
 // MockDescriber is a test mock for the Describer interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockDescriber.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockDescriber.<Method>Func not set" error.
 type MockDescriber struct {
 	contractkit.Recorder
 	GenerateFunc func(context.Context, []Target) []Result
@@ -36,18 +37,39 @@ func (m *MockDescriber) Generate(ctx context.Context, targets []Target) []Result
 	return nil
 }
 
+// MockDescriberGenerateCall is one recorded call of MockDescriber.Generate, one
+// field per parameter.
+type MockDescriberGenerateCall struct {
+	Ctx     context.Context
+	Targets []Target
+}
+
+// GenerateCalls returns every recorded Generate call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Generate").
+func (m *MockDescriber) GenerateCalls() []MockDescriberGenerateCall {
+	var out []MockDescriberGenerateCall
+	for _, c := range m.Recorder.Calls("Generate") {
+		var r MockDescriberGenerateCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Targets, _ = c.Args[1].([]Target)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ Describer = (*MockDescriber)(nil)
 
 // forge:section MockRunner
-// forge:hash=11c604bb6907de7e85c6ab62f57c2d0436a5bffab0817683af867de25a3f18d6
+// forge:hash=e70712f0484cabd5c1a8e946aa64f5b1ffcb071b5a2027490158aaf574a8f03e
 
 // MockRunner is a test mock for the Runner interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockRunner.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockRunner.<Method>Func not set" error.
 type MockRunner struct {
 	contractkit.Recorder
 	RunFunc func(context.Context, string, []string, []string) ([]byte, error)
@@ -62,18 +84,43 @@ func (m *MockRunner) Run(ctx context.Context, bin string, args []string, env []s
 	return nil, contractkit.MockNotSet("MockRunner", "Run")
 }
 
+// MockRunnerRunCall is one recorded call of MockRunner.Run, one
+// field per parameter.
+type MockRunnerRunCall struct {
+	Ctx  context.Context
+	Bin  string
+	Args []string
+	Env  []string
+}
+
+// RunCalls returns every recorded Run call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Run").
+func (m *MockRunner) RunCalls() []MockRunnerRunCall {
+	var out []MockRunnerRunCall
+	for _, c := range m.Recorder.Calls("Run") {
+		var r MockRunnerRunCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Bin, _ = c.Args[1].(string)
+		r.Args, _ = c.Args[2].([]string)
+		r.Env, _ = c.Args[3].([]string)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ Runner = (*MockRunner)(nil)
 
 // forge:section MockCacheStore
-// forge:hash=84d5ae49e183542b44ef5d953ec06fbacde46ce56b64c61a657da6752df6cd50
+// forge:hash=42dcd7f8b7b78fc9e97be58366ac5ee27e3d25c7cada51389a55747cb7d97987
 
 // MockCacheStore is a test mock for the CacheStore interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockCacheStore.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockCacheStore.<Method>Func not set" error.
 type MockCacheStore struct {
 	contractkit.Recorder
 	GetFunc func(CacheKey) ([]byte, string, bool)
@@ -96,6 +143,46 @@ func (m *MockCacheStore) Put(key CacheKey, source string, data []byte) error {
 		return m.PutFunc(key, source, data)
 	}
 	return contractkit.MockNotSet("MockCacheStore", "Put")
+}
+
+// MockCacheStoreGetCall is one recorded call of MockCacheStore.Get, one
+// field per parameter.
+type MockCacheStoreGetCall struct {
+	Key CacheKey
+}
+
+// GetCalls returns every recorded Get call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Get").
+func (m *MockCacheStore) GetCalls() []MockCacheStoreGetCall {
+	var out []MockCacheStoreGetCall
+	for _, c := range m.Recorder.Calls("Get") {
+		var r MockCacheStoreGetCall
+		r.Key, _ = c.Args[0].(CacheKey)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockCacheStorePutCall is one recorded call of MockCacheStore.Put, one
+// field per parameter.
+type MockCacheStorePutCall struct {
+	Key    CacheKey
+	Source string
+	Data   []byte
+}
+
+// PutCalls returns every recorded Put call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Put").
+func (m *MockCacheStore) PutCalls() []MockCacheStorePutCall {
+	var out []MockCacheStorePutCall
+	for _, c := range m.Recorder.Calls("Put") {
+		var r MockCacheStorePutCall
+		r.Key, _ = c.Args[0].(CacheKey)
+		r.Source, _ = c.Args[1].(string)
+		r.Data, _ = c.Args[2].([]byte)
+		out = append(out, r)
+	}
+	return out
 }
 
 // Compile-time check.

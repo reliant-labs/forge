@@ -786,7 +786,7 @@ func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
 				"func NewTestAPIServer(t *testing.T, opts ...TestOption)",
 				`"example.com/proj/gen/services/api/v1/apiv1connect"`,
 				"apiv1connect.APIServiceClient",
-				"testkit.DiscardLogger()",
+				"testkit.Logger(t)",
 				`"github.com/reliant-labs/forge/pkg/testkit"`,
 				// AuthedContext: claims-bearing ctx via the project's own
 				// middleware.ContextWithClaims setter.

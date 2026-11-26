@@ -13,7 +13,7 @@ type templateData struct {
 	Source           string // the file the interfaces were read from (contract.go, deps.go)
 	Receiver         string // every mock method's receiver; see mockReceiver
 	Imports          []ImportDef
-	Interfaces       []InterfaceDef
+	Interfaces       []mockInterface   // see mock_calls.go
 	InterfaceNames   map[string]bool   // local interface names (for zeroValue)
 	PrimitiveAliases map[string]string // local named primitive aliases (for zeroValue)
 }
@@ -65,9 +65,10 @@ import (
 // {{ $iface.MockName }} is a test mock for the {{ $iface.QualifiedName }} interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "{{ $iface.MockName }}.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "{{ $iface.MockName }}.<Method>Func not set" error.
 type {{ $iface.MockName }} struct {
 	contractkit.Recorder
 {{ range $iface.Methods }}	{{ .Name }}Func {{ .FuncFieldType }}
@@ -83,6 +84,27 @@ func ({{ $.Receiver }} *{{ $iface.MockName }}) {{ $m.Name }}({{ $m.ParamSignatur
 	}
 {{ if $m.HasResults }}	return {{ $m.ZeroResults $iface.MockName $.InterfaceNames $.PrimitiveAliases }}
 {{ end }}}
+
+{{ end -}}
+{{ range $m := $iface.Methods -}}
+{{ $c := $m.Calls -}}
+// {{ $c.Type }} is one recorded call of {{ $iface.MockName }}.{{ $m.Name }}, one
+// field per parameter.
+type {{ $c.Type }} struct {
+{{ range $c.Fields }}	{{ .Name }} {{ .Type }}
+{{ end }}}
+
+// {{ $c.Accessor }} returns every recorded {{ $m.Name }} call, oldest first, with
+// its arguments typed. It reads the same log as Calls("{{ $m.Name }}").
+func ({{ $.Receiver }} *{{ $iface.MockName }}) {{ $c.Accessor }}() []{{ $c.Type }} {
+	var {{ $c.Out }} []{{ $c.Type }}
+	for {{ if $c.Fields }}_, {{ $c.Call }} := {{ end }}range {{ $.Receiver }}.Recorder.Calls("{{ $m.Name }}") {
+		var {{ $c.Rec }} {{ $c.Type }}
+{{ range $i, $f := $c.Fields }}		{{ $c.Rec }}.{{ $f.Name }}, _ = {{ $c.Call }}.Args[{{ $i }}].({{ $f.Type }})
+{{ end }}		{{ $c.Out }} = append({{ $c.Out }}, {{ $c.Rec }})
+	}
+	return {{ $c.Out }}
+}
 
 {{ end -}}
 // Compile-time check.

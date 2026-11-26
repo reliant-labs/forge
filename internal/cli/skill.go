@@ -291,11 +291,20 @@ func filterDefaultRelevance(skills []skillMeta) []skillMeta {
 }
 
 func newSkillLoadCmd() *cobra.Command {
-	return &cobra.Command{
+	var window skillLoadWindow
+	cmd := &cobra.Command{
 		Use:   "load <name>",
 		Short: "Print a skill's content to stdout (resolves user > project > forge)",
-		Args:  cobra.ExactArgs(1),
+		Example: `  forge skill load api --section "Domain sentinels"
+  forge skill load contracts --regex 'mock|contract' -i --context 2`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("section") && strings.TrimSpace(window.section) == "" {
+				return cliutil.UserErrf(cmd.CommandPath(), "--section needs a non-empty heading")
+			}
+			if window.pattern == "" && (cmd.Flags().Changed("regex") || cmd.Flags().Changed("context") || cmd.Flags().Changed("ignore-case")) {
+				return cliutil.UserErrf(cmd.CommandPath(), "--regex needs a non-empty expression when using --regex, --context, or --ignore-case")
+			}
 			name := args[0]
 			// Allow both "db" and "forge/db"
 			name = strings.TrimPrefix(name, "forge/")
@@ -311,10 +320,19 @@ func newSkillLoadCmd() *cobra.Command {
 					"run 'forge skill list' to see available skills, or 'forge skill search <keyword>' to find one")
 			}
 
+			content, err = window.selectFromSkill(content)
+			if err != nil {
+				return cliutil.UserErrf(cmd.CommandPath(), "%v", err)
+			}
 			_, err = cmd.OutOrStdout().Write(content)
 			return err
 		},
 	}
+	cmd.Flags().StringVar(&window.section, "section", "", "print one Markdown heading and its content (exact or unique partial heading)")
+	cmd.Flags().StringVar(&window.pattern, "regex", "", "print only matching lines, numbered; may be combined with --section")
+	cmd.Flags().BoolVarP(&window.ignoreCase, "ignore-case", "i", false, "match --regex case-insensitively")
+	cmd.Flags().IntVar(&window.contextLines, "context", 0, "print this many lines of context on each side of a --regex match")
+	return cmd
 }
 
 // newSkillSearchCmd implements `forge skill search "<query>"`. The scoring

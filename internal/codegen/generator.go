@@ -34,7 +34,7 @@ type MethodTemplateData struct {
 	// file's generated package, not the service's `pb`. Empty means the
 	// service's own package (InputRef, StubImports).
 	InputGoType, OutputGoType string
-	InputImport, OutputImport foreignImport
+	InputImport, OutputImport GoImport
 }
 
 // InputRef is the qualified Go type of the request message the stub and
@@ -128,14 +128,14 @@ func (d ServiceTemplateData) HasStreamingMethods() bool {
 }
 
 // pbImport is the service's own generated package, imported as `pb`.
-func (d ServiceTemplateData) pbImport() foreignImport {
-	return foreignImport{Alias: "pb", Path: d.Module + "/gen/" + d.ProtoPackage + "/v1"}
+func (d ServiceTemplateData) pbImport() GoImport {
+	return GoImport{Alias: "pb", Path: d.Module + "/gen/" + d.ProtoPackage + "/v1"}
 }
 
 // messageImports is the de-duplicated, ordered set of imports for the
-// messages named, the zero foreignImport standing for the service's `pb`.
-func (d ServiceTemplateData) messageImports(imps []foreignImport) []foreignImport {
-	var out []foreignImport
+// messages named, the zero GoImport standing for the service's `pb`.
+func (d ServiceTemplateData) messageImports(imps []GoImport) []GoImport {
+	var out []GoImport
 	seen := map[string]bool{}
 	for _, imp := range imps {
 		if imp.Path == "" {
@@ -160,7 +160,7 @@ func (d ServiceTemplateData) messageImports(imps []foreignImport) []foreignImpor
 // its per-rpc stream type). Importing a package no signature names would
 // not compile.
 func (d ServiceTemplateData) StubImports() []GoImport {
-	var imps []foreignImport
+	var imps []GoImport
 	for _, m := range d.Methods {
 		bidi := m.ClientStreaming && m.ServerStreaming
 		if !d.ConnectV2 || (!bidi && !m.ClientStreaming) {
@@ -177,7 +177,7 @@ func (d ServiceTemplateData) StubImports() []GoImport {
 // messages it names: a unary rpc's cases name both, a streaming rpc's
 // case only the request it sends, and a bidirectional one's nothing.
 func (d ServiceTemplateData) TestImports() []GoImport {
-	var imps []foreignImport
+	var imps []GoImport
 	for _, m := range d.Methods {
 		switch {
 		case m.ClientStreaming && m.ServerStreaming:
@@ -436,10 +436,6 @@ type GoImport struct {
 	Path  string // e.g. "github.com/proj/gen/reliant/v1"
 }
 
-// foreignImport records one non-`pb` protobuf package the mock must import,
-// with the alias used to qualify its message types.
-type foreignImport = GoImport
-
 // GoPackageForProtoFile derives the generated Go import path for a proto
 // file under the buf module root. The buf module root is "proto/", and the
 // go_package convention forge projects use is `<module>/gen/<dir>` where
@@ -471,7 +467,7 @@ func GoPackageForProtoFile(protoFile, modulePath string) string {
 type mockTypeResolver struct {
 	svc      ServiceDef
 	aliases  map[string]string // go import path -> alias
-	imports  []foreignImport
+	imports  []GoImport
 	needsPb  bool
 	needsEmp bool
 }
@@ -506,32 +502,32 @@ func (r *mockTypeResolver) qualify(msgType, fqType, protoFile string) string {
 	if !ok {
 		alias = mockImportAlias(goPkg, len(r.aliases))
 		r.aliases[goPkg] = alias
-		r.imports = append(r.imports, foreignImport{Alias: alias, Path: goPkg})
+		r.imports = append(r.imports, GoImport{Alias: alias, Path: goPkg})
 	}
 	return alias + "." + short
 }
 
 // qualifyWithImport is qualify plus the import the reference needs: the
-// zero foreignImport for the service's own `pb` package. Every emitter writes
+// zero GoImport for the service's own `pb` package. Every emitter writes
 // the import with this alias explicitly (the stub and test templates, and
 // astutil.AddNamedImport when a stub is appended), so the qualifier and the
 // import agree whatever package clause a go_package `;name` suffix gives the
 // generated package.
-func (r *mockTypeResolver) qualifyWithImport(msgType, fqType, protoFile string) (string, foreignImport) {
+func (r *mockTypeResolver) qualifyWithImport(msgType, fqType, protoFile string) (string, GoImport) {
 	ref := r.qualify(msgType, fqType, protoFile)
 	alias, _, _ := strings.Cut(ref, ".")
 	switch alias {
 	case "pb":
-		return ref, foreignImport{}
+		return ref, GoImport{}
 	case "emptypb":
-		return ref, foreignImport{Alias: "emptypb", Path: "google.golang.org/protobuf/types/known/emptypb"}
+		return ref, GoImport{Alias: "emptypb", Path: "google.golang.org/protobuf/types/known/emptypb"}
 	}
 	for path, a := range r.aliases {
 		if a == alias {
-			return ref, foreignImport{Alias: alias, Path: path}
+			return ref, GoImport{Alias: alias, Path: path}
 		}
 	}
-	return ref, foreignImport{}
+	return ref, GoImport{}
 }
 
 // mockImportAlias builds a deterministic, collision-free import alias for a

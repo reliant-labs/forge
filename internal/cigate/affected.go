@@ -146,6 +146,10 @@ type AffectedInput struct {
 	// Rules are ci.gate.affected_rules: what a changed file the package
 	// graph cannot place selects.
 	Rules []config.CIGateAffectedRule
+	// Readers turns on the reader scan (ci.gate.affected_readers): a changed
+	// file nothing else places selects the test packages whose sources name
+	// it (affected_readers.go).
+	Readers bool
 	// Modules is ci.gate.affected_modules: "auto" maps changes in nested
 	// modules the root go.mod replaces onto ./dir (affected_modules.go).
 	Modules string
@@ -248,6 +252,17 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 	if err != nil {
 		return fullAfterDiff("cannot read go list output: " + err.Error())
 	}
+	if in.Readers {
+		git := in.Git
+		if git == nil {
+			git = runGit
+		}
+		// No tracked list means no readers: every unplaced file still runs
+		// the full suite.
+		if tracked, terr := trackedFiles(ctx, git, in.Root); terr == nil {
+			g.readers = scanReaders(g, tracked)
+		}
+	}
 	sel, reason := selectChanges(rootChanged, g, in.Ignore, in.Rules)
 	files := explainFiles(changed, g, in.Ignore, ruleMatchers(in.Rules))
 	files = annotateModuleFiles(files, nested, modules)
@@ -298,6 +313,7 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 			a.Selections = append(a.Selections, selectionLine(i, rule, sel.hits[i], g))
 		}
 	}
+	a.Selections = append(a.Selections, sel.readerLines...)
 	a.Build = g.buildSet(sel.changedPkgs)
 	a.Why = explainPackages(a.Packages, files, g, ruleMatchers(in.Rules))
 	return a
@@ -310,6 +326,7 @@ type selection struct {
 	rulePkgs    map[string]bool // test packages an affected rule names
 	frontends   map[string]bool // frontends an affected rule names
 	hits        []int           // per rule, how many changed files it claimed
+	readerLines []string        // per file the reader scan placed, what it selected
 }
 
 // selectChanges maps each changed file to what it selects, or returns why the
@@ -346,7 +363,14 @@ func selectChanges(changed []string, g *packageGraph, ignore []string, rules []c
 		switch {
 		case ok:
 			sel.changedPkgs[pkg] = true
-		case !claimed:
+		case claimed:
+		case len(g.readers.readersOf(f)) > 0:
+			readers := g.readers.readersOf(f)
+			for p := range readers {
+				sel.rulePkgs[p] = true
+			}
+			sel.readerLines = append(sel.readerLines, readerLine(f, readers))
+		default:
 			return sel, fmt.Sprintf("%s changed, and it is not Go source, an embedded file or testdata of a package — nothing proves which tests read it (ci.gate.affected_ignore lists files none do; ci.gate.affected_rules says what a path selects)", f)
 		}
 	}
@@ -499,6 +523,8 @@ type packageGraph struct {
 	// testDeps maps each module package that has tests to every package its
 	// test binary links.
 	testDeps map[string][]string
+	// readers is the reader scan's index; nil unless it is on.
+	readers readerIndex
 	// testImports maps a module package to what its test files import.
 	testImports map[string]map[string]bool
 	// buildDeps maps each module package to every package its build (not

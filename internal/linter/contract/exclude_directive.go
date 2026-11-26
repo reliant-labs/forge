@@ -70,9 +70,13 @@ package contract
 //     constructor or combinator returning it). That is the same line the
 //     analyzer draws for Deps seams ("a requirement, not an offer").
 //
-// A strategy registry (an exported `Register*` func taking the interface) is
-// the one multi-impl shape the contracts skill names as legitimately
-// excluded, and is exempt.
+// A strategy registry (an exported `Register*` func taking the interface, or
+// a factory that builds it) is the one multi-impl shape the contracts skill
+// names as legitimately excluded, and is exempt. It is NOT exempt from the
+// outbound-I/O refusal: the registry is pure dispatch, and an implementation
+// that leaves the process is an outbound boundary like any other. The
+// refusal names that implementation and prescribes moving its call behind
+// an adapter, which keeps the registry excludable.
 //
 // # Exemptions
 //
@@ -415,6 +419,22 @@ func checkOnePackage(p *packages.Package, marker codegen.ReasonedMarker, candida
 		hint := "remove `//forge:exclude-contract` and make this an adapter: a contract.go carrying " +
 			"`// forge:outbound-io` with a narrow Service interface in domain types, and `// forge:constructor` " +
 			"on `func New(Deps)` — see `forge skill load adapter`"
+		where := ""
+		if hit.fn != "" {
+			where = ", in " + hit.fn
+		}
+		if iface := strategyRegistryInterface(p); iface != "" && hit.fn != "" {
+			// A registry is pure dispatch and keeps its exclusion; the I/O
+			// belongs to one implementation, and that is what needs the
+			// adapter. "Make the registry an adapter" would be wrong: there
+			// is no single New(Deps) to bind.
+			hint = fmt.Sprintf("keep `//forge:exclude-contract` on this %s registry and move the I/O out of it: "+
+				"put the call %s makes behind an adapter (`forge scaffold adapter <name>`: a contract.go with "+
+				"`// forge:outbound-io`, a narrow Service in domain types, its mock and decorator), and hand that "+
+				"Service to the implementation through what its factory or constructor takes. The registry then "+
+				"does no I/O itself and the refusal clears; the implementation's tests get the adapter's mock "+
+				"instead of a live endpoint — see `forge skill load adapter`", iface, hit.fn)
+		}
 		if hit.dynamicTarget {
 			hint += ". If this call only ever reaches LOOPBACK (a local dev server, a sidecar on 127.0.0.1), " +
 				"it is not an outbound boundary: write the host as a constant — `net.JoinHostPort(\"127.0.0.1\", port)`, " +
@@ -425,9 +445,9 @@ func checkOnePackage(p *packages.Package, marker codegen.ReasonedMarker, candida
 			Severity: finding.SeverityError,
 			File:     marker.File,
 			Line:     marker.Line,
-			Message: fmt.Sprintf("package %s does outbound I/O (%s at %s) and so cannot opt out of the contract "+
+			Message: fmt.Sprintf("package %s does outbound I/O (%s at %s%s) and so cannot opt out of the contract "+
 				"system: an outbound boundary is exactly what a contract's mock and decorator are for",
-				p.PkgPath, hit.label, shortPos(hit.pos)),
+				p.PkgPath, hit.label, shortPos(hit.pos), where),
 			FixHint: hint,
 		})
 	}
@@ -442,7 +462,8 @@ func checkOnePackage(p *packages.Package, marker codegen.ReasonedMarker, candida
 				p.PkgPath, iface, len(impls), strings.Join(impls, ", ")),
 			FixHint: fmt.Sprintf("remove `//forge:exclude-contract` and move %s into a contract.go (mark it "+
 				"`//forge:contract` if it is not named Service) — see `forge skill load contracts/package-markers`. A strategy "+
-				"registry is exempt when it exposes a `Register…(%s)` func", iface, iface),
+				"registry is exempt when it exposes a `Register…(%s)` func, or one taking a factory that returns %s "+
+				"(`func(…) %s` or `func(…) (%s, error)`)", iface, iface, iface, iface, iface),
 		})
 	}
 	return out
@@ -452,6 +473,9 @@ func checkOnePackage(p *packages.Package, marker codegen.ReasonedMarker, candida
 type outboundHit struct {
 	label string
 	pos   token.Position
+	// fn is the declared function or method the call sits in, as
+	// `(*T).Method` or `Func`; "" for a call in a package-level var.
+	fn string
 	// dynamicTarget is set when the callee takes an address or URL (a dial,
 	// an http.Get) and this call's target is not a compile-time constant,
 	// so the gate cannot tell whether it is loopback.
@@ -469,29 +493,35 @@ func firstOutboundIOCall(p *packages.Package) (outboundHit, bool) {
 		if isNonSourceFile(file) {
 			continue
 		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
+		for _, decl := range f.Decls {
+			enclosing := ""
+			if fd, ok := decl.(*ast.FuncDecl); ok {
+				enclosing = funcDisplayName(fd)
 			}
-			fn, ok := typeutil.Callee(p.TypesInfo, call).(*types.Func)
-			if !ok {
-				return true
-			}
-			label, ok := ioSignalFor(fn)
-			if !ok {
-				return true
-			}
-			hit := outboundHit{label: label, pos: p.Fset.Position(call.Pos())}
-			if idx, takesTarget := targetArgIndex(fn); takesTarget {
-				if idx < len(call.Args) && staticLoopbackTarget(p.TypesInfo, call.Args[idx]) {
+			ast.Inspect(decl, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
 					return true
 				}
-				hit.dynamicTarget = true
-			}
-			hits = append(hits, hit)
-			return true
-		})
+				fn, ok := typeutil.Callee(p.TypesInfo, call).(*types.Func)
+				if !ok {
+					return true
+				}
+				label, ok := ioSignalFor(fn)
+				if !ok {
+					return true
+				}
+				hit := outboundHit{label: label, pos: p.Fset.Position(call.Pos()), fn: enclosing}
+				if idx, takesTarget := targetArgIndex(fn); takesTarget {
+					if idx < len(call.Args) && staticLoopbackTarget(p.TypesInfo, call.Args[idx]) {
+						return true
+					}
+					hit.dynamicTarget = true
+				}
+				hits = append(hits, hit)
+				return true
+			})
+		}
 	}
 	if len(hits) == 0 {
 		return outboundHit{}, false
@@ -503,6 +533,19 @@ func firstOutboundIOCall(p *packages.Package) (outboundHit, bool) {
 		return hits[i].pos.Offset < hits[j].pos.Offset
 	})
 	return hits[0], true
+}
+
+// funcDisplayName renders a declaration as a reader would look it up:
+// `(*T).Method`, `(T).Method` or `Func`.
+func funcDisplayName(fd *ast.FuncDecl) string {
+	if fd.Recv == nil || len(fd.Recv.List) == 0 {
+		return fd.Name.Name
+	}
+	recv := receiverTypeName(fd)
+	if _, ptr := fd.Recv.List[0].Type.(*ast.StarExpr); ptr {
+		recv = "*" + recv
+	}
+	return "(" + recv + ")." + fd.Name.Name
 }
 
 // targetArgIndex reports which argument of fn names the remote end, for the
@@ -597,7 +640,8 @@ func isLoopbackHost(host string) bool {
 // multiImplInterface returns the first exported, non-empty interface declared
 // in p (in non-test, non-generated source) that has >= 2 implementations in
 // the module, at least one of them declared in p. A strategy registry — an
-// exported `Register*` func accepting the interface — is exempt, and so is an
+// exported `Register*` func accepting the interface or a factory of it — is
+// exempt, and so is an
 // interface p itself consumes (consumesInterface): a seam p needs is not a
 // contract p offers, whatever implements it.
 func multiImplInterface(p *packages.Package, candidates []*types.TypeName) (string, []string, bool) {
@@ -739,17 +783,24 @@ func refersTo(typ, t types.Type) bool {
 }
 
 // hasRegistryFunc reports whether p exports a `Register*` function — or a
-// `Register*` method on one of its types (`(*Registry).Register`) — taking t:
-// the strategy-registry shape the contracts skill names as a legitimate
-// exclusion.
+// `Register*` method on one of its types (`(*Registry).Register`) — that
+// registers a t (see registers): the strategy-registry shape the contracts
+// skill names as a legitimate exclusion.
 func hasRegistryFunc(p *packages.Package, t types.Type) bool {
 	takesT := func(fn *types.Func) bool {
 		if !fn.Exported() || !strings.HasPrefix(fn.Name(), "Register") {
 			return false
 		}
-		params := fn.Type().(*types.Signature).Params()
+		sig := fn.Type().(*types.Signature)
+		params := sig.Params()
 		for i := 0; i < params.Len(); i++ {
-			if types.Identical(params.At(i).Type(), t) {
+			typ := params.At(i).Type()
+			if sig.Variadic() && i == params.Len()-1 {
+				if s, ok := typ.(*types.Slice); ok {
+					typ = s.Elem() // `Register(s ...Strategy)`
+				}
+			}
+			if registers(typ, t) {
 				return true
 			}
 		}
@@ -775,6 +826,55 @@ func hasRegistryFunc(p *packages.Package, t types.Type) bool {
 		}
 	}
 	return false
+}
+
+// registers reports whether a `Register*` parameter of type typ hands the
+// registry a t: t itself, or a factory that builds one — a func type, named
+// (`type Factory func(Params) (Source, error)`) or literal, whose results
+// are t alone or (t, error). A registry of factories is the same strategy
+// registry as one of instances; it registers constructors because each
+// implementation is built per use from its own parameters.
+func registers(typ, t types.Type) bool {
+	typ = types.Unalias(typ)
+	if types.Identical(typ, t) {
+		return true
+	}
+	sig, ok := typ.Underlying().(*types.Signature)
+	if !ok {
+		return false
+	}
+	res := sig.Results()
+	switch {
+	case res.Len() == 1:
+		return types.Identical(res.At(0).Type(), t)
+	case res.Len() == 2:
+		return types.Identical(res.At(0).Type(), t) &&
+			types.Identical(res.At(1).Type(), types.Universe.Lookup("error").Type())
+	}
+	return false
+}
+
+// strategyRegistryInterface returns the name of the first exported
+// interface declared in p's own source that p registers implementations of
+// (hasRegistryFunc), or "" when p is not a strategy registry.
+func strategyRegistryInterface(p *packages.Package) string {
+	scope := p.Types.Scope()
+	for _, name := range scope.Names() {
+		tn, ok := scope.Lookup(name).(*types.TypeName)
+		if !ok || !tn.Exported() || tn.IsAlias() {
+			continue
+		}
+		if iface, ok := tn.Type().Underlying().(*types.Interface); !ok || iface.NumMethods() == 0 {
+			continue
+		}
+		if isNonSourceFile(p.Fset.Position(tn.Pos()).Filename) {
+			continue
+		}
+		if hasRegistryFunc(p, tn.Type()) {
+			return name
+		}
+	}
+	return ""
 }
 
 // isTestSupportPackage reports whether p is test-support code: its non-test

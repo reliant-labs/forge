@@ -179,6 +179,11 @@ func lintPipeline() []linterStep {
 			// lint it.
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, g := collectGolangciLintJSON(rc)
+				// A scope whose only errors are imports of broken
+				// packages outside it is not decided, not failed.
+				if ud := golangciUndecided(rc, fs); ud != nil {
+					return nil, false, ud
+				}
 				return fs, g, nil
 			},
 		},

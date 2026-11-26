@@ -2429,3 +2429,46 @@ func TestRestrictedProfileAcceptsAllowedSourceCIDRs(t *testing.T) {
 		t.Fatalf("rendered %d objects, want the same %d as without the field", len(got), len(plain))
 	}
 }
+
+// TestCronScheduleFieldsRender: a cron's concurrencyPolicy,
+// startingDeadlineSeconds and timeZone render as declared, and unset renders
+// none of them: forge adds no default, so a CronJob a cluster already runs
+// keeps Kubernetes' (Allow, no deadline, the controller's zone). The
+// jobTemplate carries the workload's labels, so every spawned Job is
+// selectable by name and kind.
+func TestCronScheduleFieldsRender(t *testing.T) {
+	deadline := int64(120)
+	set := wl("sweep", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Schedule: "*/5 * * * *", Args: []string{"x"},
+		ConcurrencyPolicy: v1alpha1.CronConcurrencyReplace, StartingDeadlineSeconds: &deadline, TimeZone: "Asia/Tokyo"})
+	unset := wl("plain", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Schedule: "@daily", Args: []string{"x"}})
+	o := objects(t, render(t, v1alpha1.ProfileFull, set, unset))
+
+	cj := o["CronJob/sweep"]
+	for keys, want := range map[[2]string]any{
+		{"spec", "concurrencyPolicy"}:       "Replace",
+		{"spec", "startingDeadlineSeconds"}: int64(120),
+		{"spec", "timeZone"}:                "Asia/Tokyo",
+	} {
+		if got := get(cj, keys[0], keys[1]); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("CronJob/sweep %v = %v, want %v", keys, got, want)
+		}
+	}
+	plain := o["CronJob/plain"]
+	for _, f := range []string{"concurrencyPolicy", "startingDeadlineSeconds", "timeZone"} {
+		if got := get(plain, "spec", f); got != nil {
+			t.Errorf("CronJob/plain spec.%s = %v, want unset (Kubernetes' default)", f, got)
+		}
+	}
+	if got := get(plain, "spec", "jobTemplate", "spec", "backoffLimit"); got != nil {
+		t.Errorf("CronJob/plain jobTemplate backoffLimit = %v, want unset (Kubernetes' default)", got)
+	}
+	for _, name := range []string{"sweep", "plain"} {
+		for k, want := range map[string]string{
+			LabelName: name, LabelKind: "cron", LabelManagedBy: "forge",
+		} {
+			if got := get(o["CronJob/"+name], "spec", "jobTemplate", "metadata", "labels", k); got != want {
+				t.Errorf("CronJob/%s jobTemplate label %s = %v, want %q", name, k, got, want)
+			}
+		}
+	}
+}

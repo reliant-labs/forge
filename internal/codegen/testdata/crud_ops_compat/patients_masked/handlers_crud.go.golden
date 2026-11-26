@@ -14,6 +14,10 @@
 // PUBLIC — auth_required: false lets a credential-less caller through. If that is wrong, the fix
 // is the annotation on the rpc, not a middleware.GetUser(ctx) call here, which would reject
 // callers the proto (and `forge project graph`) advertise as welcome.
+// An update_mask path names a WHOLE column: a path into a JSONB column ("spec.limits") is refused
+// as unknown, so a column is written whole or not at all. A hook that validates a column only when
+// the update writes it asks crud.MaskTouches(paths, "<column>"), which applies the same rules (an
+// empty mask or "*" writes every column).
 // Customize an RPC by replacing its delegation here; CRUD RPCs added later are appended by `forge
 // generate`, and your content is never modified.
 package patients

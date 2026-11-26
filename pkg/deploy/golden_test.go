@@ -98,6 +98,15 @@ func goldenCases() []goldenCase {
 			NamespacedRBAC: []v1alpha1.PolicyRule{{APIGroups: []string{"example.com"}, Resources: []string{"widgets"}, Verbs: []string{"list", "watch"}}},
 		})}},
 		{name: "cron", ws: []v1alpha1.Workload{gw("nightly", cronSpec)}},
+		// The schedule fields render exactly as declared; "cron" above pins
+		// that, unset, forge adds none of its own.
+		{name: "cron_schedule", ws: []v1alpha1.Workload{func() v1alpha1.Workload {
+			s := cronSpec
+			s.ConcurrencyPolicy = v1alpha1.CronConcurrencyForbid
+			s.StartingDeadlineSeconds = new(int64(300))
+			s.TimeZone = "Europe/Berlin"
+			return gw("nightly", s)
+		}()}},
 		{name: "operator", ws: []v1alpha1.Workload{gw("manager", v1alpha1.WorkloadSpec{
 			Kind: v1alpha1.KindOperator, Group: "example.com", Version: "v1", CRDs: []string{"Widget"},
 			Ports:                     []v1alpha1.Port{{Name: "metrics", Port: 8080}},

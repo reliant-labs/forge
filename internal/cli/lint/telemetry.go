@@ -30,6 +30,7 @@
 package lint
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -41,7 +42,6 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/lint/secrets"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
@@ -120,7 +120,7 @@ func decodeRenderedTelemetry(raw []byte) ([]telemetry.Target, error) {
 
 // renderTelemetryEnvs renders every env under kclDir and decodes its
 // telemetry. An env that fails to render is returned in unrendered.
-func renderTelemetryEnvs(projectDir, kclDir string) (envs []telemetryEnv, unrendered []string) {
+func renderTelemetryEnvs(ctx context.Context, projectDir, kclDir string) (envs []telemetryEnv, unrendered []string) {
 	entries, err := os.ReadDir(filepath.Join(projectDir, kclDir))
 	if err != nil {
 		return nil, nil
@@ -133,7 +133,7 @@ func renderTelemetryEnvs(projectDir, kclDir string) (envs []telemetryEnv, unrend
 		if _, err := os.Stat(mainK); err != nil {
 			continue
 		}
-		raw, err := kclrender.Run(projectDir, mainK, []string{
+		raw, err := lintKCLRun(ctx, projectDir, mainK, []string{
 			"image_tag=" + strconv.Quote("lint"), "namespace=" + strconv.Quote(""), "env=" + strconv.Quote(ent.Name()),
 		})
 		if err != nil {
@@ -155,7 +155,7 @@ func renderTelemetryEnvs(projectDir, kclDir string) (envs []telemetryEnv, unrend
 }
 
 // telemetryFindings runs the lane over every env of the project.
-func telemetryFindings(projectDir string, cfg *config.ProjectConfig) telemetryLaneResult {
+func telemetryFindings(ctx context.Context, projectDir string, cfg *config.ProjectConfig) telemetryLaneResult {
 	kclDir := deployKCLDirFor(cfg)
 	files := readKCLFiles(projectDir, kclDir)
 	var res telemetryLaneResult
@@ -163,7 +163,7 @@ func telemetryFindings(projectDir string, cfg *config.ProjectConfig) telemetryLa
 		return res
 	}
 	res.adopted = true
-	envs, unrendered := renderTelemetryEnvs(projectDir, kclDir)
+	envs, unrendered := renderTelemetryEnvs(ctx, projectDir, kclDir)
 	res.unrendered = unrendered
 	for _, e := range envs {
 		if len(e.Targets) > 0 {
@@ -191,7 +191,7 @@ func telemetryFindings(projectDir string, cfg *config.ProjectConfig) telemetryLa
 
 // collectTelemetryJSON is the JSON arm. An error finding gates.
 func collectTelemetryJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-	res := telemetryFindings(rc.cwd, rc.cfg)
+	res := telemetryFindings(rc.ctx, rc.cwd, rc.cfg)
 	out := findingsToJSON(res.findings)
 	switch {
 	case !res.adopted:

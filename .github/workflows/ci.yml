@@ -132,6 +132,9 @@ permissions:
 #                     integration tests (pkg/obsquery, pkg/alerting) and the
 #                     other container-backed integration tests
 #   windows           native Windows: build, vet, -short tests, smoke
+#   coverage-floor    total Go coverage of the full lanes' recorded profiles
+#                     against .github/coverage-floor, after test, test-cli
+#                     and build (no test, no compile; about a minute)
 #
 # FEWER JOBS. The org runs at most 20 jobs at once across every repository,
 # and on 2026-10-21 half of all minutes had every slot busy (reliant's CI
@@ -1640,6 +1643,57 @@ jobs:
   # must be added to `needs` too; internal/ciguard fails on either. Queue
   # timing and budget reporting runs separately after CI completes, with
   # write permissions only in the default-branch ci-queue-slo.yml.
+  # ── Coverage floor: main's total Go coverage may only go up ──────────────
+  #
+  # PUSH TO MAIN ONLY (and workflow_dispatch), never the merge tier: it reads
+  # the profiles the full lanes already recorded (test and test-cli's -race
+  # shards, build's integration steps), which exist only here. It runs no
+  # test, compiles nothing and needs no Go toolchain: download the test-runs-*
+  # artifacts, union the profiles by block, and compare the total with
+  # .github/coverage-floor (scripts/ci-coverage-floor.sh says what is
+  # counted). About a minute of one runner, after the lanes it needs.
+  #
+  # It runs only when every lane it needs passed: a failed or cut-short lane
+  # leaves a partial profile, and the lane's own red already fails CI gate.
+  # Below the floor it fails, and CI gate with it, naming the number and the
+  # file; it never blocks a merge (main's red does not), and a release waits
+  # for main to be green. internal/ciguard's coverage_floor_test.go holds the
+  # job to this shape and the script to its arithmetic.
+  coverage-floor:
+    name: Coverage floor
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    needs:
+      - test
+      - test-cli
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # This run's own artifacts: the lanes' recorded runs, each with its
+      # cover.out. The script keeps the full lanes (*-race, integration*) and
+      # ignores the rest (the -short tier, the flake gate, the frontend). The
+      # lanes keep those artifacts on a push to main alone, so a
+      # workflow_dispatch elsewhere has nothing to judge and skips both steps.
+      - uses: actions/download-artifact@v8
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        with:
+          pattern: test-runs-*
+          merge-multiple: true
+          path: .forge/tests/runs
+      # Every full lane and how many profiles it records: test's unit
+      # shards, test-cli's internal/cli shards, and each integration step's
+      # lane. A run missing any of them is unmeasured, never judged on part
+      # of the suite. internal/ciguard derives this list from the matrices
+      # and steps above and fails when it drifts.
+      - name: Total coverage against the floor
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        env:
+          COVERAGE_LANES: "unit-race:2 cli-race:3 integration-storage:1 integration-clickhouse:1 integration:1"
+        run: scripts/ci-coverage-floor.sh .forge/tests/runs .github/coverage-floor
+
   gate:
     name: CI gate
     if: ${{ always() }}
@@ -1655,6 +1709,7 @@ jobs:
       - windows
       - windows-changed
       - build
+      - coverage-floor
     runs-on: ubuntu-latest
     permissions: {}
     steps:

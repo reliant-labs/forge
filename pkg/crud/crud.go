@@ -570,6 +570,8 @@ type UpdateOp[Req, Resp, Ent any] struct {
 	// (req.GetUpdateMask().GetPaths()). nil when the proto's update
 	// request has no update_mask field — HandleUpdate then behaves
 	// exactly as before this field existed (full replace via Persist).
+	// Each path names a whole column; see HandleUpdate for nested paths,
+	// and MaskTouches for asking whether a request writes a given column.
 	Mask func(req *Req) []string
 
 	// PersistMasked writes ONLY the named fields (proto field names ==
@@ -641,6 +643,11 @@ type UpdateOp[Req, Resp, Ent any] struct {
 //     written.
 //   - unknown or immutable path → CodeInvalidArgument naming the path
 //     (mapped from orm.UnknownFieldError by mapRepoErr).
+//   - a path is a WHOLE column, never a field inside one: a nested path into
+//     a JSONB column ("spec.task_ttl") names no column, so it is refused as
+//     unknown, and the column is written whole or not at all. A hook that
+//     validates a column only when the update writes it asks
+//     [MaskTouches](paths, "spec"), which answers with these same rules.
 //
 // The response carries the entity as the repository left it. The generated
 // repository reads back every column a write did not set (see
@@ -778,6 +785,39 @@ func refuseReadOnlyPaths(entityLower string, readOnly, unmaskable, paths []strin
 		}
 	}
 	return nil
+}
+
+// MaskTouches reports whether an Update carrying update_mask paths writes
+// column — the question a validation hook asks before it decides whether to
+// check that column's new value (an op.Entity or op.PersistMasked wrapper).
+//
+// It answers with the semantics [Update] applies, so a hook built on it
+// cannot disagree with the write that follows:
+//
+//   - an empty mask (blank entries ignored) or one containing "*" is a full
+//     replace, which writes every column: true;
+//   - a path equal to column names it: true;
+//   - a nested path under column ("spec.task_ttl" for column "spec") counts
+//     as touching it: true. Update matches mask paths against WHOLE columns
+//     only and refuses a nested path with InvalidArgument (reason
+//     unknown_field), so such a path never writes a sub-field — but a hook
+//     that answered false for it would skip validation on exactly the path a
+//     future field-level write would take. Treating it as a touch keeps the
+//     hook correct either way.
+//
+// "spec" does not touch "spec_version": only an exact match or a "."
+// boundary counts. Pass the raw paths (req.GetUpdateMask().GetPaths()).
+func MaskTouches(paths []string, column string) bool {
+	norm, full := maskPaths(paths)
+	if full {
+		return true
+	}
+	for _, p := range norm {
+		if p == column || strings.HasPrefix(p, column+".") {
+			return true
+		}
+	}
+	return false
 }
 
 // maskPaths normalizes update_mask paths: blank entries are dropped, and

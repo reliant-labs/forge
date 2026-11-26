@@ -1,8 +1,8 @@
 """Only an emitted agent adds an adopted ML cluster to apply targets."""
-# kcl-args: -D mode=external
-# kcl-args: -D mode=disabled
-# kcl-args: -D mode=no-destination
-# kcl-args: -D mode=no-scrape
+# kcl-args: mode=external
+# kcl-args: mode=disabled
+# kcl-args: mode=no-destination
+# kcl-args: mode=no-scrape
 import forge
 
 _mode = option("mode", default="external")

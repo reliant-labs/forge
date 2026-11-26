@@ -1,7 +1,7 @@
 """ML agent placement participates in lifecycle and single-cluster Flux checks."""
-# kcl-args: -D policy=local
-# kcl-args: -D policy=ephemeral
-# kcl-args: -D policy=flux
+# kcl-args: policy=local
+# kcl-args: policy=ephemeral
+# kcl-args: policy=flux
 # expect: gke_acme_us-central1_gpu
 import forge
 

@@ -59,12 +59,16 @@ evaluated `deploy/kcl/<env>/config.k` sets the runtime MODE field (the one annot
 `role: CONFIG_FIELD_ROLE_MODE`, else a field named `environment`, nested in a block
 or not) to `development` or `dev`; a refusal names the file and value it read.
 
-**What auto-seed writes to.** Only the tables behind your CRUD entities (a service
-with `Create<X>`/`List<Xs>`/… RPCs over a matching table), plus any table those
-reach through a NOT NULL foreign key. Every other table is plain schema your own
-code owns — a ledger, an idempotency log, a payments table — and synthesized rows
-there are fabricated facts, not demo data. An explicit `forge db seed apply`
-seeds every table.
+**What auto-seed writes to.** Only the tables behind your CRUD entities — the
+tables `forge generate` gives CRUD wiring and list/detail pages (a service with
+`Create<X>`/`List<Xs>`/… RPCs and an `X` message over a matching table with a
+one-column key, not marked `forge:no-entity`) — plus any table those reach
+through a NOT NULL foreign key, in the parent direction only. A table that
+merely REFERENCES a seeded one is not pulled in, and a CRUD-named rpc alone
+(`GetAssignment` over a `forge:no-entity` table) makes nothing a root. Every
+other table is plain schema your own code owns — a ledger, an idempotency log, a
+payments table — and synthesized rows there are fabricated facts, not demo data.
+An explicit `forge db seed apply` seeds every table.
 
 **There is no seed configuration in `forge.yaml`**: 20 rows per table, auto-seed on
 for a fresh dev database, scoped as above. Skip it for one run with

@@ -511,7 +511,7 @@ func TestCollectTargetedOutcomeHonoursScope(t *testing.T) {
 // collectTargetedOutcomes and returns that lane's outcome.
 func collectOneTargetedOutcome(t *testing.T, flags lintFlags, root string, scope *lintScope) lintStepOutcome {
 	t.Helper()
-	outcomes, targeted, err := collectTargetedOutcomes(t.Context(), flags, nil, root, nil, nil, scope, nil, nil)
+	outcomes, targeted, err := collectTargetedOutcomes(t.Context(), flags, nil, root, nil, nil, scope, targetedOutcomeOutput{})
 	if err != nil || !targeted || len(outcomes) != 1 {
 		t.Fatalf("one lane named: targeted=%v outcomes=%d err=%v", targeted, len(outcomes), err)
 	}
@@ -542,7 +542,7 @@ func TestCollectTargetedOutcomes_EveryNamedLaneRuns(t *testing.T) {
 	}
 
 	outcomes, targeted, err := collectTargetedOutcomes(t.Context(),
-		lintFlags{readOnlyFields: true, computedFields: true}, nil, root, nil, nil, nil, nil, nil)
+		lintFlags{readOnlyFields: true, computedFields: true}, nil, root, nil, nil, nil, targetedOutcomeOutput{})
 	if err != nil || !targeted {
 		t.Fatalf("targeted=%v err=%v", targeted, err)
 	}

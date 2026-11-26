@@ -474,6 +474,12 @@ func flattenLintOutcomes(outcomes []lintStepOutcome) ([]lintJSONFinding, bool) {
 	return findings, gated
 }
 
+// targetedOutcomeOutput controls incremental output during targeted collection.
+type targetedOutcomeOutput struct {
+	progress io.Writer
+	emit     func(lintStepOutcome)
+}
+
 // collectTargetedOutcomes is collectLintOutcomes for the `--<linter>` flags:
 // one outcome per lane they name, in dispatch order, so the verdict rendered
 // from them covers every named lane. targeted=false means no such flag was
@@ -486,9 +492,9 @@ func collectTargetedOutcomes(
 	store *projectstore.Store,
 	cfg *config.ProjectConfig,
 	scope *lintScope,
-	progress io.Writer,
-	emit func(lintStepOutcome),
+	output targetedOutcomeOutput,
 ) ([]lintStepOutcome, bool, error) {
+	progress, emit := output.progress, output.emit
 	lanes := selectedLanes(flags)
 	if len(lanes) == 0 {
 		return nil, false, nil
@@ -605,7 +611,7 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 	// Each lane's block is printed to the real stdout as the lane finishes;
 	// the verdict, over all of them, is printed last.
 	render := newLintRenderer(realStdout, flags.quiet, scope)
-	outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope, progress, render.add)
+	outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope, targetedOutcomeOutput{progress: progress, emit: render.add})
 	switch {
 	case targeted:
 		// A targeted lane never auto-fixes, in text mode or here.

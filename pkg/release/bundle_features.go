@@ -248,6 +248,15 @@ const (
 	// stripped. A shape with one identity carries Shape.Identity alone, as it
 	// always did, and needs nothing of the reader.
 	BundleFeatureIdentities = "shape-identities"
+	// BundleFeatureVulnScopedExemptions is ShapeVulnGate.ScopedExemptions:
+	// the env's vulnerability exemptions that cover their advisory only in
+	// the packages, artifacts or paths they name (forge.VulnExemption's
+	// packages, artifacts and locations). Decoding is not evaluation: producers
+	// also require CapabilityEvaluatesScopedVulnExemptions before sending a
+	// scoped policy to a control plane (CheckScopedVulnExemptions). Scoped
+	// exemptions are never broadened into entries of Exemptions.
+	BundleFeatureVulnScopedExemptions = "shape-vuln-scoped-exemptions"
+
 	// BundleFeatureStatusPage is Shape.StatusPage: the env's declared status
 	// page (forge.StatusPage). A control plane that predates it builds no
 	// page for the env, so a shape carrying it is written only to one that
@@ -348,7 +357,7 @@ const CapabilityAutoscalesWorkloads = "autoscales-workloads"
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureReleaseHealthSiteAudit, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities, BundleFeatureStatusPage}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities, BundleFeatureStatusPage, BundleFeatureVulnScopedExemptions, BundleFeatureReleaseHealthSiteAudit}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -543,6 +552,14 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		pol.HealthGate = nil
 		s.DeliveryPolicy = &pol
 	}
+	if !r.Supports(BundleFeatureVulnScopedExemptions) && s.DeliveryPolicy != nil && len(s.DeliveryPolicy.VulnGate.ScopedExemptions) > 0 {
+		pol := *s.DeliveryPolicy
+		pol.VulnGate.ScopedExemptions = nil
+		s.DeliveryPolicy = &pol
+		if pol.IsDefault() {
+			s.DeliveryPolicy = nil // all that differed from the default was what the reader cannot decode
+		}
+	}
 	if !r.Supports(BundleFeaturePreview) {
 		s.Preview = nil
 	}
@@ -595,6 +612,25 @@ func (r *BundleReader) limitIdentity(id ShapeIdentity) ShapeIdentity {
 		id.CodeLifetime = ""
 	}
 	return id
+}
+
+// CapabilityEvaluatesScopedVulnExemptions is advertised explicitly by a control
+// plane only once promotion and vulnerability reads evaluate exemptions against
+// occurrence data. It is deliberately NOT in BundleDocFeatures: decoding the
+// scoped field alone does not mean the server honours it.
+const CapabilityEvaluatesScopedVulnExemptions = "evaluates-scoped-vuln-exemptions"
+
+// CheckScopedVulnExemptions refuses a scoped policy unless the reader both
+// decodes and evaluates it. Call before declaration or recording, before LimitShape
+// can strip unsupported fields. The nil reader is this forge's local evaluator.
+func (r *BundleReader) CheckScopedVulnExemptions(s Shape) error {
+	if s.DeliveryPolicy == nil || len(s.DeliveryPolicy.VulnGate.ScopedExemptions) == 0 {
+		return nil
+	}
+	if r.Supports(BundleFeatureVulnScopedExemptions) && r.Supports(CapabilityEvaluatesScopedVulnExemptions) {
+		return nil
+	}
+	return fmt.Errorf("this env declares scoped vulnerability exemptions, but this control plane does not advertise %q and %q; upgrade the control plane to occurrence-aware scoped evaluation before using this policy", BundleFeatureVulnScopedExemptions, CapabilityEvaluatesScopedVulnExemptions)
 }
 
 // CheckIdentities refuses a shape with several identities to a reader that

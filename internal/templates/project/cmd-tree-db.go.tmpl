@@ -17,7 +17,6 @@ import (
 	"github.com/reliant-labs/forge/pkg/migratekit"
 
 	forgedb "{{.Module}}/db"
-	"{{.Module}}/pkg/config"
 )
 
 // This file is scaffolded only for a project configured for migrations, so it
@@ -48,7 +47,9 @@ func newDBCmd(deps Deps) *cobra.Command {
 		Long: "Apply or inspect the SQL migrations embedded in this binary " +
 			"(compiled from db/migrations/). Forward only: there is no down.",
 	}
-	config.RegisterFlags(migrateCmd)
+	// No config.RegisterFlags here: the migrator loads no typed config (its
+	// whole configuration is DATABASE_URL, see openMigrator), so the server's
+	// flags would only bury `db migrate --help` under ~60 it never reads.
 
 	upCmd := &cobra.Command{
 		Use:   "up",

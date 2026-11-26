@@ -406,10 +406,6 @@ type rootFacts struct {
 	consts map[string]string
 }
 
-// rootLocatorNames are helpers that locate the root by name, wherever they
-// are declared.
-var rootLocatorNames = map[string]bool{"repoRoot": true, "RepoRoot": true, "repoRootFromTest": true, "findRoot": true}
-
 // literal is the string a Join argument spells: a string literal, or a
 // package string constant.
 func (rf *rootFacts) literal(e ast.Expr) (string, bool) {
@@ -471,7 +467,7 @@ func findRootFacts(files []*ast.File) *rootFacts {
 					ast.Inspect(d.Body, func(n ast.Node) bool {
 						if ret, ok := n.(*ast.ReturnStmt); ok {
 							for _, r := range ret.Results {
-								if rf.locates(r, local) {
+								if d.Recv == nil && rf.locates(r, local) {
 									mark(rf.funcs, d.Name.Name)
 								}
 							}
@@ -567,7 +563,10 @@ func (rf *rootFacts) locates(e ast.Expr, local map[string]bool) bool {
 		return rf.fields[x.Sel.Name]
 	case *ast.CallExpr:
 		name := calleeName(x)
-		if rf.funcs[name] || rootLocatorNames[name] {
+		// Only a local free function whose body establishes a root fact is
+		// known here. A same-named method or imported helper is not that
+		// function, and a familiar name alone proves nothing.
+		if id, ok := x.Fun.(*ast.Ident); ok && rf.funcs[id.Name] {
 			return true
 		}
 		if sel, ok := x.Fun.(*ast.SelectorExpr); ok {

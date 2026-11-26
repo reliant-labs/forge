@@ -140,6 +140,21 @@ func RegisterFlags(cmd *cobra.Command) {
 	}
 }
 
+// RegisterFieldFlags is RegisterFlags for a command that is not a server — an
+// admin task, a backfill, a report: it registers --config and the flags of
+// the fields named by paths ("log_level", "<block>.<field>"), and nothing
+// else, so the command's --help lists what it takes rather than every CORS,
+// OIDC, TLS and pprof flag the server has. Load reads env and the config file
+// whether or not a field has a flag here. It panics on a path that names no
+// flagged, non-sensitive field: a typo in a command's construction, caught the
+// first time the command is built.
+func RegisterFieldFlags(cmd *cobra.Command, paths ...string) {
+	forgeconfig.RegisterConfigFlag(cmd, ConfigPathEnv)
+	if err := forgeconfig.RegisterFieldFlags(cmd, &configv1.{{.RootConfigMessage}}{}, paths...); err != nil {
+		panic("config: RegisterFieldFlags: " + err.Error())
+	}
+}
+
 // Load populates a Config from CLI flags > environment variables > config
 // file (--config, or ConfigPathEnv) > proto defaults (see the library for
 // the precedence rationale), recursing into nested config blocks. Malformed
@@ -202,6 +217,16 @@ func Validate(cfg *Config) error { return forgeconfig.Validate(cfg) }
 func RegisterFlags(cmd *cobra.Command) {
 	if err := forgeconfig.RegisterFlags(cmd, &configv1.{{.PrimaryConfigMessage}}{}); err != nil {
 		panic("config: RegisterFlags: " + err.Error())
+	}
+}
+
+// RegisterFieldFlags is RegisterFlags for a command that is not a server: it
+// registers --config and the flags of the fields named by paths, and nothing
+// else, so the command's --help lists only what it takes. It panics on a path
+// that names no flagged, non-sensitive field.
+func RegisterFieldFlags(cmd *cobra.Command, paths ...string) {
+	if err := forgeconfig.RegisterFieldFlags(cmd, &configv1.{{.PrimaryConfigMessage}}{}, paths...); err != nil {
+		panic("config: RegisterFieldFlags: " + err.Error())
 	}
 }
 

@@ -284,7 +284,7 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 	}
 	// Targeted lanes go through the outcome engine, which knows how each
 	// lane honours --scope, and one report covers every lane named.
-	if outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope, nil); targeted {
+	if outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope, targetedOutcomeOutput{}); targeted {
 		if err != nil {
 			return nil, err
 		}

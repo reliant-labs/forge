@@ -495,9 +495,15 @@ func containsString(haystack []string, needle string) bool {
 // relation — which reads like a migration-ordering bug and is not one. The
 // migration had never run.
 //
-// So: openMigrator must NOT call config.Load. It resolves --database-url /
-// DATABASE_URL directly. A required field the SERVER needs is still enforced
-// where the server loads its config.
+// So: openMigrator must NOT call config.Load. It resolves DATABASE_URL
+// directly. A required field the SERVER needs is still enforced where the
+// server loads its config.
+//
+// And it reads no --database-url flag. database_url is sensitive, so no flag
+// is ever registered for it (a secret in argv leaks through ps): the scaffold
+// once read one anyway, and GetString's "flag accessed but not defined" error
+// was swallowed into the env fallback — dead code naming a flag the binary
+// does not have (friction #26).
 func TestMigratorDSNDoesNotLoadWholeConfig(t *testing.T) {
 	src := renderDB(t, "cmd-tree-db.go.tmpl", true)
 
@@ -516,6 +522,14 @@ func TestMigratorDSNDoesNotLoadWholeConfig(t *testing.T) {
 	if !strings.Contains(body, "DATABASE_URL") {
 		t.Errorf("migratorDSN does not reference DATABASE_URL; it must read the same env var "+
 			"the server does so the two cannot target different databases.\n%s", body)
+	}
+
+	if strings.Contains(body, "database-url") || strings.Contains(body, "Flags()") {
+		t.Errorf("migratorDSN reads a flag; database_url is sensitive, so no --database-url is "+
+			"ever registered and the read can only fail. Read DATABASE_URL alone.\n%s", body)
+	}
+	if strings.Contains(src, "(or --database-url)") {
+		t.Error("rendered db.go still tells the operator to pass --database-url, a flag the binary does not have")
 	}
 
 	openBody := dbFuncBody(t, src, "openMigrator")

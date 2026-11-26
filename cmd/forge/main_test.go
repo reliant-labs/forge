@@ -41,6 +41,7 @@ func captureStdout(t *testing.T, fn func()) string {
 func TestMainStampsTheBuildIdentityIntoVersion(t *testing.T) {
 	t.Setenv("FORGE_NO_PATH_CHECK", "1") // the check execs every forge on PATH
 	t.Setenv("FORGE_VERSION_DELEGATED", "1")
+	t.Setenv("HOME", t.TempDir())
 	t.Chdir(t.TempDir())
 	oldArgs, oldV, oldD, oldC := os.Args, Version, BuildDate, GitCommit
 	t.Cleanup(func() { os.Args, Version, BuildDate, GitCommit = oldArgs, oldV, oldD, oldC })

@@ -198,7 +198,7 @@ func TestTestUploadRequestRefusesDocumentsTheControlPlaneWouldRefuse(t *testing.
 			t.Fatal(err)
 		}
 		if err := f.Truncate(maxTestUploadInflated + 1); err != nil {
-			t.Skipf("filesystem cannot make a sparse file: %v", err)
+			t.Fatalf("make the oversized results file: %v", err)
 		}
 		_ = f.Close()
 		_, _, skip, err := testUploadRequest(context.Background(), in, run, lane, nil)

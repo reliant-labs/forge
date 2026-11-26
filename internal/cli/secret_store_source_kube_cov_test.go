@@ -48,7 +48,7 @@ func TestKubeClientsGetSecret(t *testing.T) {
 	}
 
 	cs.PrependReactor("get", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
-		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, "s", errors.New("rbac"))
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, "s", errors.New("denied by policy"))
 	})
 	_, err = k.GetSecret(context.Background(), "ns", "s")
 	if err == nil || errors.Is(err, errKubeSecretNotFound) || !strings.Contains(err.Error(), "read secret ns/s") {
@@ -261,13 +261,17 @@ func TestPickForwardTarget(t *testing.T) {
 
 	t.Run("API failures name the call that failed", func(t *testing.T) {
 		cs := fake.NewSimpleClientset(covASvc(map[string]string{"app": "bao"}, corev1.ServicePort{Port: 8200}))
-		cs.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) { return true, nil, errors.New("rbac") })
-		if _, _, err := pickForwardTarget(context.Background(), cs, "ns", "bao", 8200); err == nil || !strings.Contains(err.Error(), "list the pods of service ns/bao: rbac") {
+		cs.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("denied by policy")
+		})
+		if _, _, err := pickForwardTarget(context.Background(), cs, "ns", "bao", 8200); err == nil || !strings.Contains(err.Error(), "list the pods of service ns/bao: denied by policy") {
 			t.Errorf("err = %v", err)
 		}
 		cs = fake.NewSimpleClientset()
-		cs.PrependReactor("get", "services", func(k8stesting.Action) (bool, runtime.Object, error) { return true, nil, errors.New("rbac") })
-		if _, _, err := pickForwardTarget(context.Background(), cs, "ns", "bao", 8200); err == nil || !strings.Contains(err.Error(), "read service ns/bao: rbac") {
+		cs.PrependReactor("get", "services", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("denied by policy")
+		})
+		if _, _, err := pickForwardTarget(context.Background(), cs, "ns", "bao", 8200); err == nil || !strings.Contains(err.Error(), "read service ns/bao: denied by policy") {
 			t.Errorf("err = %v", err)
 		}
 	})

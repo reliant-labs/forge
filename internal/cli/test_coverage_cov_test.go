@@ -143,10 +143,10 @@ func TestTestCoverageRefusals(t *testing.T) {
 				t.Fatalf("exit %d, want %d\n%s", code, tc.code, out)
 			}
 		})
+		if tc.code != exitUndetermined {
+			continue // a wrong request is just an error, not a failure document
+		}
 		t.Run(tc.name+" as a JSON failure document", func(t *testing.T) {
-			if tc.code != exitUndetermined {
-				t.Skip("only an undetermined read is a document; a wrong request is just an error")
-			}
 			covACoverProject(t, "origin/main")
 			out, code := trRun(t, newTestCoverageCmd(), append([]string{"--json"}, tc.args...)...)
 			if code != tc.code {

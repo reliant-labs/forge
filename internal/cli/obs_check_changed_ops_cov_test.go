@@ -295,7 +295,7 @@ func TestMapOpChangesSkipsOpsTheCheckoutNoLongerDefines(t *testing.T) {
 	dir, first, second := covAOpsRepo(t)
 	ctx := context.Background()
 	if err := os.Remove(filepath.Join(dir, "internal/billing/middleware_gen.go")); err != nil {
-		t.Skip(err)
+		t.Fatal(err)
 	}
 	cmd := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "drop the decorator")
 	cmd.Dir = dir

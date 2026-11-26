@@ -303,8 +303,8 @@ func planSBOMPush(name string, run sbomPushRun, idx *ledgerfile.ReleaseSBOMIndex
 		a.Status, a.Reason = sbomPushFailed, "the release has no such artifact"
 		return a
 	}
-	if known && !sbomDescribes(name, art) {
-		a.Status, a.Reason = sbomPushNotApplicable, sbomNotApplicableReason(name, art)
+	if reason, na := release.SBOMNotApplicable(name, art); known && na {
+		a.Status, a.Reason = sbomPushNotApplicable, reason
 		return a
 	}
 	remote := run.Remote[name]
@@ -368,18 +368,6 @@ func planSBOMPush(name string, run sbomPushRun, idx *ledgerfile.ReleaseSBOMIndex
 		}
 	}
 	return a
-}
-
-// sbomNotApplicableReason says why an artifact has no SBOM to send
-// (sbomDescribes is false).
-func sbomNotApplicableReason(name string, art release.Artifact) string {
-	if _, maps := release.SourcemapsFrontend(name); maps {
-		return "source maps: debugging data, not code that runs"
-	}
-	if art.Kind == release.KindGit {
-		return "a git source pin: it names a commit, not bytes that ship"
-	}
-	return fmt.Sprintf("a %s artifact, which an SBOM does not describe", art.Kind)
 }
 
 // overrideSBOMRef is the ref of an SBOM the operator named with --sbom: the

@@ -33,6 +33,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/linter/callerpath"
+	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 	"github.com/reliant-labs/forge/internal/linter/staticexport"
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
@@ -366,6 +367,9 @@ var newRules = []rolloutGroup{
 	// a GitSource frontend's changes.yaml, or two sources). Graded outside
 	// forge lint, at `forge env shape` and every bundle write (rollout_grade.go).
 	{IntroducedIn: "v1.12.0", Grace: &rolloutGrace{Until: "v1.13.0", Reason: "Before this release a pinned source's changes.yaml was never read, so a project whose root declares a key its source also declares differently built cleanly; warn for a release (the root's declaration ships) so each can rename the key or make the two equal before the conflict refuses the build"}, Rules: []string{RuleChangesSourceConflict}},
+	// Like blocking-index-build, table size is unknown, so the default stays
+	// advisory. Projects can opt into a gate via lint.rules.
+	{IntroducedIn: "v1.12.0", Grace: &rolloutGrace{Until: "v1.13.0", Reason: "Existing migrations can add primary keys by building indexes under a table lock; allow time to split the concurrent build from the attachment"}, Rules: []string{migrationlint.RuleBlockingPrimaryKeyBuild}},
 }
 
 // rolloutLinkFixture is a grace row linked into a test build of the forge

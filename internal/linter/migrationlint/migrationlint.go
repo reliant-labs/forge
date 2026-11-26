@@ -328,6 +328,7 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 		if f, ok := blockingIndexFinding(file, statement{Text: text, Line: stmt.Line}, emptyTables); ok {
 			findings = append(findings, f)
 		}
+		findings = append(findings, blockingPrimaryKeyFindings(file, stmt, emptyTables)...)
 		if table, proof, ok := createdTable(text); ok {
 			// A CREATE TABLE IF NOT EXISTS after a plain CREATE TABLE of
 			// the same table is a no-op: it keeps the stronger proof.
@@ -660,6 +661,8 @@ func RemediationFor(rule string) string {
 		return EnumValueUsedBeforeCommitRemediation
 	case RuleBlockingIndexBuild:
 		return BlockingIndexBuildRemediation
+	case RuleBlockingPrimaryKeyBuild:
+		return blockingPrimaryKeyBuildRemediation
 	case RuleCompatUndeclared:
 		return CompatUndeclaredRemediation
 	case RuleCompatReason:

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/goexec"
@@ -68,6 +69,60 @@ func TestGenerate_TypedCallRecords(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		mock, _ := os.ReadFile(filepath.Join(dir, "mock_gen.go"))
 		t.Fatalf("go test of the generated package failed: %v\n%s\n---- mock_gen.go ----\n%s", err, out, mock)
+	}
+}
+
+func TestGenerateMock_RejectsIncompletePackageScope(t *testing.T) {
+	dir := t.TempDir()
+	contract := filepath.Join(dir, "contract.go")
+	if err := os.WriteFile(contract, []byte("package sample\ntype Service interface { Run() }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Even an inactive platform file can declare a colliding name. Its
+	// malformed syntax must not be silently omitted from the scope scan.
+	broken := filepath.Join(dir, "platform.go")
+	if err := os.WriteFile(broken, []byte("//go:build otherplatform\n\npackage sample\ntype MockServiceRunCall struct{}\nfunc broken(\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mock := filepath.Join(dir, "mock_gen.go")
+	original := []byte("package sample\n// existing mock must survive a failed scan\n")
+	if err := os.WriteFile(mock, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := GenerateMock(contract, Options{}); err == nil || !strings.Contains(err.Error(), broken) {
+		t.Fatalf("GenerateMock() error = %v, want parse failure naming %s", err, broken)
+	}
+	got, err := os.ReadFile(mock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatal("failed package scope scan overwrote the existing mock")
+	}
+}
+
+func TestCollectPackageScopeNames(t *testing.T) {
+	dir := t.TempDir()
+	for name, source := range map[string]string{
+		"platform.go":      "//go:build otherplatform\n\npackage sample\ntype MockServiceRunCall struct{}\n",
+		"scope_test.go":    "package sample\nvar reserved int\nconst constant = 1\nfunc helper() {}\n",
+		"external_test.go": "package sample_test\ntype External struct{}\n",
+		"mock_gen.go":      "package sample\ntype OldRecord struct{}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := collectPackageScopeNames(dir, "sample")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"MockServiceRunCall": true, "reserved": true, "constant": true, "helper": true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("package names = %v, want %v", got, want)
+	}
+	if _, err := collectPackageScopeNames(filepath.Join(dir, "missing"), "sample"); err == nil {
+		t.Fatal("missing directory must fail rather than return an incomplete scope")
 	}
 }
 

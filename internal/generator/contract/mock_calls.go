@@ -223,22 +223,26 @@ func claimName(name string, taken map[string]bool) string {
 // vars and consts, including those of its in-package _test.go files, which
 // share the scope when the tests build. mock_gen.go is excluded because it
 // is the file being rendered — reading its own record types back would move
-// every one of them aside on the next run. Unparseable files are skipped;
-// a name missed there surfaces as a compile error, not a silent clash.
-func collectPackageScopeNames(dir, pkg string) map[string]bool {
+// every one of them aside on the next run. Read or parse failures abort the
+// scan: an incomplete set cannot guarantee collision-free declarations.
+func collectPackageScopeNames(dir, pkg string) (map[string]bool, error) {
 	names := map[string]bool{}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return names
+		return nil, fmt.Errorf("scan package scope in %s: %w", dir, err)
 	}
 	fset := token.NewFileSet()
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || entry.Name() == mockFileName {
 			continue
 		}
-		f, err := parser.ParseFile(fset, filepath.Join(dir, entry.Name()), nil, parser.SkipObjectResolution)
-		if err != nil || f.Name.Name != pkg {
-			continue // unparseable, or an external foo_test package
+		path := filepath.Join(dir, entry.Name())
+		f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return nil, fmt.Errorf("scan package scope in %s: %w", path, err)
+		}
+		if f.Name.Name != pkg {
+			continue // an external foo_test package
 		}
 		for _, decl := range f.Decls {
 			switch d := decl.(type) {
@@ -260,5 +264,5 @@ func collectPackageScopeNames(dir, pkg string) map[string]bool {
 			}
 		}
 	}
-	return names
+	return names, nil
 }

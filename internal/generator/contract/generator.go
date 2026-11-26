@@ -537,7 +537,10 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 		cf.Interfaces = append(cf.Interfaces, iface)
 	}
 	cf.ForeignImports = foreignImports
-	cf.PackageScopeNames = collectPackageScopeNames(dir, cf.Package)
+	cf.PackageScopeNames, err = collectPackageScopeNames(dir, cf.Package)
+	if err != nil {
+		return nil, err
+	}
 
 	return cf, nil
 }

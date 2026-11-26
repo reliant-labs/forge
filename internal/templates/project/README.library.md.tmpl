@@ -18,10 +18,30 @@ A Go library scaffolded with [Forge](https://github.com/reliant-labs/forge).
 
 ```bash
 task deps   # go mod download
-task test   # go test -race ./...
+task test   # go test -race ./..., recorded with its coverage
 task lint   # golangci-lint run
 task fmt    # goimports + go mod tidy
 ```
+
+## Test results and coverage
+
+`task test` records every lane it runs, with its coverage, under
+`.forge/tests/runs/` (gitignored); `task test:report` summarises the last
+run. `FORGE_TESTS=off` records nothing for one run.
+
+CI's "Report test results" step uploads the run to your project's control
+plane when the repository secret `FORGE_CONTROL_PLANE_TOKEN` holds a token with
+the `tests:write` scope. Mint one while signed in to the web app under
+Settings → API tokens (Reliant cloud:
+https://forge.reliantlabs.io/settings/tokens), then store it:
+
+```bash
+gh secret set FORGE_CONTROL_PLANE_TOKEN
+```
+
+Without the secret the step prints one line and stays green; it never
+decides the job's result. A token with `deploy:write` also uploads.
+`tests.upload: never` in `forge.yaml` turns upload off.
 
 ## Adding code
 

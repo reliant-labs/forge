@@ -1,4 +1,4 @@
-# forge v1.9.0: every command path of the release, hidden commands and aliases included.
+# forge v1.11.0: every command path of the release, hidden commands and aliases included.
 # Written by scripts/released-commands.sh; read by TestScaffoldTemplatesRunOnlyReleasedForgeCommands.
 forge agent
 forge agent mcp
@@ -18,14 +18,18 @@ forge build receipt
 forge ci
 forge ci gate
 forge ci migration-safety
+forge ci retry-failed
 forge ci run
+forge ci secret-scan
 forge ci summarize
 forge ci test-budget
 forge ci test-skips
 forge ci validate-kcl
 forge ci verify-generated
+forge ci verify-test-retry
 forge ci verify-test-run
 forge ci verify-tests
+forge ci vuln-sbom
 forge ci vuln-scan
 forge cloud
 forge cloud cluster
@@ -46,6 +50,7 @@ forge cloud domain verify
 forge cloud identity
 forge cloud identity delete
 forge cloud identity export
+forge cloud identity import
 forge cloud identity invite
 forge cloud identity lock
 forge cloud identity reset
@@ -85,6 +90,7 @@ forge component list
 forge component search
 forge db
 forge db analyze
+forge db analyze queries
 forge db introspect
 forge db migrate
 forge db migrate force
@@ -206,6 +212,7 @@ forge env secret access
 forge env secret allow
 forge env secret deny
 forge env secret ensure
+forge env secret get
 forge env secret import
 forge env secret list
 forge env secret migrate
@@ -224,6 +231,7 @@ forge env telemetry-keeper
 forge env up
 forge env verify
 forge fix
+forge fix build-images-vuln-scan
 forge fix composition-graph
 forge fix config-proto-package
 forge fix connect-errors
@@ -232,6 +240,7 @@ forge fix harness-mocks
 forge fix narrow-deps
 forge fix operatorkit
 forge fix tx-isolation
+forge fix zod4-forms
 forge frontend
 forge frontend sourcemaps
 forge frontend sourcemaps push
@@ -249,6 +258,7 @@ forge ledger show
 forge ledger where
 forge lint
 forge lint fix
+forge lint fix build-images-vuln-scan
 forge lint fix composition-graph
 forge lint fix config-proto-package
 forge lint fix connect-errors
@@ -257,6 +267,7 @@ forge lint fix harness-mocks
 forge lint fix narrow-deps
 forge lint fix operatorkit
 forge lint fix tx-isolation
+forge lint fix zod4-forms
 forge login
 forge logout
 forge machine
@@ -321,6 +332,7 @@ forge obs receivers test
 forge obs session
 forge obs sessions
 forge obs status
+forge obs telemetry
 forge obs tokens
 forge obs tokens create
 forge obs tokens list
@@ -404,6 +416,7 @@ forge scaffold package
 forge scaffold rpc
 forge scaffold scenario
 forge scaffold service
+forge scaffold variant
 forge scaffold webhook
 forge scaffold worker
 forge secret
@@ -411,6 +424,7 @@ forge secret access
 forge secret allow
 forge secret deny
 forge secret ensure
+forge secret get
 forge secret import
 forge secret list
 forge secret migrate
@@ -443,6 +457,22 @@ forge telemetry off
 forge telemetry on
 forge telemetry status
 forge test
+forge test begin
+forge test capture
+forge test collect
+forge test coverage
+forge test flakes
+forge test flakes confirm
+forge test flakes gate
+forge test ingest
+forge test quarantine
+forge test quarantine add
+forge test quarantine list
+forge test quarantine remove
+forge test quarantine skip-regex
+forge test report
+forge test run
+forge test runs
 forge tools
 forge tools install
 forge tools pins
@@ -454,3 +484,15 @@ forge ui component search
 forge ui sourcemaps
 forge ui sourcemaps push
 forge version
+forge vuln
+forge vuln db
+forge vuln db import
+forge vuln db pull
+forge vuln db status
+forge vuln exempt
+forge vuln list
+forge vuln patch
+forge vuln sbom
+forge vuln scan
+forge vuln show
+forge why

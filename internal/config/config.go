@@ -1062,6 +1062,10 @@ type CIGateConfig struct {
 	// full suite; a file no rule matches behaves as without rules. See
 	// CIGateAffectedRule and internal/cigate/affected.go.
 	AffectedRules []CIGateAffectedRule `yaml:"affected_rules,omitempty"`
+	// AffectedReach caps how far affected mode follows the import graph.
+	// Unset is every test package whose binary links a changed package
+	// (full transitive reach). See CIGateAffectedReach.
+	AffectedReach *CIGateAffectedReach `yaml:"affected_reach,omitempty"`
 	// ExtraChecks are the project's own rows. By default each runs in the
 	// `checks` lane, so the scaffolded CI job (`task ci:checks`) and a
 	// developer's `task ci` run the same ones.
@@ -1177,6 +1181,16 @@ type CIGateAffectedRule struct {
 	// path-gated check runs even with no change under its paths, and a
 	// test-<frontend> row runs the frontend's whole `test` script.
 	FullChecks []string `yaml:"full_checks,omitempty"`
+}
+
+// CIGateAffectedReach is ci.gate.affected_reach. Mode "direct" selects the
+// changed packages and their direct importers, plus the transitive importers
+// only when they add at most TransitiveCap packages; otherwise those are
+// deferred to the full gate and named in the gate's output. Mode "all" (or
+// unset) is the full transitive reach.
+type CIGateAffectedReach struct {
+	Mode          string `yaml:"mode,omitempty"`
+	TransitiveCap int    `yaml:"transitive_cap,omitempty"`
 }
 
 // CIGateOnGoSource is the CIGateAffectedRule.On value that matches every

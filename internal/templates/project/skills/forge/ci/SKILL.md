@@ -173,11 +173,15 @@ same verdict locally:
 |---|---|---|
 | `task ci` | `ci:checks`, then `test`, then `test:integration`, one summary table | none: run this instead of CI |
 | `task ci:checks` | verify-generated, lint, build, vuln-scan, secret-scan, license, KCL, deployability, plus your `ci.gate.extra_checks` | `checks` |
-| `task test` | unit tests + every frontend's | `test` |
-| `task test:integration` | the `integration`-tagged suite | `integration-test` |
+| `task test` | unit tests + every frontend's, each lane and its coverage recorded under `.forge/tests/runs/` | `test` |
+| `task test:integration` | the `integration`-tagged suite, recorded the same way | `integration-test` |
 
 Every check runs even after one fails; a check that could not run is `SKIPPED`
 and fails the gate unless named in `CI_SKIP`; tools run at the versions CI pins.
+The `test` and `integration-test` jobs each end with a **Report test results**
+step that uploads the recorded run when the secret `FORGE_CONTROL_PLANE_TOKEN`
+is set, and never fails the job. **Load `ci/test-report`.**
+
 **Load `ci/gate` for the rules, the check list, `CI_SKIP`, adding your own checks
 (`ci.gate.extra_checks`) and why the workflow has few jobs.**
 

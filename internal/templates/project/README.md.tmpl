@@ -83,10 +83,11 @@ task dev
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `task deps`                       | Install Go (and frontend) dependencies                                                                                                               |
 | `task build`                      | Build Go binaries (and frontend bundle)                                                                                                              |
-| `task test`                       | Run Go + every frontend's tests (integration/e2e excluded by build tag). This is the test suite — there is no `forge test`; CI runs this same target |
+| `task test`                       | Run Go + every frontend's tests (integration/e2e excluded by build tag). This is the test suite; CI runs this same target                            |
 | `task test -- ./internal/foo/...` | Scope to Go packages, or pass `go test` flags (`-- -v ./...`)                                                                                        |
 | `task test:integration`           | Run the `integration`-tagged lane                                                                                                                    |
 | `task test:e2e`                   | Run end-to-end tests (requires docker compose)                                                                                                       |
+| `task test:report`                | Summarise the last run: each lane's verdict and coverage                                                                                             |
 | `task test:all`                   | Unit + frontend + integration                                                                                                                        |
 | `task coverage`                   | Emit `coverage.out` + `coverage.html`                                                                                                                |
 | `task lint`                       | Run `golangci-lint`, `buf lint`, and frontend lint                                                                                                   |
@@ -113,6 +114,27 @@ vars and DB:
 
 If you don't need breakpoints, `task dev-up-prod` gives you a faster
 cold start and a smaller image. `task dev-down` tears down both.
+
+## Test results and coverage
+
+`task test` records every lane it runs, with its coverage, under
+`.forge/tests/runs/` (gitignored); `task test:report` summarises the last
+run. `FORGE_TESTS=off` records nothing for one run.
+
+CI's "Report test results" step uploads the run to your project's control
+plane when the repository secret `FORGE_CONTROL_PLANE_TOKEN` holds a token with
+the `tests:write` scope. Mint one while signed in to the web app under
+Settings → API tokens (Reliant cloud:
+https://forge.reliantlabs.io/settings/tokens), then store it:
+
+```bash
+gh secret set FORGE_CONTROL_PLANE_TOKEN
+```
+
+Without the secret the step prints one line and stays green; it never
+decides the job's result. A token with `deploy:write` also uploads, so a CI that
+already deploys needs no new one. `tests.upload: never` in `forge.yaml` turns
+upload off.
 
 ## End-to-end tests
 

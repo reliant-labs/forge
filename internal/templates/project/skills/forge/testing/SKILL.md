@@ -139,7 +139,10 @@ task test:integration                      # the `integration`-tagged lane
 task test:e2e                              # the e2e lane
 task test:all                              # unit + frontend + integration
 task coverage                              # coverage.out + coverage.html
+task test:report                           # summarise the last recorded run
 ```
+
+`task test` records each lane and its coverage under `.forge/tests/runs/`; `task test:report` reads it back and CI uploads it (`ci/test-report`).
 
 Everything after `--` replaces the default `./...`, so it takes both package
 patterns and `go test` flags. A scoped run skips the frontend lane — a Go

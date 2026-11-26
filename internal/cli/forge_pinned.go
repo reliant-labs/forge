@@ -42,6 +42,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/forgecompat"
+	"github.com/reliant-labs/forge/pkg/forgepin"
 )
 
 // pinnedForgeSchema names the `forge version --pinned --json` document.
@@ -49,7 +50,7 @@ const pinnedForgeSchema = "forge.version.pinned/v1"
 
 // PinnedSourceSelf is PinnedForge.Source when the running forge is the one
 // the project pins.
-const PinnedSourceSelf = "self"
+const PinnedSourceSelf = forgepin.SourceSelf
 
 // pinnedFlag is `forge version`'s --pinned.
 const pinnedFlag = "pinned"

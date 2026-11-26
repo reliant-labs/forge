@@ -140,6 +140,7 @@ func TestRollbackReport_FlagsErrorsCitingUntouchedFiles(t *testing.T) {
 			Builds:  false,
 			Output:  postRollbackBuildOutput,
 		},
+		Attribution: attributedAs(originRollback, postRollbackBuildOutput),
 	})
 	out := sb.String()
 
@@ -151,33 +152,12 @@ func TestRollbackReport_FlagsErrorsCitingUntouchedFiles(t *testing.T) {
 	if !strings.Contains(out, "scoping.go") {
 		t.Errorf("the artifact section must name the wrongly-cited file:\n%s", out)
 	}
-	if !strings.Contains(out, "forge did not write") {
-		t.Errorf("report must state these files were not written by this run (so they are correct on disk):\n%s", out)
+	if !strings.Contains(out, "disappear with this run's output in place") {
+		t.Errorf("report must state these diagnostics disappear with the run's output in place:\n%s", out)
 	}
 	// It must actively steer the user AWAY from debugging them.
 	if !strings.Contains(out, "Do not debug") {
 		t.Errorf("report must tell the user not to debug the cited files:\n%s", out)
-	}
-}
-
-func TestClassifyPostRollbackErrors_SplitsTouchedFromUntouched(t *testing.T) {
-	touched := map[string]bool{"internal/blobstore/middleware_gen.go": true}
-	output := "internal/handlers/documents/scoping.go:66:10: s.crudGetDocumentOp undefined\n" +
-		"internal/blobstore/middleware_gen.go:12:1: syntax error\n" +
-		"# some/package\n"
-
-	untouched, other := classifyPostRollbackErrors(output, touched)
-
-	if len(untouched) != 1 || !strings.Contains(untouched[0], "scoping.go") {
-		t.Errorf("scoping.go was never written this run — it must classify as untouched, got %v", untouched)
-	}
-	for _, line := range other {
-		if strings.Contains(line, "scoping.go") {
-			t.Errorf("scoping.go must not appear in the non-artifact bucket: %v", other)
-		}
-	}
-	if len(other) == 0 {
-		t.Errorf("an error citing a file forge DID write belongs in the other bucket, got none")
 	}
 }
 
@@ -333,6 +313,8 @@ func TestRollbackReport_StagedScaffoldTreeIsNotReportedAsDamage(t *testing.T) {
 			Output: "cmd/kalshishape/cmd/workers/book_snapshotter.go:40:87: c.WorkerBookSnapshotter undefined " +
 				"(type *app.Components has no field or method WorkerBookSnapshotter)\n",
 		},
+		Attribution: attributedAs(originRollback, "cmd/kalshishape/cmd/workers/book_snapshotter.go:40:87: "+
+			"c.WorkerBookSnapshotter undefined (type *app.Components has no field or method WorkerBookSnapshotter)\n"),
 		Residue: rollbackResidue{Checked: true},
 	})
 	out := sb.String()

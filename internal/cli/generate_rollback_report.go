@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -31,9 +31,8 @@ import (
 // are not:
 //
 //  1. Downstream errors produced AFTER a rollback restored stale files
-//     were presented as equals to the root cause. An error citing a file
-//     forge never wrote this run is an artifact of the revert, and the
-//     user must never be sent to debug it.
+//     were presented as equals to the root cause. Only errors shown to
+//     disappear with this run's output in place are artifacts of the revert.
 //
 //  2. The build verdict on the restored tree was conflated with the
 //     FIDELITY of the revert. Both claims were collapsed into one
@@ -137,6 +136,10 @@ type rollbackReport struct {
 	Preserved   []string
 	StepErr     error
 	Consistency rollbackConsistency
+	// Attribution says which of Consistency's errors vanish once this
+	// run's output is in place (rollback artifacts) and which do not
+	// (pre-existing). nil: not checked, so none is given either label.
+	Attribution *postRollbackAttribution
 	// Residue is the verdict on the rest of the tree: whether anything the
 	// revert did not own also differs from before the run. The "back to
 	// its pre-run state" claim is made only when it is verified Clean.
@@ -236,35 +239,6 @@ func goBuildRestoredTree(projectDir string) rollbackConsistency {
 	return rollbackConsistency{Checked: true, Builds: false, Output: rep.Build}
 }
 
-// classifyPostRollbackErrors splits post-rollback compiler output into the
-// lines that cite a file forge did NOT write this run, and everything
-// else.
-//
-// The first bucket is the dangerous one and the reason this function
-// exists. A file forge never touched is byte-identical to what the user
-// had before the run, so an error citing it is guaranteed to be a
-// consequence of some OTHER file having been reverted — scoping.go's four
-// `crudGetDocumentOp undefined` errors were exactly this. Those files are
-// correct on disk, and the report says so.
-//
-// Only lines carrying file:line coordinates are classified; `# package`
-// headers and continuation lines carry no path to judge and fall through
-// to the second bucket rather than being silently dropped.
-func classifyPostRollbackErrors(output string, touched map[string]bool) (untouched, other []string) {
-	for _, line := range strings.Split(strings.TrimRight(output, "\n"), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		rel := errorLineFile(line)
-		if rel != "" && !touched[rel] {
-			untouched = append(untouched, line)
-			continue
-		}
-		other = append(other, line)
-	}
-	return untouched, other
-}
-
 // errorLineFile extracts the project-relative path from a compiler error
 // line ("internal/x/y.go:66:10: msg"). Returns "" when the line carries no
 // file:line coordinate, which is the signal to leave it unclassified.
@@ -329,13 +303,13 @@ func writeRollbackReport(w io.Writer, rep rollbackReport) {
 		writeResidue(w, rep.Residue.Changed)
 	}
 	if rep.Consistency.Checked && !rep.Consistency.Builds {
-		writePreRunDoesNotCompileNote(w)
+		writePreRunDoesNotCompileNote(w, rep.Residue.Clean())
 	}
 	writeUnbornScaffolds(w, rep.Unborn)
 	writeSparedFiles(w, rep.Spared)
 	writeUnverifiedFiles(w, rep.Unverified)
 
-	// 3. The post-rollback errors, quarantined behind the artifact marker.
+	// 3. The post-rollback errors, grouped by their attribution.
 	if rep.Consistency.Checked && !rep.Consistency.Builds && strings.TrimSpace(rep.Consistency.Output) != "" {
 		writeArtifactSection(w, rep)
 	}
@@ -383,64 +357,76 @@ func compileVerdictSuffix(c rollbackConsistency) string {
 // references an accessor that only exists after a generate. Between those
 // two commands the tree does not build, by design, and a generate that
 // refuses in between must not tell the user their tree was damaged.
-func writePreRunDoesNotCompileNote(w io.Writer) {
-	fmt.Fprintf(w, "\n   ⚠️  That tree does NOT compile on its own — and it did not before this run\n")
-	fmt.Fprintf(w, "   either. The revert restored every file above byte for byte, so this is the\n")
-	fmt.Fprintf(w, "   state you started in, not damage the rollback caused.\n")
-	fmt.Fprintf(w, "   The usual reason is work STAGED but not yet generated (`forge scaffold ...\n")
-	fmt.Fprintf(w, "   --no-generate` writes a component whose accessor appears only once generate\n")
-	fmt.Fprintf(w, "   runs). Fix the ROOT CAUSE above and re-run `forge generate`: that emits the\n")
-	fmt.Fprintf(w, "   missing halves and the tree builds.\n")
+func writePreRunDoesNotCompileNote(w io.Writer, clean bool) {
+	if !clean {
+		fmt.Fprintln(w, "\n   ⚠️  The tree after the revert does NOT compile; whether it compiled before this run is unknown.")
+		return
+	}
+	fmt.Fprintln(w, "\n   ⚠️  That tree does NOT compile on its own — and it did not before this run either.")
+	fmt.Fprintln(w, "   This can happen after staging a component with `forge scaffold ... --no-generate`.")
 }
 
-// writeArtifactSection prints the post-rollback build errors under the
-// artifact marker, leading with the ones that cite files forge never
-// wrote — the class that sent a user to debug a correct file.
+// writeArtifactSection groups post-rollback diagnostics by what the replay proved.
 func writeArtifactSection(w io.Writer, rep rollbackReport) {
-	touched := map[string]bool{}
-	for _, p := range rep.Restored {
-		touched[filepath.ToSlash(p)] = true
+	var artifacts, preExisting, other []string
+	var why []string
+	bucket := &other
+	for _, line := range strings.Split(strings.TrimRight(rep.Consistency.Output, "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "# ") {
+			bucket = &other
+			continue // package header, not a diagnostic
+		}
+		if trimmed == line || errorLineFile(line) != "" {
+			// Indented continuation lines (e.g. have/want) follow the diagnostic.
+			switch o := rep.Attribution.of(line); o.origin {
+			case originRollback:
+				bucket = &artifacts
+			case originPreExisting:
+				bucket = &preExisting
+			default:
+				bucket = &other
+				if errorLineFile(line) != "" && !slices.Contains(why, o.why) {
+					why = append(why, o.why)
+				}
+			}
+		}
+		*bucket = append(*bucket, line)
 	}
-	untouched, other := classifyPostRollbackErrors(rep.Consistency.Output, touched)
 
-	fmt.Fprintf(w, "\n%s:\n", rollbackArtifactMarker)
-	if len(untouched) > 0 {
-		files := citedFiles(untouched)
-		fmt.Fprintf(w, "   forge did not write %s this run, so %s unchanged on disk and\n",
-			pluralFiles(len(files)), pluralIs(len(files)))
-		fmt.Fprintf(w, "   correct. %s reported only because a file %s was reverted.\n",
-			pluralThey(len(files)), pluralDependsOn(len(files)))
-		fmt.Fprintf(w, "   Do not debug %s — fix the ROOT CAUSE above instead.\n", pluralThem(len(files)))
-		for _, f := range files {
-			fmt.Fprintf(w, "     · %s\n", f)
-		}
-		for _, line := range limitLines(strings.Join(untouched, "\n"), compilerOutputTailLines) {
-			fmt.Fprintf(w, "   %s\n", line)
-		}
+	if len(artifacts) > 0 {
+		fmt.Fprintf(w, "\n%s:\n", rollbackArtifactMarker)
+		fmt.Fprintln(w, "   These diagnostics disappear with this run's output in place.")
+		fmt.Fprintln(w, "   Do not debug them — fix the ROOT CAUSE above instead.")
+		writeRollbackDiagnostics(w, artifacts)
+	}
+	if len(preExisting) > 0 {
+		fmt.Fprintf(w, "\n%s:\n", rollbackPreExistingMarker)
+		fmt.Fprintln(w, "   These diagnostics also occur with this run's output in place. Fix them separately.")
+		writeRollbackDiagnostics(w, preExisting)
 	}
 	if len(other) > 0 {
-		fmt.Fprintf(w, "   Other errors against the reverted tree (also post-rollback, also not the root cause):\n")
-		for _, line := range limitLines(strings.Join(other, "\n"), compilerOutputTailLines) {
-			fmt.Fprintf(w, "   %s\n", line)
+		fmt.Fprintln(w, "\n❔ Errors forge could not attribute:")
+		for _, reason := range why {
+			fmt.Fprintf(w, "   %s\n", reason)
 		}
+		writeRollbackDiagnostics(w, other)
 	}
 }
 
-// citedFiles returns the sorted unique file paths named by a set of
-// compiler error lines — the four identical scoping.go errors name one
-// file, and the report should say one file.
-func citedFiles(lines []string) []string {
-	seen := map[string]bool{}
-	var files []string
-	for _, line := range lines {
-		if f := errorLineFile(line); f != "" && !seen[f] {
-			seen[f] = true
-			files = append(files, f)
+func writeRollbackDiagnostics(w io.Writer, lines []string) {
+	for i, line := range lines {
+		if i >= compilerOutputTailLines {
+			fmt.Fprintf(w, "   … (%d more diagnostic line(s) against the reverted tree)\n", len(lines)-i)
+			break
 		}
+		fmt.Fprintf(w, "   %s\n", line)
 	}
-	sort.Strings(files)
-	return files
 }
+
+// rollbackPreExistingMarker labels post-rollback errors that are there with
+// this run's output in place too: the tree was broken there before the run.
+const rollbackPreExistingMarker = "⚠️  The errors below are PRE-EXISTING, unrelated to this run"
 
 // rootCauseSummary is the failing step's user-facing message, stripped of
 // the wrapping the pipeline adds.
@@ -471,39 +457,4 @@ func limitLines(output string, n int) []string {
 	out := append([]string{}, lines[:n]...)
 	return append(out, fmt.Sprintf("… (%d more line(s); full output in %s/%s)",
 		len(lines)-n, failedGenerateDir, failedGenerateErrorFile))
-}
-
-func pluralFiles(n int) string {
-	if n == 1 {
-		return "this file"
-	}
-	return "these files"
-}
-
-func pluralIs(n int) string {
-	if n == 1 {
-		return "it is"
-	}
-	return "they are"
-}
-
-func pluralThey(n int) string {
-	if n == 1 {
-		return "It is"
-	}
-	return "They are"
-}
-
-func pluralDependsOn(n int) string {
-	if n == 1 {
-		return "it depends on"
-	}
-	return "they depend on"
-}
-
-func pluralThem(n int) string {
-	if n == 1 {
-		return "it"
-	}
-	return "them"
 }

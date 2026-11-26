@@ -101,15 +101,6 @@ func reap(t *testing.T, d *DelveDebugger) {
 	})
 }
 
-func logText(t *testing.T, path string) string {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading session log: %v", err)
-	}
-	return string(b)
-}
-
 func TestLaunch_SpawnsDlvAndRecordsTheSession(t *testing.T) {
 	launchTestDlv(t)
 	out := filepath.Join(t.TempDir(), "logs", "dlv.log")

@@ -140,5 +140,3 @@ func TestDockerUsable(t *testing.T) {
 }
 
 func itoa(n int) string { return fmt.Sprint(n) }
-
-func sprintf(format string, args ...any) string { return fmt.Sprintf(format, args...) }

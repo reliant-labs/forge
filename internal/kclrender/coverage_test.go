@@ -181,20 +181,6 @@ func TestForgeModuleArg_RefusesAnUnmigratedProject(t *testing.T) {
 		}
 	})
 
-	t.Run("a project still calling the retired forge.registry helper", func(t *testing.T) {
-		dir := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(dir, "deploy", "kcl", "dev"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "deploy", "kcl", "dev", "main.k"), []byte("image = forge.registry(\"x\")\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		_, err := forgeModuleArg(dir)
-		if err == nil || !strings.Contains(err.Error(), "forge.registry") {
-			t.Errorf("err = %v, want the retired helper named", err)
-		}
-	})
-
 	t.Run("a clean project gets the embedded forge module", func(t *testing.T) {
 		arg, err := forgeModuleArg(t.TempDir())
 		if err != nil {

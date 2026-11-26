@@ -53,6 +53,10 @@ func runGateFixture(t *testing.T, root, script string, extra ...string) (int, st
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", filepath.Join(root, "scripts", script))
 	cmd.Dir = root
+	// The timeout kills bash only. A lane it started holds the output pipe
+	// open, and without a WaitDelay CombinedOutput waits on it for as long as
+	// the package's own timeout.
+	cmd.WaitDelay = time.Second
 	// Do not let the developer's gate/scaffold settings influence the fixture.
 	for _, value := range os.Environ() {
 		key, _, _ := strings.Cut(value, "=")
@@ -76,7 +80,11 @@ func runGateFixture(t *testing.T, root, script string, extra ...string) (int, st
 	return exit.ExitCode(), string(out)
 }
 
+// gateGoStub stands in for go. gate.sh asks `go env GOFLAGS` before it starts
+// a lane; that answers empty and is never a lane (under BARRIER it would be a
+// sixth arrival the barrier never releases).
 const gateGoStub = `#!/usr/bin/env bash
+[[ $1 == env ]] && exit 0
 lane=${*: -1}
 lane=${lane##*/}
 [[ $* == *'-tags e2e'* ]] && lane=e2e

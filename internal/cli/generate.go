@@ -1119,9 +1119,10 @@ func completeWriteSummary(sum checksums.WriteSummary, root string, pre *workTree
 
 // changedFileIsForges reports whether rel, a file that changed during the
 // run without passing through forge's journaled writers, is one forge owns
-// and so plausibly wrote: it carries forge's certification marker or Go's
-// generated-code header (buf's stubs, a declared tool's output), or it is a
-// comment-incapable output forge certifies by body hash (unstampable). A
+// and so plausibly wrote: it carries forge's certification marker, or it is a
+// comment-incapable output forge certifies by body hash (unstampable). Go's
+// generated-code header alone does not establish forge ownership; external
+// generators' writes are accounted for by their journal/capture instead. A
 // file that is gone or unreadable cannot be judged, and stays counted, as
 // every such change was before.
 //
@@ -1137,7 +1138,7 @@ func changedFileIsForges(root, rel string, unstampable map[string]string) bool {
 	if err != nil {
 		return true
 	}
-	return checksums.Verify(content) != checksums.NoMarker || goGeneratedHeader.Match(content)
+	return checksums.Verify(content) != checksums.NoMarker
 }
 
 // printForeignChanges names the files completeWriteSummary found changed

@@ -1,6 +1,6 @@
 ---
 name: ci/slots
-description: Host-wide heavy slots — why heavy work (test lanes, builds, codegen, full lints, gate checks) queues on a shared machine, the express lane for commands bounded to minutes (FORGE_SLOT_LANE=express), `forge slot run` / `forge slot status`, FORGE_HEAVY_SLOTS / FORGE_HEAVY_EXPRESS_SLOTS / FORGE_SLOTS_DIR / FORGE_SLOT_HELD, which forge commands take a slot on their own, and how nesting avoids deadlock. Use when a command prints "waiting for a heavy slot", when sizing a shared machine, or when wrapping your own heavy task.
+description: Host-wide heavy slots — why heavy work (test lanes, builds, codegen, full lints, gate checks) queues on a shared machine, the express lane for commands bounded to minutes (FORGE_SLOT_LANE=express), the CPU share a holder's commands run on (GOMAXPROCS, FORGE_HEAVY_SHARE), `forge slot run` / `forge slot status`, FORGE_HEAVY_SLOTS / FORGE_HEAVY_EXPRESS_SLOTS / FORGE_SLOTS_DIR / FORGE_SLOT_HELD, which forge commands take a slot on their own, and how nesting avoids deadlock. Use when a command prints "waiting for a heavy slot", when sizing a shared machine, or when wrapping your own heavy task.
 ---
 
 # Host-wide heavy slots
@@ -46,6 +46,43 @@ slots from bulk jobs that queued first. Use it only for commands scoped to
 named packages; never for `./...`, `task test`, `task ci` or `forge generate`.
 `forge slot status` flags an express holder older than 15 minutes.
 
+## A holder runs on a CPU share, not the whole machine
+
+A slot bounds how many heavy jobs run, not how wide each one runs. Without a
+bound, a holder's `go test ./...` ran with GOMAXPROCS = every CPU, and
+`go test`/`go build`'s `-p` (how many compiles, links and test binaries run at
+once) defaults to GOMAXPROCS: on a 48-CPU host sixteen holders each asked for
+48, and the host ran at load 147–164. So every holder's commands run on a
+**share**: forge exports `GOMAXPROCS=<share>` (and, when the share is under
+libuv's default of 4, `UV_THREADPOOL_SIZE`) to them.
+
+    share = min(CPUs, max(2, min(3·CPUs / (2·busy), memory GiB / (2.5·busy))))
+
+`busy` is the holders running when the slot is taken, this one included, so a
+holder alone on the machine keeps all of it and one among fifteen others gets
+its part. The CPU term lets every busy holder together ask for at most 1.5x
+the machine. The memory term budgets 2.5 GiB per unit of share, because a test
+lane links up to GOMAXPROCS test binaries at once. Measured over 24 test
+packages of a large module: a link peaks at 3.9 GiB, and a lane at `-p 2/4/8`
+peaked at 7.8/14.1/22.3 GiB (3.5/5.9/10.7 GiB on average). CPU and memory come
+from the cgroup limit when there is one, as the slot count does.
+`forge slot status` prints the share a holder starting now would get, and the
+share each one gets when every slot is held.
+
+- A command that sets its own `GOMAXPROCS` keeps it, and so does a nested
+  holder, which inherits its parent's: `GOMAXPROCS=16 task test` runs 16 wide.
+- `forge generate` and `forge lint` run on the share themselves (their own
+  GOMAXPROCS, and their children's) while they hold a slot.
+- `FORGE_HEAVY_SHARE=<n>` gives every holder n CPUs; `FORGE_HEAVY_SHARE=off`
+  exports nothing (holders run as wide as the machine). `FORGE_HEAVY_SLOTS=off`
+  exports nothing either.
+- It is GOMAXPROCS, not a hard cap: what does not read it (cc1 under cgo, node)
+  is not bound. A cgroup `cpu.max` would bind those too, but cgroup v2 lets a
+  process cap a child cgroup only after every process has left the cgroup they
+  share, and a slot holder shares its cgroup with whatever started it (task, a
+  shell, a CI runner). A supervisor that owns a cgroup per command (the
+  Reliant daemon) caps it there, and forge then keeps the GOMAXPROCS it set.
+
 ## Who takes a slot
 
 | Holder | Why |
@@ -69,6 +106,7 @@ wait behind someone's gate.
 | `FORGE_HEAVY_EXPRESS_SLOTS=<r>` | slots reserved for express. Default max(1, N/4), none when N is 1; at most N−1 |
 | `FORGE_HEAVY_SLOTS=<n>` | override the count. Default min(CPUs / 2, memory GiB / 8), read from the cgroup v2 limit when there is one (inside a VM sandbox or container that is the truth, not nproc / MemTotal), at least 1 |
 | `FORGE_HEAVY_SLOTS=off` | switch the limit off: nothing waits (a CI runner that runs one job per machine may) |
+| `FORGE_HEAVY_SHARE=<n>` / `off` | fix every holder's CPU share at n, or export none. Default: the formula above, for the holders busy when the slot is taken |
 | `FORGE_SLOTS_DIR` | relocate the slot files (default: the user cache dir, so one user's processes share them; point every user of a multi-user host at one mode-1777 directory to share across users) |
 
 Spell `--class heavy` in scripts and Taskfiles: a forge that predates the verb
@@ -104,7 +142,11 @@ if err != nil {
 }
 defer slot.Release()
 cmd.Env = append(os.Environ(), slot.Env()...) // children run inside this slot
+cmd.Env = append(cmd.Env, slot.CPUEnv(cmd.Env)...) // ... on its CPU share
 ```
+
+`slot.Share()` is the share itself, for a scheduler that sizes its own
+workers; `hostslot.DefaultShare(machine, busy)` is the formula.
 
 Set `Options.Subtree` when the work runs in child processes (a wrapper or a
 scheduler), so descendants count as inside the slot even if their environment

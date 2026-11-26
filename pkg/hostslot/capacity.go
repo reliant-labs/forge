@@ -112,6 +112,15 @@ type Capacity struct {
 	Express int
 	// ExpressSource says where Express came from.
 	ExpressSource string
+	// Share is the CPUs a holder runs on when every slot is held: the
+	// least DefaultShare gives one (a holder among fewer gets more, see
+	// ShareFor), or the fixed share ShareEnv sets. Zero when holders
+	// export none: the limit or the share is off.
+	Share int
+	// ShareSource says where Share came from.
+	ShareSource string
+	// shareFixed is set when ShareEnv fixes Share for every holder.
+	shareFixed bool
 }
 
 // SlotsEnv is the variable that overrides a class's slot count:
@@ -145,6 +154,9 @@ func CapacityFor(class string, env []string) (Capacity, error) {
 		c.Slots, c.Source = n, name+"="+v
 	}
 	if err := c.resolveExpress(env); err != nil {
+		return Capacity{}, err
+	}
+	if err := c.resolveShare(env); err != nil {
 		return Capacity{}, err
 	}
 	return c, nil

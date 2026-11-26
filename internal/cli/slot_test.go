@@ -25,6 +25,7 @@ func slotEnv(t *testing.T, n string) string {
 	// The harness running these tests may itself wait in the express lane.
 	t.Setenv(hostslot.EnvLane, "")
 	t.Setenv(hostslot.ExpressSlotsEnv(hostslot.Heavy), "")
+	t.Setenv(hostslot.ShareEnv(hostslot.Heavy), "")
 	return dir
 }
 
@@ -154,6 +155,54 @@ func TestSlotStatus_ShowsLanes(t *testing.T) {
 	for _, want := range []string{`"lane": "express"`, `"express_slots": 1`} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("json status lacks %s:\n%s", want, out.String())
+		}
+	}
+}
+
+// The command runs on the slot's CPU share, unless its environment set its
+// own GOMAXPROCS.
+func TestSlotRun_RunsOnTheShare(t *testing.T) {
+	testkit.Slow(t, "execs sh")
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	if hostslot.DetectMachine().CPUs < 2 {
+		t.Skip("needs 2 CPUs: a share of 1 on a 1-CPU machine is the whole machine, and exports nothing")
+	}
+	slotEnv(t, "2")
+	t.Setenv(hostslot.ShareEnv(hostslot.Heavy), "1")
+	for _, tc := range []struct{ env, want string }{{"", "1"}, {"5", "5"}} {
+		t.Setenv("GOMAXPROCS", tc.env)
+		var out bytes.Buffer
+		if err := runInSlot(context.Background(), hostslot.Heavy, 0, []string{"sh", "-c", `printf %s "$GOMAXPROCS"`}, nil, &out, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		if out.String() != tc.want {
+			t.Errorf("GOMAXPROCS=%q before: the command saw %q, want %q", tc.env, out.String(), tc.want)
+		}
+	}
+}
+
+func TestSlotStatus_ShowsShare(t *testing.T) {
+	slotEnv(t, "4")
+	for _, tc := range []struct{ share, text, json string }{
+		{"3", "cpu share: 3 CPUs per holder (FORGE_HEAVY_SHARE=3)", `"share": 3`},
+		{"off", "cpu share: none (FORGE_HEAVY_SHARE=off)", `"share": 0`},
+		{"", " (default min(", `"share_floor_source": "default min(`},
+	} {
+		t.Setenv(hostslot.ShareEnv(hostslot.Heavy), tc.share)
+		rep, err := hostslot.Status(hostslot.Heavy, hostslot.Options{Env: os.Environ()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		writeSlotStatus(&out, rep)
+		if !strings.Contains(out.String(), tc.text) || !strings.Contains(out.String(), "FORGE_HEAVY_SHARE overrides") {
+			t.Errorf("FORGE_HEAVY_SHARE=%q: status lacks %q:\n%s", tc.share, tc.text, out.String())
+		}
+		out.Reset()
+		if err := writeSlotStatusJSON(&out, rep); err != nil || !strings.Contains(out.String(), tc.json) {
+			t.Errorf("FORGE_HEAVY_SHARE=%q: json status lacks %s (%v):\n%s", tc.share, tc.json, err, out.String())
 		}
 	}
 }

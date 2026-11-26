@@ -41,6 +41,10 @@ func newSlotCmd() *cobra.Command {
 			"lock those), so a one-minute command never waits behind hour-long jobs. R defaults to\n" +
 			"max(1, N/4) (none when N is 1); FORGE_HEAVY_EXPRESS_SLOTS=<r> overrides it, at most N-1.\n" +
 			"FORGE_SLOT_LANE=express (or `forge slot run --lane express`) picks the express lane.\n\n" +
+			"A holder's commands run on a CPU share, not the whole machine: GOMAXPROCS (which also sets\n" +
+			"`go build`/`go test`'s -p) of min(CPUs, max(2, min(3·CPUs/(2·busy), memory GiB/(2.5·busy))))\n" +
+			"for the busy holders when the slot is taken, so one alone keeps the machine. A command that sets\n" +
+			"its own GOMAXPROCS keeps it. FORGE_HEAVY_SHARE=<n> fixes the share; =off exports none.\n\n" +
 			"`forge generate`, `forge lint` and the heavy checks of `forge ci gate` take a slot on\n" +
 			"their own. Anything running inside a slot passes it to its children (FORGE_SLOT_HELD),\n" +
 			"so a nested heavy command never waits on its own parent.",
@@ -122,6 +126,9 @@ func runInSlotLane(ctx context.Context, class string, slots int, lane string, ar
 
 	c := exec.Command(argv[0], argv[1:]...)
 	c.Env = append(os.Environ(), slot.Env()...)
+	// The command runs on the slot's CPU share (GOMAXPROCS), unless its
+	// environment chose its own.
+	c.Env = append(c.Env, slot.CPUEnv(c.Env)...)
 	c.Stdin, c.Stdout, c.Stderr = stdin, stdout, stderr
 	if err := c.Start(); err != nil {
 		code := 126
@@ -200,6 +207,7 @@ func writeSlotStatus(w io.Writer, rep hostslot.Report) {
 	} else {
 		fmt.Fprintf(w, "%s slots: %s, %d reserved for express (%s) — %s and %s override\n",
 			c.Class, c, c.Express, c.ExpressSource, hostslot.SlotsEnv(c.Class), hostslot.ExpressSlotsEnv(c.Class))
+		writeSlotShare(w, rep)
 	}
 	fmt.Fprintf(w, "machine:  %s\n", c.Machine)
 	fmt.Fprintf(w, "dir:      %s\n", rep.Dir)
@@ -228,6 +236,24 @@ func writeSlotStatus(w io.Writer, rep hostslot.Report) {
 	}
 }
 
+// writeSlotShare prints the CPU share a holder's commands run on: the one a
+// holder taking a slot now would get, and the least one gets, with every
+// slot held.
+func writeSlotShare(w io.Writer, rep hostslot.Report) {
+	c := rep.Capacity
+	name := hostslot.ShareEnv(c.Class)
+	switch {
+	case c.Share == 0:
+		fmt.Fprintf(w, "cpu share: none (%s) — holders' commands run as wide as the machine; %s overrides\n", c.ShareSource, name)
+	case rep.Share == c.Share:
+		fmt.Fprintf(w, "cpu share: %d CPUs per holder (%s) — GOMAXPROCS for each holder's commands that set none; %s overrides\n",
+			c.Share, c.ShareSource, name)
+	default:
+		fmt.Fprintf(w, "cpu share: %d CPUs for a holder starting now (%s), %d with every slot held — GOMAXPROCS for each holder's commands that set none; %s overrides\n",
+			rep.Share, rep.ShareSource, c.Share, name)
+	}
+}
+
 func age(t time.Time) string {
 	if t.IsZero() {
 		return "-"
@@ -245,19 +271,26 @@ func writeSlotStatusJSON(w io.Writer, rep hostslot.Report) error {
 		Overdue bool      `json:"overdue,omitempty"`
 	}
 	out := struct {
-		Class     string   `json:"class"`
-		Slots     int      `json:"slots"`
-		Unlimited bool     `json:"unlimited"`
-		Source    string   `json:"source"`
-		Express   int      `json:"express_slots"`
-		ExpSource string   `json:"express_source,omitempty"`
-		Machine   string   `json:"machine"`
-		Dir       string   `json:"dir"`
-		Holders   []holder `json:"holders"`
-		Waiting   []holder `json:"waiting"`
+		Class     string `json:"class"`
+		Slots     int    `json:"slots"`
+		Unlimited bool   `json:"unlimited"`
+		Source    string `json:"source"`
+		Express   int    `json:"express_slots"`
+		ExpSource string `json:"express_source,omitempty"`
+		// Share is the CPU share a holder taking a slot now would get;
+		// ShareFloor the one each gets with every slot held. 0: none.
+		Share       int      `json:"share"`
+		ShareSource string   `json:"share_source,omitempty"`
+		ShareFloor  int      `json:"share_floor"`
+		FloorSource string   `json:"share_floor_source,omitempty"`
+		Machine     string   `json:"machine"`
+		Dir         string   `json:"dir"`
+		Holders     []holder `json:"holders"`
+		Waiting     []holder `json:"waiting"`
 	}{
 		Class: rep.Capacity.Class, Slots: rep.Capacity.Slots, Unlimited: rep.Capacity.Unlimited,
 		Source: rep.Capacity.Source, Express: rep.Capacity.Express, ExpSource: rep.Capacity.ExpressSource,
+		Share: rep.Share, ShareSource: rep.ShareSource, ShareFloor: rep.Capacity.Share, FloorSource: rep.Capacity.ShareSource,
 		Machine: rep.Capacity.Machine.String(), Dir: rep.Dir,
 		Holders: []holder{}, Waiting: []holder{},
 	}

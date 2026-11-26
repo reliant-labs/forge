@@ -264,7 +264,7 @@ field), or `testing/synctest`, whose clock is fake.
 | Rule | Flags | Does not flag |
 |---|---|---|
 | `forge-test-fixed-sleep` | `time.Sleep(d)` or a bare `<-time.After(d)` in a test body (a `*testing.T` / `testing.TB` func, a `t.Run` literal, a suite's `Test*` method) with more of the test after it | a sleep in a loop (a poll — the remedy), in a goroutine, fake or handler, as the last statement, right before a context `cancel()`, of at most 2ms (a timestamp tick), in a helper process that calls `os.Exit`, or inside `synctest` |
-| `forge-test-tight-deadline` | an event wait that FAILS the test after a constant deadline under 5s: a `select` case on `time.After` / a timer / a `context.WithTimeout` ctx whose body calls `t.Fatal`/`t.Error`/`Fail`; testify `Eventually`; a poll bounded by `time.Now().Add(d)`, `time.Since(start) < d`, or a counted loop of sleeps that can exit early | a negative assertion (expiry is the pass), a deadline of 5s or more, a duration the file does not spell as a constant |
+| `forge-test-tight-deadline` | an event wait that FAILS the test after a constant deadline under 5s: a `select` case on `time.After` / a timer / a `context.WithTimeout` ctx whose body calls `t.Fatal`/`t.Error`/`Fail`; testify `Eventually`; a poll bounded by `time.Now().Add(d)`, `time.Since(start) < d`, or a counted loop of sleeps that can exit early | a negative assertion (expiry is the pass), a fixed-duration workload with no early exit, a deadline of 5s or more, a duration the file does not spell as a constant |
 | `forge-test-wall-clock-bound` | a test that fails when real elapsed time passes a constant under 5s: `if time.Since(start) > d { t.Fatal }`, `assert.Less(t, elapsed, d)`, `assert.WithinDuration(t, time.Now(), x, d)` | a lower bound (`elapsed < backoff` → fail: load cannot make it fail) |
 
 A deliberate wait — a negative assertion written as a sleep, a test OF timing —
@@ -278,7 +278,9 @@ time.Sleep(100 * time.Millisecond)
 Trailing the line works too: `time.Sleep(d) // forge:lint-disable-line forge-test-fixed-sleep: <why>`.
 
 The rules warn in a project pinned below the release after the one that ships
-them, then gate.
+them, then gate. Load `testing/test-waits` for exactly what each flags, and for
+how to write a negative assertion, a fixed-duration workload or a latency-bound
+test so the rule agrees.
 
 ## Find testdata from the package directory, never from runtime.Caller
 
@@ -323,6 +325,7 @@ is compiled into the default lane, where nothing skips it.
 - `testing/flow` — hand-written multi-entity RPC tests: seed the FK spine with `seedplan.SeedGraph`, drive the real service against a migrated DB, assert the derived result + the negative/gap case.
 - `testing/e2e` — full-stack flows behind `//go:build e2e`.
 - `testing/patterns` — copy-paste-ready table-driven templates for the four most common test shapes.
+- `testing/test-waits` — the test-waits lint rules, their 5s floor, and the escapes for negative assertions, workloads and latency-bound tests.
 - `testing/fixture-paths` — find testdata and the module root from the package directory, never from `runtime.Caller`.
 
 For Next.js / vite-spa / React frontends, this Go-flavored skill does NOT apply. Load the top-level `frontend-testing` skill instead — it covers Vitest + Testing Library patterns, the `mockTransport()` seam, and the four-state page coverage rule.

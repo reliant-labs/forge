@@ -1,8 +1,11 @@
 # Changes: one model for remote config, gradual rollouts and A/B tests
 
 **Status:** beta. Direction approved by the owner on 2026-11-20 (the "Settled" list
-below). Everything else here is **proposed**; the open owner decisions are
-collected in [section 8](#8-open-owner-decisions) and each says what it blocks.
+below). The owner decided decisions 1, 2, 3 and 6 on 2026-11-25, and on
+2026-11-26 accepted the recommendation of the rest, 4, 5, 7 and 8 ("take your
+recommendations on all"; the [Settled (owner, 2026-11-26)](#settled-owner-2026-11-26)
+list). [Section 8](#8-owner-decisions-decided-2026-11-26) keeps the options
+that were weighed. Details not named there remain proposed.
 **Date:** 2026-11-20
 **Related:** [product-events.md](product-events.md) (the events this measures
 with), [start-anywhere.md](start-anywhere.md) (declarations in `forge.yaml`, use
@@ -29,20 +32,21 @@ Merged is not released, so each row says which final tag carries it.
 | Dogfood: landing-page hero test   | Live (landing-page #162): `hero-copy`, unit `visitor`, a 5% experiment.                                                                                                                                           |
 | Dogfood: a signed-in Reliant ramp | Not started.                                                                                                                                                                                                      |
 
-Decisions 1, 2, 3 and 6 were decided by the owner on 2026-11-25; the others
-record what the released code already does, matching the recommendation in
-[section 8](#8-open-owner-decisions).
+Decisions 1, 2, 3 and 6 were decided by the owner on 2026-11-25. The others
+recorded what the released code already does, matching the recommendation in
+[section 8](#8-owner-decisions-decided-2026-11-26), and the owner decided them
+on that recommendation on 2026-11-26.
 
 | #   | State                                                                                                                                                                                                                                                                                                                                         |
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | **Decided (owner, 2026-11-25):** a project-root `changes.yaml`, one declaration for every env, no KCL needed (released in forge v1.10.0).                                                                                                                                                                                                     |
 | 2   | **Decided (owner, 2026-11-25):** hosted backends read a ConfigMap mounted as the file `FORGE_CHANGES_FILE` names (released); apps not on Reliant hosting fetch `GetChangesSnapshot` with a platform-minted token, plus the egress allow. The fetch is being built.                                                                            |
 | 3   | **Decided (owner, 2026-11-25):** a production launch, ramp up or roll-out needs a person, enforced by the control plane: a console browser session, or a one-time code emailed to the person the credential acts for (`step_up_code`). A token or CLI login acting for a person is refused. Stop, end run and ramp down never wait. Released. |
-| 4   | (a), per app: `/forge/p/<app>/experiments`.                                                                                                                                                                                                                                                                                                   |
-| 5   | (a): `changes:write` and `changes:launch`, grantable per environment.                                                                                                                                                                                                                                                                         |
+| 4   | **Decided (owner, 2026-11-26): (a)**, per app: `/forge/p/<app>/experiments`.                                                                                                                                                                                                                                                                  |
+| 5   | **Decided (owner, 2026-11-26): (a):** `changes:write` and `changes:launch`, grantable per environment.                                                                                                                                                                                                                                        |
 | 6   | **Decided (owner, 2026-11-25): (b).** A promote that drops a variant a running change uses goes through; the control plane stops that change and records why in its audit trail, and the deploy plan warns at plan time. Being built; today the snapshot delivers such a change off and reports a problem, without stopping the record.       |
-| 7   | (a): OpenFeature providers in Go and the browser over the dependency-free core.                                                                                                                                                                                                                                                               |
-| 8   | (a): no approval unless the environment is protected or named `prod`/`production`.                                                                                                                                                                                                                                                            |
+| 7   | **Decided (owner, 2026-11-26): (a):** OpenFeature providers in Go and the browser over the dependency-free core.                                                                                                                                                                                                                              |
+| 8   | **Decided (owner, 2026-11-26): (a):** no approval unless the environment is protected or named `prod`/`production`.                                                                                                                                                                                                                           |
 
 ## Summary
 
@@ -83,6 +87,25 @@ authorized API.
    change" action. Forge-only users get the same controls.
 8. Growth consumes results and is never in the request path. Ads attribution
    comes later and stays separate from randomized assignment.
+
+## Settled (owner, 2026-11-26)
+
+Decisions 1, 2, 3 and 6 were decided on 2026-11-25
+([Where it stands](#where-it-stands-2026-11-25)). The owner accepted the
+recommendation of the rest of [section 8](#8-owner-decisions-decided-2026-11-26)
+("take your recommendations on all"), which is what the released code already
+does:
+
+1. **Experiments page (decision 4):** per app, `/forge/p/<app>/experiments`. A
+   project-level page can come later as a view over the same list.
+2. **Scopes (decision 5):** `changes:write` and `changes:launch` in forge's
+   closed set, grantable per environment. Deploy scopes are not reused.
+3. **SDK shape (decision 7):** the forge SDK is an OpenFeature provider, in Go
+   and the browser, over the dependency-free core.
+4. **Non-prod approval (decision 8):** none, unless the environment is
+   protected or named `prod`/`production`.
+
+These are not reopened below.
 
 ## 1. Problem and experience
 
@@ -210,8 +233,10 @@ Funnels and Retention (`pkg/release/bundle.go`, `ShapeRetention` and
 `kcl/render.k:3260-3297`). A new shape field needs a `BundleFeatureChanges`
 constant and strip logic in `pkg/release/bundle_features.go`, because the shape
 is strict-decoded and older control planes must not choke on it. Where the
-declaration is written is an open decision
-([section 8](#8-open-owner-decisions)); a sketch, not a settled syntax:
+declaration is written was decision 1
+([section 8](#8-owner-decisions-decided-2026-11-26)), decided on 2026-11-25 as
+a project-root `changes.yaml` ([../changes.md](../changes.md) is the syntax). A
+sketch of an entry:
 
 ```yaml
 changes:
@@ -226,12 +251,12 @@ changes:
 **Delivery (proposed).** The platform writes the snapshot where the app already
 reads config, instead of every app authenticating to a platform API.
 
-| Runtime                    | Mechanism                                                                                                                                                                                                                                                            | State                                                       |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Hosted static site         | The StaticSite operator writes `/_forge/changes.json` in the same pass that writes `config.js`, with no release (control-plane `internal/operators/staticsite/runtimeconfig.go:171-182`). Served `no-cache` with an ETag (`internal/staticorigin/headers.go:19-41`). | Mechanism exists; the file and the trigger are new.         |
-| Hosted backend             | Either a platform-written ConfigMap mounted as a file, or an authenticated fetch.                                                                                                                                                                                    | **Open decision.** Backends have no live config path today. |
-| Non-hosted (cluster, host) | An authenticated fetch of the same JSON with a platform-minted token, or a file the team writes.                                                                                                                                                                     | Follows the backend decision.                               |
-| Dev (`forge env up dev`)   | forge serves a snapshot built from the declaration, defaults only, with a local override file.                                                                                                                                                                       | Forge-only.                                                 |
+| Runtime                    | Mechanism                                                                                                                                                                                                                                                            | State                                               |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| Hosted static site         | The StaticSite operator writes `/_forge/changes.json` in the same pass that writes `config.js`, with no release (control-plane `internal/operators/staticsite/runtimeconfig.go:171-182`). Served `no-cache` with an ETag (`internal/staticorigin/headers.go:19-41`). | Mechanism exists; the file and the trigger are new. |
+| Hosted backend             | Either a platform-written ConfigMap mounted as a file, or an authenticated fetch.                                                                                                                                                                                    | **Decided (decision 2):** the ConfigMap file.       |
+| Non-hosted (cluster, host) | An authenticated fetch of the same JSON with a platform-minted token, or a file the team writes.                                                                                                                                                                     | Follows the backend decision.                       |
+| Dev (`forge env up dev`)   | forge serves a snapshot built from the declaration, defaults only, with a local override file.                                                                                                                                                                       | Forge-only.                                         |
 
 The snapshot is a separate JSON file, not a field inside `config.js`: `config.js`
 is a blocking script the page cannot render without, and the JSON can be
@@ -337,7 +362,8 @@ mirror, and `forge/pkg/activity` carries the user-visible stream.
 the way `obspolicy.ProductEventsDaysFromShape` reads one key) and refuse a key or
 variant the deployed release does not declare. The shape is derived server-side
 at `RecordBundle`, so a caller cannot state one. A promotion that later drops a
-variant a running change uses is an open decision.
+variant a running change uses goes through, and the control plane stops that
+change (decision 6).
 
 **Rpcs (proposed).** `CreateChange`, `GetChange`, `ListChanges`, `UpdateChange`
 (`// forge:custom`, takes `expected_revision`), `PreviewChange`, `RequestLaunch`,
@@ -438,12 +464,14 @@ ledger. An unattended run may draft, preview and stop only.
 | Growth as the assignment service                  | Puts a marketing service in every app's request path. Growth consumes results only.                                                                                                                         |
 | Per-env declarations (`forge.Change` in KCL)      | Closest to the shape, but a change's variants should not differ between envs, so every env would carry an identical copy. Kept as an option in section 8.                                                   |
 
-## 8. Open owner decisions
+## 8. Owner decisions (decided 2026-11-26)
 
-Per project rules, the owner decides architectural choices; each row gives the
-realistic options, a recommendation, and what it blocks. The owner decided 1, 2,
-3 and 6 on 2026-11-25, and the released code settled the rest; see
-[Where it stands](#where-it-stands-2026-11-25).
+**All settled.** The owner decided 1, 2, 3 and 6 on 2026-11-25
+([Where it stands](#where-it-stands-2026-11-25)), and on 2026-11-26 decided 4,
+5, 7 and 8 on their recommended option ("take your recommendations on all"; the
+[Settled (owner, 2026-11-26)](#settled-owner-2026-11-26) list). The table keeps
+the options that were weighed and the recommendation each decision started
+from, as the record of why. Reopening a row is the owner's call.
 
 | #   | Decision                                             | Options                                                                                                                                                                 | Recommendation                                                                                                                                                      | Blocks                                                     |
 | --- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
@@ -453,7 +481,7 @@ realistic options, a recommendation, and what it blocks. The owner decided 1, 2,
 | 4   | Experiments page: per app or per project             | (a) per app, matching the console's app-scoped nav (`/forge/p/<app>`); (b) one project-level page listing changes across apps.                                          | (a) first; the data is keyed by environment already, so (b) is a view over the same list later. The brief says "project-scoped"; the nav is app-scoped.             | Route shape, nav registration.                             |
 | 5   | New scopes in forge's public closed set              | (a) add `changes:write` and `changes:launch` (a semver minor, forge PR, migration, `OrgScopes`/`EnvScopes`); (b) reuse an existing scope such as `deploy:*`.            | (a). Reusing deploy scopes would let anyone who can deploy change who gets a feature, and could not be granted separately.                                          | Authorization for every mutation.                          |
 | 6   | A promote that drops a variant a running change uses | (a) refuse the promote; (b) allow it and the control plane stops the change and says so; (c) allow it and serve the default for that change.                            | (b), with a warning at plan time. Refusing blocks a rollback of the release; serving a variant the code no longer knows is wrong.                                   | `Promote` interaction, rollback behavior.                  |
-| 7   | OpenFeature as the SDK shape                         | (a) forge SDK is an OpenFeature provider over a dependency-free core; (b) a forge-specific API only.                                                                    | (a), held until you confirm.                                                                                                                                        | The provider packages only; the core is unaffected.        |
+| 7   | OpenFeature as the SDK shape                         | (a) forge SDK is an OpenFeature provider over a dependency-free core; (b) a forge-specific API only.                                                                    | (a), confirmed 2026-11-26.                                                                                                                                          | The provider packages only; the core is unaffected.        |
 | 8   | Approval for non-prod environments                   | (a) none; (b) same as prod.                                                                                                                                             | (a), unless the environment is `protected`.                                                                                                                         | Whether agents can run a staging experiment unattended.    |
 
 ## 9. Rollout plan

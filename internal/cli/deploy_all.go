@@ -231,6 +231,9 @@ func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f dep
 		buildTarget: "all",
 		parallel:    true,
 		buildDocker: true,
+		// The image must compile the forge the host compiles
+		// (build_forge_bridge.go), or the deploy stops before building.
+		checkForgeBridge: true,
 		// pushIfDeclared, NOT push. Both push every image whose workload
 		// declares a pushable reference; they differ on an env that declares
 		// NONE, and that difference decides whether this verb works at all

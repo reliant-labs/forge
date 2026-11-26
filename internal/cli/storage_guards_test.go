@@ -108,7 +108,7 @@ func TestPreflightAdmitsALightBuildUnderTheLightReserve(t *testing.T) {
 	if !lightBuild(site, siteEnv) {
 		t.Fatal("a frontend-only build is not light")
 	}
-	if err := preflightRealBuild(context.Background(), siteEnv, buildOptions{}, lightBuild(site, siteEnv)); !errors.Is(err, lightErr) {
+	if err := preflightRealBuild(context.Background(), siteEnv, site, buildOptions{}, lightBuild(site, siteEnv)); !errors.Is(err, lightErr) {
 		t.Errorf("site preflight = %v, want the light reserve", err)
 	}
 	if lightBuild(site, nil) {
@@ -131,7 +131,7 @@ func TestPreflightAdmitsALightBuildUnderTheLightReserve(t *testing.T) {
 		if lightBuild(h.t, h.e) {
 			t.Errorf("%s build reads as light", name)
 		}
-		if err := preflightRealBuild(context.Background(), h.e, buildOptions{}, lightBuild(h.t, h.e)); !errors.Is(err, heavyErr) {
+		if err := preflightRealBuild(context.Background(), h.e, h.t, buildOptions{}, lightBuild(h.t, h.e)); !errors.Is(err, heavyErr) {
 			t.Errorf("%s preflight = %v, want the full reserve", name, err)
 		}
 	}

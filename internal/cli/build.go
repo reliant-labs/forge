@@ -129,6 +129,12 @@ type buildOptions struct {
 	// noSBOM is --no-sbom: cut the release without generating SBOMs
 	// (build_sbom.go). Each artifact records why it has none.
 	noSBOM bool
+	// checkForgeBridge: refuse, before any build, a project image that cannot
+	// compile against the go.work-bridged forge the host compiles against
+	// (build_forge_bridge.go). Set by `forge env build` and `forge env
+	// deploy`; the dev loop and the compile-only `forge build` keep their
+	// behaviour.
+	checkForgeBridge bool
 	// capacityChecked records that the caller (`forge env deploy`) already ran
 	// the hosted capacity pre-flight, so the build does not repeat it.
 	capacityChecked bool
@@ -773,7 +779,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		}
 		return runBuildPlan(ctx, cfg, entities, targets, opts, resolvedTag, projectTag)
 	}
-	if err := preflightRealBuild(ctx, entities, opts, lightBuild(targets, entities)); err != nil {
+	if err := preflightRealBuild(ctx, entities, targets, opts, lightBuild(targets, entities)); err != nil {
 		return err
 	}
 	// A cut of this version that pushed every image and was interrupted
@@ -1039,7 +1045,12 @@ func recordBuild(ctx context.Context, cfg *config.ProjectConfig, entities *KCLEn
 // A LIGHT build (no go build, no image build: a static site) is admitted
 // under the light-build reserve; every heavy lane it does not have checks
 // the full reserve again before it runs.
-func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOptions, light bool) error {
+func preflightRealBuild(ctx context.Context, entities *KCLEntities, targets buildTargetSet, opts buildOptions, light bool) error {
+	// A project image that would compile a different forge than the host
+	// does is refused before anything is built (build_forge_bridge.go).
+	if err := preflightForgeBridge(opts, targets); err != nil {
+		return err
+	}
 	check := checkBuildStorageFn
 	if light {
 		check = checkLightBuildStorageFn

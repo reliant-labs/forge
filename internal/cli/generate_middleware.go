@@ -190,6 +190,16 @@ func contractsExcluded(cfg *config.ProjectConfig) func(rel string) bool {
 // is still written; no checksum is recorded — and with no manifest there
 // is correspondingly no sweep that could flag it).
 func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConfig, cs *generator.FileChecksums) error {
+	return generateInternalPackageContractsIn(projectDir, cfg, cs, nil)
+}
+
+// generateInternalPackageContractsIn is generateInternalPackageContracts
+// over the packages scope covers (nil: every package) — `forge generate
+// --scope`. Each covered package goes through exactly the code a full run
+// gives it, so a scoped run writes the full run's bytes; the walk only
+// passes through the directories above a scoped package, and skips the
+// rest.
+func generateInternalPackageContractsIn(projectDir string, cfg *config.ProjectConfig, cs *generator.FileChecksums, scope contractScope) error {
 	internalDir := filepath.Join(projectDir, "internal")
 	if !dirExists(internalDir) {
 		return nil
@@ -207,7 +217,7 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 	// Derived contracts first: every reader below — the Resolver, the mock,
 	// the decorator — reads contract_gen.go, so it must be current before
 	// any of them runs.
-	if err := deriveInternalContracts(internalDir, projectDir, cs); err != nil {
+	if err := deriveInternalContracts(internalDir, projectDir, cs, scope); err != nil {
 		return err
 	}
 
@@ -223,7 +233,7 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		// ONE resolver for every contract in the walk: the import names
 		// and foreign Deps interfaces of the whole tree cost two
 		// go/packages loads for the run, not two per contract.
-		Resolver: contract.NewResolver(contractPathsUnder(internalDir, projectDir, cfg)...),
+		Resolver: contract.NewResolver(scopedContractPaths(contractPathsUnder(internalDir, projectDir, cfg), projectDir, scope)...),
 	}
 
 	generated, changed := 0, 0
@@ -261,9 +271,20 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		// rather than an abandonment (see contract/retire.go). The whole
 		// subtree is swept because SkipDir means the walk will not visit
 		// the descendants that the exclude also covers.
+		//
+		// Checked before the scope, so a scoped package below an excluded
+		// directory is retired exactly as the full run retires it.
 		if cfg != nil && cfg.Contracts.IsExcluded(rel) {
-			if retErr := retireExcludedSubtree(path, contractOpts); retErr != nil {
-				return retErr
+			if scope.covers(rel) || scope.leadsTo(rel) {
+				if retErr := retireExcludedSubtree(path, contractOpts, scope); retErr != nil {
+					return retErr
+				}
+			}
+			return filepath.SkipDir
+		}
+		if !scope.covers(rel) {
+			if scope.leadsTo(rel) {
+				return nil
 			}
 			return filepath.SkipDir
 		}
@@ -439,7 +460,9 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 // and the decorator, but contract_gen.go is the interface the package's own
 // code is written against (New returns Service), and the package does not
 // compile without it. testdata/ holds fixtures, not packages.
-func deriveInternalContracts(internalDir, projectDir string, cs *generator.FileChecksums) error {
+//
+// scope narrows it to the packages a --scope run names (nil: every one).
+func deriveInternalContracts(internalDir, projectDir string, cs *generator.FileChecksums, scope contractScope) error {
 	opts := contract.Options{ProjectRoot: projectDir, Checksums: cs}
 	return filepath.WalkDir(internalDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -451,14 +474,20 @@ func deriveInternalContracts(internalDir, projectDir string, cs *generator.FileC
 		if d.Name() == "testdata" {
 			return filepath.SkipDir
 		}
-		if !contractsrc.HasMarkedType(path) && !fileExists(filepath.Join(path, contractsrc.DerivedFileName)) {
-			return nil
-		}
 		rel, relErr := filepath.Rel(projectDir, path)
 		if relErr != nil {
 			rel = path
 		}
 		rel = filepath.ToSlash(rel)
+		if !scope.covers(rel) {
+			if scope.leadsTo(rel) {
+				return nil
+			}
+			return filepath.SkipDir
+		}
+		if !contractsrc.HasMarkedType(path) && !fileExists(filepath.Join(path, contractsrc.DerivedFileName)) {
+			return nil
+		}
 		outcome, derr := contract.SyncDerivedContract(path, opts)
 		if derr != nil {
 			return fmt.Errorf("derive the contract of %s: %w", rel, derr)
@@ -555,7 +584,10 @@ func birthContractTest(b contractTestBirth, declines *contractTestDeclines) erro
 // `contracts.exclude` entry covers the whole subtree, and the caller
 // SkipDirs immediately afterwards, so this is the only pass that will
 // ever see those descendants.
-func retireExcludedSubtree(dir string, opts contract.Options) error {
+//
+// scope limits the retirement to the packages a --scope run names (nil:
+// the whole subtree).
+func retireExcludedSubtree(dir string, opts contract.Options, scope contractScope) error {
 	return filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -566,8 +598,27 @@ func retireExcludedSubtree(dir string, opts contract.Options) error {
 		if d.Name() == "testdata" {
 			return filepath.SkipDir // fixture packages, not real output
 		}
+		if rel, relErr := filepath.Rel(opts.ProjectRoot, path); relErr == nil && !scope.covers(filepath.ToSlash(rel)) {
+			return nil
+		}
 		return reportRetirement(contract.RetireExcludedArtifacts(path, opts))
 	})
+}
+
+// scopedContractPaths keeps the contract files of the packages scope covers
+// (nil: all of them), so a --scope run's Resolver loads only what its
+// packages need.
+func scopedContractPaths(paths []string, projectDir string, scope contractScope) []string {
+	if scope == nil {
+		return paths
+	}
+	var out []string
+	for _, p := range paths {
+		if rel, err := filepath.Rel(projectDir, filepath.Dir(p)); err == nil && scope.covers(filepath.ToSlash(rel)) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // reportRetirement prints one line per artifact the retirement sweep

@@ -243,7 +243,7 @@ forge frontend sourcemaps push	cmd	allow-version-skew:bool base-path:string buil
 forge gate	group	allow-version-skew:bool project-dir/C:string
 forge gate list	cmd	allow-version-skew:bool json:bool project-dir/C:string promotion:string
 forge gate record	cmd	allow-version-skew:bool from:string json:bool name:string no-run:bool project-dir/C:string promotion:string release:string run-id:string run-url:string status:string summary:string url:string
-forge generate	cmd	allow-version-skew:bool check:bool dry-run:bool explain-drift:bool explain:bool force-cleanup:bool force/f:bool heal:bool help-dev:bool keep-on-build-failure:bool no-cache:bool no-revert:bool plan:bool project-dir/C:string skip-config-check:bool skip-pre-checks:bool skip-validate:bool steps:string strict:bool templates-only:bool timings:bool verbose/v:bool watch/w:bool
+forge generate	cmd	allow-version-skew:bool check:bool dry-run:bool explain-drift:bool explain:bool force-cleanup:bool force/f:bool heal:bool help-dev:bool keep-on-build-failure:bool no-cache:bool no-revert:bool plan:bool project-dir/C:string scope:stringSlice skip-config-check:bool skip-pre-checks:bool skip-validate:bool steps:string strict:bool templates-only:bool timings:bool verbose/v:bool watch/w:bool
 forge kcl	group	allow-version-skew:bool project-dir/C:string
 forge kcl eval	cmd	allow-version-skew:bool format:string materialize:bool option/D:stringArray process-rooted:bool project-dir/C:string render-active:bool render-context:string render-env:string select/S:stringArray
 forge kcl imports	cmd	allow-version-skew:bool json:bool project-dir/C:string refresh:bool

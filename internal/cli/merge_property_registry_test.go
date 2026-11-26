@@ -162,6 +162,7 @@ var mergeCases = map[string]mergeCase{
 	"detect renamed Tier-1 exports":                             noOutput("check"),
 	"check disowned-sibling dangling refs":                      noOutput("check"),
 	"check stale scaffold tests":                                noOutput("check"),
+	"go build (validate scoped packages)":                       noOutput("check"),
 	"go build (validate generated code)":                        noOutput("check"),
 	"deploy KCL loads":                                          noOutput("check"),
 	"record generating forge build":                             noOutput("writes under .forge/, ignored"),

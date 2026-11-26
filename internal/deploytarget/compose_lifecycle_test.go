@@ -126,6 +126,143 @@ func TestComposeDownSurvivesAGoneOrUnverifiableContainer(t *testing.T) {
 	}
 }
 
+// composeNetworkFixture is one owned clickstack container of project, recorded
+// for env dev, and the canned docker answers env down reads for it. Tests add
+// the network answers they exercise.
+func composeNetworkFixture(t *testing.T, project string) (string, *fakeRunner) {
+	t.Helper()
+	dir := t.TempDir()
+	rec := composeOwned{Directory: dir, Checkout: dir, Env: "dev", Project: project, Service: "clickstack", IDs: []string{"c-owned"}, Services: map[string]string{"c-owned": "clickstack"}}
+	if err := statefile.Write(composeOwnedPath(dir, "dev", "clickstack"), "compose ownership", rec); err != nil {
+		t.Fatal(err)
+	}
+	labels, _ := json.Marshal([]map[string]any{{"Config": map[string]any{"Labels": map[string]string{"com.docker.compose.project": project, "com.docker.compose.project.working_dir": dir, "com.docker.compose.service": "clickstack"}}}})
+	return dir, &fakeRunner{outputs: map[string]string{"docker inspect c-owned": string(labels)}, runErrs: map[string]error{}}
+}
+
+// networkJSON is `docker network inspect` for one network.
+func networkJSON(project, network string, attached ...string) string {
+	containers := map[string]any{}
+	for _, id := range attached {
+		containers[id] = map[string]string{"Name": id}
+	}
+	labels := map[string]string{"com.docker.compose.project": project, "com.docker.compose.version": "5.8.0"}
+	if network != "" {
+		labels["com.docker.compose.network"] = network
+	}
+	b, _ := json.Marshal([]map[string]any{{"Name": project + "_" + network, "Labels": labels, "Containers": containers}})
+	return string(b)
+}
+
+func networksRemoved(r *fakeRunner) map[string]bool {
+	removed := map[string]bool{}
+	for _, call := range r.calls {
+		if id, ok := strings.CutPrefix(call, "docker network rm "); ok {
+			removed[id] = true
+		}
+	}
+	return removed
+}
+
+// TestComposeDownRemovesTheProjectsEmptyNetworks pins the leak that exhausted
+// a shared host's address pools: env down removed every container and left
+// each `<project>_<net>` network compose had created. Only an unused network
+// of the stack's own project goes; one in use, by a running or a stopped
+// container, stays, as does anything not provably compose's for the project.
+func TestComposeDownRemovesTheProjectsEmptyNetworks(t *testing.T) {
+	const project = "forge-abc-dev"
+	dir, r := composeNetworkFixture(t, project)
+	r.outputs["docker network ls --quiet --filter label=com.docker.compose.project="+project] = "net-empty\nnet-running\nnet-stopped\nnet-foreign\nnet-external\nnet-gone\n"
+	r.outputs["docker network inspect net-empty"] = networkJSON(project, "shop-net")
+	r.outputs["docker network inspect net-running"] = networkJSON(project, "db-net", "other-stack-container")
+	r.outputs["docker network inspect net-stopped"] = networkJSON(project, "cache-net")
+	r.outputs["docker container ls --all --quiet --filter network=net-stopped"] = "e7aa82ad0485\n"
+	r.outputs["docker network inspect net-foreign"] = networkJSON("forge-xyz-dev", "shop-net") // the filter is checked, not trusted
+	r.outputs["docker network inspect net-external"] = networkJSON(project, "")
+	r.outputs["docker network inspect net-gone"] = "[]\nError response from daemon: network net-gone not found\n"
+	r.runErrs["docker network inspect net-gone"] = errors.New("exit status 1")
+
+	p := ComposeProvider{ProjectDir: dir, Runner: r}
+	if err := p.StopOwned(context.Background(), "dev"); err != nil {
+		t.Fatal(err)
+	}
+	removed := networksRemoved(r)
+	if !removed["net-empty"] {
+		t.Errorf("the project's empty network leaked; calls:\n%s", strings.Join(r.calls, "\n"))
+	}
+	for _, id := range []string{"net-running", "net-stopped", "net-foreign", "net-external", "net-gone"} {
+		if removed[id] {
+			t.Errorf("removed network %s, which is in use or not provably the project's", id)
+		}
+	}
+	for _, call := range r.calls {
+		if strings.Contains(call, "prune") || (strings.HasPrefix(call, "docker network ls") && !strings.HasSuffix(call, "label=com.docker.compose.project="+project)) {
+			t.Errorf("overbroad network call: %s", call)
+		}
+	}
+	if !slices.Contains(r.calls, "docker rm -f c-owned") {
+		t.Errorf("owned container not removed; calls:\n%s", strings.Join(r.calls, "\n"))
+	}
+}
+
+// TestComposeDownKeepsNetworksWhileTheProjectIsNotSettled: a container of the
+// project left (unremovable, unverifiable, or not ours to remove) still
+// references the networks, so none of them is even listed.
+func TestComposeDownKeepsNetworksWhileTheProjectIsNotSettled(t *testing.T) {
+	const project = "forge-abc-dev"
+	for name, arrange := range map[string]func(r *fakeRunner){
+		"container rm fails": func(r *fakeRunner) { r.runErrs["docker rm -f c-owned"] = errors.New("exit status 1") },
+		"project container left": func(r *fakeRunner) {
+			r.outputs["docker container ls --all --quiet --filter label=com.docker.compose.project="+project] = "f00dcafe\n"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, r := composeNetworkFixture(t, project)
+			r.outputs["docker network ls --quiet --filter label=com.docker.compose.project="+project] = "net-empty\n"
+			r.outputs["docker network inspect net-empty"] = networkJSON(project, "shop-net")
+			arrange(r)
+			_ = (ComposeProvider{ProjectDir: dir, Runner: r}).StopOwned(context.Background(), "dev")
+			for _, call := range r.calls {
+				if strings.HasPrefix(call, "docker network ") {
+					t.Errorf("touched networks of an unsettled project: %s", call)
+				}
+			}
+		})
+	}
+}
+
+// TestComposeDownNetworkFailuresDoNotFailEnvDown: the containers are gone,
+// which is what env down promises; a network docker will not remove, or a
+// daemon that stopped answering, is left for the next env down.
+func TestComposeDownNetworkFailuresDoNotFailEnvDown(t *testing.T) {
+	const project = "forge-abc-dev"
+	ls := "docker network ls --quiet --filter label=com.docker.compose.project=" + project
+	for name, arrange := range map[string]func(r *fakeRunner){
+		"rm refused": func(r *fakeRunner) {
+			r.outputs[ls] = "net-a\nnet-b\n"
+			r.outputs["docker network inspect net-a"] = networkJSON(project, "a-net")
+			r.outputs["docker network inspect net-b"] = networkJSON(project, "b-net")
+			r.outputs["docker network rm net-a"] = "Error response from daemon: error while removing network: network net-a has active endpoints\n"
+			r.runErrs["docker network rm net-a"] = errors.New("exit status 1")
+		},
+		"daemon down": func(r *fakeRunner) {
+			r.outputs[ls] = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock\n"
+			r.runErrs[ls] = errors.New("exit status 1")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, r := composeNetworkFixture(t, project)
+			arrange(r)
+			if err := (ComposeProvider{ProjectDir: dir, Runner: r}).StopOwned(context.Background(), "dev"); err != nil {
+				t.Fatalf("a network failure failed env down: %v", err)
+			}
+			if name == "rm refused" && !networksRemoved(r)["net-b"] {
+				t.Errorf("one refused rm stopped the rest; calls:\n%s", strings.Join(r.calls, "\n"))
+			}
+		})
+	}
+}
+
 func TestContainerAbsentMatchesEveryDockerSpelling(t *testing.T) {
 	for out, want := range map[string]bool{
 		"error: no such object: 3f2a":                      true, // Docker 29

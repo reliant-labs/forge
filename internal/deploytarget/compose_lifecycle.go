@@ -185,6 +185,13 @@ func (p ComposeProvider) OwnedRunning(ctx context.Context, env string) (bool, er
 // are returned together. A failed ID is never removed (its ownership is
 // unproven) and stays in its record, so the next env down retries exactly
 // that ID; a record whose every ID was settled is deleted.
+//
+// Once every record of a compose project is settled, the project's empty
+// networks go too (removeEmptyProjectNetworks). Compose creates one per
+// declared network on up, and removing the containers alone left each of them
+// behind: 31 empty forge-*-dev networks built up on one shared host in six
+// days and exhausted docker's predefined address pools, after which every
+// `docker network create` on the machine failed.
 func (p ComposeProvider) StopOwned(ctx context.Context, env string) error {
 	pattern := filepath.Join(filepath.Dir(composeOwnedPath(p.projectDir(), env, "_")), "*.json")
 	paths, err := filepath.Glob(pattern)
@@ -192,27 +199,113 @@ func (p ComposeProvider) StopOwned(ctx context.Context, env string) error {
 		return err
 	}
 	var errs []error
+	// settled maps each compose project seen to whether every one of its
+	// records was settled: one unsettled record keeps the project's networks.
+	settled := map[string]bool{}
 	for _, path := range paths {
-		if err := p.stopRecord(ctx, env, path); err != nil {
+		project, done, err := p.stopRecord(ctx, env, path)
+		if err != nil {
 			errs = append(errs, err)
 		}
+		if project != "" {
+			prev, seen := settled[project]
+			settled[project] = done && (!seen || prev)
+		}
+	}
+	projects := make([]string, 0, len(settled))
+	for project, done := range settled {
+		if done {
+			projects = append(projects, project)
+		}
+	}
+	slices.Sort(projects)
+	for _, project := range projects {
+		p.removeEmptyProjectNetworks(ctx, project)
 	}
 	return errors.Join(errs...)
 }
 
+// removeEmptyProjectNetworks removes the networks compose created for project
+// once nothing uses them. project comes from a settled ownership record, whose
+// name was read from the labels of containers proven ours by their working
+// directory; compose labels a network only with com.docker.compose.project,
+// .network, .version and .config-hash (no working directory), so the project
+// label is the only tie a network has to its stack, and it is checked on the
+// network itself rather than trusted from the list filter.
+//
+// A network is removed only when it carries that project label and a compose
+// network label (an external network is never one compose created), has no
+// container attached in any state, and no container of the project is left at
+// all: a stopped container still references its networks, and removing one
+// would make `docker start` on it fail. Removal is one `docker network rm` per
+// network, never a prune; volumes are untouched.
+//
+// Nothing here fails env down. The containers are already gone, which is what
+// env down promises; a network still in use (a shared stack, a container
+// started meanwhile) is kept, a network already gone needs nothing, and a
+// docker failure (daemon down, permission) keeps the network. The settled
+// records are deleted by then, so env down does not come back for a network
+// kept here; that is the price of never removing what is unproven.
+func (p ComposeProvider) removeEmptyProjectNetworks(ctx context.Context, project string) {
+	runner := p.runner()
+	filter := "label=com.docker.compose.project=" + project
+	out, err := runner.Output(ctx, "docker", "container", "ls", "--all", "--quiet", "--filter", filter)
+	if err != nil || len(composeContainerIDs(out)) > 0 {
+		return
+	}
+	out, err = runner.Output(ctx, "docker", "network", "ls", "--quiet", "--filter", filter)
+	if err != nil {
+		return
+	}
+	// `network ls --quiet` prints one ID per line, the shape `compose ps
+	// --quiet` has, diagnostics included.
+	for _, id := range composeContainerIDs(out) {
+		if !networkUnused(ctx, runner, id, project) {
+			continue
+		}
+		_ = runner.Run(ctx, "docker", "network", "rm", id) // in use, gone or unreachable: kept, see above
+	}
+}
+
+// networkUnused reports whether network id is compose's network for project
+// with no container attached, running or stopped. Anything it cannot
+// establish counts as in use.
+func networkUnused(ctx context.Context, runner commandRunner, id, project string) bool {
+	out, err := runner.Output(ctx, "docker", "network", "inspect", id)
+	if err != nil {
+		return false
+	}
+	var rows []struct {
+		Labels     map[string]string
+		Containers map[string]json.RawMessage // attached endpoints: running containers only
+	}
+	if err := json.Unmarshal(out, &rows); err != nil || len(rows) != 1 {
+		return false
+	}
+	net := rows[0]
+	if net.Labels["com.docker.compose.project"] != project || net.Labels["com.docker.compose.network"] == "" || len(net.Containers) > 0 {
+		return false
+	}
+	// A stopped container has no endpoint, so inspect does not list it; the
+	// network filter matches on the container's own configuration.
+	out, err = runner.Output(ctx, "docker", "container", "ls", "--all", "--quiet", "--filter", "network="+id)
+	return err == nil && len(composeContainerIDs(out)) == 0
+}
+
 // stopRecord settles one ownership record: each recorded ID is removed when
 // its labels still prove it is ours, forgotten when it is gone or now belongs
-// to someone else, and kept when neither could be established.
-func (p ComposeProvider) stopRecord(ctx context.Context, env, path string) error {
+// to someone else, and kept when neither could be established. It returns the
+// record's compose project, and whether the record was settled (and deleted).
+func (p ComposeProvider) stopRecord(ctx context.Context, env, path string) (project string, settled bool, _ error) {
 	rec, err := statefile.Read[composeOwned](path, "compose ownership")
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	if rec == nil {
-		return nil
+		return "", false, nil
 	}
 	if rec.Env != env || !sameDirectory(rec.Checkout, p.projectDir()) {
-		return fmt.Errorf("compose ownership record %s belongs to another checkout/environment; refusing removal", path)
+		return "", false, fmt.Errorf("compose ownership record %s belongs to another checkout/environment; refusing removal", path)
 	}
 	var errs []error
 	var unsettled []string
@@ -237,9 +330,9 @@ func (p ComposeProvider) stopRecord(ctx context.Context, env, path string) error
 	}
 	if len(unsettled) == 0 {
 		if err := os.Remove(path); err != nil {
-			errs = append(errs, err)
+			return rec.Project, false, err
 		}
-		return errors.Join(errs...)
+		return rec.Project, true, nil
 	}
 	rec.IDs = unsettled
 	for id := range rec.Services {
@@ -250,5 +343,5 @@ func (p ComposeProvider) stopRecord(ctx context.Context, env, path string) error
 	if err := statefile.Write(path, "compose ownership", rec); err != nil {
 		errs = append(errs, err)
 	}
-	return errors.Join(errs...)
+	return rec.Project, false, errors.Join(errs...)
 }

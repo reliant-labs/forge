@@ -418,9 +418,6 @@ func segmentMetadata(src string) (meta map[string]jsValue, known bool) {
 	return nil, true
 }
 
-// nextHead is the document the segments' merged metadata gives the root
-// route (srcs[0] is the root layout): the tags Next.js writes for the fields
-// it can read, and which of them are dynamic.
 // mergeSegments merges the segments' metadata the way Next.js does, and
 // names the tags a segment the reader cannot see may write.
 func mergeSegments(srcs []string) (map[string]jsValue, map[string]bool) {
@@ -468,6 +465,9 @@ func mergeSegments(srcs []string) (map[string]jsValue, map[string]bool) {
 	return meta, dynamic
 }
 
+// nextHead is the document the segments' merged metadata gives the root
+// route (srcs[0] is the root layout): the tags Next.js writes for the fields
+// it can read, and which of them are dynamic.
 func nextHead(srcs []string, site string) (string, map[string]bool) {
 	meta, dynamic := mergeSegments(srcs)
 	src := srcs[0]

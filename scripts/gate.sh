@@ -28,15 +28,14 @@
 #
 # CI is set for every lane, as on a runner: a test that needs docker, a tool or
 # an image fails rather than skipping green (testdocker.Unavailable,
-# requireTool, requireDockerDaemon). A lane that fails ONLY in that way says
-# nothing about the code under test, so it is UNPROVEN, not FAIL (below).
+# requireTool, requireDockerDaemon). Host-looking test output alone cannot
+# establish that the lane failed ONLY on the host (see below).
 #
 # EXIT. 0 every lane passed; 1 a lane failed; 2 no lane failed but one could
-# not prove anything (UNPROVEN: its log matches HOST_RE, the host-class failures
-# forge's own test helpers print: no docker daemon, a missing tool, the disk, a
-# registry's rate limit). The queue never lands an unproven candidate and never
-# blames a PR for one. A lane that failed AND matches HOST_RE is UNPROVEN too:
-# the cost is a retry on another gate machine, never a red landing.
+# not prove anything (UNPROVEN: scaffold's explicit missing-tool exit 2).
+# Test output can mix host trouble with real assertion failures, so a failed
+# command is conservatively FAIL regardless of host-looking text in its log.
+# Only the scaffold preflight's explicit exit code proves a host-only failure.
 #
 #   GATE_LANES=unit,cli   run only those lanes (a lane left out is listed as
 #                         NOT RUN, and the stage cannot pass: exit 2)
@@ -50,10 +49,12 @@ set -uo pipefail
 cd "$(git rev-parse --show-toplevel)" || exit 2
 
 mode=${1:-test}
-HOST_RE='CI is set, so this is a failure, not a skip|required tool\(s\) not on PATH|no docker daemon answers|Cannot connect to the Docker daemon|no space left on device|toomanyrequests|429 Too Many Requests'
 
-logs=${GATE_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/forge-gate.XXXXXX")}
-mkdir -p "$logs"
+# Even a caller-supplied log directory may be reused (or shared by concurrent
+# candidates). Receipts must belong only to this invocation.
+log_root=${GATE_LOG_DIR:-${TMPDIR:-/tmp}}
+mkdir -p "$log_root" || exit 2
+logs=$(mktemp -d "$log_root/forge-gate.XXXXXX") || exit 2
 started=$SECONDS
 
 # pkgs <set>: scripts/ci-test-packages.sh's set, refusing an empty one (a lane
@@ -77,7 +78,9 @@ lane() {
   (export CI=1 FORGE_E2E_REQUIRE_TOOLS=1 && "$name") >"$logs/$name.log" 2>&1 || rc=$?
   if ((rc == 0)); then
     status=PASS
-  elif grep -qE "$HOST_RE" "$logs/$name.log"; then
+  elif [[ $name == scaffold && $rc == 2 ]] &&
+    [[ $(wc -l <"$logs/$name.log") == 1 ]] &&
+    grep -q '^required tool(s) not on PATH: .* (E2E Scaffold needs go, node, pnpm and buf)$' "$logs/$name.log"; then
     status=UNPROVEN
   else
     status=FAIL

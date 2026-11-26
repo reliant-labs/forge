@@ -37,8 +37,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
-	"sync/atomic"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -59,34 +57,25 @@ var descriptorBuilder func(projectDir string) error
 
 // DescriptorBuilderRegistered reports whether a CLI host installed the
 // descriptor-only extractor. Library users may deliberately leave it absent.
-func DescriptorBuilderRegistered() bool { return descriptorBuilder != nil }
+func DescriptorBuilderRegistered() bool {
+	return descriptorBuilder != nil || descriptorContextBuilder != nil
+}
 
 // RegisterDescriptorBuilder installs the extractor LoadDescriptor runs when the
 // descriptor is missing or stale. The extractor lives with the protoc plugin
 // (internal/cli), which imports this package, hence the registration.
 func RegisterDescriptorBuilder(build func(projectDir string) error) {
 	descriptorBuilder = build
+	descriptorContextBuilder = nil
 }
 
-// descriptorRefreshQuiet counts the callers holding the extractor's output
-// (QuietDescriptorRefresh); while it is positive the extractor prints only on
-// failure.
-var descriptorRefreshQuiet atomic.Int32
+var descriptorContextBuilder func(string, bool) error
 
-// QuietDescriptorRefresh asks the registered extractor to hold its progress
-// output until restore is called: a command that promises to print only what
-// failed (`forge lint --quiet`) reads the descriptor without the refresh's
-// "running protoc-gen-forge" lines, which then reach stderr only when the
-// extraction fails. restore is idempotent.
-func QuietDescriptorRefresh() (restore func()) {
-	descriptorRefreshQuiet.Add(1)
-	var once sync.Once
-	return func() { once.Do(func() { descriptorRefreshQuiet.Add(-1) }) }
+// RegisterDescriptorPolicyBuilder installs an extractor with invocation-local
+// output policy. RegisterDescriptorBuilder remains available to legacy hosts.
+func RegisterDescriptorPolicyBuilder(build func(string, bool) error) {
+	descriptorContextBuilder = build
 }
-
-// DescriptorRefreshQuiet reports whether a caller holds the extractor's output
-// (QuietDescriptorRefresh). The extractor reads it.
-func DescriptorRefreshQuiet() bool { return descriptorRefreshQuiet.Load() > 0 }
 
 // WriteGeneratedFrom stamps the protos gen/ was just generated from. Only the
 // generate pipeline calls it.

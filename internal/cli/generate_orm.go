@@ -175,16 +175,17 @@ const foreignGoPackageManaged = `managed:
 // buildDescriptorOnDemand is the extractor codegen.LoadDescriptor runs when a
 // reader finds the descriptor missing or stale (registered by Execute).
 func buildDescriptorOnDemand(projectDir string) error {
-	return refreshDescriptor(projectDir, os.Stderr, runDescriptorGenerate)
+	return buildDescriptorOnDemandWithQuiet(projectDir, false)
 }
 
-// refreshDescriptor runs an on-demand extraction, reporting on stderr. A
-// command that promises only what failed (`forge lint --quiet`) holds the
-// refresh's output (codegen.QuietDescriptorRefresh): the progress lines and
-// buf's diagnostics are buffered, and reach stderr only when the extraction
-// fails, where they explain the error.
-func refreshDescriptor(projectDir string, stderr io.Writer, extractDescriptor func(string, io.Writer, io.Writer) error) error {
-	if !codegen.DescriptorRefreshQuiet() {
+func buildDescriptorOnDemandWithQuiet(projectDir string, quiet bool) error {
+	return refreshDescriptor(projectDir, quiet, os.Stderr, runDescriptorGenerate)
+}
+
+// refreshDescriptor buffers diagnostics only for this invocation's quiet
+// extraction, and replays them on failure.
+func refreshDescriptor(projectDir string, quiet bool, stderr io.Writer, extractDescriptor func(string, io.Writer, io.Writer) error) error {
+	if !quiet {
 		return extractDescriptor(projectDir, stderr, stderr)
 	}
 	// One writer for both streams: exec.Cmd then calls Write from one

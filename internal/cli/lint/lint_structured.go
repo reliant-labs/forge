@@ -598,8 +598,8 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 	var progress io.Writer
 	if !flags.quiet {
 		progress = os.Stderr
-	} else {
-		defer codegen.QuietDescriptorRefresh()()
+	} else if err := prepareQuietDescriptor(cwd, flags); err != nil {
+		return err
 	}
 	realStdout := os.Stdout
 	os.Stdout = os.Stderr
@@ -651,6 +651,25 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 		return resolveGateRunResult(verdictErr, emitLintGate(flags.gateJSON, tallyFromOutcomes(outcomes), startedAt))
 	}
 	return verdictErr
+}
+
+// prepareQuietDescriptor refreshes metadata before descriptor-reading lanes run.
+// Quietness belongs to this extraction, not to process-global state; subsequent
+// readers use the current cache with their ordinary output policy.
+func prepareQuietDescriptor(cwd string, flags lintFlags) error {
+	lanes := selectedLanes(flags)
+	needsDescriptor := len(lanes) == 0
+	for _, lane := range lanes {
+		switch lane {
+		case "idempotency", "auth-no-sign-in", "crud-ownership", "db-grants", "config-reach":
+			needsDescriptor = true
+		}
+	}
+	if needsDescriptor {
+		_, err := codegen.LoadDescriptorWithQuiet(cwd, true)
+		return err
+	}
+	return nil
 }
 
 // structuredFixPrePass applies the deterministic-safe formatters the default

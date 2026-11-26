@@ -28,9 +28,9 @@ func TestQuietLintHoldsTheOnDemandDescriptorRefresh(t *testing.T) {
 				t.Fatal(err)
 			}
 			calls, heldDuring := 0, false
-			codegen.RegisterDescriptorBuilder(func(dir string) error {
+			codegen.RegisterDescriptorPolicyBuilder(func(dir string, quiet bool) error {
 				calls++
-				heldDuring = codegen.DescriptorRefreshQuiet()
+				heldDuring = quiet
 				return codegen.WriteDescriptor(dir, nil)
 			})
 			t.Cleanup(func() { codegen.RegisterDescriptorBuilder(nil) })
@@ -46,9 +46,6 @@ func TestQuietLintHoldsTheOnDemandDescriptorRefresh(t *testing.T) {
 			}
 			if heldDuring != tc.quiet {
 				t.Errorf("descriptor refresh held its output = %v during a quiet=%v run, want %v", heldDuring, tc.quiet, tc.quiet)
-			}
-			if codegen.DescriptorRefreshQuiet() {
-				t.Error("the run returned still holding the descriptor refresh's output")
 			}
 		})
 	}

@@ -7,8 +7,6 @@ import (
 	"io"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // An on-demand descriptor refresh streams its progress to stderr, except
@@ -17,6 +15,7 @@ import (
 // and buf's diagnostics — so the error still has its explanation.
 func TestOnDemandDescriptorRefreshIsSilentWhileHeldUnlessItFails(t *testing.T) {
 	var fail error
+	quiet := false
 	extract := func(_ string, out, errOut io.Writer) error {
 		_, _ = fmt.Fprintln(out, "🔨 Running protoc-gen-forge (mode=descriptor) to extract proto metadata...")
 		_, _ = fmt.Fprintln(errOut, "buf: proto/a.proto:3:1: syntax error")
@@ -24,17 +23,16 @@ func TestOnDemandDescriptorRefreshIsSilentWhileHeldUnlessItFails(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	if err := refreshDescriptor(t.TempDir(), &stderr, extract); err != nil {
+	if err := refreshDescriptor(t.TempDir(), quiet, &stderr, extract); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(stderr.String(), "Running protoc-gen-forge") {
 		t.Errorf("an unheld refresh hid its progress: %q", stderr.String())
 	}
 
-	restore := codegen.QuietDescriptorRefresh()
-	defer restore()
+	quiet = true
 	stderr.Reset()
-	if err := refreshDescriptor(t.TempDir(), &stderr, extract); err != nil {
+	if err := refreshDescriptor(t.TempDir(), quiet, &stderr, extract); err != nil {
 		t.Fatal(err)
 	}
 	if stderr.Len() != 0 {
@@ -43,7 +41,7 @@ func TestOnDemandDescriptorRefreshIsSilentWhileHeldUnlessItFails(t *testing.T) {
 
 	fail = errors.New("descriptor generation failed: exit status 100")
 	stderr.Reset()
-	if err := refreshDescriptor(t.TempDir(), &stderr, extract); !errors.Is(err, fail) {
+	if err := refreshDescriptor(t.TempDir(), quiet, &stderr, extract); !errors.Is(err, fail) {
 		t.Fatalf("err = %v, want %v", err, fail)
 	}
 	for _, want := range []string{"Running protoc-gen-forge", "syntax error"} {
@@ -52,9 +50,32 @@ func TestOnDemandDescriptorRefreshIsSilentWhileHeldUnlessItFails(t *testing.T) {
 		}
 	}
 
-	restore()
-	restore() // idempotent: a second call must not release another holder
-	if codegen.DescriptorRefreshQuiet() {
-		t.Error("restore left the refresh held")
+}
+
+func TestConcurrentDescriptorRefreshOutputIsInvocationLocal(t *testing.T) {
+	root := t.TempDir()
+	started, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	var quietOut, verboseOut bytes.Buffer
+	extract := func(_ string, out, errOut io.Writer) error {
+		_, _ = fmt.Fprintln(out, "progress")
+		_, _ = fmt.Fprintln(errOut, "diagnostics")
+		return nil
+	}
+	go func() {
+		done <- refreshDescriptor(root, true, &quietOut, func(dir string, out, errOut io.Writer) error {
+			close(started)
+			<-release
+			return extract(dir, out, errOut)
+		})
+	}()
+	<-started
+	err := refreshDescriptor(root, false, &verboseOut, extract)
+	close(release)
+	quietErr := <-done
+	if err != nil || quietErr != nil {
+		t.Fatalf("refresh errors: verbose=%v quiet=%v", err, quietErr)
+	}
+	if quietOut.Len() != 0 || verboseOut.String() != "progress\ndiagnostics\n" {
+		t.Fatalf("quiet=%q verbose=%q", quietOut.String(), verboseOut.String())
 	}
 }

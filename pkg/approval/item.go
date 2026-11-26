@@ -21,18 +21,29 @@ import (
 type State string
 
 const (
+	// StatePending is an item awaiting a decision. It is the only state that
+	// changes.
+	//
 	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it
 	// will be removed in forge v2. Copy it into your project if you depend on it.
 	StatePending State = "pending"
+	// StateApproved is an item a decider approved.
+	//
 	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it
 	// will be removed in forge v2. Copy it into your project if you depend on it.
 	StateApproved State = "approved"
+	// StateRejected is an item a decider rejected.
+	//
 	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it
 	// will be removed in forge v2. Copy it into your project if you depend on it.
 	StateRejected State = "rejected"
+	// StateExpired is an item nobody decided before its ExpiresAt.
+	//
 	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it
 	// will be removed in forge v2. Copy it into your project if you depend on it.
 	StateExpired State = "expired"
+	// StateCancelled is a pending item withdrawn before anyone decided it.
+	//
 	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it
 	// will be removed in forge v2. Copy it into your project if you depend on it.
 	StateCancelled State = "cancelled"

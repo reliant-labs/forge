@@ -108,10 +108,16 @@ func (a Action) String() string {
 // it; the app's [Policy] and [Drainer] give it meaning.
 type Urgency int
 
+// The urgencies, least urgent first. The order is all this package defines:
+// what each one demands is the app's [Policy] and [Drainer] to decide.
 const (
+	// Routine is the least urgent, and the zero value.
 	Routine Urgency = iota
+	// Normal is more urgent than Routine.
 	Normal
+	// Security is more urgent than Normal: by its name, a security fix.
 	Security
+	// Emergency is the most urgent.
 	Emergency
 )
 

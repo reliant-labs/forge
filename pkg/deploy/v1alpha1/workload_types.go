@@ -24,12 +24,18 @@ import (
 type WorkloadKind string
 
 const (
-	KindService  WorkloadKind = "service"
-	KindWorker   WorkloadKind = "worker"
-	KindJob      WorkloadKind = "job"
-	KindCron     WorkloadKind = "cron"
+	// KindService is a long-running Deployment with a ClusterIP Service.
+	KindService WorkloadKind = "service"
+	// KindWorker is a long-running Deployment that nothing dials by name.
+	KindWorker WorkloadKind = "worker"
+	// KindJob is a one-shot that runs to completion.
+	KindJob WorkloadKind = "job"
+	// KindCron is a CronJob on Schedule.
+	KindCron WorkloadKind = "cron"
+	// KindOperator is a controller-runtime manager.
 	KindOperator WorkloadKind = "operator"
-	KindTool     WorkloadKind = "tool"
+	// KindTool is built into the image and never scheduled.
+	KindTool WorkloadKind = "tool"
 )
 
 // DeployPhase places a standalone job (kind job, no Before) in a deploy.
@@ -44,7 +50,11 @@ const (
 type DeployPhase string
 
 const (
-	DeployPhasePreRollout  DeployPhase = "pre-rollout"
+	// DeployPhasePreRollout runs the job to completion before any other
+	// workload is applied; its failure aborts the deploy.
+	DeployPhasePreRollout DeployPhase = "pre-rollout"
+	// DeployPhasePostRollout applies the job with the workloads and awaits it
+	// after they roll out.
 	DeployPhasePostRollout DeployPhase = "post-rollout"
 )
 
@@ -59,8 +69,10 @@ const (
 type DeploymentStrategy string
 
 const (
+	// StrategyRollingUpdate starts the new pods before the old ones stop.
 	StrategyRollingUpdate DeploymentStrategy = "RollingUpdate"
-	StrategyRecreate      DeploymentStrategy = "Recreate"
+	// StrategyRecreate stops every old pod before starting the new ones.
+	StrategyRecreate DeploymentStrategy = "Recreate"
 )
 
 // BeforeAll is the BROADCAST entry for Before: gate every workload in the
@@ -78,7 +90,9 @@ const BeforeAll = "*"
 type PortProtocol string
 
 const (
+	// ProtocolTCP is a TCP port.
 	ProtocolTCP PortProtocol = "tcp"
+	// ProtocolUDP is a UDP port.
 	ProtocolUDP PortProtocol = "udp"
 )
 

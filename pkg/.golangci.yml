@@ -10,10 +10,12 @@
 # (see ../.github/workflows/library-lint.yml) — a run from the repo root
 # reads the root config instead.
 #
-# NARROW ON PURPOSE. Only forbidigo is enabled here. The root config's full
-# linter set reports 77 pre-existing findings against this library — real
-# triage that belongs in its own change, not smuggled in behind a security
-# guardrail. Widening this file is welcome; leaving forbidigo out is not.
+# NARROW ON PURPOSE. Two linters are enabled here: forbidigo, and revive with
+# only its `exported` rule (every exported identifier carries a Go-style doc
+# comment; see that entry below). The root config's full linter set reports
+# 77 pre-existing findings against this library — real triage that belongs in
+# its own change, not smuggled in behind a security guardrail. Widening this
+# file is welcome; leaving forbidigo out is not.
 #
 # The rule itself is not new: forge's own project template
 # (../internal/templates/project/golangci.yml.tmpl) FAILS a generated
@@ -51,7 +53,17 @@ linters:
     # forbidigo deliberately absent from `enable`, which is why it never
     # gated anything.
     - forbidigo
+    # pkg/ is the public library pkg.go.dev renders, so every exported
+    # identifier needs a doc comment that starts with its name. Only the
+    # `exported` rule runs (settings below). The merge tier lints the
+    # packages a pull request changed (scripts/ci-golangci-changed.sh,
+    # --new-from-rev), so this fails only a PR that adds or edits an
+    # undocumented exported identifier; main's Lint job lints all of pkg/.
+    - revive
   settings:
+    revive:
+      rules:
+        - name: exported
     forbidigo:
       forbid:
         - pattern: 'os\.Getenv'
@@ -222,3 +234,22 @@ linters:
       - path: ^profilequery/pgo_test\.go$
         linters:
           - forbidigo
+
+      # revive's `exported` rule also reports names that stutter with their
+      # package. These three are public v1 API: renaming one is a breaking
+      # change, which forge does not ship within v1 (reliant.md, "Semver at
+      # major 1"). They wait for v2. Each is excluded by file AND name, so
+      # any other stutter, or a missing doc comment in the same file, still
+      # fails.
+      - path: ^telemetry/collector/netpol\.go$
+        linters:
+          - revive
+        text: "collector\\.CollectorRef by other packages, and that stutters"
+      - path: ^retry/errors\.go$
+        linters:
+          - revive
+        text: "retry\\.RetryAfterOf by other packages, and that stutters"
+      - path: ^config/filelayer\.go$
+        linters:
+          - revive
+        text: "config\\.ConfigPathEnvFor by other packages, and that stutters"

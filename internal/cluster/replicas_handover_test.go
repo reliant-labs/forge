@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // The replicas handover and the metrics-server refusal, with kubectl behind
@@ -229,6 +231,47 @@ func TestHandoverReplicasAfterPreRolloutGate(t *testing.T) {
 	want := string(replicasHandoverManifest("api", "prod", 4))
 	if len(f.applied) != 1 || f.applied[0] != want {
 		t.Fatalf("want replica ownership handed over at 4, got %v", f.applied)
+	}
+}
+
+func TestAutoscaleAfterDeliveryUnitSplit(t *testing.T) {
+	deployment := strings.Replace(autoscaledDeploy("api", ""), "labels: {", "labels: {forge.dev/delivery-unit: app, ", 1)
+	base := strings.Replace(autoscaledDeploy("base", "prod"), "labels: {", "labels: {forge.dev/delivery-unit: base, ", 1)
+	// The HPA precedes its target and has no unit label. Its target's
+	// resolved namespace and unit, not document order, determine the wave.
+	hpa := hpaDoc("api", "prod", "api", 2, 6)
+	support := "apiVersion: v1\nkind: ServiceAccount\nmetadata: {name: app, namespace: prod}"
+	s := stream(hpa, base, support, deployment)
+	order, err := planUnitWaves([]release.DeliveryUnit{{Name: "base"}, {Name: "app", After: []string{"base"}}}, s)
+	if err != nil || len(order) < 2 {
+		t.Fatalf("expected staged delivery units, got %v: %v", order, err)
+	}
+	head, stages := splitUnitStages(s, order, "prod")
+	if head != support || stages.final != "" {
+		t.Fatalf("only support should go ahead: head=%s final=%s", head, stages.final)
+	}
+	var appStream string
+	for _, wave := range stages.waves {
+		if strings.Contains(wave.stream, "kind: HorizontalPodAutoscaler") {
+			appStream = wave.stream
+			if len(wave.workloads) != 1 || wave.workloads[0].Kind != "Deployment" || wave.workloads[0].Name != "api" {
+				t.Fatalf("await only the target Deployment, got %v", wave.workloads)
+			}
+		}
+	}
+	if appStream != stream(hpa, deployment) {
+		t.Fatalf("HPA must share its target's wave: %s", appStream)
+	}
+	f := &handoverKubectl{live: []map[string]any{liveDeployment(t, "api", mfForgeOwnsReplicas, 4)}}
+	if err := handoverReplicas(context.Background(), f.run, "prod", appStream, nil); err != nil {
+		t.Fatal(err)
+	}
+	if want := string(replicasHandoverManifest("api", "prod", 4)); len(f.applied) != 1 || f.applied[0] != want {
+		t.Fatalf("want replica ownership handed over at 4, got %v", f.applied)
+	}
+	metrics := &metricsKubectl{stderr: "Error from server (NotFound)", err: errors.New("exit status 1")}
+	if err := refuseAutoscaleWithoutMetrics(context.Background(), metrics.run, "", "prod", appStream, nil); err == nil || len(metrics.calls) != 1 {
+		t.Fatalf("staged autoscale must refuse missing metrics, got %v, calls %v", err, metrics.calls)
 	}
 }
 

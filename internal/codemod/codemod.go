@@ -73,6 +73,13 @@ type Codemod struct {
 	// restructuring is run on request, after the person running it has read
 	// what it does.
 	Upgrade bool
+	// Advise marks a codemod `forge generate` dry-runs on every run,
+	// whatever the pin, and names when it would rewrite something: the fix
+	// to a template whose output the project owns (templatefix.go), which
+	// no other path would tell a project that moved its pin past the
+	// release. Only a codemod that reads a handful of named files is cheap
+	// enough to qualify.
+	Advise bool
 	// CleanTree marks a codemod that replaces files wholesale: `forge fix`
 	// refuses to run it over uncommitted changes (unless --allow-dirty), so
 	// `git diff` is the review and `git checkout .` the undo.

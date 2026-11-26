@@ -53,6 +53,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"snapshot Tier-1 exports",
 		"reconcile forge_version with go.mod",
 		"announce project",
+		"advise owned-file template fixes",
 		"sync forge KCL module vendor",
 		"read declared databases",
 		"detect proto directories",

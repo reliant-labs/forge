@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -31,8 +32,8 @@ type gateMatch struct {
 }
 
 // vulnGateHarness is the vuln harness with a fake syft that records what it
-// read and a fake grype whose findings each test chooses. Its HTTP client
-// fails the test on any request.
+// read and a fake grype whose findings each test chooses. Its vulnerability
+// database listing fails the test on any request.
 type vulnGateHarness struct {
 	*vulnHarness
 	mu       sync.Mutex
@@ -47,7 +48,12 @@ func newVulnGateHarness(t *testing.T) *vulnGateHarness {
 	g := &vulnGateHarness{vulnHarness: newVulnHarness(t)}
 	g.deps.run = g.grype
 	g.deps.sbomRunner = g
-	g.deps.httpClient = &http.Client{Transport: gateFailTransport{t}}
+	listing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("forge vuln gate read the network: %s %s", r.Method, r.URL)
+		http.Error(w, "network forbidden", http.StatusForbidden)
+	}))
+	t.Cleanup(listing.Close)
+	g.deps.dbURL = func() string { return listing.URL }
 	g.deps.tool = func(ctx context.Context, tl toolfetch.Tool, install bool) (string, string, error) {
 		if tl.Name == "syft" && g.noSyft {
 			return "", "", errors.New("syft v1.57.2 is not installed")
@@ -55,13 +61,6 @@ func newVulnGateHarness(t *testing.T) *vulnGateHarness {
 		return g.vulnHarness.tool(ctx, tl, install)
 	}
 	return g
-}
-
-type gateFailTransport struct{ t *testing.T }
-
-func (f gateFailTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	f.t.Errorf("forge vuln gate read the network: %s %s", r.Method, r.URL)
-	return nil, errors.New("network forbidden")
 }
 
 // Run is the fake syft: it records the source and describes it as an empty

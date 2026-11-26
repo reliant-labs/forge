@@ -136,9 +136,6 @@ type DB struct {
 	// disk as it is. A missing or stale database is then ErrNoDB or
 	// ErrStale, as with no network.
 	Offline bool
-	// HTTPClient reads the listing; nil is a client bounded by the
-	// listing timeout.
-	HTTPClient *http.Client
 }
 
 // ErrOffline is a network read refused because the database is Offline.
@@ -430,11 +427,7 @@ func (d *DB) Latest(ctx context.Context) (Listing, error) {
 	if err != nil {
 		return l, err
 	}
-	client := d.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: listingTimeout}
-	}
-	resp, err := client.Do(req)
+	resp, err := (&http.Client{Timeout: listingTimeout}).Do(req)
 	if err != nil {
 		return l, fmt.Errorf("read the vulnerability database listing %s: %w", d.ListingURL(), err)
 	}

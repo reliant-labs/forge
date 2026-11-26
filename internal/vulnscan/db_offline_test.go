@@ -4,22 +4,12 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"testing"
 	"time"
 )
-
-// failTransport fails the test on any request: proof that a database mode
-// that promises no network reads none.
-type failTransport struct{ t *testing.T }
-
-func (f failTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	f.t.Errorf("offline database read the network: %s %s", r.Method, r.URL)
-	return nil, errors.New("network forbidden in this test")
-}
 
 // tree lists every path under dir with its size and mode, so a test can say
 // nothing in it changed.
@@ -59,7 +49,6 @@ func TestOfflineEnsureNeverReadsTheNetwork(t *testing.T) {
 			t.Parallel()
 			db, g, l, _ := newTestDB(t, tc.built, testNow.Add(-time.Hour))
 			db.Offline = true
-			db.HTTPClient = &http.Client{Transport: failTransport{t}}
 			_, err := db.Ensure(ctx, EnsureOptions{Fetch: true, Force: true})
 			if tc.wantErr == nil && err != nil {
 				t.Fatalf("Ensure: %v", err)
@@ -77,23 +66,6 @@ func TestOfflineEnsureNeverReadsTheNetwork(t *testing.T) {
 				t.Errorf("Latest offline = %v, want ErrOffline", err)
 			}
 		})
-	}
-}
-
-type countingTransport struct{ n *int }
-
-func (c countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
-	*c.n++
-	return nil, errors.New("refused by the test")
-}
-
-func TestHTTPClientReadsTheListing(t *testing.T) {
-	t.Parallel()
-	db, _, l, _ := newTestDB(t, testNow.Add(-48*time.Hour), testNow.Add(-time.Hour))
-	var n int
-	db.HTTPClient = &http.Client{Transport: countingTransport{&n}}
-	if _, err := db.Latest(context.Background()); err == nil || n != 1 || l.reads.Load() != 0 {
-		t.Fatalf("Latest = %v after %d client calls and %d direct reads: it went around the configured client", err, n, l.reads.Load())
 	}
 }
 

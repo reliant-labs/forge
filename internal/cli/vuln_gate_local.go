@@ -421,7 +421,6 @@ func scanGateInputs(ctx context.Context, deps vulnDeps, errOut io.Writer, inputs
 	}
 	if err == nil {
 		db.Offline = offline
-		db.HTTPClient = deps.httpClient
 		st, err = db.Ensure(ctx, vulnscan.EnsureOptions{Fetch: !offline})
 	}
 	if err != nil {

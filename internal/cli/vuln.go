@@ -34,7 +34,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -78,9 +77,6 @@ type vulnDeps struct {
 	// sbomCache is the SBOM cache's directory for `vuln sbom --file`; nil
 	// or "" caches nothing.
 	sbomCache func() string
-	// httpClient reads the database listing for `vuln gate`; nil is the
-	// database's own client.
-	httpClient *http.Client
 }
 
 func defaultVulnDeps() vulnDeps {

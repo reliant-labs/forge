@@ -129,7 +129,12 @@ func depsFieldName(st *ast.StructType) (string, bool) {
 		if len(f.Names) == 0 {
 			return "Deps", true
 		}
-		return f.Names[0].Name, true
+		for _, name := range f.Names {
+			// Blank fields cannot be selected by the generated decorator.
+			if name.Name != "_" {
+				return name.Name, true
+			}
+		}
 	}
 	return "", false
 }

@@ -94,6 +94,18 @@ func TestObservedDecorator_LoggerBindingShapes(t *testing.T) {
 		"no Logger":       strings.Replace(loggerService, "Logger *slog.Logger", "Log *slog.Logger", 1),
 		"not slog":        strings.Replace(loggerService, "Logger *slog.Logger", "Logger *log.Logger", 1),
 		"no Deps on impl": strings.Replace(strings.Replace(loggerService, "deps Deps", "name string", 1), "&service{deps: deps}", "&service{}", 1),
+		"nil pointer Deps": strings.NewReplacer(
+			"deps Deps", "deps *Deps",
+			"&service{deps: deps}", "&service{}",
+		).Replace(loggerService),
+		"nil embedded pointer Deps": strings.NewReplacer(
+			"deps Deps\n}", "*Deps\n}",
+			"&service{deps: deps}", "&service{}",
+		).Replace(loggerService),
+		"blank Deps": strings.NewReplacer(
+			"deps Deps\n}", "_ Deps\n}",
+			"&service{deps: deps}", "&service{}",
+		).Replace(loggerService),
 	} {
 		got := genDecorator(t, writeLoggerPackage(t, src), "Service", "store")
 		if strings.Contains(got, "WithLogger") {

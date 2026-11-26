@@ -10,6 +10,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,15 +107,15 @@ func TestRollbackReport_UnattributedErrorGetsNeitherLabel(t *testing.T) {
 
 func TestOriginUnder(t *testing.T) {
 	const line = "internal/x/x.go:3:2: undefined: y"
-	compiled := func(errText string) *listedPackage {
-		p := &listedPackage{ImportPath: "ex.com/m/internal/x"}
+	compiled := func(errText string) *postRunPackage {
+		p := &postRunPackage{listedPackage: listedPackage{ImportPath: "ex.com/m/internal/x"}, Export: "compiled.a"}
 		if errText != "" {
 			p.Error = &listedPackageError{Err: "# ex.com/m/internal/x\n" + errText}
 		}
 		return p
 	}
 	for name, tc := range map[string]struct {
-		pkg    *listedPackage
+		pkg    *postRunPackage
 		origin errorOrigin
 		why    string
 	}{
@@ -126,7 +127,11 @@ func TestOriginUnder(t *testing.T) {
 			pkg: compiled("internal/x/x.go:4:2: brand new\n"), why: "may hide other errors",
 		},
 		"a dependency fails": {
-			pkg: &listedPackage{DepsErrors: []*listedPackageError{{Err: "boom"}}}, why: "imports does not compile",
+			pkg: &postRunPackage{listedPackage: listedPackage{DepsErrors: []*listedPackageError{{Err: "boom"}}}}, why: "imports does not compile",
+		},
+		"no compile evidence": {pkg: &postRunPackage{}, why: "did not produce a compiled package"},
+		"load error is not a compiler diagnostic": {
+			pkg: &postRunPackage{listedPackage: listedPackage{Error: &listedPackageError{Err: line}}}, why: "did not reach",
 		},
 		"not listed": {why: "not there"},
 	} {
@@ -139,14 +144,47 @@ func TestOriginUnder(t *testing.T) {
 	}
 }
 
-// TestRollbackGeneratedTree_PreExistingErrorIsNotAnArtifact is the reported
-// case on a real tree, through the real rollback path and two real
-// compiles. The run writes internal/assigner/mock_gen.go, whose error is the
-// root cause. Two files it never wrote fail after the revert:
-//
-//   - internal/handlers/jobs/rpc.go calls a method only this run's
-//     handlers_ops_gen.go defines: an artifact of the revert.
-//   - pkg/rangerclient/zz_broken.go was broken before the run: pre-existing.
+// A changed dependency can fix an unchanged consumer or prevent its compiler
+// from running at all. Only the first case is a proven rollback artifact.
+func TestRollbackAttribution_CrossPackage(t *testing.T) {
+	testkit.Slow(t, "compiles a cross-package overlay with go")
+	for _, brokenDependency := range []bool{false, true} {
+		t.Run(fmt.Sprint(brokenDependency), func(t *testing.T) {
+			root := t.TempDir()
+			writeRollbackFile(t, root, "go.mod", "module example.com/app\n\ngo 1.22\n")
+			writeRollbackFile(t, root, "dep/output.go", "package dep\nconst Value = 1\n")
+			writeRollbackFile(t, root, "consumer/use.go", "package consumer\nimport \"example.com/app/dep\"\nvar _ string = dep.Value\n")
+			body := "package dep\nconst Value = \"ok\"\n"
+			if brokenDependency {
+				body = "package dep\nconst Value = missing\n"
+			}
+			const line = "consumer/use.go:3:16: cannot use dep.Value (untyped int constant 1) as string value in variable declaration"
+			inputs := postRunGoInputs{files: map[string]postRunFile{"dep/output.go": {exists: true, content: []byte(body)}}}
+			attr := attributePostRollbackErrors(root, inputs, []string{"dep/output.go"}, line)
+			want := originRollback
+			if brokenDependency {
+				want = originUnknown
+			}
+			if got := attr.of(line); got.origin != want {
+				t.Fatalf("attribution = %+v, want %v", got, want)
+			}
+			// The replay includes the full restored-tree scope, even though
+			// only the consumer's directory appeared in the diagnostic.
+			writeRollbackFile(t, root, "unrelated/other.go", "package unrelated\nconst X = 1\n")
+			pkgs, err := compileWithPostRunOverlay(root, inputs.files)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, p := range pkgs {
+				if p.ImportPath == "example.com/app/unrelated" && p.Export != "" {
+					return
+				}
+			}
+			t.Fatal("replay omitted a package in ./...")
+		})
+	}
+}
+
 func TestRollbackGeneratedTree_PreExistingErrorIsNotAnArtifact(t *testing.T) {
 	testkit.Slow(t, "execs git and go")
 	root := t.TempDir()

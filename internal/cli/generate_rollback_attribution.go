@@ -20,7 +20,7 @@ package cli
 // two is the other side: does the error go away once this run's output is
 // in place? cmd/go answers it without touching the tree: the post-run bytes
 // of every file the revert put back, captured just before it did, are laid
-// over the tree with `go list -overlay` and the failing packages are
+// over the tree with `go list -overlay` and the same ./... build scope is
 // compiled once more. (forge#2928 asks the inverse question in the validate
 // step, overlaying the pre-run bytes on the post-run tree.)
 //
@@ -41,7 +41,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -81,15 +80,15 @@ type postRollbackAttribution struct {
 // of returns line's attribution.
 func (a *postRollbackAttribution) of(line string) lineOrigin {
 	if a == nil {
-		return lineOrigin{why: "the check did not run"}
+		return lineOrigin{origin: originUnknown, why: "the check did not run"}
 	}
 	if a.reason != "" {
-		return lineOrigin{why: a.reason}
+		return lineOrigin{origin: originUnknown, why: a.reason}
 	}
 	if o, ok := a.lines[strings.TrimSpace(line)]; ok {
 		return o
 	}
-	return lineOrigin{why: "the check did not reach it"}
+	return lineOrigin{origin: originUnknown, why: "the check did not reach it"}
 }
 
 // postRunFile is a file's state as the failed run left it, read just before
@@ -157,8 +156,6 @@ func attributePostRollbackErrors(projectDir string, postRun postRunGoInputs, res
 	// Each line's package, by its file's directory. A line citing a file
 	// outside the project has no package here to compile.
 	lines := map[string]string{}
-	var dirs []string
-	seenDir := map[string]bool{}
 	for _, raw := range strings.Split(output, "\n") {
 		line := strings.TrimSpace(raw)
 		file := errorLineFile(line)
@@ -171,10 +168,6 @@ func attributePostRollbackErrors(projectDir string, postRun postRunGoInputs, res
 			continue
 		}
 		lines[line] = dir
-		if !seenDir[dir] {
-			seenDir[dir] = true
-			dirs = append(dirs, dir)
-		}
 	}
 	if len(lines) == 0 {
 		return attr
@@ -188,12 +181,12 @@ func attributePostRollbackErrors(projectDir string, postRun postRunGoInputs, res
 		return attr
 	}
 
-	pkgs, err := compileWithPostRunOverlay(root, replace, dirs)
+	pkgs, err := compileWithPostRunOverlay(root, replace)
 	if err != nil {
 		attr.reason = "the check could not run: " + err.Error()
 		return attr
 	}
-	byDir := map[string]*listedPackage{}
+	byDir := map[string]*postRunPackage{}
 	for _, p := range pkgs {
 		if p.testBuild() {
 			continue
@@ -211,19 +204,25 @@ func attributePostRollbackErrors(projectDir string, postRun postRunGoInputs, res
 // originUnder attributes one post-rollback error line from its package's
 // compile with this run's output in place (p, nil when that compile did
 // not list it).
-func originUnder(p *listedPackage, line string) lineOrigin {
+func originUnder(p *postRunPackage, line string) lineOrigin {
 	if p == nil {
-		return lineOrigin{why: "its package is not there with this run's output in place"}
+		return lineOrigin{origin: originUnknown, why: "its package is not there with this run's output in place"}
 	}
 	if p.Error == nil {
 		if len(p.DepsErrors) > 0 {
-			return lineOrigin{why: "a package it imports does not compile with this run's output either, so it could not be recompiled"}
+			return lineOrigin{origin: originUnknown, why: "a package it imports does not compile with this run's output either, so it could not be recompiled"}
 		}
 		if p.Name == "main" && strings.HasSuffix(line, ": function main is undeclared in the main package") {
 			// missingMainFunc checks source files directly, not overlay bytes.
-			return lineOrigin{why: "the replay compiled this main package but did not check for func main"}
+			return lineOrigin{origin: originUnknown, why: "the replay compiled this main package but did not check for func main"}
+		}
+		if p.Export == "" || p.Incomplete {
+			return lineOrigin{origin: originUnknown, why: "the replay did not produce a compiled package"}
 		}
 		return lineOrigin{origin: originRollback}
+	}
+	if len(p.DepsErrors) > 0 || !strings.HasPrefix(p.Error.Err, "# ") {
+		return lineOrigin{origin: originUnknown, why: "the replay did not reach this package's compiler"}
 	}
 	for _, l := range strings.Split(p.Error.text(), "\n") {
 		if strings.TrimSpace(l) == line {
@@ -232,7 +231,7 @@ func originUnder(p *listedPackage, line string) lineOrigin {
 	}
 	// A package still failing for another reason can mask diagnostics (e.g.
 	// cmd/compile's error cap or a syntax error stopping type checking).
-	return lineOrigin{why: "its package did not compile with this run's output, which may hide other errors"}
+	return lineOrigin{origin: originUnknown, why: "its package did not compile with this run's output, which may hide other errors"}
 }
 
 // projectRelDirOf returns the project-relative directory (slash form) of a
@@ -254,11 +253,20 @@ func projectRelDirOf(root, p string) (string, bool) {
 	return filepath.ToSlash(rel), true
 }
 
-// compileWithPostRunOverlay runs `go list -e -export -deps` over the
-// project directories dirs with each replaced path overlaid by the run's
-// output (removed when the run left none), and returns every package it
-// reports.
-func compileWithPostRunOverlay(root string, replace map[string]postRunFile, dirs []string) ([]*listedPackage, error) {
+// postRunPackage includes evidence that go list actually compiled a package.
+// A listed package without an Error is not enough: dependency failures can
+// prevent compilation, and excluded packages may have no buildable files.
+type postRunPackage struct {
+	listedPackage
+	Export     string `json:"Export"`
+	Incomplete bool   `json:"Incomplete"`
+}
+
+// compileWithPostRunOverlay replays the restored-tree check's ./... scope
+// with each replaced path overlaid by the run's output (removed when the
+// run left none). -export compiles packages; Export proves success, while
+// Error carries diagnostics for packages whose own compilation failed.
+func compileWithPostRunOverlay(root string, replace map[string]postRunFile) ([]*postRunPackage, error) {
 	tmp, err := os.MkdirTemp("", "forge-rollback-postrun-")
 	if err != nil {
 		return nil, err
@@ -288,10 +296,7 @@ func compileWithPostRunOverlay(root string, replace map[string]postRunFile, dirs
 		return nil, err
 	}
 
-	args := []string{"list", "-e", "-export", "-deps", "-json=" + compileFields, "-overlay=" + overlayFile}
-	for _, dir := range dirs {
-		args = append(args, "./"+path.Clean(dir))
-	}
+	args := []string{"list", "-e", "-export", "-deps", "-json=" + compileFields + ",Export,Incomplete", "-overlay=" + overlayFile, "./..."}
 	cmd := exec.Command("go", args...)
 	cmd.Dir = root
 	cmd.Env = goexec.CheckEnv()
@@ -300,10 +305,10 @@ func compileWithPostRunOverlay(root string, replace map[string]postRunFile, dirs
 	if err := cmd.Run(); err != nil {
 		return nil, &listFailure{stderr: stderr.String(), err: err}
 	}
-	var pkgs []*listedPackage
+	var pkgs []*postRunPackage
 	dec := json.NewDecoder(&stdout)
 	for {
-		p := new(listedPackage)
+		p := new(postRunPackage)
 		if err := dec.Decode(p); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {

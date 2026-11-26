@@ -16,6 +16,13 @@ check: { checks: ["CI gate"] }
 gate:
   runner: machine # an isolated gate machine (the sysbox backend): e2e and E2E Scaffold need its nested docker engine
   pool: gate
+  # Owner decision (2026-11-26): until a dedicated sysbox gate machine
+  # exists, a batch gated on plain runc (contained, not isolated) may land.
+  # Such a batch is recorded unisolated_accepted, its gate uses a warm
+  # per-repository cache, and suites that start containers skip as
+  # "docker unavailable (gate)". Remove this once sysbox gate machines
+  # exist: that closes both gaps.
+  allow_unisolated: true
   # The test stage's lanes run concurrently, so the wall is about the slowest
   # (the e2e corpus); 90m leaves room for a cold build cache. An exceeded
   # timeout is unproven, never red.

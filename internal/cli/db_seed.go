@@ -201,14 +201,32 @@ func seedShadowServer(projectDir string) string {
 // hook): a replay of *.up.sql there reads no schema at all, so the applied
 // schema comes from internal/shadowdb, whose shadow that tool migrates.
 func buildLiveSeedPlan(ctx context.Context, db *sql.DB, projectDir, migDir, shadowServer string, cfg seedplan.Config) (*seedplan.Plan, error) {
-	if _, hooked := migrationhook.ResolveForDir(projectDir, migDir); !hooked {
-		return seedplan.BuildLivePlan(ctx, db, migDir, shadowServer, cfg)
+	tables, err := liveSeedTables(projectDir, migDir, shadowServer)
+	if err != nil {
+		return nil, err
 	}
-	tables, err := shadowdb.Tables(projectDir, migDir)
+	return seedplan.BuildLivePlanFromTables(ctx, db, tables, migDir, cfg)
+}
+
+// liveSeedTables is the applied schema a live seed plan is built from: the
+// shadow replay seedplan.BuildLivePlan makes, or, in a project that keeps its
+// own migration tool, the shadow that tool migrates (internal/shadowdb).
+// Split from buildLiveSeedPlan for the auto-seed, whose scope is a function
+// of the schema (autoSeedFirstBoot) and must not cost a second apply.
+func liveSeedTables(projectDir, migDir, shadowServer string) ([]schemadef.Table, error) {
+	var (
+		tables []schemadef.Table
+		err    error
+	)
+	if _, hooked := migrationhook.ResolveForDir(projectDir, migDir); hooked {
+		tables, err = shadowdb.Tables(projectDir, migDir)
+	} else {
+		tables, err = schemadef.ApplyAndIntrospectAt(migDir, shadowServer)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("introspect applied schema: %w", err)
 	}
-	return seedplan.BuildLivePlanFromTables(ctx, db, tables, migDir, cfg)
+	return tables, nil
 }
 
 // seedConfigFromProject is the project's dev dataset configuration: the

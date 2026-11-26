@@ -199,7 +199,7 @@ Stop and report it, with a reproduction. Do not paper over it, and do not hand-e
 
 - Tell them which forge skills to load before starting (`architecture`, `services`, `contracts`, `migration` plus this skill's children).
 - Tell them which fixes are already in (so they don't relitigate).
-- Be explicit about whether to use `forge package new` or copy source directly.
+- Be explicit about whether to use `forge scaffold package` or copy source directly.
 - Specify env: `export PATH=/path/to/go/bin:$PATH`.
 - Halt-and-report rule on new forge bugs (don't fix forge themselves — bring back to the orchestrator).
 

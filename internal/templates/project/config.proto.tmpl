@@ -110,7 +110,6 @@ message AppConfig {
 
   string database_url = 3 [(forge.v1.config) = {
     env_var: "DATABASE_URL"
-    flag: "database-url"
 {{- if not .DatabaseOptional}}
     required: true
 {{- end}}
@@ -384,7 +383,6 @@ message AppConfig {
 
   string jwt_secret = 29 [(forge.v1.config) = {
     env_var: "JWT_SECRET"
-    flag: "jwt-secret"
     sensitive: true
     description: "The static signing key: an HS* SHARED SECRET, or a PEM-encoded RS*/ES* PUBLIC key. SENSITIVE — an HS* value verifies AND mints, so it is never an inline manifest value: the deploy projection binds it to valueFrom.secretKeyRef in every environment (dev: the gitignored secrets/dev/ store; staging/prod: an out-of-band Secret forge never sees). Leave it empty when jwt_jwks_url is set. Empty in both means the service can verify nothing and every credential it is shown is rejected — which is the correct closed state, not a bug."
   }];
@@ -476,7 +474,6 @@ message AppConfig {
 
   string idp_broker_token = 36 [(forge.v1.config) = {
     env_var: "IDP_BROKER_TOKEN"
-    flag: "idp-broker-token"
     sensitive: true
     description: "The login broker's service-account token. SENSITIVE and HIGHLY PRIVILEGED: it holds the issuer's login-client role, which can complete an authorization request for ANY user in the instance, so a leak is an impersonation capability rather than a data exposure. Provisioned by `auth idp-provision` as a DEDICATED account, separate from the provisioning credential, so the login path and the deploy path have independent blast radii and can be rotated separately. The deploy projection binds it to valueFrom.secretKeyRef in every environment; it must never appear in a frontend bundle or a build environment. Required only when idp_login_uri is set."
   }];
@@ -497,7 +494,6 @@ message AppConfig {
 
   string idp_login_policy = 49 [(forge.v1.config) = {
     env_var: "IDP_LOGIN_POLICY"
-    flag: "idp-login-policy"
     sensitive: true
     description: "The LOGIN_POLICY document (JSON, version 1) the login broker enforces: the signup mode (invite, open, domain) and its domains and role, the first-factor methods (password, passkey, magic_link), the passkey relying-party id, the social providers with their issuer ids, the mail state, whether a session requires a verified address, and the password complexity. Delivered by the identity converge from forge.ManagedIdentity; do not write it by hand. EMPTY keeps the legacy policy (password only; sign-up in development or with auth_self_signup). When PRESENT it is the only source, and auth_self_signup is ignored. Malformed or an unknown version also yields the legacy policy, logged at ERROR: the broker fails closed to what it served before. Marked sensitive because it names the instance's identity-provider ids."
   }];
@@ -558,7 +554,6 @@ message AppConfig {
 
   string jwt_jwks_snapshot = 44 [(forge.v1.config) = {
     env_var: "JWT_JWKS_SNAPSHOT"
-    flag: "jwt-jwks-snapshot"
     sensitive: true
     description: "The same JWKS snapshot as jwt_jwks_snapshot_file, delivered inline as a config value — the shape the secret store (a ManagedSecret / ControlPlaneSecret) carries. Marked sensitive only so it rides the secret path instead of being inlined into a manifest; the keys in it are PUBLIC. It needs `delivered_at`, because an inline value has no file mtime to date it by. If both are set the newer snapshot wins."
   }];

@@ -43,7 +43,7 @@ internal/                     # the application: components, DI, data access
     graph_gen.go              #     generated: memoized accessors g.<X>(), Build<Root>/Run<Root>, the default Server root
     routes_gen.go             #     generated: <Audience>Routes route sets, MountOptions, the data-only Inventory
   db/                         #   <entity>_orm.go (generated from schema) + <entity>_repo_ext.go (yours)
-pkg/app/                      # substrate: testing.go (per-component test harness) + migrate.go
+pkg/app/                      # CONVENTIONS.md only (the composition root is internal/app)
 pkg/config/                   # typed config projected from the config proto (below)
 pkg/middleware/               # thin owned policy file
 gen/                          # ALL generated stubs/clients/mocks + forge_descriptor/ — never hand-edit

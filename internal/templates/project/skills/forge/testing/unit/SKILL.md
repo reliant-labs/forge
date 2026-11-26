@@ -53,6 +53,8 @@ for _, tt := range tests {
 
 Dependencies are defined as interfaces in your handler contracts. Mock implementations are generated in `mock_gen.go` files — don't hand-write stubs when the contract mock already exists. Inject them during test setup, never construct real clients.
 
+Every mock records its calls. Read a method's arguments back with the generated typed accessor — `m.PublishCalls()[0].Lease.Epoch`, one named, typed field per contract parameter — rather than `m.Calls("Publish")[0].Args[1].(Lease)`, whose position silently shifts when the contract gains a parameter. `m.CallCount("Publish")` counts. The `contracts` skill has the naming rules.
+
 **Mock collaborators, never the subject.** Mock the handler's *dependencies*; the handler itself stays real. A unit test that stubs the thing it claims to test asserts only that your mock returned what you told it to.
 
 For the table-driven scaffolding around these mocks (terse construction, RPC case tables, authed contexts), use the `pkg/tdd` + `pkg/testkit` helpers rather than wiring it by hand — see `testing/patterns`.

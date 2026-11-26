@@ -512,6 +512,14 @@ describe("the published surface", () => {
         `./vite must export ${symbol}`,
       ).toBe(true);
     }
+    // forgeSiteFiles, the build plugin, lives in its own module and is
+    // re-exported: vite.config.ts imports it from ./vite like the others.
+    expect(vite).toMatch(
+      /export \{[^}]*\bforgeSiteFiles\b[^}]*\} from "\.\/vite-site-files\.js"/,
+    );
+    expect(
+      readFileSync(join(pkgDir, "dist", "vite-site-files.d.ts"), "utf8"),
+    ).toMatch(/export declare function forgeSiteFiles\b/);
     const js = readFileSync(join(pkgDir, "dist", "vite.js"), "utf8");
     expect(js.includes("./devlog.js"), "vite.js imports the browser half").toBe(
       false,

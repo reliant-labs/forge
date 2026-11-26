@@ -145,6 +145,14 @@ func classifyGeneratedFile(rel, projectDir string, svcByName map[string]codegen.
 	relSlash := filepath.ToSlash(rel)
 
 	switch {
+	// Before the handler case: a mock is also a *_gen.go under internal/handlers/.
+	case strings.HasPrefix(relSlash, "internal/handlers/mocks/") && strings.HasSuffix(relSlash, "_mock_gen.go"):
+		kind = "service-mock"
+		base := strings.TrimSuffix(filepath.Base(relSlash), "_mock_gen.go")
+		if svc, ok := svcByName[base]; ok {
+			sources = append(sources, svc.ProtoFile)
+		}
+
 	case strings.HasPrefix(relSlash, "internal/handlers/") && strings.HasSuffix(relSlash, "_gen.go"):
 		kind = "service-handler"
 		// internal/handlers/<pkg>/<file>_gen.go → look up the service
@@ -161,13 +169,6 @@ func classifyGeneratedFile(rel, projectDir string, svcByName map[string]codegen.
 					notes = append(notes, fmt.Sprintf("%d RPC(s) declared (%s)", len(rpcs), strings.Join(rpcs, ", ")))
 				}
 			}
-		}
-
-	case strings.HasPrefix(relSlash, "internal/handlers/mocks/") && strings.HasSuffix(relSlash, "_mock_gen.go"):
-		kind = "service-mock"
-		base := strings.TrimSuffix(filepath.Base(relSlash), "_mock_gen.go")
-		if svc, ok := svcByName[base]; ok {
-			sources = append(sources, svc.ProtoFile)
 		}
 
 	case strings.HasPrefix(relSlash, "gen/services/"):

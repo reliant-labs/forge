@@ -747,6 +747,43 @@ today. They switch to `forgeDevLog()` once the runtime floor forge scaffolds
 includes a release that ships it. A project that has that file can keep it. To
 switch, delete the file and use `forgeDevLog()` in its place.
 
+## robots.txt and sitemap.xml at build time (`/vite`)
+
+A sitemap lists absolute URLs, and robots.txt's `Sitemap:` line must be
+absolute too, so neither can be a static file: the origin is the env's
+`env_vars.SITE_URL`. `forgeSiteFiles()` writes both into the build output
+after `vite build` has written it:
+
+```ts
+// vite.config.ts
+import { forgeSiteFiles } from "@reliantlabs/forge-web-runtime/vite";
+plugins: [
+  react(),
+  forgeSiteFiles({
+    siteUrl: process.env.SITE_URL, // e.g. https://example.com
+    routes: ["/pricing"], // client-side routes with no .html file of their own
+    exclude: ["/thanks", "/admin/*"], // exact paths, or prefixes ending in *
+    robots: { disallow: ["/admin/"] },
+  }),
+];
+```
+
+- `robots.txt` is `User-agent: *`, `Allow: /`, a `Disallow:` per entry and
+  `Sitemap: <siteUrl>/sitemap.xml`.
+- `sitemap.xml` lists every `.html` file of the output (`about.html` is
+  `/about`, `blog/index.html` is `/blog/`) plus `routes`, minus `exclude`.
+  `404.html` and Search Console verification files are never listed.
+- Every path is under Vite's `base`. A `siteUrl` that already ends with the
+  base path is not doubled. Crawlers read robots.txt only at a host's root,
+  so under a base it is written but only the sitemap is useful.
+- A file the app ships in `public/` is never overwritten. If the app's own
+  robots.txt has no `Sitemap:` line, the build warns with the line to add.
+- An empty or unset `siteUrl` writes robots.txt with no `Sitemap:` line and no
+  sitemap (a relative sitemap URL is invalid), and the build warns with the
+  fix: set `env_vars.SITE_URL` on the frontend in `deploy/kcl/<env>/main.k`.
+  So `process.env.SITE_URL` is safe in a build that has none yet.
+- It runs only for the client build. Node builtins only, no new dependency.
+
 ## The DOM-free interceptors entry point
 
 ```ts

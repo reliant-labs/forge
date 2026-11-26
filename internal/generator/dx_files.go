@@ -965,7 +965,7 @@ go run ./cmd db migrate up      # apply all pending migrations
 go run ./cmd db migrate status  # print current version / dirty flag
 ` + "```" + `
 
-All subcommands read ` + "`DATABASE_URL`" + ` (or ` + "`--database-url`" + `) from the
+All subcommands read ` + "`DATABASE_URL`" + ` from the
 standard project config.
 
 ## Seeds

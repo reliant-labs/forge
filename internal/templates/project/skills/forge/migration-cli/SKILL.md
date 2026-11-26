@@ -56,7 +56,7 @@ For an admin / inspector CLI that hosts its own child subcommands (e.g. `<binary
 
 ## Pure-utility packages — three options
 
-For packages like `naming`, `validate`, format helpers — pure functions on no state — `forge package new` is overkill. The contract+mock generation has no test seam to mock when the package has no I/O, no time, no randomness, no external state.
+For packages like `naming`, `validate`, format helpers — pure functions on no state — `forge scaffold package` is overkill. The contract+mock generation has no test seam to mock when the package has no I/O, no time, no randomness, no external state.
 
 Three honest options:
 
@@ -100,6 +100,9 @@ Run `forge generate` after every config-block or contract-bearing package port. 
 
 ## Sub-module under `pkg/`
 
+Publishing a Go SDK that imports generated types or clients? Load
+`migration-cli/go-sdk` for the `gen/` module tag and the clean-consumer check.
+
 `pkg/` is ONLY for code with real external importers you will support as public API. No external importer ⇒ keep it in `internal/`, not `pkg/`. Carve out a `pkg/` sub-module (its own `pkg/go.mod`) only when you have **runtime libraries** downstream consumers should import without pulling in your CLI / build-tool dep graph (Cobra, codegen libs, Delve, etc.). Symptoms:
 
 - Tooling deps bleeding into `go.sum` of importers.
@@ -135,7 +138,7 @@ $(go env GOPATH)/bin/<name>-next --help    # smoke
 - App code lives under `internal/`. `pkg/` is only for code with real external importers.
 - `contract.go` is optional for a trivial CLI; the config/logger/shutdown paved path is not.
 - Use `forge scaffold binary <name>` for second binaries (real owned Cobra subcommands; see `binaries`). The scaffolded command also hosts child subcommands via `<name>Cmd.AddCommand(...)`.
-- For pure-utility packages, pick option (A), (B), or (C) explicitly. Don't blanket-apply `forge package new`.
+- For pure-utility packages, pick option (A), (B), or (C) explicitly. Don't blanket-apply `forge scaffold package`.
 - `pkg/` sub-module: workspace `use` OR `replace`, not both.
 
 ## When this skill is not enough

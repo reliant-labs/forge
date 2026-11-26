@@ -99,6 +99,10 @@ var targetedPackageLanes = map[string]bool{"contract": true, "exported-vars": tr
 type lintScope struct {
 	root  string
 	paths []string // project-relative, slash-separated, cleaned, sorted
+	// companions are the other halves of the services paths reach, whose
+	// findings the run reports too, without running or fixing anything
+	// there (lint_scope_service.go).
+	companions []string
 }
 
 // parseLintScope validates the --scope values. Each must exist and lie
@@ -146,6 +150,7 @@ func parseLintScope(root string, raw []string) (*lintScope, error) {
 			"pass a project-relative path, e.g. --scope internal/handlers/jobs")
 	}
 	sort.Strings(s.paths)
+	s.companions = serviceCompanions(root, s.paths)
 	return s, nil
 }
 
@@ -232,10 +237,11 @@ func (s *lintScope) reachesAnyDir(dirs []string) bool {
 	return false
 }
 
-// filter keeps the findings a scoped run reports: those under the scope,
-// plus those with no file at all (unattributable, so never hidden) — except
-// a raw line that belongs to an anchored finding (its source excerpt, caret
-// or run summary: lintJSONFinding.under), which goes where its anchor goes.
+// filter keeps the findings a scoped run reports: those under the scope or
+// the other half of a service it reaches (reports), plus those with no file
+// at all (unattributable, so never hidden) — except a raw line that belongs
+// to an anchored finding (its source excerpt, caret or run summary:
+// lintJSONFinding.under), which goes where its anchor goes.
 //
 // Without that exception an out-of-scope golangci-lint issue was dropped
 // while the lines printed beneath it were kept: a scoped `forge lint --quiet`
@@ -249,11 +255,11 @@ func (s *lintScope) filter(fs []lintJSONFinding) []lintJSONFinding {
 	for _, f := range fs {
 		switch {
 		case f.File != "":
-			if s.contains(f.File) {
+			if s.reports(f.File) {
 				out = append(out, f)
 			}
 		case f.under != "":
-			if s.contains(f.under) {
+			if s.reports(f.under) {
 				out = append(out, f)
 			}
 		default:
@@ -297,6 +303,11 @@ type lintStepOutcome struct {
 	findings  []lintJSONFinding
 	// gated reports that this lane fails the build.
 	gated bool
+	// outside counts the error findings --scope dropped: the lane ran and
+	// found them, in files outside the slice. They do not fail a scoped
+	// run, and the verdict says they exist, because the unscoped run that
+	// gates the merge reports them.
+	outside int
 	// gap is set when the lane (or part of it) was supposed to execute
 	// and could not — the `-unavailable` rule family lint_json.go
 	// documents, graded by applyGapPolicy. Such a lane is neither "ran"
@@ -425,6 +436,7 @@ func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOu
 		fs, gated = gradeProjectLane(rc.cfg, fs, gated)
 		o.ran = true
 		o.findings, o.gated = scopeOutcome(rc.scope, fs, gated)
+		o.outside = outsideErrors(rc.scope, fs)
 		applyGapPolicy(&o, laneGates(step, rc), rc)
 		outcomes.add(o)
 	}
@@ -452,6 +464,22 @@ func scopeOutcome(scope *lintScope, fs []lintJSONFinding, gated bool) ([]lintJSO
 	}
 	kept := scope.filter(fs)
 	return kept, gated && anyErrorFinding(kept)
+}
+
+// outsideErrors counts the error findings with a file that a scoped run
+// does not report (scopeOutcome drops them). Path-less lines go where their
+// anchor goes and are not counted on their own.
+func outsideErrors(scope *lintScope, fs []lintJSONFinding) int {
+	if scope == nil {
+		return 0
+	}
+	n := 0
+	for _, f := range fs {
+		if f.Severity == lintSevError && f.File != "" && !scope.reports(f.File) {
+			n++
+		}
+	}
+	return n
 }
 
 // flattenLintOutcomes renders outcomes onto the flat --json findings list,
@@ -595,6 +623,7 @@ func collectLaneOutcome(
 	fs, gated := gradeProjectLane(cfg, report.Findings, !report.OK)
 	o.ran = true
 	o.findings, o.gated = scopeOutcome(scope, fs, gated)
+	o.outside = outsideErrors(scope, fs)
 	return o, nil
 }
 
@@ -777,6 +806,10 @@ func (r *lintRenderer) add(o lintStepOutcome) {
 			v.skipped = append(v.skipped, o.name)
 		}
 		return
+	}
+	if o.outside > 0 {
+		v.outside += o.outside
+		v.outsideLanes = append(v.outsideLanes, o.name)
 	}
 
 	var errs, warns []lintJSONFinding

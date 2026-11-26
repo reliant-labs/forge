@@ -79,23 +79,24 @@ task dev
 
 ## Task Commands
 
-| Command                           | Description                                                                                                                                          |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `task deps`                       | Install Go (and frontend) dependencies                                                                                                               |
-| `task build`                      | Build Go binaries (and frontend bundle)                                                                                                              |
-| `task test`                       | Run Go + every frontend's tests (integration/e2e excluded by build tag). This is the test suite — there is no `forge test`; CI runs this same target |
-| `task test -- ./internal/foo/...` | Scope to Go packages, or pass `go test` flags (`-- -v ./...`)                                                                                        |
-| `task test:integration`           | Run the `integration`-tagged lane                                                                                                                    |
-| `task test:e2e`                   | Run end-to-end tests (requires docker compose)                                                                                                       |
-| `task test:all`                   | Unit + frontend + integration                                                                                                                        |
-| `task coverage`                   | Emit `coverage.out` + `coverage.html`                                                                                                                |
-| `task lint`                       | Run `golangci-lint`, `buf lint`, and frontend lint                                                                                                   |
-| `task dev`                        | Start dev infra and Air hot-reload                                                                                                                   |
-| `task dev-up`                     | Bring up local dev infra with `app-debug` (Delve on :2345)                                                                                           |
-| `task dev-up-prod`                | Bring up local dev infra with the production `app` image                                                                                             |
-| `task dev-down`                   | Tear down local dev infra (`docker compose --profile '*' down`)                                                                                      |
-| `task generate`                   | Regenerate everything forge generates, with the forge `forge.yaml` pins                                                                              |
-| `task clean`                      | Clean generated files and build artifacts                                                                                                            |
+| Command                           | Description                                                                                                               |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `task deps`                       | Install Go (and frontend) dependencies                                                                                    |
+| `task build`                      | Build Go binaries (and frontend bundle)                                                                                   |
+| `task test`                       | Run Go + every frontend's tests (integration/e2e excluded by build tag). This is the test suite; CI runs this same target |
+| `task test -- ./internal/foo/...` | Scope to Go packages, or pass `go test` flags (`-- -v ./...`)                                                             |
+| `task test:integration`           | Run the `integration`-tagged lane                                                                                         |
+| `task test:e2e`                   | Run end-to-end tests (requires docker compose)                                                                            |
+| `task test:report`                | Summarise the last run: each lane's verdict and coverage                                                                  |
+| `task test:all`                   | Unit + frontend + integration                                                                                             |
+| `task coverage`                   | Emit `coverage.out` + `coverage.html`                                                                                     |
+| `task lint`                       | Run `golangci-lint`, `buf lint`, and frontend lint                                                                        |
+| `task dev`                        | Start dev infra and Air hot-reload                                                                                        |
+| `task dev-up`                     | Bring up local dev infra with `app-debug` (Delve on :2345)                                                                |
+| `task dev-up-prod`                | Bring up local dev infra with the production `app` image                                                                  |
+| `task dev-down`                   | Tear down local dev infra (`docker compose --profile '*' down`)                                                           |
+| `task generate`                   | Regenerate everything forge generates, with the forge `forge.yaml` pins                                                   |
+| `task clean`                      | Clean generated files and build artifacts                                                                                 |
 
 Run `task --list` (or just `task`) at any time to see the full set of
 automation entry points the scaffold ships with.
@@ -113,6 +114,24 @@ vars and DB:
 
 If you don't need breakpoints, `task dev-up-prod` gives you a faster
 cold start and a smaller image. `task dev-down` tears down both.
+
+## Test results and coverage
+
+`task test` records every lane it runs, with its coverage, under
+`.forge/tests/runs/` (gitignored); `task test:report` summarises the last
+run. `FORGE_TESTS=off` records nothing for one run.
+
+CI's "Report test results" step uploads the run to your project's control
+plane with no secret: its job has `id-token: write`, and forge exchanges the
+job's GitHub OIDC token for a short-lived `tests:write` token. That works once
+the Reliant GitHub App is installed on this repository and an org admin has
+linked the installation to the org in the web app's organization settings
+(Reliant cloud: https://forge.reliantlabs.io). Until then, and on a fork's pull
+request, which gets no OIDC token, the step prints one line and stays green; it
+never decides the job's result. To upload with a token instead, store one with
+`tests:write` (or `deploy:write`) as the secret `FORGE_CONTROL_PLANE_TOKEN` and
+pass it in the step's `env:`: the secret, if set, overrides OIDC.
+`tests.upload: never` in `forge.yaml` turns upload off.
 
 ## End-to-end tests
 

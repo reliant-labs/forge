@@ -280,6 +280,25 @@ export const result = [createCall, createQueryHook];
 	}
 }
 
+// A hook file that resolves its client from the query's scope (forge#2726)
+// against a runtime from before /transport-scope existed: the entry point is
+// absent from its exports map, so scopedClient is named, and nothing the
+// runtime does ship is.
+func TestWebRuntimeContentNotices_NameScopedClientOnARuntimeWithoutTransportScope(t *testing.T) {
+	project := t.TempDir()
+	fe := filepath.Join("frontends", "web")
+	writeFile(t, filepath.Join(project, fe, "src", "hooks", "item-service-hooks_gen.ts"), generatedTSHeader+`
+import { createQueryHook } from "@reliantlabs/forge-web-runtime/service-hooks";
+import { scopedClient } from "@reliantlabs/forge-web-runtime/transport-scope";
+export const result = [createQueryHook, scopedClient];
+`)
+	installRuntime(t, filepath.Join(project, fe, "node_modules"), "0.13.21")
+	n := WebRuntimeContentNotices(project, fe)
+	if len(n) != 1 || !strings.Contains(n[0], "scopedClient (src/hooks/item-service-hooks_gen.ts)") || strings.Contains(n[0], "createQueryHook") {
+		t.Fatalf("want a notice naming only scopedClient; got %q", n)
+	}
+}
+
 func TestWebRuntimeContentNotices_SilentWhenShippedOrNotJudgeable(t *testing.T) {
 	fe := filepath.Join("frontends", "web")
 	t.Run("ships everything, hoisted to the project root", func(t *testing.T) {

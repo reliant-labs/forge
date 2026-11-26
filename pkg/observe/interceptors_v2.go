@@ -344,6 +344,7 @@ func (d Deadline) InterceptorV2() connectv2.ServerInterceptor {
 				return markDeadline(ctx, next(ctx, spec, stream))
 			}
 			stop := d.watch(ctx, spec.Procedure)
+			defer stop(errHandlerPanicked) // see errHandlerPanicked
 			err := next(ctx, spec, stream)
 			stop(err)
 			return markDeadline(ctx, err)

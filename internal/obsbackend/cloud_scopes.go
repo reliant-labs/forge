@@ -23,8 +23,9 @@ type ScopeDeclarer interface {
 // authutil.Service.RequireObsRead (observability, activity, telemetry status,
 // alerting's gate for obsRead) or obsread's admitMachine without Triage
 // (issues, rum), both obs:read; dashboard reads need obs:read
-// (dashboard.authorizeMachine); UpdateIssueStatus, AddIssueComment and
-// AssignIssue admit with Triage (issues admitWrite), which is obs:triage.
+// (dashboard.authorizeMachine); UpdateIssueStatus, AddIssueComment,
+// UpdateIssueComment, DeleteIssueComment and AssignIssue admit with Triage
+// (issues admitWrite), which is obs:triage.
 func DeclareCloudScopes(c ScopeDeclarer) {
 	c.DeclareScope("obs:read",
 		procSearchLogs, procListTraces, procGetTrace, procListMetrics, procQueryPanel,
@@ -36,5 +37,5 @@ func DeclareCloudScopes(c ScopeDeclarer) {
 		procListDashboards, procGetDashboard,
 		procExportPGOProfile, procGetFlamegraph,
 	)
-	c.DeclareScope("obs:triage", procUpdateIssueStatus, procAddIssueComment, procAssignIssue)
+	c.DeclareScope("obs:triage", procUpdateIssueStatus, procAddIssueComment, procUpdateIssueComment, procDeleteIssueComment, procAssignIssue)
 }

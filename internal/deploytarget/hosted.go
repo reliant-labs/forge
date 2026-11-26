@@ -1384,6 +1384,10 @@ type HostedProvider struct {
 	// recorded bundle applied; the wait is the longer of it and
 	// Rollout.Timeout. Zero means HostedApplyBudget.
 	ApplyBudget time.Duration
+	// FirstDeployFailureGrace is how long a workload of an env the platform
+	// has never applied a revision to may report a failure before the
+	// deploy ends as failed. Zero means HostedFirstDeployFailureGrace.
+	FirstDeployFailureGrace time.Duration
 	// OnRollout, when set, receives one outcome per published workload.
 	OnRollout func(cluster.RolloutObservation)
 	// OnEnvironment, when set, receives the control plane's environment id
@@ -1583,11 +1587,7 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 	// Charging that to the readiness budget would spend the (default 5m)
 	// timeout before any workload was looked at, so the apply budget is at
 	// least HostedApplyBudget.
-	floor := p.ApplyBudget
-	if floor <= 0 {
-		floor = HostedApplyBudget
-	}
-	applyBudget := max(policy.Timeout, floor)
+	applyBudget := p.applyWaitBudget(policy.Timeout)
 	applyDeadline := time.Now().Add(applyBudget)
 	for {
 		if !applied {
@@ -1612,6 +1612,9 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 				deadline = time.Now().Add(policy.Timeout)
 			default:
 				progress.announce(state, bundleDigest)
+				if ferr := p.firstDeployFailure(ctx, c, envID, state, plan, &progress, time.Now()); ferr != nil {
+					return p.firstDeployFailed(envName, ferr, plan, policy.Mode)
+				}
 				progress.heartbeat(time.Now(), state, bundleDigest, applyBudget)
 				if time.Now().After(applyDeadline) || ctx.Err() != nil {
 					return p.applyNotLanded(envName, promotionID, bundleDigest, state, time.Since(progress.started).Round(time.Second), plan, policy.Mode)
@@ -1706,6 +1709,16 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 	}
 }
 
+// applyWaitBudget allows the platform's apply phase at least its own budget,
+// independently of the readiness timeout.
+func (p HostedProvider) applyWaitBudget(readinessTimeout time.Duration) time.Duration {
+	floor := p.ApplyBudget
+	if floor <= 0 {
+		floor = HostedApplyBudget
+	}
+	return max(readinessTimeout, floor)
+}
+
 // rolloutSuperseded ends a wait whose promotion was replaced by a newer one:
 // every workload is observed NOT WAITED, and the error is returned, or only
 // printed under --rollout warn.
@@ -1754,6 +1767,9 @@ func (p HostedProvider) readinessTimedOut(envName string, last map[string]string
 // periodic "still waiting" line that shows a long apply is still being watched.
 type applyProgress struct {
 	current, failure string
+	// workloadFailures is, per workload of a first deploy, the failure it
+	// currently reports and since when (see firstDeployFailure).
+	workloadFailures map[string]workloadFailure
 	// started is when the apply wait began; lastBeat when the last "still
 	// waiting" line was printed (or the wait began).
 	started, lastBeat time.Time
@@ -1933,16 +1949,23 @@ func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID stri
 }
 
 // printHostedURLs is the deploy summary's answer to "where is it?": the
-// platform URL of every workload that has one, in plan order. Printed once,
+// platform URL of every workload that has one, in plan order, then the
+// same-origin API address of each site the platform serves its API on
+// (planSiteAPIURLs) — the line `forge env status` prints too. Printed once,
 // when the deploy is ready — a URL printed mid-rollout may still serve the
 // previous release.
 func printHostedURLs(plan []hostedPlanItem, published map[string]hostedPublished) {
+	fmt.Print(formatHostedDeployURLs(plan, published))
+}
+
+// formatHostedDeployURLs is printHostedURLs' text.
+func formatHostedDeployURLs(plan []hostedPlanItem, published map[string]hostedPublished) string {
 	ws := make([]HostedWorkloadStatus, 0, len(plan))
 	for _, item := range plan {
 		pub := published[item.Name]
 		ws = append(ws, HostedWorkloadStatus{Name: item.Name, URL: pub.URL, ServingPath: pub.ServingPath})
 	}
-	fmt.Print(FormatHostedURLs("  ", ws))
+	return FormatHostedURLs("  ", ws) + FormatSiteAPIURLs("  ", planSiteAPIURLs(plan, published))
 }
 
 // FormatHostedURLs renders one "url <name>: <url>" line per workload that has

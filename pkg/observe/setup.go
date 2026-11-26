@@ -84,6 +84,11 @@ type Config struct {
 	// collection takes a new one. Zero means 15s; the shortest is 1s.
 	// FORGE_OBSERVE_RESOURCE_INTERVAL wins over it.
 	ResourceMetricsInterval time.Duration
+
+	// DBSpans selects which database client spans are exported. The zero
+	// value exports every one. FORGE_OBSERVE_DB_SPAN_MIN_DURATION and
+	// FORGE_OBSERVE_DB_SPAN_OMIT_TX win over it. See db_spans.go.
+	DBSpans DBSpans
 }
 
 // Setup initializes OpenTelemetry from Config plus the standard OTEL_*
@@ -158,7 +163,13 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.H
 		if err != nil {
 			return fail(fmt.Errorf("creating trace exporter: %w", err))
 		}
-		tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res),
+		dbSpans, warns := resolveDBSpans(cfg)
+		for _, w := range warns {
+			slog.WarnContext(ctx, "observe: database span policy", "error", w)
+		}
+		tp := sdktrace.NewTracerProvider(
+			sdktrace.WithSpanProcessor(newDBSpanFilter(sdktrace.NewBatchSpanProcessor(exp), dbSpans)),
+			sdktrace.WithResource(res),
 			sdktrace.WithSampler(genai.KeepSampler(envSampler())))
 		otel.SetTracerProvider(tp)
 		shutdowns = append(shutdowns, tp.Shutdown)

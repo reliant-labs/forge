@@ -111,9 +111,11 @@ message AppConfig {
   string database_url = 3 [(forge.v1.config) = {
     env_var: "DATABASE_URL"
     flag: "database-url"
+{{- if not .DatabaseOptional}}
     required: true
+{{- end}}
     sensitive: true
-    description: "PostgreSQL connection string. SENSITIVE — it embeds the database password, so it is NEVER an inline value in a rendered manifest: the deploy projection binds it to valueFrom.secretKeyRef (the project's <name>-secrets Secret, key database_url) in every environment. Values come from the env's secret provider (dev: the gitignored secrets/dev/ store, from which forge renders the Secret for local clusters; staging/prod: an out-of-band Secret forge never sees). Required: the server refuses to start without it (config.checkRequired fires before bind)."
+    description: "PostgreSQL connection string.{{if .DatabaseOptional}} OPTIONAL: this project was created with no database (orm and migrations disabled), so the server starts without one; mark it required here when you add one.{{end}} SENSITIVE — it embeds the database password, so it is NEVER an inline value in a rendered manifest: the deploy projection binds it to valueFrom.secretKeyRef (the project's <name>-secrets Secret, key database_url) in every environment. Values come from the env's secret provider (dev: the gitignored secrets/dev/ store, from which forge renders the Secret for local clusters; staging/prod: an out-of-band Secret forge never sees). {{if not .DatabaseOptional}}Required: the server refuses to start without it (config.checkRequired fires before bind).{{end}}"
   }];
 
   string cors_origins = 4 [(forge.v1.config) = {

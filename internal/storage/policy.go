@@ -406,6 +406,24 @@ func (e *ReserveError) Error() string {
 	return fmt.Sprintf("host disk %s has %.1f GiB free, below the %d GiB reserve; run 'forge storage status' and 'forge storage gc --apply' before building (persistent volumes are never automatically deleted)", e.Path, float64(e.Available)/float64(GiB), e.ReserveGiB)
 }
 
+// LightBuildReserveGiB caps the host reserve for a LIGHT build: one that runs
+// no go build and no image build (a static site's `npm run build`, which
+// writes megabytes). The policy's HostReserveGiB is sized for the heavy
+// lanes, which fill the Go build cache and docker's layer store; holding a
+// static-site deploy to it refused a release that needed megabytes on a
+// shared host with 58 GiB free (obs 4dea8e9e). A light build still needs room
+// for node_modules and its output, so the floor is not zero.
+const LightBuildReserveGiB = 5
+
+// LightBuild is the policy a light build is admitted under: HostReserveGiB
+// lowered to LightBuildReserveGiB when it is larger, everything else as is.
+func (p Policy) LightBuild() Policy {
+	if p.HostReserveGiB > LightBuildReserveGiB {
+		p.HostReserveGiB = LightBuildReserveGiB
+	}
+	return p
+}
+
 // CheckSpace refuses builds that would start below the physical host reserve.
 // A shortfall is returned as a *ReserveError; any other error means a disk
 // could not be measured at all.

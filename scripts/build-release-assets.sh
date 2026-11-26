@@ -75,7 +75,8 @@ export COPYFILE_DISABLE=1
 # Every step propagates its own failure (`|| return`): build_one runs as the left
 # operand of `&&` below, where bash disables `set -e` for the whole function, so
 # without them a failed go build, cp or chmod is ignored whenever tar succeeds.
-# Where a release's forge sends its anonymous Events (forge_cli_first_run):
+# Where a release's forge sends its anonymous Events (forge_cli_first_run,
+# forge_claimable_refused):
 # the platform's keyed ingest with the forge CLI's NATIVE key, declared by
 # control-plane (deploy/kcl/lib/env.k forge_cli_ingest_keys) for the
 # Reliant-owned telemetry org. Publishable, like a browser key: it can only

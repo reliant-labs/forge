@@ -77,6 +77,90 @@ func TestCloudTokenCreate_ExpiryIsSent(t *testing.T) {
 	}
 }
 
+// --bind-env reaches the wire as CreateTokenRequest.resource, in the
+// protojson shape control-plane's ResourceBinding decodes; without it no
+// resource is sent, so an older control plane sees the request it accepts.
+func TestCloudTokenCreate_BindEnvSendsTheResource(t *testing.T) {
+	t.Parallel()
+	caller := &recordingCaller{resp: `{"token":{"id":"tok_1","name":"app","scopes":["changes:read"],"resource":{"kind":"environment","id":"env-123"}},"secret":"x"}`}
+	var out bytes.Buffer
+	if err := runCloudTokenCreateBound(context.Background(), caller, "app", []string{"changes:read"}, 0, " env-123 ", false, &out); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(caller.req["resource"])
+	if string(raw) != `{"id":"env-123","kind":"environment"}` {
+		t.Errorf("resource = %s, want {\"kind\":\"environment\",\"id\":\"env-123\"}", raw)
+	}
+	if !strings.Contains(out.String(), "Bound to environment env-123") {
+		t.Errorf("output does not name the binding:\n%s", out.String())
+	}
+
+	unbound := &recordingCaller{resp: `{"token":{"id":"tok_2"},"secret":"x"}`}
+	if err := runCloudTokenCreate(context.Background(), unbound, "ci", []string{"deploy:write"}, 0, true, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := unbound.req["resource"]; has {
+		t.Error("no --bind-env must send no resource")
+	}
+}
+
+// Both output modes must withhold success and the secret unless the server
+// confirms the exact binding, including when an old server ignores resource.
+func TestCloudTokenCreate_BindEnvRequiresReturnedBinding(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, resource string
+		matches        bool
+	}{
+		{name: "absent", resource: `null`},
+		{name: "wrong kind", resource: `{"kind":"project","id":"env-123"}`},
+		{name: "wrong id", resource: `{"kind":"environment","id":"env-other"}`},
+		{name: "matching", resource: `{"kind":"environment","id":"env-123"}`, matches: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, jsonOut := range []bool{false, true} {
+				caller := &recordingCaller{resp: `{"token":{"id":"tok_1","resource":` + tc.resource + `},"secret":"rlat_private"}`}
+				var out bytes.Buffer
+				err := runCloudTokenCreateBound(context.Background(), caller, "app", []string{"changes:read"}, 0, " env-123 ", jsonOut, &out)
+				if tc.matches {
+					if err != nil || !strings.Contains(out.String(), "rlat_private") {
+						t.Fatalf("json=%v: matching binding: err=%v, output=%s", jsonOut, err, &out)
+					}
+					if jsonOut {
+						var doc cloudTokenCreateDocument
+						if err := json.Unmarshal(out.Bytes(), &doc); err != nil || doc.Token.Resource == nil || doc.Token.Resource.ID != "env-123" {
+							t.Fatalf("returned binding missing from JSON: %s (%v)", &out, err)
+						}
+					}
+					continue
+				}
+				if err == nil || !strings.Contains(err.Error(), "Revoke token \"tok_1\"") || !strings.Contains(err.Error(), "resource bindings") {
+					t.Fatalf("json=%v: expected actionable binding refusal, got %v", jsonOut, err)
+				}
+				if out.Len() != 0 || strings.Contains(err.Error(), "rlat_private") {
+					t.Fatalf("json=%v: refusal exposed output or secret", jsonOut)
+				}
+			}
+		})
+	}
+}
+
+// A scope that cannot ride an environment binding is refused before the
+// round trip, naming it; one that can passes, and no flag checks nothing.
+func TestCloudTokenCreate_BindEnvChecksScopes(t *testing.T) {
+	t.Parallel()
+	if err := checkEnvBinding("app", []string{"changes:read", "obs:read"}, "env-1"); err != nil {
+		t.Errorf("env-bindable scopes refused: %v", err)
+	}
+	if err := checkEnvBinding("ci", []string{"deploy:write"}, ""); err != nil {
+		t.Errorf("no --bind-env refused: %v", err)
+	}
+	err := checkEnvBinding("ci", []string{"changes:read", "deploy:write"}, "env-1")
+	if err == nil || !strings.Contains(err.Error(), "--bind-env") || !strings.Contains(err.Error(), "deploy:write") {
+		t.Errorf("deploy:write bound to an environment: err = %v", err)
+	}
+}
+
 // A server refusal (e.g. a machine credential, which the control plane will
 // not let mint a token) surfaces as the command's error, never as success.
 func TestCloudTokenCreate_ServerRefusalIsAnError(t *testing.T) {

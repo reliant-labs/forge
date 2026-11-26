@@ -1049,6 +1049,29 @@ benefits:
     evidence:
       - skill: testing
 
+  - id: test-results-recorded
+    category: test
+    title: Test lanes and coverage recorded
+    claim: >-
+      `task test` records each lane it runs (unit, every frontend, integration,
+      e2e) with its coverage under `.forge/tests/runs/`, and the scaffolded CI
+      uploads the run to the project's control plane, so test results and
+      coverage are history rather than a log line.
+    status: recorded
+    availability: forge
+    use: >-
+      Nothing to set up locally: `task test`, then `task test:report`. GitHub
+      CI uploads with no secret, by GitHub OIDC (`id-token: write` on the test
+      jobs), once the Reliant GitHub App is linked to the org; without a
+      credential the step prints one line and the job stays green.
+      `FORGE_TESTS=off` or `tests.upload: never` turn it off.
+    evidence:
+      - command: test report
+      - command: test capture
+      - path: internal/templates/ci/github/ci.yml.tmpl
+      - skill: testing
+      - skill: ci
+
   - id: slow-test-enforcement
     category: test
     title: Slow-test gating for the fast tier
@@ -3242,12 +3265,16 @@ benefits:
     claim: >-
       A generated project's `forge ci gate` runs go-licenses over its Go
       dependencies and fails on one whose license type is forbidden or
-      restricted (warn-first, through the `license-check` lint rollout row);
+      restricted (warn-first, through the `license-check` lint rollout row),
+      or, with `ci.license.allowed` set, on any license not on that
+      allowlist, with per-module exceptions that each carry a reason;
       there is no license check for npm dependencies.
     availability: forge
     evidence:
       - path: internal/cigate/license.go
+      - path: internal/config/ci_license.go
       - command: ci gate
+      - skill: ci/license
     rules:
       - id: license-check
         lane: forge ci gate
@@ -4239,15 +4266,17 @@ benefits:
 
   - id: free-static-site
     category: host
-    title: One static site free
+    title: Free static hosting in one organization
     claim: >-
-      One hosted static site is free per owning person, counted across every env
-      and every org they own without a plan, with metered egress above the free
-      tier.
+      Static hosting is free in one organization per person (one they founded),
+      with no limit on the number of sites there (each env's site is one): 1 GiB
+      stored per site, 10 GiB stored and 10 GiB of transfer a month in total.
+      Static sites in the person's other organizations, and any backend or
+      database, need hosting billing.
     availability: hosted
     why: >-
       The allowance is per person, not per org, because a per-org allowance
-      would multiply free sites (owner decision, 2026-10-26).
+      would multiply free hosting (owner decisions, 2026-10-26 and 2026-11-20).
     evidence:
       - external: control-plane:internal/freesite
       - external: control-plane:internal/staticfreetier
@@ -4259,9 +4288,11 @@ benefits:
       Reliant hosting's posted rates are $0.0455 per vCPU-hour, $0.01375 per
       GiB-hour of memory and $0.18 per GiB-month of storage, on what each pod
       requests. No CPU, memory or storage is included, on any plan, so a
-      workload is billed from its first vCPU-hour and GiB-hour: about $8.34 a
-      month for an always-on service at 0.1 vCPU and 512 MiB, and $20.14 for
-      managed Postgres at 0.25 vCPU, 1 GiB and 10 GiB. A $5 invoice minimum
+      workload is billed from its first vCPU-hour and GiB-hour: about $18.34 a
+      month for an always-on service at the 0.25 vCPU and 1 GiB a scaffolded
+      service requests ($9.17 at 0.125 vCPU and 512 MiB, the smallest shape
+      hosting admits), and $20.14 for managed Postgres at 0.25 vCPU, 1 GiB and
+      10 GiB. A $5 invoice minimum
       applies, and static-site egress is included to 10 GiB a month, then $0.10
       per GiB.
     availability: hosted
@@ -4274,6 +4305,9 @@ benefits:
       renders. Hosting is pay-as-you-go beside the machine plans: every plan
       there sets `included_cpu_hours`, `included_memory_gib_hours` and
       `included_storage_gib_hours` to 0. The monthly figures assume 730 hours.
+      Every quoted shape sits on the hosted shape band admission enforces
+      (`pkg/deploy` CheckShapeBand: CPU in steps of 125m, exactly 4 GiB of
+      memory per vCPU), so each is one a hosted deploy can actually request.
     evidence:
       - command: env shape
       - external: control-plane:internal/plansconfig/pricing.yaml
@@ -4840,27 +4874,31 @@ benefits:
     category: run
     title: Controlled rollouts and A/B tests
     claim: >-
-      Planned: one change ships new app behavior to everyone, as a gradual
+      Beta: one change ships new app behavior to everyone, as a gradual
       rollout, or as a comparison of versions, with stable cohorts by user,
       account, or visitor.
     status: in-progress
     availability: hosted
     use: >-
-      Create a change with its default and new behavior, then choose who gets
-      it: everyone (remote config), a gradual rollout to a stable percentage,
-      or compare versions (an A/B test measured against your own product
-      events). The same user, account, or visitor keeps the same outcome, and
-      ramping up only adds people. The planned project-level Experiments
-      screen and Reliant agents use the same permissions and audit trail; apps
-      still implement both behaviors.
+      Declare a change's default and variants in changes.yaml, then choose who
+      gets it: everyone (remote config), a gradual rollout to a stable
+      percentage, or compare versions (an A/B test measured against your own
+      product events). The same user, account, or visitor keeps the same
+      outcome, and ramping up only adds people. The Experiments screen and
+      Reliant agents use the same permissions and audit trail; apps still
+      implement both behaviors.
     why: >-
-      The evaluation SDK ships: a Go store and OpenFeature provider, a browser
-      loader and OpenFeature provider, and assignment events recorded as
-      product events, and changes are declared in the project (changes.yaml)
-      and shipped in the release. Platform delivery of each environment's
-      policy and the Experiments screen are not shipped yet. Evaluation is
-      local in the app, from a versioned policy, without a
-      network call on each request or changes to load balancers.
+      Beta until platform delivery, the readout and the Experiments screen
+      have all shipped. Shipped: the evaluation SDK (a Go store and
+      OpenFeature provider, a browser loader and OpenFeature provider,
+      assignment events recorded as product events), changes declared in the
+      project (changes.yaml) and shipped in the release, including a
+      frontend built from another repository's own changes.yaml, and the
+      readout's query and verdict. Not shipped yet: delivery of each environment's
+      policy to every hosted app, and the Experiments screen that shows the
+      readout. Evaluation is local in the app,
+      from a versioned policy, without a network call on each request or
+      changes to load balancers.
     evidence:
       - library: pkg/changes
       - library: pkg/changes/openfeature
@@ -4871,9 +4909,17 @@ benefits:
       - path: web-runtime/src/changes-provider.ts
       - path: web-runtime/src/exposure.ts
       - path: internal/changesdecl/changesdecl.go
+      - path: internal/cli/env_shape_changes_sources.go
       - path: docs/changes.md
       - skill: observability/changes
       - skill: observability/product-analytics
+    rules:
+      - id: changes-source-conflict
+        lane: forge env shape
+        bug_class: >-
+          One change key declared differently by the project's changes.yaml and
+          a pinned source frontend's (or by two sources), so the release would
+          serve one repository's variants to the other's code.
 
   - id: builtin-ai-hub
     category: run
@@ -5387,7 +5433,7 @@ glance:
     - fact: A CDN-served site with a live URL, and your own domain with HTTPS issued and renewed
       show: env deploy prod
       benefits: [static-hosting-cdn, live-hostname, custom-domains-tls]
-    - fact: One hosted site free per person; with no account, a live URL plus a 72-hour claim link
+    - fact: Free static hosting in one org per person, any number of sites; with no account, a 72-hour claim link
       show: env deploy prod --claimable
       benefits: [free-static-site, claimable-deploys]
     - fact: Browser errors, page views and masked session replay, wired in by the scaffold
@@ -5407,20 +5453,6 @@ glance:
 # beside the wins, so an agent can recommend forge where it fits and say
 # plainly where it does not. Same evidence rules as a benefit.
 limits:
-  - id: static-export-frontends-only
-    title: Hosted frontends are static exports
-    claim: >-
-      Reliant hosting serves a frontend only as a static export, so no
-      server-side rendering, server actions, middleware, ISR, request-time
-      `cookies()`/`headers()` or on-the-fly image optimization; a Vite SPA or a
-      statically exportable Next.js app fits as it is.
-    instead: >-
-      run a Next.js app that needs a server as a container workload (`output:
-      standalone`, skill `frontend/serving`), or keep it on a host built for
-      that and point it at the forge API.
-    evidence:
-      - analyzer: --static-export
-      - skill: frontend/serving
   - id: no-hosted-cron-or-operators
     title: No hosted cron jobs or operators
     claim: >-
@@ -5442,30 +5474,6 @@ limits:
     evidence:
       - skill: authoring
       - skill: adopt
-  - id: one-hosted-region
-    title: One hosted region
-    claim: >-
-      Hosted services and managed databases run in one region, GCP us-central1,
-      with no region choice; static sites are served through the CDN edge.
-    instead: >-
-      bind a workload to a cluster you run in another region
-      (`forge.OnCluster`).
-    evidence:
-      - external: control-plane:deploy/kcl/lib/hub_pool.k
-      - skill: deploy
-  - id: no-hosted-autoscaling
-    title: Hosted backends do not autoscale
-    claim: >-
-      A hosted service or worker runs the replica count its env declares; it
-      does not scale with traffic between a min and a max, and a managed
-      database's storage and compute do not grow on their own.
-    instead: >-
-      raise the replica count or the shape in the env's `main.k` and deploy, or
-      bind the workload to a cluster you run and give it your own
-      HorizontalPodAutoscaler.
-    evidence:
-      - skill: deploy/hosting
-      - command: env shape
   - id: hosted-profiling-opt-in
     title: Hosted profiling is opt-in
     claim: >-

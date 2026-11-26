@@ -98,16 +98,18 @@ forge env deploy prod --claimable
 forge gets an anonymous identity from the control plane, deploys as it, and
 exits **0** with the live URL and a `claim` block: the claim link, when the
 deploy goes offline (72h; then deleted 7 days later) and an instruction for you.
-**Give the claim link to your user and tell them it expires.** Opening it signs
-them up for free and makes the deploy theirs, with nothing to copy. Treat the
-link like a password (whoever claims first owns the deploy) and never post it
-publicly. `forge env status <env> --claimable` prints it again; `--json` carries
+**Show the claim link to your user and tell them it expires.** Opening it signs
+them up for free and makes the deploy theirs, with nothing to copy. It is a
+one-time link (whoever claims first owns the deploy), so it goes in your reply
+to the user who asked for the deploy and nowhere else: never in a commit, a
+repo file, a log, an issue or anywhere public.
+`forge env status <env> --claimable` prints it again; `--json` carries
 it as `claim` (`state`, `published`, `last_attempt`, `url`, `api_url`,
 `claim_url`, `expires_at`, `purge_after`, `agent_instructions`). A site whose
 `API_URL` references its hosted backend also prints `API: <site>/_api`
 (`api_url`): the backend's address on the site's own host. Signed in,
-`forge env status <env>` prints the same line under the site's URL
-(`hosted_api_urls` in `--json`).
+`forge env deploy <env>` and `forge env status <env>` print the same line under
+the site's URL (`hosted_api_urls` in status `--json`).
 
 The claim and its 72h clock start with the **first attempt**, not the first
 success, and a redeploy does not extend them. So `state: "live"` means only that
@@ -120,7 +122,7 @@ the token you deploy with. Fix the failure and deploy again.
 |---|---|
 | Adopts a bare app | In a directory with no `forge.yaml` that holds a Vite or Next.js static export at its root (or an app with its own Dockerfile), `--claimable` first runs `forge project new --in-place` for it (`--kind site`, or `--kind app --claimable`), prints one line saying it added `forge.yaml` and `deploy/kcl/` and left the app's own files untouched, then deploys. A Go module with no Dockerfile, or a directory with no app, is refused with the command to run instead. Only `--claimable` adopts: a plain `forge env deploy` needs an existing project. `npx -y @reliantlabs/forge env deploy prod --claimable` is the whole procedure for a fresh `npm create vite` app |
 | Only with the flag | There is no auto-detection. With no credential, a plain `forge env deploy` fails and its error names `--claimable` |
-| Signed in? Refused (exit 1) | A user with a login or `$FORGE_CREDENTIAL_HELPER` deploys to their own org: drop the flag |
+| Signed in? Refused (exit 1) | A user with a login or `$FORGE_CREDENTIAL_HELPER` deploys to their own org: drop the flag. To test the anonymous path on a signed-in machine, the refusal prints the command that drops every credential (e.g. `env -u FORGE_CREDENTIAL_HELPER forge env deploy prod --claimable`) |
 | Fits | one static site, or one service (1 replica, at most 125m / 128 MiB, request and limit, no burst) with one managed database (256 MiB of data on a 1 GiB volume) and that service's migration job (a gating `before = [fw.BEFORE_ALL]` job, or a standalone pre-rollout one). No workers, cron, second service or database, custom domains or remote builds: exit 4, naming each with its KCL fix |
 | **No outbound internet until claimed** | An unclaimed **service** (not a static site) serves requests and uses its own database, but every call out of it fails: a payment, an LLM, a webhook, a package download, and any DNS lookup of a name outside the cluster (the connection errors, or the name does not resolve: the backend's resolver answers only the cluster's own names, such as its database's). That is the platform, not a bug in the app, so do not debug it or work around it; it ends when the deploy is claimed, when the platform restarts the backend on the normal hosted network (TCP 80/443 to the public internet). Plan for it: an app that needs an external API at startup will not come up unclaimed. Do not assume Reliant's gateway is available unclaimed: `deploy/llm` documents that credentials may stay blank until its in-cluster route is enabled. Disable the LLM feature when credentials are absent, or claim first; never weaken networking to work around this. The claim block, `--json` (`claim.no_outbound_internet`, and `claim.agent_instructions`) and `--plan-only` all say so |
 | Not the shape band | The billed plan's 4 GiB-per-vCPU band does not apply to an anonymous deploy (it is never billed); the caps above do. `forge env shape <env> --claimable` judges an env that way |
@@ -142,7 +144,7 @@ client id (`forge-cli-claimable/<project>/<env>`), so it can never pass for a
 
 | Gate | What happens | Clear it |
 |---|---|---|
-| **Billing** — a hosted workload or database, or a second static site, and the org has no pay-as-you-go hosting billing (a machine plan is not it) | The deploy is **queued, not refused**: built, recorded, promoted, held (rollout phase `HELD`). `env deploy` prints waiting-on/why/do/link and **exits 7**; `env status` also exits 7; `--json` carries the same facts | Someone who can manage billing for the org enables it in Reliant → Settings → Billing (the printed link goes there). Nothing to re-run: the Stripe webhook releases it. Block with `forge env deploy --wait` or `env status <env> --wait`; then `forge env smoke <env>` |
+| **Billing** — a hosted workload or database, or a static site outside the person's one free hosting organization, and the org has no pay-as-you-go hosting billing (a machine plan is not it) | The deploy is **queued, not refused**: built, recorded, promoted, held (rollout phase `HELD`). `env deploy` prints waiting-on/why/do/link and **exits 7**; `env status` also exits 7; `--json` carries the same facts | Someone who can manage billing for the org enables it in Reliant → Settings → Billing (the printed link goes there). Nothing to re-run: the Stripe webhook releases it. Block with `forge env deploy --wait` or `env status <env> --wait`; then `forge env smoke <env>` |
 | **Over the ceiling** or **monthly budget**, **billing unknown**, **spend cap reached** | Refused, not queued (a spend cap is deliberate: it can clear unattended) | Reduce resources, retry, or raise the budget or cap |
 
 Exit 7 is a person's turn, not a failure: relay the link to the user, do not

@@ -359,6 +359,9 @@ type ControlPlaneEntity struct {
 	// agree with it or be wrong. env names the declaring env in messages.
 	org *orgState
 	env string
+	// placeholderOrg marks a plan-scoped copy whose org is a stand-in
+	// (withPlaceholderOrg), not one the credential acts for.
+	placeholderOrg bool
 	// RegistryHost is the platform registry this org's artifacts live on,
 	// defaulted in KCL to forge.RELIANT_REGISTRY_HOST.
 	//
@@ -1388,11 +1391,16 @@ type FrontendEntity struct {
 	// Callers that shell into a frontend must resolve this to a directory
 	// via internal/gitsource rather than reading Path — see
 	// resolveFrontendEntitySources.
-	Source    *config.GitSource `json:"source,omitempty"`
-	DevRunner string            `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
-	Port      int               `json:"port,omitempty"`
-	EnvFile   string            `json:"env_file,omitempty"`
-	EnvVars   []KCLEnvVar       `json:"env_vars,omitempty"`
+	Source *config.GitSource `json:"source,omitempty"`
+	// ChangesFromSource is the KCL `changes_from_source`: nil (unset) or
+	// true carries the Forge Changes the source's changes.yaml declares into
+	// the env's shape; false keeps them out. The render emits the key only
+	// when it is false, so every other frontend renders byte-identically.
+	ChangesFromSource *bool       `json:"changes_from_source,omitempty"`
+	DevRunner         string      `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
+	Port              int         `json:"port,omitempty"`
+	EnvFile           string      `json:"env_file,omitempty"`
+	EnvVars           []KCLEnvVar `json:"env_vars,omitempty"`
 	// Config is the typed, well-known knobs block (kcl/schema.k
 	// FrontendConfig). nil when the frontend declares no `config`. forge
 	// expands it into the SAME env stream as EnvVars via frontendConfigEnv,

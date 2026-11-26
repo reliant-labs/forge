@@ -19,7 +19,9 @@ forge domain bind www.hounders.club --env prod --redirect-to hounders.club
 A `--redirect-to` binding answers every path with a permanent redirect to
 the same path and query on the other host: 301 for GET and HEAD, 308 for
 anything else. Point the www name at the same records as its apex (the
-static-site edge serves redirects too). `--hsts-include-subdomains` on a bind
+static-site edge serves redirects too). A redirect of one PATH (`/docs` to
+another site) is not a binding: it is the site's own `_redirects` file
+(`deploy/static-site`). `--hsts-include-subdomains` on a bind
 adds `includeSubDomains` to that hostname's `Strict-Transport-Security`; it is
 off by default because it breaks every subdomain still on plain HTTP for as
 long as a browser remembers it (a year), and a rebind without it turns it off

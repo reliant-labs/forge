@@ -40,6 +40,12 @@ const (
 	// dependency and passed, so every finding it reports is new: while the
 	// rule warns, a failing row is an allowed SKIPPED "would fail".
 	RuleLicenseCheck = "license-check"
+	// RuleChangesSourceConflict grades two declarations of one Forge Changes
+	// key that disagree (the project root's changes.yaml and a pinned source
+	// frontend's, or two sources). While it warns, the shape keeps the first
+	// declaration (the root's, else the first source by frontend name) and
+	// says so; when it gates, `forge env shape` and the bundle write refuse.
+	RuleChangesSourceConflict = "changes-source-conflict"
 )
 
 // RuleGrade is what a project makes of one rule.

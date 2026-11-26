@@ -4925,6 +4925,14 @@ schema Frontend:
     # where only this repository is checked out, and builds the same
     # bytes on every machine. See GitSource.
     source?: GitSource
+    # Whether the release carries the Forge Changes this frontend's source
+    # declares: the changes.yaml at the root of `source`'s repository, read
+    # at the commit the release builds (docs/proposals/changes-from-sources.md).
+    # Unset means yes: the code that evaluates those changes ships here, so
+    # the env must declare them or no one can launch them. False keeps them
+    # out (the env then declares only the project root's changes.yaml).
+    # Meaningful only with `source`.
+    changes_from_source?: bool
     dev_runner: str = "npm"
     port: int = 3000
     env_file?: str

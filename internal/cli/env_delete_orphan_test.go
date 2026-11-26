@@ -360,3 +360,44 @@ func TestEnvDelete_AmbiguousEnvDocumentsCountAsDeclared(t *testing.T) {
 		}
 	})
 }
+
+// The anonymous credential of an unclaimed (--claimable) deploy carries no
+// domain scope, so ListDomains refuses it; such an env can have no domain it
+// bound, and its creator must still be able to delete it (obs f8ff6e6b).
+func TestRunEnvDelete_ClaimableCredentialWithoutDomainScopeStillDeletes(t *testing.T) {
+	denied := &cloud.Error{Code: cloud.CodePermissionDenied, Message: "credential lacks domain:read"}
+	f := &fakeLifecycleCaller{errs: map[string]error{"ListDomains": denied}}
+	var out bytes.Buffer
+	if err := runEnvDelete(context.Background(), f, "env_1", "prod", envDeleteOptions{Yes: true, Claimable: true}, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "custom domains: not readable with an unclaimed deploy's credential") || strings.Contains(out.String(), "custom domains: none") {
+		t.Errorf("preview must say the domains could not be read, never that there are none:\n%s", out.String())
+	}
+	if last := f.calls[len(f.calls)-1]; last.proc != procDeleteEnvironment {
+		t.Errorf("the claimable delete stopped; last call %s", last.proc)
+	}
+
+	// A signed-in credential refused the same way still stops the delete:
+	// its env may have domains this preview cannot see.
+	f = &fakeLifecycleCaller{errs: map[string]error{"ListDomains": denied}}
+	out.Reset()
+	if err := runEnvDelete(context.Background(), f, "env_1", "prod", envDeleteOptions{Yes: true}, strings.NewReader(""), &out); err == nil {
+		t.Fatal("a signed-in delete with an unreadable domain list proceeded")
+	}
+}
+
+// A domain bound to the env after its claimable deploy (by whoever can bind
+// one) is invisible to the anonymous credential; the delete reaches the
+// control plane, whose bound-domain refusal is what the user sees.
+func TestRunEnvDelete_ClaimableDeleteOfAnEnvWithABoundDomainIsRefusedByTheControlPlane(t *testing.T) {
+	refusal := &cloud.Error{Code: cloud.CodeFailedPrecondition, Message: "custom domain shop.example is bound to this environment"}
+	f := &fakeLifecycleCaller{errs: map[string]error{
+		"ListDomains":       &cloud.Error{Code: cloud.CodePermissionDenied, Message: "credential lacks domain:read"},
+		"DeleteEnvironment": refusal,
+	}}
+	err := runEnvDelete(context.Background(), f, "env_1", "prod", envDeleteOptions{Yes: true, Claimable: true}, strings.NewReader(""), &bytes.Buffer{})
+	if err == nil || !errors.Is(err, refusal) || !strings.Contains(err.Error(), "shop.example is bound") {
+		t.Fatalf("err = %v; want the control plane's bound-domain refusal", err)
+	}
+}

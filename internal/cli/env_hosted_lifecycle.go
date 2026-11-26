@@ -101,6 +101,10 @@ type lifecycleTarget struct {
 	// Name and Project are the control plane's record of the env, shown
 	// before a delete. Name is "" when the resolver did not read it.
 	Name, Project string
+	// Claimable is true when no login resolved and the target is reached
+	// with the anonymous credential this machine stored for an unclaimed
+	// (--claimable) deploy of the env.
+	Claimable bool
 }
 
 // resolveLifecycleTarget is a seam so tests drive the verbs against a fake
@@ -519,6 +523,7 @@ func boundHostedEndpoints(projectDir string) ([]string, error) {
 // lifecycleTargetAt resolves env's id on the control plane ep names.
 func lifecycleTargetAt(ctx context.Context, env string, ep cloud.Endpoint, flagToken string) (lifecycleTarget, error) {
 	cred, err := cloud.ResolveCredential(flagToken, ep)
+	claimable := false
 	if err != nil {
 		// Not signed in: an env this machine deployed with --claimable is
 		// still this machine's to stop, start or delete, with the anonymous
@@ -529,13 +534,14 @@ func lifecycleTargetAt(ctx context.Context, env string, ep cloud.Endpoint, flagT
 			return lifecycleTarget{}, err
 		}
 		cred = stored
+		claimable = true
 	}
 	client := cloud.NewClient(ep, cred)
 	he, err := deploytarget.FindHostedEnvironment(ctx, client, hostedProjectName(), env)
 	if err != nil {
 		return lifecycleTarget{}, err
 	}
-	return lifecycleTarget{Client: client, EnvironmentID: he.ID, Endpoint: ep.URL, Name: he.Name, Project: he.Project}, nil
+	return lifecycleTarget{Client: client, EnvironmentID: he.ID, Endpoint: ep.URL, Name: he.Name, Project: he.Project, Claimable: claimable}, nil
 }
 
 func listLifecycleDeployments(ctx context.Context, c cloudCaller, envID string) ([]lifecycleDeployment, error) {
@@ -849,7 +855,7 @@ deletes anything on a control plane and which this command never uses.`,
 				env = t.Name
 			}
 			return runEnvDelete(cmd.Context(), t.Client, t.EnvironmentID, env,
-				envDeleteOptions{Yes: yes, KeepData: keepData, Project: t.Project, Endpoint: t.Endpoint}, lifecycleStdin, cmd.OutOrStdout())
+				envDeleteOptions{Yes: yes, KeepData: keepData, Project: t.Project, Endpoint: t.Endpoint, Claimable: t.Claimable}, lifecycleStdin, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm the deletion without the typed-name prompt (required when non-interactive)")
@@ -880,6 +886,17 @@ func writeEnvDeleteSummary(ctx context.Context, c cloudCaller, out io.Writer, en
 	switch {
 	case err != nil && hostedErrorHasCode(err, cloud.CodeUnimplemented):
 		fmt.Fprintln(out, "  custom domains: none (this control plane has no domain service)")
+	case err != nil && opts.Claimable && hostedErrorHasCode(err, cloud.CodePermissionDenied):
+		// The anonymous credential of an unclaimed deploy carries no domain
+		// scope, so it cannot read the list at all, and no login it could
+		// obtain would let it (obs f8ff6e6b: refusing here left the anonymous
+		// creator unable to delete its own deploy, with advice that does not
+		// apply to it). The refusal is NOT evidence that no domain is bound,
+		// so the preview says it could not tell rather than "none". What
+		// keeps the delete safe is the control plane itself: it refuses to
+		// delete an env while a custom domain is bound (control plane #1547),
+		// and that refusal reaches the user as it said it.
+		fmt.Fprintln(out, "  custom domains: not readable with an unclaimed deploy's credential (the control plane refuses this delete if one is bound)")
 	case err != nil:
 		fmt.Fprintf(out, "  custom domains: could not be read (%v)\n", err)
 		return fmt.Errorf("could not list the custom domains bound to env %s, so the delete preview is incomplete; nothing was deleted: %w\n"+
@@ -923,6 +940,9 @@ type envDeleteOptions struct {
 	KeepData bool
 	// Project and Endpoint describe the env in the preview; "" omits them.
 	Project, Endpoint string
+	// Claimable is lifecycleTarget.Claimable: the delete runs on the
+	// anonymous credential of an unclaimed deploy.
+	Claimable bool
 }
 
 func runEnvDelete(ctx context.Context, c cloudCaller, envID, env string, opts envDeleteOptions, in io.Reader, out io.Writer) error {

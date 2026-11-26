@@ -54,6 +54,7 @@ const PreStopShutdownSeconds = 5
 var kindCapabilities = map[string]map[WorkloadKind]bool{
 	"ports":                         {KindService: true, KindWorker: true, KindOperator: true},
 	"replicas":                      {KindService: true, KindWorker: true, KindOperator: true},
+	"autoscale":                     {KindService: true, KindWorker: true},
 	"probes":                        {KindService: true, KindWorker: true, KindOperator: true},
 	"storageGiB":                    {KindService: true, KindWorker: true, KindOperator: true},
 	"namespacedRBAC":                scheduledKinds,
@@ -97,6 +98,7 @@ var deploymentKinds = map[WorkloadKind]bool{KindService: true, KindWorker: true,
 var kindCapabilityReasons = map[string]string{
 	"ports":                         "a batch kind (job/cron) runs to completion and a tool is never scheduled, so there is no pod anything can dial; use kind service or worker",
 	"replicas":                      "a batch pod's concurrency belongs to its Job or CronJob and a tool is never scheduled, so Kubernetes has nowhere to put this value",
+	"autoscale":                     "only a service or a worker scales on load: an operator elects one leader, so more pods buy it nothing, and a batch kind (job/cron) or a tool has no Deployment to scale; use replicas",
 	"probes":                        "probes gate traffic and restart long-running pods; a batch pod runs to completion and a tool is never scheduled",
 	"storageGiB":                    "a ReadWriteOnce volume is mounted by a long-running pod; a batch pod or a tool has nothing to keep it for",
 	"namespacedRBAC":                "a tool is never scheduled, so it has no pod to grant permission to",
@@ -164,7 +166,7 @@ func (s WorkloadSpec) Validate(p Profile) error {
 	// --- kind capabilities ---
 	if validKind {
 		for _, field := range []string{
-			"ports", "replicas", "probes", "storageGiB", "namespacedRBAC", "clusterRBAC", "crds", "group",
+			"ports", "replicas", "autoscale", "probes", "storageGiB", "namespacedRBAC", "clusterRBAC", "crds", "group",
 			"version", "leaderElection", "schedule", "before", "deployPhase", "serviceAccountAnnotations",
 			"sidecars", "volumes", "serviceAccount", "nodeSelector", "tolerations", "podAnnotations",
 			"priorityClassName", "enableServiceLinks", "strategy", "terminationGracePeriodSeconds", "preStopSeconds",
@@ -193,6 +195,9 @@ func (s WorkloadSpec) Validate(p Profile) error {
 	}
 	if s.StorageGiB > 0 && s.Replicas > 1 {
 		errs = append(errs, fmt.Errorf("storageGiB requires replicas 1 (got %d): the volume is ReadWriteOnce, so a second replica can never mount it, and the workload rolls out with Recreate", s.Replicas))
+	}
+	if s.Autoscale != nil {
+		errs = append(errs, s.autoscaleErrors()...)
 	}
 
 	// --- job / cron ---
@@ -351,6 +356,37 @@ func (s WorkloadSpec) Validate(p Profile) error {
 	return errors.Join(errs...)
 }
 
+// autoscaleErrors checks an autoscaled spec: the range itself, and the
+// fields that contradict a count the autoscaler moves. The kind is checked
+// with the other kind capabilities.
+func (s WorkloadSpec) autoscaleErrors() []error {
+	var errs []error
+	a := s.Autoscale
+	if a.MinReplicas < 1 {
+		errs = append(errs, fmt.Errorf("autoscale.minReplicas must be at least 1 (got %d): scale to zero is not offered", a.MinReplicas))
+	}
+	if a.MaxReplicas > MaxAutoscaleReplicas {
+		errs = append(errs, fmt.Errorf("autoscale.maxReplicas must be at most %d (got %d): the platform caps an autoscaled workload at %d replicas", MaxAutoscaleReplicas, a.MaxReplicas, MaxAutoscaleReplicas))
+	}
+	if a.MinReplicas > a.MaxReplicas {
+		errs = append(errs, fmt.Errorf("autoscale.minReplicas (%d) must not exceed autoscale.maxReplicas (%d)", a.MinReplicas, a.MaxReplicas))
+	}
+	if t := a.CPUTargetPercent; t != 0 && (t < MinAutoscaleCPUTargetPercent || t > MaxAutoscaleCPUTargetPercent) {
+		errs = append(errs, fmt.Errorf("autoscale.cpuTargetPercent must be %d-%d (got %d): it is a percent of the CPU request, and a limit at the request caps utilization near 100%%, so a higher target never triggers a scale-up; omit it for %d",
+			MinAutoscaleCPUTargetPercent, MaxAutoscaleCPUTargetPercent, t, DefaultAutoscaleCPUTargetPercent))
+	}
+	if s.Replicas > 1 {
+		errs = append(errs, fmt.Errorf("replicas %d is set beside autoscale: autoscale owns the replica count; set autoscale.minReplicas", s.Replicas))
+	}
+	if s.StorageGiB > 0 {
+		errs = append(errs, errors.New("autoscale is not allowed with storageGiB: the volume is ReadWriteOnce, so a second replica can never mount it; drop autoscale, or keep the data somewhere every replica can reach (a managed database or bucket)"))
+	}
+	if s.Strategy == StrategyRecreate {
+		errs = append(errs, errors.New("autoscale is not allowed with strategy Recreate: Recreate declares the replica count a correctness bound (one version, one pod set), which a count the autoscaler moves contradicts; drop one"))
+	}
+	return errs
+}
+
 // gatingPodFields are the fields that describe a pod of the workload's OWN.
 // A job with `before` has none: it runs as an initContainer INSIDE the pods
 // it gates, under their ServiceAccount, on their nodes, with their volumes.
@@ -385,6 +421,8 @@ func (s WorkloadSpec) declares(field string) bool {
 		return len(s.Ports) > 0
 	case "replicas":
 		return s.Replicas > 1
+	case "autoscale":
+		return s.Autoscale != nil
 	case "probes":
 		return s.Probes != nil
 	case "storageGiB":

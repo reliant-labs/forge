@@ -3,6 +3,7 @@ package release
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -319,6 +320,20 @@ const CapabilityCollectsTelemetry = "collects-telemetry"
 // /_api/@<name> calls 404.
 const CapabilityServesNamedSiteAPIs = "serves-named-site-apis"
 
+// CapabilityAutoscalesWorkloads is advertised beside the bundle features by a
+// control plane that APPLIES a hosted workload's autoscale
+// (WorkloadSpec.Autoscale): its operator renders the HorizontalPodAutoscaler,
+// hands spec.replicas over to it, and admits the workload at its maximum.
+//
+// Decoding the field is a matter of the forge a control plane pins, which it
+// would gain on any pin bump, and a control plane that predates it ignores
+// the unknown field, so the workload would run at one replica with nothing
+// saying so. Like [CapabilityEnforcesPromotionChecks] it is deliberately not
+// in [BundleDocFeatures]: a control plane adds it by hand, in the change that
+// applies HPAs. Until it does, forge refuses to deploy an autoscaled hosted
+// workload there ([BundleReader.CheckAutoscaledWorkloads]).
+const CapabilityAutoscalesWorkloads = "autoscales-workloads"
+
 // BundleDocFeatures is every optional bundle feature this version's
 // [DecodeBundleDoc] and [ValidateManifestsLayer] accept. A control plane
 // advertises exactly this list, so what it claims to decode and what its
@@ -599,6 +614,24 @@ func (r *BundleReader) CheckNamedSiteAPIs(sites []string) error {
 		"does not serve them (it does not advertise %q), so every call to one would 404. Upgrade the control plane, or call those "+
 		"backends by URL (a literal in runtime_config) until it is",
 		strings.Join(sites, ", "), CapabilityServesNamedSiteAPIs)
+}
+
+// CheckAutoscaledWorkloads refuses hosted workloads that declare autoscale
+// (workloads names them) to a reader that does not apply it: one that does
+// not advertise [CapabilityAutoscalesWorkloads] would run each at one replica
+// and never scale it. One error per workload, joined. No such workload, and
+// the nil reader (this forge's own machine ledger), always pass. Callers run
+// it before anything is written.
+func (r *BundleReader) CheckAutoscaledWorkloads(workloads []string) error {
+	if len(workloads) == 0 || r.Supports(CapabilityAutoscalesWorkloads) {
+		return nil
+	}
+	errs := make([]error, 0, len(workloads))
+	for _, name := range workloads {
+		errs = append(errs, fmt.Errorf("workload %q declares autoscale, but this control plane does not apply HorizontalPodAutoscalers yet "+
+			"(it does not advertise %q); set replicas instead until it is upgraded", name, CapabilityAutoscalesWorkloads))
+	}
+	return errors.Join(errs...)
 }
 
 // identityOutputLoginPolicy is the identity output the sign-in feature added.

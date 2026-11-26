@@ -768,7 +768,11 @@ func TestPodEscapeHatches(t *testing.T) {
 // asserts the EXACT object kinds: only what reaches the hosted user's own pods.
 // No RBAC, ever.
 func TestRestrictedKindSet(t *testing.T) {
-	objs := render(t, v1alpha1.ProfileRestricted, restrictedSet()...)
+	// restrictedSet is pinned by restricted.golden.yaml, so the autoscaled
+	// workload that adds the HorizontalPodAutoscaler joins here only.
+	scaler := wl("scaler", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker, Image: "ghcr.io/acme/app:v1", Args: []string{"scale"},
+		Autoscale: &v1alpha1.Autoscale{MinReplicas: 1, MaxReplicas: 4}})
+	objs := render(t, v1alpha1.ProfileRestricted, append(restrictedSet(), scaler)...)
 	got := map[string]bool{}
 	for _, o := range objs {
 		got[o.GetKind()] = true

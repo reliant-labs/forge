@@ -1424,14 +1424,15 @@ func (d *appDetection) dedupeNames() {
 	seen := map[string]int{}
 	for i := range d.spec.Workloads {
 		w := &d.spec.Workloads[i]
-		if n := seen[w.Name]; n > 0 {
-			w.Name = fmt.Sprintf("%s-%d", w.Name, n+1)
+		base := w.Name
+		if n := seen[base]; n > 0 {
+			w.Name = fmt.Sprintf("%s-%d", base, n+1)
 			w.Ident = workloadIdent(w.Name)
 			if w.Build != nil {
 				w.Image = w.Name
 			}
 		}
-		seen[w.Name]++
+		seen[base]++
 	}
 }
 

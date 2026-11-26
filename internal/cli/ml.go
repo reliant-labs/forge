@@ -226,102 +226,23 @@ func runMLDiscover(ctx context.Context, o mlDiscoverOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if o.collect == nil {
-		o.collect = mlCollect
-	}
-	if o.render == nil {
-		o.render = mlEnvRender
-	}
-	if o.evaluate == nil {
-		o.evaluate = mlrecs.Evaluate
-	}
-	if o.propose == nil {
-		o.propose = mlrecs.Propose
-	}
-	if o.probeTargets == nil {
-		o.probeTargets = mldiscover.ProbeTargets
-	}
-	if o.runProbe == nil {
-		o.runProbe = mlProbe
-	}
-	if o.stderr == nil {
-		o.stderr = io.Discard
-	}
+	o = o.withDefaults()
 	if o.rules {
 		return writeMLRules(o.stdout, o.jsonOut)
 	}
-	if o.probe && o.fromSnapshot != "" {
-		return errors.New("--probe reads a live cluster: it cannot run on --from-snapshot (a snapshot saved with --probe already holds its probes)")
+	path, err := o.validate()
+	if err != nil {
+		return err
 	}
-	if o.fromSnapshot != "" && o.kubeContext != "" {
-		return errors.New("--from-snapshot and --context are exclusive: a snapshot records the context it was read through")
-	}
-	if o.env != "" && o.projectDir == "" {
-		return fmt.Errorf("--env %s needs a forge project (no forge.yaml here or above); outside one, place the proposal with --out <file>", o.env)
-	}
-	if o.env != "" && !mlEnvName.MatchString(o.env) {
-		return fmt.Errorf("--env %q is not an env name", o.env)
-	}
-	path := mlProposalPath(o)
-	if o.write && path == "" {
-		if o.projectDir == "" {
-			return errors.New("--write outside a forge project needs --out <file>: there is no deploy/kcl/<env>/ to write into")
-		}
-		return errors.New("--write needs --env <env> (writes deploy/kcl/<env>/ml.k) or --out <file>")
-	}
-
 	doc := MLDiscoverDocument{Schema: MLDiscoverDocumentSchema, Findings: []mlrecs.Finding{}, Warnings: []string{}}
 
-	// The read.
-	var snap *mldiscover.Snapshot
-	if o.fromSnapshot != "" {
-		s, err := readMLSnapshot(o.fromSnapshot)
-		if err != nil {
-			return err
-		}
-		snap = s
-	} else {
-		s, err := o.collect(ctx, o.kubeContext)
-		if err != nil {
-			if errors.Is(err, mlcollect.ErrUnreachable) {
-				return undeterminedf("forge ml discover: %v", err)
-			}
-			return fmt.Errorf("forge ml discover: %w", err)
-		}
-		snap = s
+	snap, err := o.read(ctx)
+	if err != nil {
+		return err
 	}
-
-	// The first pass names the probe targets; the probe's families refine
-	// the second.
-	inv := mldiscover.Discover(snap)
-	if o.probe {
-		targets := o.probeTargets(snap, inv)
-		probes, err := o.runProbe(ctx, snap.Context, targets)
-		if err != nil {
-			doc.Warnings = append(doc.Warnings, fmt.Sprintf("--probe: %v", err))
-		}
-		snap.Probes = probes
-		if len(targets) == 0 {
-			doc.Warnings = append(doc.Warnings, "--probe: no metrics endpoint to probe (no exporter with a running pod and a metrics port was found)")
-		}
-		inv = mldiscover.Discover(snap)
-	}
-
-	if o.fromSnapshot == "" && o.projectDir != "" {
-		state := mlStateFile(o.projectDir, snap.Context)
-		if err := writeMLSnapshot(state, snap); err != nil {
-			doc.Warnings = append(doc.Warnings, fmt.Sprintf("could not save the snapshot to %s: %v", state, err))
-		} else {
-			doc.Snapshot = displayMLPath(state)
-		}
-	}
-	if o.saveSnapshot != "" {
-		if err := writeMLSnapshot(o.saveSnapshot, snap); err != nil {
-			return fmt.Errorf("--save-snapshot: %w", err)
-		}
-		if doc.Snapshot == "" {
-			doc.Snapshot = displayMLPath(o.saveSnapshot)
-		}
+	inv := o.discover(ctx, snap, &doc)
+	if err := o.saveSnapshots(snap, &doc); err != nil {
+		return err
 	}
 
 	// The env's declared decisions, best effort.
@@ -344,28 +265,8 @@ func runMLDiscover(ctx context.Context, o mlDiscoverOptions) error {
 		doc.Findings = findings
 	}
 	doc.Warnings = append(mlInventoryWarnings(snap, inv), doc.Warnings...)
-
-	// The proposal.
-	doc.Proposal = MLDiscoverProposal{MLK: mlk}
-	if path != "" {
-		doc.Proposal.Path = displayMLPath(path)
-		existing, err := os.ReadFile(path)
-		switch {
-		case err == nil:
-			doc.Proposal.Exists = true
-			doc.Proposal.Diff = mlUnifiedDiff(string(existing), mlk, path)
-		case !errors.Is(err, os.ErrNotExist):
-			return fmt.Errorf("read %s: %w", path, err)
-		}
-		if o.write && mlk != "" && (!doc.Proposal.Exists || string(existing) != mlk) {
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return err
-			}
-			if err := atomicfile.WriteFile(path, []byte(mlk), 0o644); err != nil {
-				return fmt.Errorf("write %s: %w", path, err)
-			}
-			doc.Proposal.Written = true
-		}
+	if doc.Proposal, err = o.placeProposal(path, mlk); err != nil {
+		return err
 	}
 
 	if o.jsonOut {
@@ -374,6 +275,142 @@ func runMLDiscover(ctx context.Context, o mlDiscoverOptions) error {
 		return enc.Encode(doc)
 	}
 	return writeMLDiscoverHuman(o.stdout, doc, o)
+}
+
+// withDefaults fills every unset pipeline step with the real one.
+func (o mlDiscoverOptions) withDefaults() mlDiscoverOptions {
+	if o.collect == nil {
+		o.collect = mlCollect
+	}
+	if o.render == nil {
+		o.render = mlEnvRender
+	}
+	if o.evaluate == nil {
+		o.evaluate = mlrecs.Evaluate
+	}
+	if o.propose == nil {
+		o.propose = mlrecs.Propose
+	}
+	if o.probeTargets == nil {
+		o.probeTargets = mldiscover.ProbeTargets
+	}
+	if o.runProbe == nil {
+		o.runProbe = mlProbe
+	}
+	if o.stderr == nil {
+		o.stderr = io.Discard
+	}
+	return o
+}
+
+// validate refuses flag combinations that cannot work, before anything is
+// read, and returns where the proposal goes ("" for printed only).
+func (o mlDiscoverOptions) validate() (string, error) {
+	if o.probe && o.fromSnapshot != "" {
+		return "", errors.New("--probe reads a live cluster: it cannot run on --from-snapshot (a snapshot saved with --probe already holds its probes)")
+	}
+	if o.fromSnapshot != "" && o.kubeContext != "" {
+		return "", errors.New("--from-snapshot and --context are exclusive: a snapshot records the context it was read through")
+	}
+	if o.env != "" && o.projectDir == "" {
+		return "", fmt.Errorf("--env %s needs a forge project (no forge.yaml here or above); outside one, place the proposal with --out <file>", o.env)
+	}
+	if o.env != "" && !mlEnvName.MatchString(o.env) {
+		return "", fmt.Errorf("--env %q is not an env name", o.env)
+	}
+	path := mlProposalPath(o)
+	if o.write && path == "" {
+		if o.projectDir == "" {
+			return "", errors.New("--write outside a forge project needs --out <file>: there is no deploy/kcl/<env>/ to write into")
+		}
+		return "", errors.New("--write needs --env <env> (writes deploy/kcl/<env>/ml.k) or --out <file>")
+	}
+	return path, nil
+}
+
+// read is the snapshot: a saved one, or a live read of the cluster.
+func (o mlDiscoverOptions) read(ctx context.Context) (*mldiscover.Snapshot, error) {
+	if o.fromSnapshot != "" {
+		return readMLSnapshot(o.fromSnapshot)
+	}
+	s, err := o.collect(ctx, o.kubeContext)
+	if err != nil {
+		if errors.Is(err, mlcollect.ErrUnreachable) {
+			return nil, undeterminedf("forge ml discover: %v", err)
+		}
+		return nil, fmt.Errorf("forge ml discover: %w", err)
+	}
+	return s, nil
+}
+
+// discover runs discovery over the snapshot. With --probe the first pass
+// names the probe targets, the probe's results go into the snapshot, and the
+// second pass is refined by them.
+func (o mlDiscoverOptions) discover(ctx context.Context, snap *mldiscover.Snapshot, doc *MLDiscoverDocument) *mldiscover.Inventory {
+	inv := mldiscover.Discover(snap)
+	if !o.probe {
+		return inv
+	}
+	targets := o.probeTargets(snap, inv)
+	probes, err := o.runProbe(ctx, snap.Context, targets)
+	if err != nil {
+		doc.Warnings = append(doc.Warnings, fmt.Sprintf("--probe: %v", err))
+	}
+	snap.Probes = probes
+	if len(targets) == 0 {
+		doc.Warnings = append(doc.Warnings, "--probe: no metrics endpoint to probe (no exporter with a running pod and a metrics port was found)")
+	}
+	return mldiscover.Discover(snap)
+}
+
+// saveSnapshots writes a live read to .forge/state inside a project (a
+// failure is a warning) and to --save-snapshot (a failure is an error).
+func (o mlDiscoverOptions) saveSnapshots(snap *mldiscover.Snapshot, doc *MLDiscoverDocument) error {
+	if o.fromSnapshot == "" && o.projectDir != "" {
+		state := mlStateFile(o.projectDir, snap.Context)
+		if err := writeMLSnapshot(state, snap); err != nil {
+			doc.Warnings = append(doc.Warnings, fmt.Sprintf("could not save the snapshot to %s: %v", state, err))
+		} else {
+			doc.Snapshot = displayMLPath(state)
+		}
+	}
+	if o.saveSnapshot != "" {
+		if err := writeMLSnapshot(o.saveSnapshot, snap); err != nil {
+			return fmt.Errorf("--save-snapshot: %w", err)
+		}
+		if doc.Snapshot == "" {
+			doc.Snapshot = displayMLPath(o.saveSnapshot)
+		}
+	}
+	return nil
+}
+
+// placeProposal compares the proposal with the file at path and, with
+// --write, writes it when it differs.
+func (o mlDiscoverOptions) placeProposal(path, mlk string) (MLDiscoverProposal, error) {
+	p := MLDiscoverProposal{MLK: mlk}
+	if path == "" {
+		return p, nil
+	}
+	p.Path = displayMLPath(path)
+	existing, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		p.Exists = true
+		p.Diff = mlUnifiedDiff(string(existing), mlk, path)
+	case !errors.Is(err, os.ErrNotExist):
+		return p, fmt.Errorf("read %s: %w", path, err)
+	}
+	if o.write && mlk != "" && (!p.Exists || string(existing) != mlk) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return p, err
+		}
+		if err := atomicfile.WriteFile(path, []byte(mlk), 0o644); err != nil {
+			return p, fmt.Errorf("write %s: %w", path, err)
+		}
+		p.Written = true
+	}
+	return p, nil
 }
 
 var mlEnvName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)

@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/version"
+	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	kubefake "k8s.io/client-go/kubernetes/fake"
@@ -525,5 +526,54 @@ func TestReadSetTableNamesEveryRead(t *testing.T) {
 		if r.Verb != VerbGet && r.Verb != VerbList {
 			t.Errorf("%s: verb %q", r.Name(), r.Verb)
 		}
+	}
+}
+
+// A group whose discovery failed (metrics-server's aggregated API not ready
+// on a fresh cluster) leaves the partial answer in use: a group the read set
+// does not need is ignored, one it needs is a ReadError naming it, and the
+// rest of the read goes on.
+func TestCollectToleratesPartialAPIDiscovery(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		failed map[schema.GroupVersion]error
+		want   string
+	}{
+		{"unneeded group", map[schema.GroupVersion]error{
+			{Group: "metrics.k8s.io", Version: "v1beta1"}: errors.New("stale GroupVersion discovery: metrics.k8s.io/v1beta1"),
+		}, ""},
+		{"needed group", map[schema.GroupVersion]error{
+			{Group: "metrics.k8s.io", Version: "v1beta1"}: errors.New("stale"),
+			{Group: "kueue.x-k8s.io", Version: "v1beta1"}: errors.New("stale GroupVersion discovery: kueue.x-k8s.io/v1beta1"),
+		}, "/apis/kueue.x-k8s.io/v1beta1"},
+	} {
+		f := newFixture(t)
+		f.kube.PrependReactor("get", "resource", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, &discovery.ErrGroupDiscoveryFailed{Groups: tc.failed}
+		})
+		s, err := Collect(context.Background(), f.clients(), Options{Now: fixedNow, ConfigRefs: noRefs})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		var got []string
+		for _, e := range s.ReadErrors {
+			got = append(got, e.Resource)
+		}
+		if strings.Join(got, ",") != tc.want {
+			t.Errorf("%s: read errors = %+v, want %q", tc.name, s.ReadErrors, tc.want)
+		}
+		if !slices.Contains(s.APIGroups, "kueue.x-k8s.io") || s.CustomResources["clusterqueues.kueue.x-k8s.io"] != 2 || len(s.Nodes) != 1 {
+			t.Errorf("%s: the partial result was not used: groups %v counts %v", tc.name, s.APIGroups, s.CustomResources)
+		}
+	}
+	// Any other discovery error is still a /apis read error.
+	f := newFixture(t)
+	f.kube.PrependReactor("get", "resource", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("boom")
+	})
+	s, err := Collect(context.Background(), f.clients(), Options{Now: fixedNow, ConfigRefs: noRefs})
+	if err != nil || len(s.ReadErrors) != 1 || s.ReadErrors[0].Resource != "/apis" {
+		t.Errorf("a whole discovery failure: %v %+v", err, s.ReadErrors)
 	}
 }

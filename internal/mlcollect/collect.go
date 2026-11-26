@@ -40,6 +40,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/metadata"
@@ -139,36 +140,84 @@ func Collect(ctx context.Context, c Clients, opts Options) (*mldiscover.Snapshot
 	if now == nil {
 		now = time.Now
 	}
-	r := &reader{c: c, page: opts.PageSize}
+	r := &reader{c: c, page: opts.PageSize,
+		s:         &mldiscover.Snapshot{Schema: mldiscover.SnapshotSchema, Context: opts.Context},
+		preferred: map[string]string{}, servedAt: map[string][]string{}, crds: map[string]bool{}}
 	if r.page <= 0 {
 		r.page = PageSize
 	}
-	s := &mldiscover.Snapshot{Schema: mldiscover.SnapshotSchema, Context: opts.Context}
-
 	v, err := c.Kube.Discovery().ServerVersion()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
-	s.ServerVersion = v.GitVersion
+	r.s.ServerVersion = v.GitVersion
 
-	// Served groups and the versions each serves a resource at: what a CRD's
-	// objects are read through. One aggregated-discovery request on a
-	// current API server. A resource is read at its group's preferred
-	// version when served there, else at the first version that serves it
-	// (opentelemetry.io prefers v1beta1, where instrumentations is not).
-	preferred := map[string]string{}
-	servedAt := map[string][]string{} // "plural.group" → versions
-	groups, lists, err := c.Kube.Discovery().ServerGroupsAndResources()
+	r.discoverAPIs()
+	r.listCRDs(ctx)
+	r.listCore(ctx)
+	r.listApps(ctx)
+	r.listBatchAndAutoscaling(ctx)
+	r.countCustomResources(ctx)
+	r.readCustomObjects(ctx)
+	refs := opts.ConfigRefs
+	if refs == nil {
+		refs = mldiscover.ConfigRefs
+	}
+	r.readConfigMaps(ctx, refs(r.s))
+
+	sort.SliceStable(r.s.ReadErrors, func(i, j int) bool { return r.s.ReadErrors[i].Resource < r.s.ReadErrors[j].Resource })
+	r.s.CollectedAt = now().UTC().Truncate(time.Second)
+	return r.s, nil
+}
+
+// reader is one Collect: the clients, the snapshot it fills, and what API
+// discovery and the CRD list told it.
+type reader struct {
+	c    Clients
+	page int64
+	s    *mldiscover.Snapshot
+	// preferred is each served group's preferred version; servedAt the
+	// versions each "plural.group" is served at; crds the installed CRDs.
+	preferred map[string]string
+	servedAt  map[string][]string
+	crds      map[string]bool
+}
+
+func (r *reader) fail(resource string, err error) {
+	r.s.ReadErrors = append(r.s.ReadErrors, mldiscover.ReadError{Resource: resource, Error: err.Error()})
+}
+
+// discoverAPIs records the served groups and the versions each serves a
+// resource at: what a CRD's objects are read through. One aggregated-discovery
+// request on a current API server.
+//
+// A group whose discovery failed (an aggregated API that is not ready, such
+// as metrics-server's metrics.k8s.io on a fresh cluster) leaves the rest of
+// the answer intact: the partial result is used, a failed group the read set
+// does not need is ignored, and one it needs is a ReadError naming that
+// group/version.
+func (r *reader) discoverAPIs() {
+	groups, lists, err := r.c.Kube.Discovery().ServerGroupsAndResources()
 	if err != nil {
-		r.fail(s, "/apis", err)
+		var failed *discovery.ErrGroupDiscoveryFailed
+		if !errors.As(err, &failed) {
+			r.fail("/apis", err)
+		} else {
+			needed := readSetGroups()
+			for gv, gerr := range failed.Groups {
+				if needed[gv.Group] {
+					r.fail("/apis/"+gv.String(), gerr)
+				}
+			}
+		}
 	}
 	for _, g := range groups {
 		if g != nil && g.Name != "" {
-			s.APIGroups = append(s.APIGroups, g.Name)
-			preferred[g.Name] = g.PreferredVersion.Version
+			r.s.APIGroups = append(r.s.APIGroups, g.Name)
+			r.preferred[g.Name] = g.PreferredVersion.Version
 		}
 	}
-	sort.Strings(s.APIGroups)
+	sort.Strings(r.s.APIGroups)
 	for _, l := range lists {
 		if l == nil {
 			continue
@@ -180,79 +229,101 @@ func Collect(ctx context.Context, c Clients, opts Options) (*mldiscover.Snapshot
 		for _, res := range l.APIResources {
 			if !strings.Contains(res.Name, "/") {
 				key := res.Name + "." + gv.Group
-				servedAt[key] = append(servedAt[key], gv.Version)
+				r.servedAt[key] = append(r.servedAt[key], gv.Version)
 			}
 		}
 	}
-	versionOf := func(group, resource string) string {
-		versions := servedAt[resource+"."+group]
-		if len(versions) == 0 || slices.Contains(versions, preferred[group]) {
-			return preferred[group]
-		}
-		return versions[0]
-	}
+}
 
-	crds := map[string]bool{}
+// readSetGroups is every API group a ReadSet row reads from.
+func readSetGroups() map[string]bool {
+	out := map[string]bool{}
+	for _, row := range ReadSet() {
+		if !strings.HasPrefix(row.Resource, "/") {
+			out[row.Group] = true
+		}
+	}
+	return out
+}
+
+// versionOf is the version a resource is read at: its group's preferred
+// version when served there, else the first version that serves it
+// (opentelemetry.io prefers v1beta1, where instrumentations is not).
+func (r *reader) versionOf(group, resource string) string {
+	versions := r.servedAt[resource+"."+group]
+	if len(versions) == 0 || slices.Contains(versions, r.preferred[group]) {
+		return r.preferred[group]
+	}
+	return versions[0]
+}
+
+func (r *reader) listCRDs(ctx context.Context) {
 	crdGVR := schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
-	if items, err := r.metadataList(ctx, crdGVR); err != nil {
-		r.fail(s, "customresourcedefinitions.apiextensions.k8s.io", err)
-	} else {
-		for _, it := range items {
-			crds[it.Name] = true
-			s.CRDs = append(s.CRDs, it.Name)
-		}
-		sort.Strings(s.CRDs)
+	items, err := r.metadataList(ctx, crdGVR)
+	if err != nil {
+		r.fail("customresourcedefinitions.apiextensions.k8s.io", err)
+		return
 	}
+	for _, it := range items {
+		r.crds[it.Name] = true
+		r.s.CRDs = append(r.s.CRDs, it.Name)
+	}
+	sort.Strings(r.s.CRDs)
+}
 
-	core := c.Kube.CoreV1()
+func (r *reader) listCore(ctx context.Context) {
+	core := r.c.Kube.CoreV1()
 	if items, err := listAll(ctx, r.page, func(ctx context.Context, o metav1.ListOptions) (*corev1.NodeList, error) {
 		return core.Nodes().List(ctx, o)
 	}, func(l *corev1.NodeList) []corev1.Node { return l.Items }); err != nil {
-		r.fail(s, "nodes", err)
+		r.fail("nodes", err)
 	} else {
 		for i := range items {
 			strip(&items[i].ObjectMeta)
 		}
-		s.Nodes = items
+		r.s.Nodes = items
 	}
 	if items, err := listAll(ctx, r.page, func(ctx context.Context, o metav1.ListOptions) (*corev1.PodList, error) {
 		return core.Pods(metav1.NamespaceAll).List(ctx, o)
 	}, func(l *corev1.PodList) []corev1.Pod { return l.Items }); err != nil {
-		r.fail(s, "pods", err)
+		r.fail("pods", err)
 	} else {
 		for i := range items {
 			strip(&items[i].ObjectMeta)
 			stripPodSpec(&items[i].Spec)
 		}
-		s.Pods = items
+		r.s.Pods = items
 	}
-	apps := c.Kube.AppsV1()
+}
+
+func (r *reader) listApps(ctx context.Context) {
+	apps := r.c.Kube.AppsV1()
 	if items, err := listAll(ctx, r.page, func(ctx context.Context, o metav1.ListOptions) (*appsv1.DaemonSetList, error) {
 		return apps.DaemonSets(metav1.NamespaceAll).List(ctx, o)
 	}, func(l *appsv1.DaemonSetList) []appsv1.DaemonSet { return l.Items }); err != nil {
-		r.fail(s, "daemonsets.apps", err)
+		r.fail("daemonsets.apps", err)
 	} else {
 		for i := range items {
 			strip(&items[i].ObjectMeta)
 			stripTemplate(&items[i].Spec.Template)
 		}
-		s.DaemonSets = items
+		r.s.DaemonSets = items
 	}
 	if items, err := listAll(ctx, r.page, func(ctx context.Context, o metav1.ListOptions) (*appsv1.DeploymentList, error) {
 		return apps.Deployments(metav1.NamespaceAll).List(ctx, o)
 	}, func(l *appsv1.DeploymentList) []appsv1.Deployment { return l.Items }); err != nil {
-		r.fail(s, "deployments.apps", err)
+		r.fail("deployments.apps", err)
 	} else {
 		for i := range items {
 			strip(&items[i].ObjectMeta)
 			stripTemplate(&items[i].Spec.Template)
 		}
-		s.Deployments = items
+		r.s.Deployments = items
 	}
 	if items, err := listAll(ctx, r.page, func(ctx context.Context, o metav1.ListOptions) (*appsv1.StatefulSetList, error) {
 		return apps.StatefulSets(metav1.NamespaceAll).List(ctx, o)
 	}, func(l *appsv1.StatefulSetList) []appsv1.StatefulSet { return l.Items }); err != nil {
-		r.fail(s, "statefulsets.apps", err)
+		r.fail("statefulsets.apps", err)
 	} else {
 		for i := range items {
 			strip(&items[i].ObjectMeta)
@@ -261,95 +332,102 @@ func Collect(ctx context.Context, c Clients, opts Options) (*mldiscover.Snapshot
 				strip(&items[i].Spec.VolumeClaimTemplates[j].ObjectMeta)
 			}
 		}
-		s.StatefulSets = items
+		r.s.StatefulSets = items
 	}
+}
+
+func (r *reader) listBatchAndAutoscaling(ctx context.Context) {
 	if items, err := listAll(ctx, r.page, func(ctx context.Context, o metav1.ListOptions) (*batchv1.JobList, error) {
-		return c.Kube.BatchV1().Jobs(metav1.NamespaceAll).List(ctx, o)
+		return r.c.Kube.BatchV1().Jobs(metav1.NamespaceAll).List(ctx, o)
 	}, func(l *batchv1.JobList) []batchv1.Job { return l.Items }); err != nil {
-		r.fail(s, "jobs.batch", err)
+		r.fail("jobs.batch", err)
 	} else {
 		for i := range items {
 			strip(&items[i].ObjectMeta)
 			stripTemplate(&items[i].Spec.Template)
 		}
-		s.Jobs = items
+		r.s.Jobs = items
 	}
 	if items, err := listAll(ctx, r.page, func(ctx context.Context, o metav1.ListOptions) (*autoscalingv2.HorizontalPodAutoscalerList, error) {
-		return c.Kube.AutoscalingV2().HorizontalPodAutoscalers(metav1.NamespaceAll).List(ctx, o)
+		return r.c.Kube.AutoscalingV2().HorizontalPodAutoscalers(metav1.NamespaceAll).List(ctx, o)
 	}, func(l *autoscalingv2.HorizontalPodAutoscalerList) []autoscalingv2.HorizontalPodAutoscaler {
 		return l.Items
 	}); err != nil {
-		r.fail(s, "horizontalpodautoscalers.autoscaling", err)
+		r.fail("horizontalpodautoscalers.autoscaling", err)
 	} else {
 		for i := range items {
 			strip(&items[i].ObjectMeta)
 		}
-		s.HPAs = items
+		r.s.HPAs = items
 	}
+}
 
-	// Counts: DRA's ResourceSlices when the group is served, then each ML
-	// CRD that is installed, through the metadata API.
+// countCustomResources counts DRA's ResourceSlices when the group is served,
+// then each ML CRD that is installed, through the metadata API.
+func (r *reader) countCustomResources(ctx context.Context) {
 	count := func(key, group, resource string) {
-		version := versionOf(group, resource)
+		version := r.versionOf(group, resource)
 		if version == "" {
-			r.fail(s, key, fmt.Errorf("the CRD is installed but API group %s is not served", group))
+			r.fail(key, fmt.Errorf("the CRD is installed but API group %s is not served", group))
 			return
 		}
 		items, err := r.metadataList(ctx, schema.GroupVersionResource{Group: group, Version: version, Resource: resource})
 		if err != nil {
-			r.fail(s, key, err)
+			r.fail(key, err)
 			return
 		}
-		if s.CustomResources == nil {
-			s.CustomResources = map[string]int{}
+		if r.s.CustomResources == nil {
+			r.s.CustomResources = map[string]int{}
 		}
-		s.CustomResources[key] = len(items)
+		r.s.CustomResources[key] = len(items)
 	}
-	if preferred["resource.k8s.io"] != "" {
+	if r.preferred["resource.k8s.io"] != "" {
 		count(resourceSliceKey, "resource.k8s.io", "resourceslices")
 	}
 	for _, name := range CountedCRDs() {
-		if !crds[name] {
+		if !r.crds[name] {
 			continue
 		}
 		plural, group, _ := strings.Cut(name, ".")
 		count(name, group, plural)
 	}
+}
 
-	// Full custom objects, for the specs rules read.
+// readCustomObjects reads, redacted, the custom objects whose spec a rule
+// reads.
+func (r *reader) readCustomObjects(ctx context.Context) {
 	for _, name := range customObjectCRDs {
-		if !crds[name] {
+		if !r.crds[name] {
 			continue
 		}
 		plural, group, _ := strings.Cut(name, ".")
-		version := versionOf(group, plural)
+		version := r.versionOf(group, plural)
 		if version == "" {
-			continue // already reported by count
+			continue // already reported by countCustomResources
 		}
 		objs, err := r.dynamicList(ctx, schema.GroupVersionResource{Group: group, Version: version, Resource: plural})
 		if err != nil {
-			r.fail(s, name, err)
+			r.fail(name, err)
 			continue
 		}
-		if s.CustomObjects == nil {
-			s.CustomObjects = map[string][]map[string]any{}
+		if r.s.CustomObjects == nil {
+			r.s.CustomObjects = map[string][]map[string]any{}
 		}
-		s.CustomObjects[name] = objs
+		r.s.CustomObjects[name] = objs
 	}
+}
 
-	// Phase two: the ConfigMaps the found components reference, by name.
-	refs := opts.ConfigRefs
-	if refs == nil {
-		refs = mldiscover.ConfigRefs
-	}
+// readConfigMaps is phase two: the ConfigMaps the found components
+// reference, each GET by name, redacted.
+func (r *reader) readConfigMaps(ctx context.Context, refs []mldiscover.ObjectRef) {
 	seen := map[string]bool{}
-	for _, ref := range refs(s) {
+	for _, ref := range refs {
 		id := ref.Namespace + "/" + ref.Name
 		if ref.Name == "" || seen[id] {
 			continue
 		}
 		seen[id] = true
-		cm, err := core.ConfigMaps(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+		cm, err := r.c.Kube.CoreV1().ConfigMaps(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			// Absent is an answer, not a refused read: a ConfigMap named
 			// by convention (kubeadm-config on a cluster kubeadm did not
@@ -358,32 +436,19 @@ func Collect(ctx context.Context, c Clients, opts Options) (*mldiscover.Snapshot
 			continue
 		}
 		if err != nil {
-			r.fail(s, "configmaps", fmt.Errorf("%s (%s): %w", id, ref.Why, err))
+			r.fail("configmaps", fmt.Errorf("%s (%s): %w", id, ref.Why, err))
 			continue
 		}
 		RedactConfigMap(cm)
-		s.ConfigMaps = append(s.ConfigMaps, *cm)
+		r.s.ConfigMaps = append(r.s.ConfigMaps, *cm)
 	}
-	sort.Slice(s.ConfigMaps, func(i, j int) bool {
-		a, b := s.ConfigMaps[i], s.ConfigMaps[j]
+	sort.Slice(r.s.ConfigMaps, func(i, j int) bool {
+		a, b := r.s.ConfigMaps[i], r.s.ConfigMaps[j]
 		if a.Namespace != b.Namespace {
 			return a.Namespace < b.Namespace
 		}
 		return a.Name < b.Name
 	})
-
-	sort.SliceStable(s.ReadErrors, func(i, j int) bool { return s.ReadErrors[i].Resource < s.ReadErrors[j].Resource })
-	s.CollectedAt = now().UTC().Truncate(time.Second)
-	return s, nil
-}
-
-type reader struct {
-	c    Clients
-	page int64
-}
-
-func (r *reader) fail(s *mldiscover.Snapshot, resource string, err error) {
-	s.ReadErrors = append(s.ReadErrors, mldiscover.ReadError{Resource: resource, Error: err.Error()})
 }
 
 // listAll pages through a typed list, PageSize objects at a time.

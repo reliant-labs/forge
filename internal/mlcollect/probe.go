@@ -87,7 +87,7 @@ func probeOne(ctx context.Context, fetch Fetch, t mldiscover.ProbeTarget, timeou
 	if err != nil {
 		return nil, nil, err.Error()
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }() // a read-only GET: nothing to flush or report
 	lr := &io.LimitedReader{R: body, N: limit + 1}
 	families, labels, perr := ParseExposition(lr)
 	switch {

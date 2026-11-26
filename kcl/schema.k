@@ -1625,6 +1625,14 @@ _host_minio_region = lambda i: any -> str {
     i.minio_region or "us-east-1"
 }
 
+# What of the compose MinIO an env declares: each forge.minio_workload (a
+# compose workload whose process env carries the MinIO root user) and each
+# bucket bound to one (a BucketOnMinIO with no `infra`).
+_compose_minio_names = lambda workloads: [any], buckets: [Bucket] -> [str] {
+    [w.name for w in workloads if w.runtime and w.runtime.type == "compose" and w.runtime.env and "MINIO_ROOT_USER" in w.runtime.env] \
+        + ["bucket ${b.name}" for b in buckets if b.runtime.type == "minio" and not b.runtime.infra]
+}
+
 # The buckets on a host MinIO whose region is not that MinIO's.
 _host_minio_region_mismatches = lambda buckets: [Bucket], infra: [any] -> [str] {
     [b.name for b in buckets if b.runtime.type == "minio" and b.runtime.infra for i in infra if i.engine == "minio" and i.name == b.runtime.infra and _host_minio_region(i) != b.runtime.region]
@@ -9690,6 +9698,13 @@ schema Bundle:
         # for the bucket's: the two must agree.
         len(_host_minio_region_mismatches(buckets, infra)) == 0, \
             "Bundle.buckets ${_host_minio_region_mismatches(buckets, infra)}: a BucketOnMinIO's region must be its host MinIO's (HostInfra.minio_region, default \"us-east-1\"), which is the region clients sign for"
+        # One MinIO shape per env. The compose MinIO reads its root user
+        # from MINIO_ROOT_USER, the very store key a host MinIO named
+        # `minio` is generated under, so beside each other one's credentials
+        # silently become the other's; and two servers serving one env's
+        # buckets is never the intent.
+        not any i in infra { i.engine == "minio" } or len(_compose_minio_names(workloads, buckets)) == 0, \
+            "Bundle runs MinIO both on the host (${[i.name for i in infra if i.engine == 'minio']}, forge.HostInfra) and in docker compose (${_compose_minio_names(workloads, buckets)}): their root-credential keys collide (MINIO_ROOT_USER / MINIO_ROOT_PASSWORD). Pick one per env: drop the forge.minio_workload and bind every bucket to forge.BucketOnMinIO {infra = ...}, or drop the minio HostInfra"
         # A host MinIO's root credentials are generated into the env's
         # secret file, never committed: the env needs one.
         not any i in infra { i.engine == "minio" } or (secret_provider and secret_provider.type == "file"), \

@@ -12,14 +12,14 @@ package hostinfra
 //     `minio.<goos>-<goarch>.<release>` with a sha256sum beside it, so the
 //     checksum covers the binary itself (binaryRelease.raw). Upstream stopped
 //     publishing binaries after RELEASE.2025-09-07T16-13-09Z (later releases
-//     are source only), which is why that is the pin. The server binds
-//     loopback and holds a developer's test files, the same exposure as the
-//     compose image.
+//     are source only), which is why that is the pin. See MinIOVersion for
+//     the security fix this pin predates and why it does not reach a dev
+//     server, and for what replacing the pin will take.
 //   - The root credentials are NOT in the declaration. They come from the
 //     env's secret store (forge generates them on first `forge env up`), and
 //     the server is handed them through its environment, never argv: the
 //     process table is readable by every user on the machine. Every
-//     inherited MINIO_* variable is dropped first, so a developer's shell
+//     inherited MINIO_* / _MINIO_* variable is dropped first, so a developer's shell
 //     configuration for some other MinIO cannot reconfigure this one.
 //   - The buckets are CONVERGED on every start, on a fresh server and on an
 //     adopted one alike: created when missing (never deleted), and anonymous
@@ -38,6 +38,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +54,23 @@ const EngineMinIO = "minio"
 
 // MinIOVersion is the pinned MinIO server release: the last one upstream
 // published binaries for.
+//
+// It PREDATES a security fix. RELEASE.2025-10-15T17-29-55Z fixes
+// CVE-2025-62506 (GHSA-jjjj-jwhf-8rgr, high): a service account or STS
+// account with a restricted session policy could create a new service
+// account for itself that drops the restriction. That needs a restricted
+// non-root identity to start from, and a forge dev MinIO has none: the only
+// identity is the generated root user, which already holds every
+// permission, no workload is handed anything else, and nothing here creates
+// service accounts or STS sessions. The server binds 127.0.0.1 and holds a
+// developer's test files. So the fix changes nothing this server can do.
+//
+// The pin can never take a fix, though: upstream publishes source only from
+// that release on, so there is no later checksummed binary to move to. The
+// next MinIO advisory that DOES reach a root-only loopback server, or an OS
+// the pinned build stops running on, means replacing the source: a build
+// forge publishes from a tagged MinIO source tree, or another distribution
+// with checksummed binaries. Not a newer pin from github.com/minio/minio.
 const MinIOVersion = "RELEASE.2025-09-07T16-13-09Z"
 
 // minioDefaultRegion is the region a declaration that names none answers as,
@@ -190,12 +208,17 @@ func minioArgs(spec Spec, dataDir string) []string {
 }
 
 // minioEnv is the server's environment: the inherited one without any
-// MINIO_* variable, then the root credentials, the region, the CORS origins,
-// and the update check off (a dev loop does not reach the network to start).
+// variable the server reads as its own configuration (minioOwnedVar), then
+// the root credentials, the region, the CORS origins, and the update check
+// off (a dev loop does not reach the network to start).
 func minioEnv(spec Spec, inherited []string) []string {
+	return minioEnvFor(runtime.GOOS, spec, inherited)
+}
+
+func minioEnvFor(goos string, spec Spec, inherited []string) []string {
 	env := make([]string, 0, len(inherited)+6)
 	for _, kv := range inherited {
-		if !strings.HasPrefix(kv, "MINIO_") {
+		if !minioOwnedVar(goos, kv) {
 			env = append(env, kv)
 		}
 	}
@@ -210,6 +233,18 @@ func minioEnv(spec Spec, inherited []string) []string {
 		env = append(env, "MINIO_BROWSER=off")
 	}
 	return env
+}
+
+// minioOwnedVar reports whether an inherited KEY=value is configuration the
+// MinIO server reads: MINIO_* and the _MINIO_* internals it also honours.
+// Windows environment names are case-insensitive, so there `minio_root_user`
+// is the same variable as MINIO_ROOT_USER and is dropped too.
+func minioOwnedVar(goos, kv string) bool {
+	key, _, _ := strings.Cut(kv, "=")
+	if goos == "windows" {
+		key = strings.ToUpper(key)
+	}
+	return strings.HasPrefix(key, "MINIO_") || strings.HasPrefix(key, "_MINIO_")
 }
 
 // minioReady performs one readiness probe: MinIO's own readiness endpoint.

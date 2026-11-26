@@ -9,21 +9,18 @@ container-free dev shape:
   2. the rendered infra entry carries the MinIO's buckets (only those on it),
      their public_read, the union of their CORS origins, the console port,
      the region, and the store KEYS of its root credentials;
-  3. the rendered FileSecrets `generate`s those keys (hex), and an author's
-     own spec for one of them wins;
-  4. a compose MinIO beside it keeps its own buckets and literals, and the
-     host MinIO's buckets are not handed to it.
+  3. the rendered FileSecrets `generate`s those keys (hex), merged into the
+     declared provider: an author's own spec for one of them wins, and every
+     other declared entry and field renders as declared.
 """
 
 import forge
 import forge.workloads as fw
 
 _host = forge.BucketOnMinIO {infra = "blobs"}
-_compose = forge.BucketOnMinIO {port = 9123}
 _buckets = [
     forge.Bucket {name = "gtm-assets", runtime = _host, cors_origins = ["http://localhost:5173"]}
     forge.Bucket {name = "avatars", runtime = _host, public_read = True, cors_origins = ["http://localhost:3000", "http://localhost:5173"]}
-    forge.Bucket {name = "legacy", runtime = _compose}
 ]
 
 output = forge.render(forge.Bundle {
@@ -41,7 +38,6 @@ output = forge.render(forge.Bundle {
             env = forge.bucket_env("GTM_ASSETS", "gtm-assets")
             runtime = forge.OnHost {}
         }
-        forge.minio_workload(_compose, _buckets)
     ]
     secret_provider = forge.FileSecrets {
         path = "secrets/dev.yaml"
@@ -71,11 +67,10 @@ assert_infra_secret_keys = _blobs.minio_root_user_secret == "BLOBS_ROOT_USER" an
 # Every other engine renders exactly as before: no minio keys.
 assert_postgres_unchanged = "minio_buckets" not in _infra["postgres"] and "minio_root_user_secret" not in _infra["postgres"]
 
-# 3. The generated credentials.
-assert_generates_password = _gen["BLOBS_ROOT_PASSWORD"].bytes == 32 and _gen["BLOBS_ROOT_PASSWORD"].encoding == "hex"
-assert_author_spec_wins = _gen["BLOBS_ROOT_USER"].bytes == 12 and _gen["BLOBS_ROOT_USER"].prefix == "dev"
-assert_keeps_author_generate = _gen["AUTH_API_KEY"].bytes == 24 and output.secret_provider.path == "secrets/dev.yaml"
-
-# 4. The compose MinIO beside it.
-_mc = [w for w in output.workloads if w.name == "minio"][0].runtime
-assert_compose_keeps_its_own = _mc.env.MINIO_BUCKETS == "legacy" and _mc.env.MINIO_ROOT_USER == "minioadmin"
+# 3. The generated credentials, merged into the declared provider.
+assert_generates_password = _gen["BLOBS_ROOT_PASSWORD"] == {bytes = 32, encoding = "hex"}
+# The author's BLOBS_ROOT_USER spec is the one rendered, whole: forge's
+# 16-byte default neither replaces nor merges into it.
+assert_author_spec_wins = _gen["BLOBS_ROOT_USER"].bytes == 12 and _gen["BLOBS_ROOT_USER"].prefix == "dev" and _gen["BLOBS_ROOT_USER"].encoding == "hex"
+assert_keeps_author_generate = _gen["AUTH_API_KEY"].bytes == 24 and len(_gen) == 3
+assert_keeps_provider_fields = output.secret_provider.type == "file" and output.secret_provider.path == "secrets/dev.yaml"

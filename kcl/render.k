@@ -3587,16 +3587,14 @@ _host_minio_cors = lambda d: HostInfra, bundle: Bundle -> str {
 # _minio_root_secrets names: hex, because an access key travels inside the
 # SigV4 Credential header, where a base64 '/' would split it. A spec the
 # author declared for the same key wins. Each added spec is the env
-# document's GenerateSpec shape (bytes, encoding) and nothing more.
+# document's GenerateSpec shape (bytes, encoding) and nothing more. The
+# declared provider is merged into, not rebuilt: every field it carries
+# renders as declared, and only `generate` gains entries.
 _render_secret_provider = lambda bundle: Bundle -> any {
     _sp = bundle.secret_provider
     _keys = [k for i in bundle.infra if i.engine == "minio" for k in [_minio_root_secrets(i.name).user, _minio_root_secrets(i.name).password]] if _sp.type == "file" else []
-    _minio_gen = {k: {"bytes": 16 if k.endswith("_ROOT_USER") else 32, "encoding": "hex"} for k in _keys}
-    _sp if not _minio_gen else {
-        "type": _sp.type
-        "path": _sp.path
-        "generate": _minio_gen | (_sp.generate or {})
-    }
+    _minio_gen = {k: {"bytes": 16 if k.endswith("_ROOT_USER") else 32, "encoding": "hex"} for k in _keys if k not in (_sp.generate or {})}
+    _sp if not _minio_gen else {k: v for k, v in _sp if k != "generate"} | {"generate": _minio_gen | (_sp.generate or {})}
 }
 
 _render_host_infra = lambda d: HostInfra, bundle: Bundle -> any {

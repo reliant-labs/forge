@@ -3,9 +3,11 @@ package hostinfra
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +21,33 @@ import (
 
 	"github.com/minio/minio-go/v7"
 )
+
+// productionCredentials returns root credentials of the sizes render has
+// FileSecrets generate (kcl/render.k _render_secret_provider): 16 random
+// bytes in hex for the user, 32 for the password.
+func productionCredentials(t *testing.T) (user, password string) {
+	t.Helper()
+	b := make([]byte, 48)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(b[:16]), hex.EncodeToString(b[16:])
+}
+
+// nonLoopbackIPv4 is one of this host's addresses that is not loopback, ""
+// when it has none.
+func nonLoopbackIPv4() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && !n.IP.IsLoopback() && n.IP.To4() != nil {
+			return n.IP.String()
+		}
+	}
+	return ""
+}
 
 func minioSpec(port int) Spec {
 	return Spec{
@@ -134,6 +163,23 @@ func TestMinIOEnvDropsInheritedMinIOVariables(t *testing.T) {
 			t.Errorf("an inherited MINIO_* variable survived: %q", kv)
 		}
 	}
+	for _, goos := range []string{"linux", "windows"} {
+		for _, kv := range minioEnvFor(goos, spec, []string{"_MINIO_SERVER_DEBUG=on", "MINIO_OPTS=--x"}) {
+			if strings.HasPrefix(kv, "_MINIO_") || strings.HasPrefix(kv, "MINIO_OPTS") {
+				t.Errorf("%s: an inherited server variable survived: %q", goos, kv)
+			}
+		}
+	}
+	// Windows names are case-insensitive: a lower-case minio_root_user IS
+	// MINIO_ROOT_USER there, and must go. Elsewhere it is another variable.
+	lower := []string{"minio_root_user=someone-else", "_minio_ci_cd=on"}
+	if got := minioEnvFor("windows", spec, lower); slices.Contains(got, lower[0]) || slices.Contains(got, lower[1]) {
+		t.Errorf("windows kept a lower-case MinIO variable: %v", got)
+	}
+	if got := minioEnvFor("linux", spec, lower); !slices.Contains(got, lower[0]) {
+		t.Errorf("linux dropped %q, which is not a variable MinIO reads there: %v", lower[0], got)
+	}
+
 	spec.MinIOConsolePort = 9101
 	spec.MinIOCORSAllowOrigin = ""
 	spec.MinIORegion = "eu-west-1"
@@ -211,9 +257,25 @@ func TestMinIODriftNamesWhatTheRunningServerCannotTake(t *testing.T) {
 	if msg := minioDrift(spec, dir); msg != "" {
 		t.Errorf("same declaration, but drift %q", msg)
 	}
-	spec.MinIOCORSAllowOrigin = "http://localhost:3000"
-	if msg := minioDrift(spec, dir); !strings.Contains(msg, "http://localhost:3000") || !strings.Contains(msg, "forge env down") {
-		t.Errorf("a changed CORS list was not reported with its fix: %q", msg)
+	for _, tc := range []struct {
+		name   string
+		change func(*Spec)
+		want   string
+	}{
+		{"CORS origins", func(s *Spec) { s.MinIOCORSAllowOrigin = "http://localhost:3000" }, `CORS origins "http://localhost:3000" (running: "*")`},
+		{"region", func(s *Spec) { s.MinIORegion = "eu-west-1" }, `region "eu-west-1" (running: "us-east-1")`},
+		{"console port", func(s *Spec) { s.MinIOConsolePort = 9101 }, "console port 9101 (running: 0)"},
+	} {
+		changed := spec
+		tc.change(&changed)
+		if msg := minioDrift(changed, dir); !strings.Contains(msg, tc.want) || !strings.Contains(msg, "forge env down") {
+			t.Errorf("a changed %s was not reported with its fix: %q", tc.name, msg)
+		}
+	}
+	all := spec
+	all.MinIORegion, all.MinIOConsolePort = "eu-west-1", 9101
+	if msg := minioDrift(all, dir); !strings.Contains(msg, "region") || !strings.Contains(msg, "console port") {
+		t.Errorf("two changes, but not both named: %q", msg)
 	}
 }
 
@@ -233,6 +295,8 @@ func TestMinIOStartsConvergesBucketsAndStops(t *testing.T) {
 	defer cancel()
 	project := t.TempDir()
 	spec := minioSpec(freeTCPPort(t))
+	spec.MinIORootUser, spec.MinIORootPassword = productionCredentials(t)
+	spec.MinIOConsolePort = freeTCPPort(t)
 	spec.MinIOCORSAllowOrigin = "http://localhost:3000"
 	spec.MinIOBuckets = []MinIOBucket{{Name: "uploads"}, {Name: "avatars", PublicRead: true}}
 	if err := Start(ctx, project, spec); err != nil {
@@ -281,6 +345,26 @@ func TestMinIOStartsConvergesBucketsAndStops(t *testing.T) {
 		t.Errorf("CORS preflight from the declared origin: Access-Control-Allow-Origin %q", got)
 	}
 
+	// Both listeners answer on loopback and on nothing else. The console
+	// comes up beside the API, so it is given a moment.
+	var consoleUp bool
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline) && !consoleUp; time.Sleep(250 * time.Millisecond) {
+		consoleUp = portListening(spec.MinIOConsolePort)
+	}
+	if !consoleUp {
+		t.Errorf("the declared console port %d is not listening on 127.0.0.1", spec.MinIOConsolePort)
+	}
+	if ip := nonLoopbackIPv4(); ip != "" {
+		for _, p := range []int{spec.Port, spec.MinIOConsolePort} {
+			if conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(p)), time.Second); err == nil {
+				_ = conn.Close()
+				t.Errorf("port %d answers on %s: it must bind loopback only", p, ip)
+			}
+		}
+	} else {
+		t.Log("no non-loopback address on this host; the loopback-only half is not exercised")
+	}
+
 	st, err := StatusOf(ctx, project, spec)
 	if err != nil || !st.Running || !st.Ready || st.Port != spec.Port || st.Version != MinIOVersion {
 		t.Fatalf("status: %+v %v", st, err)
@@ -298,7 +382,7 @@ func TestMinIOStartsConvergesBucketsAndStops(t *testing.T) {
 	}
 
 	wrong := spec
-	wrong.MinIORootPassword = "not-the-password-it-started-with"
+	_, wrong.MinIORootPassword = productionCredentials(t)
 	if err := Start(ctx, project, wrong); err == nil || !strings.Contains(err.Error(), "forge env down") {
 		t.Errorf("a server started with other credentials was adopted silently: %v", err)
 	}

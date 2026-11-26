@@ -89,6 +89,19 @@ port: change one and `forge env up` says so, with the restart that applies it
 (`forge env down`, then `forge env up`). The same holds for rotating the root
 credentials with `forge secret set`.
 
+The pinned binary is MinIO RELEASE.2025-09-07T16-13-09Z, the last release
+upstream published binaries for; later releases are source only. It predates
+the RELEASE.2025-10-15T17-29-55Z fix for CVE-2025-62506 (a restricted service
+account or STS session escaping its session policy), which cannot reach this
+server: its only identity is the generated root user, it binds loopback, and
+it holds dev files. The pin can never take a later fix, so a host MinIO is for
+dev data only; anything shared or long-lived belongs on `forge.BucketOnS3` or
+`forge.OnHosted`.
+
+Also do not mix the two MinIOs in one env: a host MinIO named `minio` and the
+compose `forge.minio_workload` both use the root-credential names
+`MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`, so render refuses the pair.
+
 `forge.Bucket` fields:
 
 | field | meaning |

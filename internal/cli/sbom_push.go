@@ -7,7 +7,8 @@ package cli
 //
 // THE SERVER IS IDEMPOTENT on (release, artifact, digest): sending an SBOM
 // it already holds answers created=false, and sending a different one for an
-// artifact that has one answers AlreadyExists (it keeps its copy). So a
+// artifact that has one answers FailedPrecondition/sbom_binding_conflict
+// (or AlreadyExists on an older server; it keeps its copy). So a
 // re-send is always safe, and every outcome is one of a few statuses.
 //
 // WHICH SBOM DESCRIBES AN ARTIFACT. The control plane's copy of a release
@@ -98,6 +99,7 @@ type sbomPushArtifact struct {
 type sbomPushRun struct {
 	Version string
 	Project string
+	Target  string
 	CutAt   time.Time
 	// Artifacts is the release's artifacts. Nil sends what the machine
 	// ledger's index names (a drain).
@@ -191,7 +193,8 @@ func (u sbomUploader) send(ctx context.Context, version, project, name string, r
 		switch {
 		case hostedUnimplemented(err):
 			return sbomSendResult{status: sbomPushFailed, err: err, unimplemented: true}
-		case hostedErrorHasCode(err, cloud.CodeAlreadyExists):
+		case hostedErrorHasCode(err, cloud.CodeAlreadyExists),
+			hostedErrorHasCode(err, cloud.CodeFailedPrecondition) && hostedErrorReason(err) == "sbom_binding_conflict":
 			return sbomSendResult{status: sbomPushDiffers, err: err}
 		case hostedErrorHasCode(err, cloud.CodePermissionDenied), hostedErrorHasCode(err, cloud.CodeUnauthenticated):
 			return sbomSendResult{status: sbomPushFailed, err: err, refused: true}
@@ -217,6 +220,11 @@ func pushReleaseSBOMs(ctx context.Context, up sbomUploader, store sbomLedger, ru
 	idx, err := store.ReleaseSBOMIndex(run.Version)
 	if err != nil {
 		out.Notes = append(out.Notes, fmt.Sprintf("this machine's SBOM index of release %s could not be read: %v", run.Version, err))
+		idx = nil
+	}
+	// Never attribute another target's (or an unbound legacy) mappings to
+	// this caller. Explicit overrides and digest-proven metadata still work.
+	if idx != nil && run.Target != "" && idx.Target != run.Target {
 		idx = nil
 	}
 	names := map[string]bool{}
@@ -515,6 +523,38 @@ func (m *sbomMetadataIndex) match(name string, art release.Artifact) (*release.S
 
 // ─── The index ───────────────────────────────────────────────────────────────
 
+// resolveSBOMTarget asks the server which tenant owns the selected project.
+// JSON encoding keeps endpoint/org/project tuple boundaries unambiguous.
+func resolveSBOMTarget(ctx context.Context, client cloudCaller, endpoint, project string) (string, error) {
+	var target struct {
+		OrgID     string `json:"orgId"`
+		ProjectID string `json:"projectId"`
+	}
+	if err := client.Call(ctx, "controlplane.v1.DeployService/ResolveHostedProject", map[string]any{"name": project}, &target); err != nil {
+		return "", err
+	}
+	if target.OrgID == "" || target.ProjectID == "" {
+		return "", errors.New("control plane returned incomplete SBOM target identity")
+	}
+	key, err := json.Marshal([]string{endpoint, target.OrgID, target.ProjectID})
+	return string(key), err
+}
+
+// recordTargetSBOMIndex binds only the accepted cut's refs, never mappings
+// inherited from a different tenant or an unbound legacy index.
+func recordTargetSBOMIndex(store sbomLedger, r release.Release, target string) error {
+	if err := store.UpdateReleaseSBOMIndex(r.Version, func(x *ledgerfile.ReleaseSBOMIndex) error {
+		if x.Target != target {
+			x.Artifacts, x.Uploads = nil, nil
+			x.Target = target
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return recordSBOMIndex(store, r)
+}
+
 // recordSBOMIndex writes r's SBOM refs to the machine ledger's index of r:
 // what a later `forge vuln sbom push`, or a drain on the next cut, sends.
 // Artifacts without a ref (no SBOM step, or one that describes no code) are
@@ -540,7 +580,10 @@ func recordSBOMIndex(store sbomLedger, r release.Release) error {
 			x.Artifacts = map[string]release.SBOMRef{}
 		}
 		for name, ref := range refs {
-			x.Artifacts[name] = ref
+			// A re-cut may fill a gap, never rewrite an established binding.
+			if _, exists := x.Artifacts[name]; !exists {
+				x.Artifacts[name] = ref
+			}
 		}
 		return nil
 	})
@@ -589,6 +632,14 @@ func recordSBOMPush(store sbomLedger, endpoint string, run sbomPushRun, out sbom
 // effort: the ledger refusing the write loses only a re-send hint.
 func setSBOMUploadState(store sbomLedger, endpoint string, run sbomPushRun, artifacts []sbomPushArtifact, state, reason string) {
 	_ = store.UpdateReleaseSBOMIndex(run.Version, func(x *ledgerfile.ReleaseSBOMIndex) error {
+		if run.Target == "" && x.Target != "" {
+			return errors.New("cannot update a bound SBOM index without resolving its target")
+		}
+		if x.Target != run.Target {
+			// Switching targets must not adopt mappings or retry state.
+			x.Artifacts, x.Uploads = nil, nil
+			x.Target = run.Target
+		}
 		if x.Project == "" {
 			x.Project = run.Project
 		}

@@ -242,8 +242,12 @@ func vulnSBOMPush(ctx context.Context, deps vulnDeps, opts vulnSBOMPushOptions, 
 			return fmt.Errorf("--sbom %s: release %s has no such artifact", name, doc.Release)
 		}
 	}
+	target, err := resolveSBOMTarget(ctx, client, endpoint, env.Project)
+	if err != nil {
+		return sbomPushReadError(env, "resolve the SBOM target identity", err)
+	}
 	res := pushReleaseSBOMs(ctx, sbomUploader{client: client, endpoint: endpoint, project: env.Project}, store, sbomPushRun{
-		Version: doc.Release, Project: env.Project, CutAt: rel.CreatedAt, Artifacts: rel.Artifacts,
+		Version: doc.Release, Project: env.Project, Target: target, CutAt: rel.CreatedAt, Artifacts: rel.Artifacts,
 		Overrides: overrides, Remote: remote, Fallback: true,
 	})
 	doc.Artifacts = res.Artifacts

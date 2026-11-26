@@ -72,6 +72,10 @@ type fakeVulnService struct {
 
 func (f *fakeVulnService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	const svc = "/controlplane.v1.VulnerabilityService/"
+	if r.URL.Path == "/controlplane.v1.DeployService/ResolveHostedProject" {
+		_ = json.NewEncoder(w).Encode(map[string]any{"orgId": "org-acme", "projectId": "project-acme"})
+		return
+	}
 	if r.URL.Path != "/controlplane.v1.DeployService/GetCapabilities" && !strings.HasPrefix(r.URL.Path, svc) {
 		if f.next == nil {
 			connectErr(w, http.StatusNotFound, "unimplemented", "no such procedure "+r.URL.Path)
@@ -134,7 +138,8 @@ func (f *fakeVulnService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			switch had, ok := f.held[key]; {
 			case ok && had != digest:
-				connectErr(w, http.StatusConflict, "already_exists", "the release already records a different SBOM for that artifact")
+				w.Header().Set(cloud.ReasonHeader, "sbom_binding_conflict")
+				connectErr(w, http.StatusPreconditionFailed, "failed_precondition", "binding conflict")
 				return
 			case ok:
 				_ = json.NewEncoder(w).Encode(map[string]any{"digest": digest, "created": false, "scanState": "VULNERABILITY_SCAN_STATE_SCANNED"})

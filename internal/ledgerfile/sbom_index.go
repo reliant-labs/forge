@@ -64,6 +64,9 @@ var ErrSBOMIndexUnknownSchema = errors.New("sbom index written in a schema this 
 
 // ReleaseSBOMIndex is one release's SBOM index.
 type ReleaseSBOMIndex struct {
+	// Target is the resolved endpoint/org/project identity. Empty legacy
+	// indexes are never eligible for automatic replay.
+	Target  string `json:"target,omitempty"`
 	Schema  string `json:"schema"`
 	Version string `json:"version"`
 	// Project is the forge project the release belongs to, when known.

@@ -251,14 +251,20 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 	if s.sboms != nil {
 		store, storeErr = s.sboms()
 	}
-	var pending []ledgerfile.ReleaseSBOMIndex
+	// Resolve through the authenticated server, never checkout names or a
+	// credential's display identity. If unavailable, do not replay anything.
+	var target string
 	if store != nil {
-		if err := recordSBOMIndex(store, r); err != nil {
+		target, _ = resolveSBOMTarget(ctx, s.client, s.endpoint, s.project)
+	}
+	var pending []ledgerfile.ReleaseSBOMIndex
+	if store != nil && target != "" {
+		if err := recordTargetSBOMIndex(store, r, target); err != nil {
 			fmt.Fprintf(warn, "[ledger] warning: release %s: could not record which SBOM describes each artifact in this machine's ledger: %v\n", r.Version, err)
 		}
 		all, _, _ := store.PendingSBOMUploads(s.endpoint)
 		for _, p := range all {
-			if p.Version != r.Version {
+			if p.Version != r.Version && p.Target == target {
 				pending = append(pending, p)
 			}
 		}
@@ -266,7 +272,7 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 	if len(names) == 0 && !source && len(pending) == 0 {
 		return
 	}
-	run := sbomPushRun{Version: r.Version, Project: r.Project, CutAt: r.CreatedAt, Artifacts: r.Artifacts}
+	run := sbomPushRun{Version: r.Version, Project: r.Project, Target: target, CutAt: r.CreatedAt, Artifacts: r.Artifacts}
 	markPending := func(reason string) {
 		if store != nil && len(names) > 0 {
 			setSBOMUploadState(store, s.endpoint, run, nil, ledgerfile.SBOMUploadPending, reason)
@@ -356,7 +362,7 @@ func (s *hostedStore) drainPendingSBOMs(ctx context.Context, up sbomUploader, st
 			fmt.Fprintf(warn, "[ledger] note: %d more release(s) wait to re-send their SBOMs to %s; the next cut continues\n", len(pending)-sent, s.endpoint)
 			return
 		}
-		run := sbomPushRun{Version: p.Version, Project: p.Project, CutAt: p.CutAt}
+		run := sbomPushRun{Version: p.Version, Project: p.Project, Target: p.Target, CutAt: p.CutAt}
 		if p.Uploads[s.endpoint].Attempts >= sbomDrainMaxAttempts {
 			setSBOMUploadState(store, s.endpoint, run, nil, ledgerfile.SBOMUploadAbandoned,
 				fmt.Sprintf("gave up after %d attempts", p.Uploads[s.endpoint].Attempts))

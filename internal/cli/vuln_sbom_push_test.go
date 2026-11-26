@@ -86,6 +86,19 @@ func (h *pushHarness) put(doc []byte) string {
 func (h *pushHarness) index(refs map[string]string) {
 	h.t.Helper()
 	if err := h.store.UpdateReleaseSBOMIndex("v1.0.0", func(x *ledgerfile.ReleaseSBOMIndex) error {
+		env, err := h.deps.resolveEnv(context.Background(), "", "prod")
+		if err != nil {
+			return err
+		}
+		client, err := h.deps.hostedClient(context.Background(), env)
+		if err != nil {
+			return err
+		}
+		target, err := resolveSBOMTarget(context.Background(), client, env.Endpoint, "acme")
+		if err != nil {
+			return err
+		}
+		x.Target = target
 		x.Artifacts = map[string]release.SBOMRef{}
 		for name, d := range refs {
 			x.Artifacts[name] = release.SBOMRef{Digest: d, Status: release.SBOMStatusOK, Format: release.SBOMFormatCycloneDXJSON}
@@ -220,6 +233,15 @@ func TestVulnSBOMPushReadsTheControlPlanesRecordAndReportsDiffers(t *testing.T) 
 	for _, rec := range fake.records {
 		if rec["artifactName"] == pushImage {
 			t.Errorf("api was sent although the control plane records its SBOM")
+		}
+	}
+	x, err := h.store.ReleaseSBOMIndex("v1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, up := range x.Uploads {
+		if up.State != ledgerfile.SBOMUploadDone || up.Artifacts[pushSite] != sbomPushDiffers {
+			t.Fatalf("binding conflict must be terminal, not retried: %+v", up)
 		}
 	}
 }

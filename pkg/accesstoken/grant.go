@@ -151,7 +151,7 @@ var scopeResourceRules = map[Scope]struct {
 //
 // The one other exception is a person-only scope (personOnlyScopes).
 func admitsOnDaemon(scope Scope) bool {
-	if personOnly(scope) {
+	if personOnly(scope) || IsHostCredentialScope(scope) {
 		return false
 	}
 	rule, ok := scopeResourceRules[scope]
@@ -237,6 +237,8 @@ var actingUserScopes = []Scope{
 	// An MCP client's OAuth token acts for the person who authorized it.
 	ScopeMCPOAuth,
 	ScopeMCPForge,
+	// An app's OAuth token acts for the person who consented to the app.
+	ScopeAppOAuth,
 	// A wake is billed to, and authorized as, the person who owns the
 	// daemon; the consumer resolves ownership from the acting user.
 	ScopeDaemonResume,
@@ -297,6 +299,11 @@ type Grant struct {
 	// (validateOAuthClient).
 	ClientID string
 	Audience string
+	// AppGrantID is the app grant an app's OAuth token (app:oauth) was
+	// issued under: the person's consent to one app, which a control plane
+	// re-reads at every call. Required on app:oauth and refused on every
+	// other shape (validateAppGrant).
+	AppGrantID string
 	// Ephemeral marks a token tied to a session's lifetime (a desktop
 	// daemon's run), revoked when that session ends. It must be bound and
 	// must expire: an ephemeral token that outlives everything is a
@@ -340,11 +347,19 @@ func (g Grant) Validate(now time.Time) error {
 		return err
 	}
 
+	if err := g.validateHostCredential(now); err != nil {
+		return err
+	}
+
 	if err := g.validateResource(); err != nil {
 		return err
 	}
 
 	if err := g.validateOAuthClient(); err != nil {
+		return err
+	}
+
+	if err := g.validateAppGrant(); err != nil {
 		return err
 	}
 
@@ -387,7 +402,10 @@ func (g Grant) Admissible() Set {
 		// An MCP client's token (mcp:oauth, mcp:forge) is a whole credential
 		// too: a token for one resource, which no wildcard is
 		// (validateOAuthClient).
-		if personOnly(scope) || RegistryOnly(scope) || IsOAuthClientScope(scope) {
+		//
+		// So is the end-tenant host credential (validateHostCredential): a
+		// host organisation's own automation, which no wildcard resolves to.
+		if personOnly(scope) || RegistryOnly(scope) || IsOAuthClientScope(scope) || IsHostCredentialScope(scope) {
 			continue
 		}
 		probe := Grant{OrgID: "probe", Name: "probe", ActingUserID: g.ActingUserID,
@@ -416,10 +434,10 @@ func KnownScopes(raw []string) Set {
 	return out
 }
 
-// OAuthClientScopes are the scopes of an MCP client's OAuth token: each is a
-// whole credential, the token's only scope, naming its client and the one
-// resource it was issued for (validateOAuthClient).
-var OAuthClientScopes = []Scope{ScopeMCPOAuth, ScopeMCPForge}
+// OAuthClientScopes are the scopes of an OAuth client's token (an MCP client's,
+// or an app's): each is a whole credential, the token's only scope, naming its
+// client and the one resource it was issued for (validateOAuthClient).
+var OAuthClientScopes = []Scope{ScopeMCPOAuth, ScopeMCPForge, ScopeAppOAuth}
 
 // IsOAuthClientScope reports whether scope is one of OAuthClientScopes.
 func IsOAuthClientScope(scope Scope) bool {
@@ -451,8 +469,8 @@ func (g Grant) validateOAuthClient() error {
 	scope := g.oauthClientScope()
 	if scope == "" {
 		if g.ClientID != "" || g.Audience != "" {
-			return fmt.Errorf("%w: a client id or audience belongs only on an MCP client's token (%s, %s)",
-				ErrInvalidGrant, ScopeMCPOAuth, ScopeMCPForge)
+			return fmt.Errorf("%w: a client id or audience belongs only on an OAuth client's token (%s, %s, %s)",
+				ErrInvalidGrant, ScopeMCPOAuth, ScopeMCPForge, ScopeAppOAuth)
 		}
 		return nil
 	}
@@ -470,6 +488,21 @@ func (g Grant) validateOAuthClient() error {
 	}
 	if g.Ephemeral {
 		return fmt.Errorf("%w: an %s token is not ephemeral", ErrInvalidGrant, scope)
+	}
+	return nil
+}
+
+// validateAppGrant holds the app grant id to its one home: an app's OAuth
+// token (app:oauth) names the grant it was issued under, and no other shape
+// carries one. A consumer that re-reads the grant on every call must never
+// find an id on a token that would also pass a check that ignores it.
+func (g Grant) validateAppGrant() error {
+	hasAppScope := g.Scopes.Has(ScopeAppOAuth)
+	switch {
+	case hasAppScope && strings.TrimSpace(g.AppGrantID) == "":
+		return fmt.Errorf("%w: an %s token names the app grant it was issued under", ErrInvalidGrant, ScopeAppOAuth)
+	case !hasAppScope && g.AppGrantID != "":
+		return fmt.Errorf("%w: an app grant id belongs only on an %s token", ErrInvalidGrant, ScopeAppOAuth)
 	}
 	return nil
 }
@@ -592,6 +625,9 @@ type Principal struct {
 	// (Grant.ClientID, Grant.Audience); empty on every other token.
 	ClientID string
 	Audience string
+	// AppGrantID is an app's token's grant (Grant.AppGrantID); empty on every
+	// other token.
+	AppGrantID string
 }
 
 // IsMCPOAuthFor reports whether p is an MCP client's OAuth token issued for
@@ -608,6 +644,13 @@ func (p *Principal) IsMCPOAuthFor(resource string) bool {
 // accepts the other's token.
 func (p *Principal) IsMCPForgeFor(resource string) bool {
 	return p.isOAuthClientFor(ScopeMCPForge, resource)
+}
+
+// IsAppOAuthFor is IsMCPOAuthFor for an app's OAuth token (app:oauth): the
+// same shape, plus the app grant it was issued under. A control plane checks
+// it with the resource it serves before it admits any app procedure.
+func (p *Principal) IsAppOAuthFor(resource string) bool {
+	return p.isOAuthClientFor(ScopeAppOAuth, resource) && p.AppGrantID != ""
 }
 
 func (p *Principal) isOAuthClientFor(scope Scope, resource string) bool {

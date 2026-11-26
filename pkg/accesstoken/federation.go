@@ -65,7 +65,7 @@ func FederationOf(scope Scope) Federation {
 // registry-only scopes).
 func Federatable(scope Scope, refProtected bool) bool {
 	e, ok := entryOf(scope)
-	if !ok || e.class == ClassSensitive || !slices.Contains(e.bundles, BundleCI) {
+	if !ok || e.class == ClassSensitive || e.class == ClassHost || !slices.Contains(e.bundles, BundleCI) {
 		return false
 	}
 	switch e.federation {

@@ -764,7 +764,7 @@ func TestAdmissible_DaemonCarriesEveryScope(t *testing.T) {
 	got := daemon.Admissible()
 	for _, s := range AllScopes {
 		rule, bound := scopeResourceRules[s]
-		elsewhere := (bound && rule.required && rule.kind != ResourceDaemon) || personOnly(s) || RegistryOnly(s) || IsOAuthClientScope(s)
+		elsewhere := (bound && rule.required && rule.kind != ResourceDaemon) || personOnly(s) || RegistryOnly(s) || IsOAuthClientScope(s) || IsHostCredentialScope(s)
 		if got.Has(s) == elsewhere {
 			t.Errorf("daemon wildcard holds %s = %v; it must hold every scope that does not require a %s binding",
 				s, got.Has(s), rule.kind)
@@ -772,8 +772,17 @@ func TestAdmissible_DaemonCarriesEveryScope(t *testing.T) {
 	}
 	// The two that bind elsewhere, by name, so the exclusion cannot grow
 	// silently.
-	if got.Has(ScopeProxyPort) || got.Has(ScopeMCPConnector) || got.Has(ScopeMCPOAuth) || got.Has(ScopeMCPForge) {
-		t.Fatalf("a daemon wildcard resolved to a port share, connector credential or MCP client token: %s", got)
+	if got.Has(ScopeProxyPort) || got.Has(ScopeMCPConnector) || got.Has(ScopeMCPOAuth) || got.Has(ScopeMCPForge) || got.Has(ScopeAppOAuth) {
+		t.Fatalf("a daemon wildcard resolved to a port share, connector credential or OAuth client token: %s", got)
+	}
+	// The host credential's scopes, by name: a daemon never carries them.
+	for _, s := range []Scope{ScopeEndTenantsManage, ScopeEndTenantsDelete, ScopeConnectionsConnect} {
+		if got.Has(s) || !IsHostCredentialScope(s) || !NeverOnDaemon(s) || admitsOnDaemon(s) {
+			t.Fatalf("host scope %s rides a daemon, or is not classified as one: %s", s, got)
+		}
+	}
+	if len(HostCredentialScopes) != 3 {
+		t.Fatalf("HostCredentialScopes changed: %v; name the new member here on purpose", HostCredentialScopes)
 	}
 	// The person-only scopes, by name, for the same reason.
 	if len(personOnlyScopes) != 1 || personOnlyScopes[0] != ScopeDaemonManage {
@@ -785,7 +794,7 @@ func TestAdmissible_DaemonCarriesEveryScope(t *testing.T) {
 	unbound := Grant{ActingUserID: "user"}.Admissible()
 	for _, s := range AllScopes {
 		rule, bound := scopeResourceRules[s]
-		if unbound.Has(s) == ((bound && rule.required) || personOnly(s) || RegistryOnly(s) || IsOAuthClientScope(s)) {
+		if unbound.Has(s) == ((bound && rule.required) || personOnly(s) || RegistryOnly(s) || IsOAuthClientScope(s) || IsHostCredentialScope(s)) {
 			t.Errorf("unbound wildcard holds %s = %v", s, unbound.Has(s))
 		}
 	}
@@ -793,6 +802,9 @@ func TestAdmissible_DaemonCarriesEveryScope(t *testing.T) {
 	for s := range (Grant{}).Admissible() {
 		if RequiresActingUser(s) {
 			t.Errorf("an org automation wildcard resolved to the person-scope %s", s)
+		}
+		if IsHostCredentialScope(s) || s == ScopeAppOAuth {
+			t.Errorf("an org automation wildcard resolved to the whole-credential scope %s", s)
 		}
 	}
 }

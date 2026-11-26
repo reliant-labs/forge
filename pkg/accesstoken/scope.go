@@ -369,6 +369,40 @@ const (
 	// changes:launch imply it at the point of use (see changes.go); nothing
 	// else does, and it implies nothing.
 	ScopeChangesRead Scope = "changes:read"
+
+	// ScopeAppOAuth is the OAuth access token of a third-party APP acting for
+	// one person: the mcp:oauth shape (the token's only scope, naming its
+	// client and its RFC 8707 audience, acting as a person, never bound,
+	// never ephemeral) plus the app grant the person consented to
+	// (Grant.AppGrantID, required on this token and refused on every other).
+	// It carries no product scope itself: a control plane admits it only on
+	// the procedures an app may call, and per call only with what that grant
+	// and the person hold right now. A sibling of mcp:oauth and mcp:forge, not
+	// a widening of either: each server accepts its own token and no other.
+	ScopeAppOAuth Scope = "app:oauth"
+
+	// ScopeEndTenantsManage creates, reads and updates the end tenants of a
+	// host organisation: the host credential's authority (see
+	// host_credential.go). Never held by a person, never bundled, never on a
+	// daemon, never elevated to. Spelled without an underscore on purpose:
+	// the wire format of a scope is ^[a-z]+(:[a-z]+)*$.
+	ScopeEndTenantsManage Scope = "endtenants:manage"
+
+	// ScopeEndTenantsDelete deletes an end tenant and what it holds. Its own
+	// scope, so a host credential that may onboard tenants need not be able
+	// to erase one. The host credential rules apply (host_credential.go).
+	ScopeEndTenantsDelete Scope = "endtenants:delete"
+
+	// ScopeConnectionsConnect starts the connection of an end tenant to an
+	// outside service, on the host credential's authority (host_credential.go).
+	ScopeConnectionsConnect Scope = "connections:connect"
+
+	// ScopeEventsRead reads an organisation's product events and nothing
+	// else of its telemetry: the narrower sibling of obs:read, for a holder
+	// who must see how a product is used and must not see its logs, traces
+	// or metrics. It joins no bundle and is INERT until a control plane
+	// confines a query to product events: no procedure admits it today.
+	ScopeEventsRead Scope = "events:read"
 )
 
 // AllScopes is the closed set, grouped by product, least authority first.
@@ -418,6 +452,11 @@ var AllScopes = []Scope{
 	ScopeTestsWrite,
 	ScopeMCPForge,
 	ScopeChangesRead,
+	ScopeAppOAuth,
+	ScopeEndTenantsManage,
+	ScopeEndTenantsDelete,
+	ScopeConnectionsConnect,
+	ScopeEventsRead,
 }
 
 // ParseScope maps a wire string onto a known Scope. An unknown string is an

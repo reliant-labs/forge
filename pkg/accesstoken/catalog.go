@@ -47,10 +47,14 @@ const (
 	ClassStandard Class = "standard"
 	// ClassSensitive is org authority held only by a grant naming it.
 	ClassSensitive Class = "sensitive"
+	// ClassHost is the end-tenant host credential's authority: held by no
+	// person, no member, no bundle and no CI identity, only by a token
+	// minted whole for a host organisation (host_credential.go).
+	ClassHost Class = "host"
 )
 
 // AllClasses is every class, least guarded first.
-var AllClasses = []Class{ClassPersonal, ClassMember, ClassStandard, ClassSensitive}
+var AllClasses = []Class{ClassPersonal, ClassMember, ClassStandard, ClassSensitive, ClassHost}
 
 // Bundle names a reviewed set of scopes for one kind of holder. A grant row or
 // a token may name a bundle (stored as BundleRef, "bundle:<name>") instead of
@@ -210,6 +214,19 @@ var catalog = []scopeEntry{
 	// developer or an admin holds it, and an app's own token is minted
 	// with it alone.
 	{scope: ScopeChangesRead, class: ClassStandard, bundles: inDeveloperAndUp},
+	// An app's OAuth token is a whole credential, like mcp:oauth and
+	// mcp:forge: no bundle, and no wildcard resolves to it.
+	{scope: ScopeAppOAuth, class: ClassPersonal},
+	// The host credential (host_credential.go): ClassHost, in no bundle,
+	// federatable to no CI identity, never on a daemon, never elevated to.
+	{scope: ScopeEndTenantsManage, class: ClassHost, neverOnDaemon: true, notElevatable: true},
+	{scope: ScopeEndTenantsDelete, class: ClassHost, neverOnDaemon: true, notElevatable: true},
+	{scope: ScopeConnectionsConnect, class: ClassHost, neverOnDaemon: true, notElevatable: true},
+	// Sensitive, so held only by a grant naming it and in no bundle:
+	// product events describe an organisation's end users, and a bundle
+	// expands at check time, so a bundle row would widen every existing
+	// token. Inert until a control plane admits it (see ScopeEventsRead).
+	{scope: ScopeEventsRead, class: ClassSensitive},
 }
 
 // entryOf returns scope's catalog row.
@@ -270,14 +287,14 @@ func ParseBundleRef(s string) (Bundle, bool) {
 // ExpandBundle returns the scopes bundle b grants under THIS binary's
 // catalog: a fresh Set the caller may keep. An unknown bundle is empty.
 //
-// A SENSITIVE SCOPE IS NEVER IN THE RESULT. The catalog lists none in a
-// bundle and the tests fail one that does; this skips them anyway, so a
+// A SENSITIVE OR HOST SCOPE IS NEVER IN THE RESULT. The catalog lists none
+// in a bundle and the tests fail one that does; this skips them anyway, so a
 // mistaken row widens nothing. A sensitive scope is held only by a grant
 // that names it.
 func ExpandBundle(b Bundle) Set {
 	out := Set{}
 	for _, e := range catalog {
-		if e.class == ClassSensitive {
+		if e.class == ClassSensitive || e.class == ClassHost {
 			continue
 		}
 		for _, in := range e.bundles {

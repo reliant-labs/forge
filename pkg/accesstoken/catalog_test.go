@@ -304,7 +304,7 @@ func TestBundleContents(t *testing.T) {
 func TestClasses_MatchWhatConsumersHeld(t *testing.T) {
 	personal := []Scope{
 		ScopeReliantAPI, ScopeDaemonConnect, ScopeDaemonManage, ScopeDaemonResume, ScopeLLMInvoke,
-		ScopeProxyPort, ScopeMCPConnector, ScopeMCPOAuth, ScopeMCPForge,
+		ScopeProxyPort, ScopeMCPConnector, ScopeMCPOAuth, ScopeMCPForge, ScopeAppOAuth,
 		ScopeRunsStart, ScopeRunsRead, ScopeRunsControl, ScopeTriggersFire, ScopeTriggersManage,
 		ScopeInboxRead, ScopeInboxManage, ScopeApprovalsDecide, ScopeQuestionsAnswer,
 	}
@@ -318,10 +318,13 @@ func TestClasses_MatchWhatConsumersHeld(t *testing.T) {
 	}
 	sensitive := []Scope{
 		ScopeDeployConfigRead, ScopeTokenRead, ScopeTokenWrite, ScopeSecretWrite,
-		ScopeIdentityManage, ScopeDBQuery, ScopeStorageRead, ScopeChangesLaunch,
+		ScopeIdentityManage, ScopeDBQuery, ScopeStorageRead, ScopeChangesLaunch, ScopeEventsRead,
 	}
 	if got := SetOf(ScopesOfClass(ClassSensitive)...); !reflect.DeepEqual(got, SetOf(sensitive...)) {
 		t.Errorf("sensitive = %s\nwant       %s", got, SetOf(sensitive...))
+	}
+	if got := ScopesOfClass(ClassHost); !reflect.DeepEqual(got, HostCredentialScopes) {
+		t.Errorf("host = %v, want %v", got, HostCredentialScopes)
 	}
 	for _, scope := range actingUserScopes {
 		if ClassOf(scope) != ClassPersonal {
@@ -339,10 +342,11 @@ func TestNeverOnDaemonAndElevatable(t *testing.T) {
 			never = append(never, scope)
 		}
 	}
-	if want := []Scope{ScopeTokenRead, ScopeTokenWrite, ScopeApprovalsDecide}; !reflect.DeepEqual(never, want) {
+	if want := []Scope{ScopeTokenRead, ScopeTokenWrite, ScopeApprovalsDecide, ScopeEndTenantsManage, ScopeEndTenantsDelete, ScopeConnectionsConnect}; !reflect.DeepEqual(never, want) {
 		t.Errorf("NeverOnDaemon = %v, want %v", never, want)
 	}
-	excluded := SetOf(ScopeDeployWrite, ScopeTokenRead, ScopeTokenWrite, ScopeSourcemapsWrite, ScopeChangesLaunch)
+	excluded := SetOf(ScopeDeployWrite, ScopeTokenRead, ScopeTokenWrite, ScopeSourcemapsWrite, ScopeChangesLaunch,
+		ScopeEndTenantsManage, ScopeEndTenantsDelete, ScopeConnectionsConnect)
 	for _, scope := range AllScopes {
 		want := ClassOf(scope) != ClassPersonal && !excluded.Has(scope)
 		if got := Elevatable(scope); got != want {

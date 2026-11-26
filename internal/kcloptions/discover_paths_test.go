@@ -164,10 +164,11 @@ func TestFindModuleRoot(t *testing.T) {
 		}
 	}
 	// With no kcl.mod above, the walk ends at the filesystem root and says "".
-	// Only checkable when no ancestor of the temp dir happens to hold one.
-	for dir := root; ; dir = filepath.Dir(dir) {
-		if _, err := os.Stat(filepath.Join(dir, "kcl.mod")); err == nil && dir != root {
-			t.Skipf("%s holds a kcl.mod above the temp dir", dir)
+	// The temp dir is private to this test; an ancestor holding a kcl.mod
+	// would make the expectation wrong, so that is a broken fixture.
+	for dir := filepath.Dir(root); ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "kcl.mod")); err == nil {
+			t.Fatalf("fixture broken: %s holds a kcl.mod above the temp dir", dir)
 		}
 		if filepath.Dir(dir) == dir {
 			break

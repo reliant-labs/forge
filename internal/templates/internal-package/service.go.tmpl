@@ -31,7 +31,7 @@ type Deps struct {
 
 // ─── The contract ───────────────────────────────────────────────────
 //
-// The //forge:contract marker on `service` below makes its exported
+// The forge:contract marker on `service` below makes its exported
 // methods the {{.Name}} package boundary. `forge generate` derives
 // `type Service interface` from them into contract_gen.go (forge-owned:
 // never edit it), and mock_gen.go and middleware_gen.go from that — so a
@@ -71,10 +71,9 @@ type service struct {
 //
 // The marker above opts this package into the generated observability
 // decorator (span / metrics / structured logging / panic-recovery on every
-// Service method, routed through the owned observe_chain.go seam). Remove it
-// and add `// forge:no-observe` on this line to opt the package out; add
-// `// forge:no-observe` to a single method's doc comment to skip just that
-// method.
+// Service method, routed through the owned observe_chain.go seam). Replace it
+// with a forge:no-observe marker line to opt the package out; the same marker
+// in a single method's doc comment skips just that method.
 func New(deps Deps) (Service, error) {
 	return &service{deps: deps}, nil
 }

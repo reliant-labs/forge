@@ -8,7 +8,7 @@
 // {{.Package}}.go alongside it.
 //
 // Hand-add fields to Deps as the binary grows. Mark optional fields
-// with `// forge:optional-dep` so the validateDeps gate doesn't
+// with a forge:optional-dep marker so the validateDeps gate doesn't
 // reject construction in dev mode.
 package {{.Package}}
 
@@ -25,7 +25,7 @@ import (
 // Logger / Config are the bare-Deps set: every binary needs them.
 // Add your binary-specific deps below — DB pool, NATS connection,
 // k8s client, HTTP client, etc. Required fields should be checked
-// in validateDeps; optional fields tagged with `// forge:optional-dep`
+// in validateDeps; optional fields tagged with a forge:optional-dep marker
 // stay nil-safe at construction time.
 type Deps struct {
 	Logger *slog.Logger
@@ -37,7 +37,7 @@ type Deps struct {
 	//   NATS *natsio.Client
 	//
 	// If a field is INTENTIONALLY optional, tag it with
-	// `// forge:optional-dep` on a comment line directly above the
+	// a forge:optional-dep marker on a comment line directly above the
 	// field declaration. validateDeps must NOT enforce optional-dep
 	// fields — the binary handles `if s.deps.X != nil { ... }` per
 	// call site as idiomatic Go.

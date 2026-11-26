@@ -17,7 +17,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -208,19 +207,6 @@ func captureStdout(t *testing.T, fn func()) string {
 	os.Stdout = old
 	_ = w.Close()
 	return <-done
-}
-
-func portOf(t *testing.T, addr string) int {
-	t.Helper()
-	_, p, err := net.SplitHostPort(strings.TrimPrefix(addr, "http://"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	n, err := strconv.Atoi(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return n
 }
 
 // deadPID is the pid of a process that has exited and been reaped.

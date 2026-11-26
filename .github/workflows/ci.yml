@@ -541,6 +541,20 @@ jobs:
           path: ${{ runner.temp }}/test-shard.json
           retention-days: 7
           if-no-files-found: warn
+      # The merge queue: the runs the -short tier and the flake gate recorded,
+      # for test-upload.yml (a pull request labelled ci:run keeps none; it
+      # uploads nothing).
+      - name: Keep the recorded test runs (for test-upload.yml)
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-runs-${{ github.job }}-${{ strategy.job-index }}
+          path: .forge/tests/runs
+          include-hidden-files: true
+          # test-upload.yml sends a merge-queue entry's runs when its CI run
+          # completes, so a day is plenty; main's stay 3.
+          retention-days: ${{ github.event_name == 'merge_group' && 1 || 3 }}
+          if-no-files-found: warn
 
   # ── Go tests, full mode: three jobs, partitioned by scripts/ci-test-packages.sh ──
   #
@@ -662,14 +676,16 @@ jobs:
           scripts/ci-forge.sh test capture --run "$run" --lane integration-storage -- \
             scripts/ci-go-test.sh -race -tags=integration -count=1 -json -covermode=atomic -coverprofile="$run/integration-storage/cover.out" -timeout=5m ./internal/storage
       # Main only: the runs the steps above recorded, for test-upload.yml.
-      - name: Keep the recorded test runs (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Keep the recorded test runs (for test-upload.yml)
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
         uses: actions/upload-artifact@v7
         with:
           name: test-runs-${{ github.job }}-${{ strategy.job-index }}
           path: .forge/tests/runs
           include-hidden-files: true
-          retention-days: 3
+          # test-upload.yml sends a merge-queue entry's runs when its CI run
+          # completes, so a day is plenty; main's stay 3.
+          retention-days: ${{ github.event_name == 'merge_group' && 1 || 3 }}
           if-no-files-found: warn
       # Main only: keeps any archive this job had to fetch, so the next run
       # does not (see embedded-postgres-cache's header).
@@ -743,14 +759,16 @@ jobs:
           CI_TEST_JSON: ${{ runner.temp }}/test-full.json
         run: scripts/ci-test-full-shard.sh ${{ matrix.args }}
       # Main only: the run the shard recorded, for test-upload.yml.
-      - name: Keep the recorded test runs (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Keep the recorded test runs (for test-upload.yml)
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
         uses: actions/upload-artifact@v7
         with:
           name: test-runs-${{ github.job }}-${{ strategy.job-index }}
           path: .forge/tests/runs
           include-hidden-files: true
-          retention-days: 3
+          # test-upload.yml sends a merge-queue entry's runs when its CI run
+          # completes, so a day is plenty; main's stay 3.
+          retention-days: ${{ github.event_name == 'merge_group' && 1 || 3 }}
           if-no-files-found: warn
       # Main only: keeps any archive this job had to fetch, so the next run
       # does not (see embedded-postgres-cache's header).
@@ -830,14 +848,16 @@ jobs:
       # Main only: the runs the -short tier and the flake gate recorded, for
       # test-upload.yml. The guards are not recorded: they test the repository's
       # shape, not code a coverage report would credit.
-      - name: Keep the recorded test runs (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Keep the recorded test runs (for test-upload.yml)
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
         uses: actions/upload-artifact@v7
         with:
           name: test-runs-${{ github.job }}-${{ strategy.job-index }}
           path: .forge/tests/runs
           include-hidden-files: true
-          retention-days: 3
+          # test-upload.yml sends a merge-queue entry's runs when its CI run
+          # completes, so a day is plenty; main's stay 3.
+          retention-days: ${{ github.event_name == 'merge_group' && 1 || 3 }}
           if-no-files-found: warn
       # Main only: keeps any archive this job had to fetch, so the next run
       # does not (see embedded-postgres-cache's header).
@@ -1294,14 +1314,16 @@ jobs:
             -run '^(TestServiceDockerBuild_ReproducibleImageID|TestSmoke_UploadedJWKSLogsInToARealOpenBao|TestSmoke_WriterPathAgainstARealOpenBao|TestDBSquash_FromDSN_AdoptsTheGooseDatabaseItWasCutFrom|TestDBSquash_BaselineAndTheNextMigrationApplyInOneMigratekitRun|TestDBSquash_TheDatabaseItsHistoryBuiltAdoptsTheBaseline|TestDBSquash_IsByteForByteReproducible|TestGeneratedProjectDeliversTelemetryToClickStack|TestDockerfile_ProductionLoadLocation|TestScaffoldedMinIOReconcilesAnonymousAccess|TestWhyRoundTripsThroughInstancesAndEvents|TestMigrateAddsTheWhyColumnToAnOlderSchema|TestS3AgainstMinIO|TestConcurrentRunsBehindASessionModePgBouncer|TestConcurrentRunsOverCreateIndexConcurrentlyBehindASessionModePgBouncer|TestSlowSkipsInTheIntegrationLane)$' \
             ./internal/cli ./internal/templates ./pkg/alerting/pgstore ./pkg/blobstore ./pkg/migratekit ./pkg/testkit
       # Main only: the runs the integration steps recorded, for test-upload.yml.
-      - name: Keep the recorded test runs (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Keep the recorded test runs (for test-upload.yml)
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
         uses: actions/upload-artifact@v7
         with:
           name: test-runs-${{ github.job }}-${{ strategy.job-index }}
           path: .forge/tests/runs
           include-hidden-files: true
-          retention-days: 3
+          # test-upload.yml sends a merge-queue entry's runs when its CI run
+          # completes, so a day is plenty; main's stay 3.
+          retention-days: ${{ github.event_name == 'merge_group' && 1 || 3 }}
           if-no-files-found: warn
       # Main only (this job runs nowhere else): keeps any archive this job had
       # to fetch, so the next run does not (see embedded-postgres-cache's
@@ -1560,15 +1582,18 @@ jobs:
         # The forge `Install forge` put on PATH records the lane (the same
         # source scripts/ci-forge.sh would relink); with none, it builds one.
         run: CI_FORGE="$(command -v forge || true)" scripts/ci-web-runtime-test.sh
-      # Main only: the run the step above recorded, for test-upload.yml.
-      - name: Keep the recorded test runs (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      # Main and the merge queue (this job runs in both): the run the step
+      # above recorded, for test-upload.yml.
+      - name: Keep the recorded test runs (for test-upload.yml)
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
         uses: actions/upload-artifact@v7
         with:
           name: test-runs-${{ github.job }}-${{ strategy.job-index }}
           path: .forge/tests/runs
           include-hidden-files: true
-          retention-days: 3
+          # test-upload.yml sends a merge-queue entry's runs when its CI run
+          # completes, so a day is plenty; main's stay 3.
+          retention-days: ${{ github.event_name == 'merge_group' && 1 || 3 }}
           if-no-files-found: warn
       - name: Save the Go caches (main only)
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}

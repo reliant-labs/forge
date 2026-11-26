@@ -1,5 +1,5 @@
 // Package testkit provides a small set of test helpers that every
-// forge-generated bootstrap_testing.go reinvents: a discard logger, a
+// forge-generated bootstrap_testing.go reinvents: a test-bound logger, a
 // real-postgres ORM context (bare, or with the project's embedded
 // migrations applied), an httptest harness that wraps a Connect-mounted
 // service, and a claims-bearing AuthedContext for handlers that read the
@@ -19,7 +19,7 @@
 // defaultTestConfig:
 //
 //	cfg := &testConfig{
-//	    logger: testkit.DiscardLogger(),
+//	    logger: testkit.Logger(t), // shown only if the test fails
 //	    cfg:    config.Defaults(), // the config Load yields with nothing set
 //	    db:     testkit.NewPostgresDB(t), // when AnyServiceHasDB
 //	}
@@ -434,6 +434,12 @@ func ApplyOptions[C any, O ~func(*C)](cfg *C, opts ...O) *C {
 // text here while production redacts it. Passing svcerr.Interceptor yourself
 // stays harmless: Wrap is idempotent.
 //
+// Outside svcerr sits production's logging interceptor
+// (observe.LoggingInterceptor), writing to [Logger](t). So when a call fails
+// with a redacted "internal server error", the record of it — the procedure,
+// the code, and the `cause` the client was never shown — is printed with the
+// test's output if the test fails, and nowhere if it passes.
+//
 // Production also validates every request against its protovalidate rules
 // before svcerr, rejecting an invalid one with invalid_argument. The test
 // server checks the same rules but, for now, only logs a violation on t and
@@ -455,6 +461,9 @@ func NewConnectClient[C any](
 	if warn := newWarnInvalidRequests(t); warn != nil {
 		opts = append(opts, connect.WithInterceptors(warn))
 	}
+	// Outside svcerr, as in production: it logs the wire error and the cause
+	// svcerr withheld from the client, to the test's own log.
+	opts = append(opts, connect.WithInterceptors(observe.LoggingInterceptor(Logger(t))))
 	opts = append(opts, connect.WithInterceptors(svcerr.Interceptor()))
 	srv := NewTestServer(t, func(mux *http.ServeMux) { register(mux, opts...) })
 	// Traced, so a test's own span is the parent of the server's.

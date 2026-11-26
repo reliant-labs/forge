@@ -31,7 +31,9 @@ Each input is one artifact, named by its base name or `<name>=<path>`.
   day old.
 - **The policy.** `--env <env>` judges by that env's `vuln_gate` and its `forge vuln
   exempt` exemptions; `--policy <file>` by a `vuln_gate` object in YAML or JSON (a
-  field it leaves out keeps its default); neither, by the default gate with
+  field it leaves out keeps its default; `scoped_exemptions` entries add `packages`,
+  `artifacts` or `locations`, and cover the advisory only there); neither, by the
+  default gate with
   `forge.yaml`'s `ci.vuln_scan.exemptions`.
 - **The output.** `--out <dir>` writes each SBOM there (`<name>.cdx.json` or
   `.spdx.json`) and the document as `vuln-gate.json`; `--json` prints it. It is the

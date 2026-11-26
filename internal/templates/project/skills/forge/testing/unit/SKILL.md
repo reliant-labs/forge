@@ -71,6 +71,8 @@ assert.Equal(t, connect.CodeInvalidArgument, svcerr.Code(err))
 
 Read the code with `svcerr.Code`, not `connect.CodeOf`. A test calls the handler directly, so the svcerr interceptor never runs: a handler returning a bare kind (`return nil, svcerr.PermissionDenied("admin only")`) hands the test no `*connect.Error`, and `connect.CodeOf` reads it as `Unknown`. `svcerr.Code` is the code the client is sent — it reads a `*connect.Error` exactly as `connect.CodeOf` does, and a bare kind as the interceptor will wrap it.
 
+Over the wire (`NewTest<Svc>Server`), an unclassified error reaches the client as `internal: internal server error`. On test failure, the harness prints the server's `rpc failed` log with the `cause` that svcerr withheld. The generated component logger (`testkit.Logger(t)`) also prints its recent records on failure. Both stay quiet on pass, even under `-v`.
+
 ## Rules
 
 - **Don't test generated code** in `gen/` — it's regenerated and not your logic

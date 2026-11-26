@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -427,6 +428,36 @@ func TestVulnGatePolicySources(t *testing.T) {
 			t.Fatalf("exit %d, exemptions %+v, notes %v: %s", code, doc.Gate.ExemptionsApplied, doc.Notes, stderr)
 		}
 	})
+	// A scoped exemption in --policy covers its advisory only in the packages
+	// it names, and is checked like an unscoped one.
+	for _, tc := range []struct {
+		name, policy string
+		wantCode     int
+		wantApplied  bool
+		wantNote     string
+	}{
+		{name: "in its package", policy: "scoped_exemptions:\n  - id: CVE-2026-2\n    reason: never reached\n    expires: 2026-12-31\n    packages: [b]\n", wantCode: exitOK, wantApplied: true},
+		{name: "in another package", policy: "scoped_exemptions:\n  - id: CVE-2026-2\n    reason: never reached\n    expires: 2026-12-31\n    packages: [other]\n", wantCode: exitWrong},
+		{name: "with no reason", policy: "scoped_exemptions:\n  - id: CVE-2026-2\n    expires: 2026-12-31\n    packages: [b]\n", wantCode: exitWrong, wantNote: "exemption not honored"},
+	} {
+		t.Run("--policy scoped exemption "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newVulnGateHarness(t)
+			h.matches = critical
+			p := filepath.Join(t.TempDir(), "p.yaml")
+			_ = os.WriteFile(p, []byte(tc.policy), 0o644)
+			doc, stderr, code := h.execGate(buildOutput(t), "--db", t.TempDir(), "--policy", p)
+			if code != tc.wantCode {
+				t.Fatalf("exit %d, want %d: %s", code, tc.wantCode, stderr)
+			}
+			if applied := len(doc.Gate.ExemptionsApplied) == 1 && slices.Equal(doc.Gate.ExemptionsApplied[0].Packages, []string{"b"}); applied != tc.wantApplied {
+				t.Errorf("exemptions applied = %+v", doc.Gate.ExemptionsApplied)
+			}
+			if tc.wantNote != "" && !strings.Contains(strings.Join(doc.Notes, "\n"), tc.wantNote) {
+				t.Errorf("notes = %v, want %q", doc.Notes, tc.wantNote)
+			}
+		})
+	}
 	for _, bad := range []string{`block_severity: severe`, `mode: sometimes`, `unknown_field: 1`} {
 		t.Run("bad policy "+bad, func(t *testing.T) {
 			t.Parallel()

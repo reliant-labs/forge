@@ -62,6 +62,10 @@ func TestGenerateConfigLoader_ThinAliasShim(t *testing.T) {
 		// RegisterFlags / Load delegate to the descriptor-driven library.
 		"func RegisterFlags(cmd *cobra.Command)",
 		"forgeconfig.RegisterFlags(cmd, &configv1.AppConfig{})",
+		// The narrow form for a non-serving command (friction #25): only
+		// the named fields' flags, not the server's whole surface.
+		"func RegisterFieldFlags(cmd *cobra.Command, paths ...string)",
+		"forgeconfig.RegisterFieldFlags(cmd, &configv1.AppConfig{}, paths...)",
 		"func Load(cmd *cobra.Command) (*Config, error)",
 		"forgeconfig.LoadTyped[*configv1.AppConfig](cmd)",
 		// Defaults: the config Load yields with nothing set, which the

@@ -502,7 +502,7 @@ func readVulnGatePolicy(path string) (release.ShapeVulnGate, []string, error) {
 		return gate, nil, undeterminedf("--policy: %v", err)
 	}
 	if err := yaml.UnmarshalStrict(data, &gate); err != nil {
-		return gate, nil, undeterminedf("--policy %s is not a vuln_gate (mode, block_severity, warn_severity, block_kev, fixable_only, exemptions): %v", path, err)
+		return gate, nil, undeterminedf("--policy %s is not a vuln_gate (mode, block_severity, warn_severity, block_kev, fixable_only, exemptions, scoped_exemptions): %v", path, err)
 	}
 	switch {
 	case gate.Mode == "":
@@ -521,6 +521,18 @@ func readVulnGatePolicy(path string) (release.ShapeVulnGate, []string, error) {
 	}
 	accepted, malformed := sbomScanExemptions(entries)
 	gate.Exemptions = accepted
+	// A scoped exemption (scoped_exemptions, release.ShapeVulnScopedExempt)
+	// is checked the same way, and keeps its scope.
+	scoped := gate.ScopedExemptions[:0]
+	for _, x := range gate.ScopedExemptions {
+		ok, bad := sbomScanExemptions([]config.CIVulnExemption{{ID: x.ID, Reason: x.Reason, Expires: x.Expires}})
+		malformed = append(malformed, bad...)
+		if len(ok) == 1 {
+			x.ID, x.Reason, x.Expires = ok[0].ID, ok[0].Reason, ok[0].Expires
+			scoped = append(scoped, x)
+		}
+	}
+	gate.ScopedExemptions = scoped
 	var notes []string
 	for _, m := range malformed {
 		notes = append(notes, "exemption not honored: "+m)

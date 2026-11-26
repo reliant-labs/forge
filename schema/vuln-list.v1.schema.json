@@ -334,6 +334,16 @@
             "string",
             "null"
           ]
+        },
+        "occurrences": {
+          "description": "Occurrences are each place it was found: an artifact, and a path of the package inside it, one per pair. What a scoped exemption's artifacts and locations are matched against (forge.VulnExemption).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/Occurrence"
+          }
         }
       },
       "required": [
@@ -347,7 +357,7 @@
       "additionalProperties": false
     },
     "Exemption": {
-      "description": "Exemption is an accepted advisory, as the env declares it (forge.VulnExemption): time-boxed, with its reason.",
+      "description": "Exemption is an accepted advisory, as the env declares it (forge.VulnExemption): time-boxed, with its reason, and the scope it covers the advisory in (none: everywhere).",
       "type": "object",
       "properties": {
         "id": {
@@ -367,6 +377,34 @@
             "string",
             "null"
           ]
+        },
+        "packages": {
+          "description": "Packages, Artifacts and Locations are the exemption's scope (release.ShapeVulnScopedExempt), absent when it covers the advisory everywhere.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "artifacts": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "locations": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -413,7 +451,7 @@
           ]
         },
         "exemptions_applied": {
-          "description": "ExemptionsApplied are the unexpired exemptions that took at least one finding out of the gate, sorted by id, each once. Absent when none did, and when the gate is off (nothing is judged).",
+          "description": "ExemptionsApplied are the unexpired exemptions that took at least one finding out of the gate, sorted by id, each declaration (an id and its scope: release.ShapeVulnScopedExempt.Identity) once. Absent when none did, and when the gate is off (nothing is judged).",
           "type": [
             "array",
             "null"
@@ -443,6 +481,25 @@
           ]
         },
         "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Occurrence": {
+      "description": "Occurrence is one place a finding was found. Artifact is absent for a finding attributed to the release as a whole, Location when the scan names no path.",
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "location": {
           "type": [
             "string",
             "null"

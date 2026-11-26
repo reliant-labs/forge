@@ -74,7 +74,17 @@
       ],
       "first_seen": "2026-11-18T07:00:11.41065994Z",
       "action": "block",
-      "rule": "block_severity"
+      "rule": "block_severity",
+      "occurrences": [
+        {
+          "artifact": "api",
+          "location": "/lib/apk/db/installed"
+        },
+        {
+          "artifact": "worker",
+          "location": "/lib/apk/db/installed"
+        }
+      ]
     },
     {
       "id": "CVE-2026-82560",
@@ -105,7 +115,41 @@
       ],
       "first_seen": "2026-11-20T07:00:11.41065994Z",
       "action": "warn",
-      "rule": "warn_severity"
+      "rule": "warn_severity",
+      "occurrences": [
+        {
+          "artifact": "api",
+          "location": "/usr/share/doc/perl-base/copyright"
+        },
+        {
+          "artifact": "api",
+          "location": "/var/lib/dpkg/info/perl-base.list"
+        },
+        {
+          "artifact": "api",
+          "location": "/var/lib/dpkg/info/perl-base.md5sums"
+        },
+        {
+          "artifact": "api",
+          "location": "/var/lib/dpkg/status"
+        },
+        {
+          "artifact": "worker",
+          "location": "/usr/share/doc/perl-base/copyright"
+        },
+        {
+          "artifact": "worker",
+          "location": "/var/lib/dpkg/info/perl-base.list"
+        },
+        {
+          "artifact": "worker",
+          "location": "/var/lib/dpkg/info/perl-base.md5sums"
+        },
+        {
+          "artifact": "worker",
+          "location": "/var/lib/dpkg/status"
+        }
+      ]
     },
     {
       "id": "GHSA-chx6-hx7r-mcp5",
@@ -139,7 +183,17 @@
       ],
       "first_seen": "2026-11-20T07:00:11.41065994Z",
       "action": "warn",
-      "rule": "warn_severity"
+      "rule": "warn_severity",
+      "occurrences": [
+        {
+          "artifact": "api",
+          "location": "/package-lock.json"
+        },
+        {
+          "artifact": "worker",
+          "location": "/package-lock.json"
+        }
+      ]
     },
     {
       "id": "CVE-2025-60876",
@@ -165,7 +219,17 @@
         "worker"
       ],
       "first_seen": "2026-11-20T07:00:11.41065994Z",
-      "action": "none"
+      "action": "none",
+      "occurrences": [
+        {
+          "artifact": "api",
+          "location": "/lib/apk/db/installed"
+        },
+        {
+          "artifact": "worker",
+          "location": "/lib/apk/db/installed"
+        }
+      ]
     },
     {
       "id": "CVE-2025-60876",
@@ -191,7 +255,17 @@
         "worker"
       ],
       "first_seen": "2026-11-20T07:00:11.41065994Z",
-      "action": "none"
+      "action": "none",
+      "occurrences": [
+        {
+          "artifact": "api",
+          "location": "/lib/apk/db/installed"
+        },
+        {
+          "artifact": "worker",
+          "location": "/lib/apk/db/installed"
+        }
+      ]
     },
     {
       "id": "CVE-2025-60876",
@@ -217,7 +291,17 @@
         "worker"
       ],
       "first_seen": "2026-11-20T07:00:11.41065994Z",
-      "action": "none"
+      "action": "none",
+      "occurrences": [
+        {
+          "artifact": "api",
+          "location": "/lib/apk/db/installed"
+        },
+        {
+          "artifact": "worker",
+          "location": "/lib/apk/db/installed"
+        }
+      ]
     }
   ]
 }

@@ -10,7 +10,7 @@ package cli
 //	forge vuln sbom <env> [--release v] [--artifact name] [--format cyclonedx|spdx]
 //	forge vuln sbom --file <path> [--artifact name] [--release v] [--format cyclonedx|spdx]
 //	forge vuln db status|pull|import <file>
-//	forge vuln exempt <env> <advisory-id> --reason "<why>" --expires YYYY-MM-DD
+//	forge vuln exempt <env> <advisory-id> --reason "<why>" --expires YYYY-MM-DD [--package p] [--artifact a] [--location /path]
 //
 // The scanning, the shared grype database and the gate rule are
 // internal/vulnscan; this file and its vuln_*.go siblings are flags, the

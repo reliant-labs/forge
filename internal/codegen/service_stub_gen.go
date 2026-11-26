@@ -16,87 +16,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
-
-	"github.com/reliant-labs/forge/internal/atomicfile"
 )
-
-// ReconcileScaffoldTestHelperName re-points the born scaffold tests'
-// references to the forge-generated `app.NewTest<X>` / `app.With<X>Deps`
-// factories at the collision-aware helper name pkg/app/testing.go actually
-// emits for this service, and reports whether it rewrote anything.
-//
-// It sweeps every scaffold test in the directory (IsScaffoldTestFile), not
-// one fixed filename: the scaffold is one file per RPC.
-//
-// GenerateServiceStub writes the scaffold test ONCE, at `forge project new` /
-// `forge scaffold service`, using whatever ComputeTestHelperName resolved
-// THEN — before any same-named domain package exists, so the plain form
-// (`NewTestWidget`). When the RPC-vertical sweep later creates the
-// `internal/<svc>` domain package, GenerateBootstrapTesting / ComputeTestHelperName
-// flip the factory to the Svc-prefixed form (`NewTestSvcWidget`) to disambiguate
-// it from the domain package's own `NewTestPkg<X>` factory — but the
-// scaffold-once test is frozen on the stale name, an undefined reference that
-// fails `go vet` on the very next generate. Reconciling ONLY these forge-owned
-// factory identifiers on every generate keeps the owned scaffold test in
-// lockstep with the regenerated testing.go, without touching the user's own
-// test logic. It is idempotent (a no-op once the names already agree) and
-// symmetric — it also rewrites back to the plain form if the domain package is
-// later removed.
-func ReconcileScaffoldTestHelperName(projectDir, servicePkg, targetDir string) (bool, error) {
-	entries, err := os.ReadDir(targetDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-
-	current := ComputeTestHelperName(servicePkg, projectDir)
-	pascal := naming.ToPascalCase(servicePkg)
-	// A service's factory name is either the plain pascal or the "Svc"-prefixed
-	// collision form; the stale name is whichever the current one is not.
-	stale := "Svc" + pascal
-	if current == stale {
-		stale = pascal
-	}
-	if stale == current { // degenerate (empty servicePkg) — nothing to reconcile
-		return false, nil
-	}
-
-	rewroteAny := false
-	for _, e := range entries {
-		if e.IsDir() || !IsScaffoldTestFile(e.Name()) {
-			continue
-		}
-		path := filepath.Join(targetDir, e.Name())
-		src, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return rewroteAny, rerr
-		}
-
-		// The two prefix rewrites cover every forge-owned factory identifier
-		// the scaffold references: `NewTest<X>` (the service under test) and
-		// `With<X>Deps` (named in the override comment). `NewTest<X>` also
-		// subsumes any `NewTest<X>Server`.
-		out := strings.ReplaceAll(string(src), "NewTest"+stale, "NewTest"+current)
-		out = strings.ReplaceAll(out, "With"+stale+"Deps", "With"+current+"Deps")
-		if out == string(src) {
-			continue
-		}
-
-		formatted, ferr := format.Source([]byte(out))
-		if ferr != nil {
-			// A pure identifier rename never breaks the parse; if it somehow
-			// did, leave the file untouched rather than write unparseable Go.
-			continue
-		}
-		if werr := atomicfile.WriteFile(path, formatted, 0o644); werr != nil {
-			return rewroteAny, werr
-		}
-		rewroteAny = true
-	}
-	return rewroteAny, nil
-}
 
 // GenerateServiceStub generates service.go plus one handler file per custom
 // RPC (RPCHandlerFileName) for a new service, using the embedded FS
@@ -147,7 +67,7 @@ func GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...ma
 
 	// One scaffold test file per RPC (same filter as the stubs — skip CRUD
 	// methods). The qualified filenames free the canonical handlers_test.go
-	// slot for user-owned tests; forge never touches handlers_test.go.
+	// slot for user-owned tests.
 	if err := writeScaffoldTests(targetDir, handlersData); err != nil {
 		return err
 	}
@@ -505,9 +425,8 @@ const rpcHandlerPrefix = "rpc_"
 // holds real tests (the header offers rpc_<name>_test.go) is supported: the
 // scaffold-once ledger keeps the old name from being born again, and
 // writeScaffoldTests declines a birth whose Test<Rpc>_Generated func another
-// file already declares. A renamed file leaves the IsScaffoldTestFile sweeps
-// (the stale-pb warning, the test-helper-name reconcile), exactly as every
-// hand-written test file in the package already does.
+// file already declares. The stale-pb warning no longer applies after a
+// rename, but references to renamed test helpers are still reconciled.
 func ScaffoldTestFileName(rpc string) string {
 	return scaffoldTestPrefix + buildSafeStem(naming.ToSnakeCase(rpc)) + "_test.go"
 }
@@ -517,9 +436,7 @@ const scaffoldTestPrefix = "handlers_scaffold_"
 // IsScaffoldTestFile reports whether a bare filename is one of forge's
 // born per-RPC scaffold tests. It also accepts the single-file
 // `handlers_scaffold_test.go` that projects born before the per-RPC split
-// still have: that file is on real users' disks and the consumers of this
-// predicate (stale-pb-reference detection, test-helper reconciliation)
-// have to keep working on it.
+// still have: stale-pb-reference detection also applies to that file.
 func IsScaffoldTestFile(name string) bool {
 	return name == "handlers_scaffold_test.go" ||
 		(strings.HasPrefix(name, scaffoldTestPrefix) && strings.HasSuffix(name, "_test.go"))

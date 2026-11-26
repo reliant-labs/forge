@@ -404,6 +404,7 @@ func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
 	flags.BoolVar(&f.explain, "explain", false, "Print the declared-cluster guard decision (declared/current/verdict) and exit")
 	flags.StringVar(&f.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
 	flags.BoolVar(&f.noSBOM, "no-sbom", false, "When this deploy cuts a release (no version named): cut it without generating an SBOM for each artifact. Warns, and each artifact records why it has none. No effect when the deploy promotes an existing release")
+	flags.BoolVar(&f.noVulnDBPull, "no-vuln-db-pull", false, "When this deploy cuts a release (no version named): scan it only with a vulnerability database this machine already has; never download one (the cut fetches it when missing or stale by default). FORGE_VULN_DB_PULL=never sets this for every cut on the machine. No effect when the deploy promotes an existing release")
 	flags.BoolVar(&f.prune, "prune", false, "Delete forge-managed Deployments in the namespace that the current KCL render no longer produces (opt-in)")
 	flags.StringArrayVar(&f.targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
 	flags.BoolVar(&f.skipFrontend, "skip-frontend", false, "Deploy every backend workload but skip the static frontend build+ship (hosted static hosting, a bucket or Firebase). The backend-only path without enumerating every --target.")
@@ -634,6 +635,9 @@ type deployCmdFlags struct {
 	// noSBOM is --no-sbom: the release this deploy cuts gets no SBOMs
 	// (build_sbom.go).
 	noSBOM bool
+	// noVulnDBPull is --no-vuln-db-pull: the cut this deploy makes never
+	// downloads the vulnerability database (vuln_gate.go).
+	noVulnDBPull bool
 }
 
 // dispatchDeployCmd validates the flag combination and routes to the release

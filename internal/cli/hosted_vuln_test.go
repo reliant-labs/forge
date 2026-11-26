@@ -598,7 +598,7 @@ func TestVulnListReadsTheControlPlane(t *testing.T) {
 		t.Errorf("scanned on this machine: the control plane's findings are the record")
 	}
 	text, _, _ := h.exec("list", "prod")
-	for _, want := range []string{"vuln_gate (audit): BLOCK: CVE-2026-1111", "not scanned: web (no SBOM recorded on the control plane)",
+	for _, want := range []string{"vuln_gate (enforce): BLOCK: CVE-2026-1111", "not scanned: web (no SBOM recorded on the control plane)",
 		"→ https://forge.reliantlabs.io/forge/p/acme/vulnerabilities"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("text lacks %q:\n%s", want, text)
@@ -1033,8 +1033,9 @@ func (o oneRelease) Get(_ context.Context, v string) (*release.Release, error) {
 }
 
 // ledgerOnlyVulnGates judges v1.0.0's promotion to a ledger-only prod (forge
-// applies, the control plane converges nothing) under the default policy, with
-// fake as the control plane. The release, as a control plane returns it,
+// applies, the control plane converges nothing) under an audit policy (both
+// controls turned down from their enforce default, so every verdict is
+// recorded and none refuses), with fake as the control plane. The release, as a control plane returns it,
 // carries no SBOM refs.
 func ledgerOnlyVulnGates(t *testing.T, fake *fakeVulnService) ([]release.Gate, string) {
 	t.Helper()
@@ -1052,6 +1053,8 @@ func ledgerOnlyVulnGates(t *testing.T, fake *fakeVulnService) ([]release.Gate, s
 		t.Fatal("the fixture is not a ledger-only env")
 	}
 	pol := release.DefaultDeliveryPolicy()
+	pol.VulnGate.Mode = release.DeliveryAudit
+	pol.ProvenanceSBOM.Mode = release.DeliveryAudit
 	var out bytes.Buffer
 	gates, err := checkPromotionVulnGates(context.Background(), &out, t.TempDir(), ledger, &pol, promotionCheckInput{Env: "prod", Version: "v1.0.0"})
 	if err != nil {

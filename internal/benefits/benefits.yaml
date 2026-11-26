@@ -2858,17 +2858,19 @@ benefits:
     headline: true
     use: >-
       Nothing to set up: `forge env build <env> --release v1.0.0` (or the cut
-      inside `forge env deploy`) does it. Read it back with `forge vuln list
-      <env>`; `forge vuln db pull` fetches the vulnerability database once per
-      machine. `forge vuln patch <env> --verify` bumps each vulnerable Go or
+      inside `forge env deploy`) does it, fetching the vulnerability database
+      once per machine when it has none (`--no-vuln-db-pull` or
+      `FORGE_VULN_DB_PULL=never` opts out). Read it back with `forge vuln list
+      <env>`. `forge vuln patch <env> --verify` bumps each vulnerable Go or
       npm/pnpm/yarn dependency to its fix and runs your gate over the result.
     why: >-
       forge installs syft and grype as pinned release binaries whose sha256 is
       compiled into forge. An artifact it could not describe is recorded
-      `unavailable` with the reason, a static site's SBOM is its lockfile (it
-      can overstate the bundle), and nothing is refused unless an env opts in
-      (`vuln-gate-self-hosted`). `--no-sbom` and `provenance_sbom = off` turn
-      it off.
+      `unavailable` with the reason, and a static site's SBOM is its lockfile
+      (it can overstate the bundle). A promotion is refused by default
+      (`vuln-gate-self-hosted`, warn first); `mode = "audit"` records and
+      refuses nothing. `--no-sbom` and `provenance_sbom = off` turn the SBOM
+      off.
     evidence:
       - skill: vuln
       - command: vuln scan
@@ -3979,21 +3981,26 @@ benefits:
     claim: >-
       Every release cut prints what its SBOMs are known to be vulnerable to
       and what each env's `vuln_gate` would do, and an env with no control
-      plane has `vuln_gate = enforce` and `provenance_sbom` judged before
-      forge writes its promotion, warning for one release before it refuses.
+      plane has `vuln_gate` and `provenance_sbom` judged before forge writes
+      its promotion: `enforce` by default, warning for one release before it
+      refuses.
     availability: forge
     use: >-
+      Nothing to set up; accept one advisory with `forge vuln exempt <env>
+      <id> --reason "..." --expires YYYY-MM-DD`, or opt an env out with
       `delivery_policy = forge.DeliveryPolicy { vuln_gate = forge.VulnPolicy {
-      mode = "enforce" } }`; accept one advisory with `forge vuln exempt
-      <env> <id> --reason "..." --expires YYYY-MM-DD`
+      mode = "audit" } }`
     why: >-
-      Graded through the lint rollout rows `vuln-gate` and `sbom-required`:
-      below their `gates_from` release an enforce is judged as audit and says
-      "would block". From it, a self-hosted promotion is refused
+      Graded through the lint rollout rows `vuln-gate` and `sbom-required`
+      (new in v1.12.0, gating from v1.13.0): below `gates_from`, an enforce,
+      declared or default, is judged as audit and says "would block". From it,
+      a self-hosted promotion is refused
       `vuln_gate_blocked`, `vuln_gate_unscanned` (no SBOM or scan, or a stale
       database: could not determine is never a pass) or `sbom_missing`, each
       exit 4; `--override-vuln-gate "<why>"` records who overrode it, why,
-      and which findings. `lint.rules: {vuln-gate: error}` gates now.
+      and which findings. `lint.rules: {vuln-gate: error}` gates now. With
+      `provenance_sbom = off` and no `vuln_gate` mode declared, the gate is
+      `audit`: there is no SBOM to scan.
     evidence:
       - command: vuln exempt
       - command: ci vuln-sbom
@@ -4003,8 +4010,9 @@ benefits:
       - id: vuln-gate
         lane: forge env deploy
         bug_class: >-
-          An env that declares `vuln_gate = enforce` promoting a release with
-          a fixable critical or KEV-listed advisory, or one nobody scanned
+          An env whose `vuln_gate` is `enforce` (the default) promoting a
+          release with a fixable critical or KEV-listed advisory, or one
+          nobody scanned
       - id: sbom-required
         lane: forge env deploy
         bug_class: >-
@@ -4020,7 +4028,7 @@ benefits:
       `flux_verify` are enforced on a control plane, `required_gates` and
       `approval_hook` wherever the env's ledger lives, `vuln_gate` and
       `provenance_sbom` are judged by forge itself for an env with no control
-      plane (warn first, and `audit` unless you opt in), while
+      plane (`enforce` by default, warn first), while
       `trusted_builder`, `admission_verify`, `signed_promotions`,
       `bundle_kinds` and `approvals` are recorded and refuse nothing yet.
     status: recorded
@@ -4036,7 +4044,9 @@ benefits:
       `forge env build` does not sign images; only an env with a control plane
       gets its bundles signed, by the platform. A control that cannot block a
       deploy defaults to `enforce`; one that can defaults to `audit`, so you
-      read its would-deny verdicts before turning it on.
+      read its would-deny verdicts before turning it on. The exception is the
+      release's own evidence: `vuln_gate` and `provenance_sbom` default to
+      `enforce`, warn first.
     evidence:
       - skill: deploy/delivery-policy
 

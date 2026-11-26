@@ -31,11 +31,12 @@ At every cut (`forge env build <env> --release <v>`, or the cut inside
   same artifact with or without one). The bytes go to this machine's ledger, and
   an image or hosted static site also gets the SBOM beside it in its registry as
   an OCI referrer. An env on a control plane uploads it there too.
-- **Scanned, when the database is here.** On a machine with forge's grype
-  database (`forge vuln db pull`, about 200 MB, once per machine), the cut prints
-  the findings and the env's `vuln_gate` verdict. A cut never downloads the
-  first database and never fails over an SBOM or a scan: an artifact forge could
-  not describe is recorded `unavailable` and reads as "not scanned", never clean.
+- **Scanned.** With forge's grype database (about 200 MB, once per machine), the
+  cut prints the findings and the env's `vuln_gate` verdict. Through v1.11.x the
+  cut never downloaded the first database (`forge vuln db pull` did); from v1.12.0
+  it does (`migrations/v1.12.0/vuln-gate-default`). A cut never fails over an SBOM
+  or a scan: an artifact forge could not describe is recorded `unavailable` and
+  reads as "not scanned", never clean.
 
 `forge vuln list <env>`, `show`, `scan`, `sbom`, `exempt` and `patch` read
 those records (`forge skill load vuln`).
@@ -102,11 +103,13 @@ or edit yours:
 A repository that runs its own scanner can keep it: nothing in forge depends on
 these steps. The SBOMs and the gate come from the release cut, not from CI.
 
-## `vuln_gate`: findings are recorded, nothing is refused by default
+## `vuln_gate`: findings are recorded; from v1.12.0 they can refuse
 
-Each env's `delivery_policy` declares `vuln_gate`, and its schema default is
-`audit`: findings are recorded and printed as "would block", and a promotion
-goes ahead. Opt an env in to refusing promotions with one line:
+Through v1.11.x, each env's `delivery_policy` declared `vuln_gate` with a schema
+default of `audit`: findings were recorded and printed as "would block", and a
+promotion went ahead. **From v1.12.0 the default is `enforce`** (warn first, gating
+from v1.13.0): `migrations/v1.12.0/vuln-gate-default` has what changes and how to
+opt out. At a v1.11.x pin an env opted in to refusing promotions with one line:
 
 ```kcl
 delivery_policy = forge.DeliveryPolicy {
@@ -114,16 +117,13 @@ delivery_policy = forge.DeliveryPolicy {
 }
 ```
 
-`enforce` is warn-first. It is graded through the `vuln-gate` lint rollout row
-(and a declared `provenance_sbom = forge.Control {mode = "enforce"}` through
-`sbom-required`): new in v1.10.0, gating from **v1.11.0**. So once this upgrade
-moves `forge_version` to v1.11.0, a declared `enforce` refuses promotions. While
-the pin is below v1.11.0, this forge judges an `enforce` as `audit` and prints
-`would block (new in v1.10.0; gates from v1.11.0)`. The v1.10.0 binary itself
-was cut before that row moved, and already gates it at a v1.10.0 pin.
-`lint.rules: {vuln-gate: error}` in forge.yaml gates now; `{vuln-gate: warn}`
-extends the warning past the bump. A
-release an older forge cut, with no SBOMs, is never refused for lacking one.
+`enforce` is warn-first, graded through the `vuln-gate` lint rollout row (and
+`provenance_sbom = enforce` through `sbom-required`). A v1.11.x forge gated a
+declared `enforce` from v1.11.0; the v1.12.0 forge moved both rows to v1.12.0 and
+gates from **v1.13.0**, so a pin below v1.13.0 sees `would block (new in v1.12.0;
+gates from v1.13.0)` instead of a refusal. `lint.rules: {vuln-gate: error}` in
+forge.yaml gates now; `{vuln-gate: warn}` extends the warning. A release an older
+forge cut, with no SBOMs, is never refused for lacking one.
 
 Before turning `enforce` on for an env, look at what it would block:
 

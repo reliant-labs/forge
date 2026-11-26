@@ -309,9 +309,12 @@ type ShapeApprovals struct {
 
 // DefaultDeliveryPolicy is every control at its default for an env that
 // delivers through a control plane (the only reader of a recorded policy,
-// so it is what a nil policy in a shape means). A control that cannot block
-// a deploy and costs the customer nothing is enforced (provenance/SBOM); a
-// control that can refuse a deploy is audited until the env turns it up.
+// so it is what a nil policy in a shape means). A control that can refuse a
+// deploy is audited until the env turns it up — except the release's own
+// evidence: provenance_sbom and vuln_gate are enforced (secure by default;
+// forge grades both warn-first through the lint rollout rows sbom-required
+// and vuln-gate, so a project pinned below the release that made them the
+// default is warned "would block" for one release before it is refused).
 //
 // Signing and flux_verify are audit: the platform signs every recorded bundle
 // with the org's key and verifies it server-side, recording the verdict, and
@@ -325,12 +328,12 @@ func DefaultDeliveryPolicy() ShapeDeliveryPolicy {
 	return ShapeDeliveryPolicy{
 		TrustedBuilder:   ShapeTrustedBuilder{Mode: DeliveryAudit, Builders: []string{}},
 		Signing:          ShapeSigning{Mode: DeliveryAudit, Key: SigningKeyOrgKMS},
-		ProvenanceSBOM:   ShapeControl{Mode: DeliveryAudit},
+		ProvenanceSBOM:   ShapeControl{Mode: DeliveryEnforce},
 		FluxVerify:       ShapeControl{Mode: DeliveryAudit},
 		AdmissionVerify:  ShapeControl{Mode: DeliveryAudit},
 		SignedPromotions: ShapeControl{Mode: DeliveryAudit},
 		VulnGate: ShapeVulnGate{
-			Mode: DeliveryAudit, BlockSeverity: "critical", WarnSeverity: "high",
+			Mode: DeliveryEnforce, BlockSeverity: "critical", WarnSeverity: "high",
 			BlockKEV: true, FixableOnly: true, Exemptions: []ShapeVulnExempt{},
 		},
 		BundleKinds: ShapeBundleKinds{Mode: DeliveryAudit, Allow: []string{}, Deny: []string{}},

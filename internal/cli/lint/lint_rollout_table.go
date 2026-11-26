@@ -303,15 +303,19 @@ var newRules = []rolloutGroup{
 		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "Give existing Vite sites time to align build output and base paths with their deployment"},
 		Rules:        []string{staticexport.RuleViteOutDir, staticexport.RuleViteBase},
 	},
-	// The vulnerability gate made real (rollout_grade.go): an env's declared
-	// `vuln_gate = enforce` is judged as audit until it gates — at the cut,
-	// at a self-hosted promote and in the vuln-sbom gate step — and a
-	// declared `provenance_sbom = enforce` refuses a promotion whose
-	// artifacts have no SBOM. Both are the approved SBOM design's warn-first
-	// rollout (forge#2468 §1.8).
+	// The vulnerability gate (rollout_grade.go): an env's `vuln_gate =
+	// enforce` is judged as audit until it gates — at the cut, at a
+	// self-hosted promote and in the vuln-sbom gate step — and
+	// `provenance_sbom = enforce` refuses a promotion whose artifacts have no
+	// SBOM. First shipped in v1.10.0 as an opt-in (forge#2468 §1.8, gating
+	// from v1.11.0); v1.12.0 makes enforce the DEFAULT for both (owner,
+	// 2026-11-26: vulnerability scanning gates every release by default, as
+	// lint and tests do). A tightened rule moves to the tightening release,
+	// so the window reopens: every pinned project, declared or not, is warned
+	// "would block" through v1.12.0 and refused from v1.13.0.
 	{
-		IntroducedIn: "v1.10.0",
-		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "An enforce declared before forge evaluated it blocked nothing; it warns \"would block\" for one release before it refuses a promotion"},
+		IntroducedIn: "v1.12.0",
+		Grace:        &rolloutGrace{Until: "v1.13.0", Reason: "enforce becomes the default vuln_gate and provenance_sbom of every env; a project that declared neither blocked nothing, so it warns \"would block\" for one release before it refuses a promotion"},
 		Rules:        []string{RuleVulnGate, RuleSBOMRequired},
 	},
 	// The license-check gate step made real: the pinned go-licenses ran with

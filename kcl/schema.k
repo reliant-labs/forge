@@ -7023,10 +7023,17 @@ schema VulnPolicy:
     A finding blocks when it is KEV-listed (`block_kev`), or when its severity
     is at or above `block_severity` and, with `fixable_only`, a fixed version
     exists. Findings at or above `warn_severity` that do not block are warned.
-    `none` for either severity switches that band off. Default mode `audit`:
-    enforcing it can refuse a promotion.
+    `none` for either severity switches that band off.
+
+    Default mode `enforce` — a release must prove it ships no known KEV or
+    fixable critical, as it must pass lint and tests — except under
+    `provenance_sbom = off`, where there is no SBOM to scan and an unset mode
+    resolves to `audit`. Set `mode = "audit"` to record findings and refuse
+    nothing. A project pinned below the release that made enforce the default
+    sees "would block" warnings for one release first (the warn-first rollout
+    row `vuln-gate`). Resolved at render.
     """
-    mode: ControlMode = "audit"
+    mode?: ControlMode
     block_severity: "none" | "low" | "medium" | "high" | "critical" = "critical"
     warn_severity: "none" | "low" | "medium" | "high" | "critical" = "high"
     block_kev: bool = True
@@ -7209,7 +7216,9 @@ schema DeliveryPolicy:
 
     Each control is `off`, `audit` (record and alert, never block) or
     `enforce`. The default follows one rule: a control that cannot block a
-    deploy is `enforce`; one that can is `audit`. Load `deploy/delivery-policy`
+    deploy is `enforce`; one that can is `audit` — except the release's own
+    evidence, `provenance_sbom` and `vuln_gate`, which are `enforce` (secure
+    by default, warn first). Load `deploy/delivery-policy`
     for the table, what each enforces, and which controls are recorded but not
     enforced yet.
 
@@ -7231,9 +7240,10 @@ schema DeliveryPolicy:
     # (the platform signs, and verifies server-side), `off` without one
     # (nothing signs a self-hosted env's bundles yet). Resolved at render.
     signing?: Signing
-    # `audit` (owner, 2026-11-20): enforcing it refuses a promotion whose
-    # artifacts have no SBOM, so it is a control that can block a deploy.
-    provenance_sbom: Control = Control {mode = "audit"}
+    # `enforce` (owner, 2026-11-26: secure by default): every cut writes an
+    # SBOM per artifact, so a release that has none is refused a promotion
+    # (`sbom_missing`). Warn first: the rollout row `sbom-required`.
+    provenance_sbom: Control = Control {mode = "enforce"}
     # Unset follows `signing`'s rule: `audit` with a control plane, `off`
     # without one. `enforce` writes OCIRepository spec.verify on the hub.
     flux_verify?: Control
@@ -7270,6 +7280,12 @@ _delivery_signing_mode = lambda p: DeliveryPolicy, hosted: bool -> str {
 }
 _delivery_flux_verify_mode = lambda p: DeliveryPolicy, hosted: bool -> str {
     p.flux_verify.mode if p.flux_verify else ("audit" if hosted else "off")
+}
+
+# vuln_gate resolved: the declared mode, else `enforce` — unless
+# provenance_sbom is off, where there is no SBOM to scan, so `audit`.
+_delivery_vuln_gate_mode = lambda p: DeliveryPolicy -> str {
+    p.vuln_gate.mode if p.vuln_gate.mode else ("audit" if p.provenance_sbom.mode == "off" else "enforce")
 }
 
 # The signing controls an env with no control plane declares as enforce:

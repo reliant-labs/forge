@@ -211,7 +211,7 @@ func TestVulnListBlocksAndStoresTheScan(t *testing.T) {
 	if doc.Schema != vulnscan.DocumentSchema || doc.Env != "prod" || doc.Release != "v1.0.0" {
 		t.Errorf("doc head = %s %s %s", doc.Schema, doc.Env, doc.Release)
 	}
-	if doc.Gate.Verdict != vulnscan.VerdictBlock || strings.Join(doc.Gate.Blocking, ",") != "CVE-2026-4738" || doc.Gate.Mode != "audit" {
+	if doc.Gate.Verdict != vulnscan.VerdictBlock || strings.Join(doc.Gate.Blocking, ",") != "CVE-2026-4738" || doc.Gate.Mode != "enforce" {
 		t.Errorf("gate = %+v", doc.Gate)
 	}
 	rec, err := h.store.LatestFindings(digest)
@@ -227,7 +227,7 @@ func TestVulnListBlocksAndStoresTheScan(t *testing.T) {
 	}
 	// Text names the blocking advisory and the next command.
 	text, _, _ := h.exec("list", "prod")
-	for _, want := range []string{"vuln_gate (audit): BLOCK: CVE-2026-4738", "fixed in 1.4-r0", "→ forge vuln show prod CVE-2026-4738", "CPE match, low confidence"} {
+	for _, want := range []string{"vuln_gate (enforce): BLOCK: CVE-2026-4738", "fixed in 1.4-r0", "→ forge vuln show prod CVE-2026-4738", "CPE match, low confidence"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("text lacks %q:\n%s", want, text)
 		}

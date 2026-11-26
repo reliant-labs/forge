@@ -85,21 +85,3 @@ func TestVulnGateRulesWarnFirst(t *testing.T) {
 		}
 	}
 }
-
-func TestRuleGradePredates(t *testing.T) {
-	g := RuleGrade{Rule: rolloutRule, IntroducedIn: "v1.9.0", GatesFrom: "v1.9.1"}
-	for v, want := range map[string]bool{
-		"v1.8.4":                               true,
-		"1.8.0":                                true,
-		"v1.9.0":                               false,
-		"v1.10.0":                              false,
-		"v1.9.1-0.20261120000000-abcdef123456": false, // leads to v1.9.1
-		"":                                     false,
-		"(devel)":                              false,
-		"dev":                                  false,
-	} {
-		if got := g.Predates(v); got != want {
-			t.Errorf("Predates(%q) = %v, want %v", v, got, want)
-		}
-	}
-}

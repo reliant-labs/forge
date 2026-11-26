@@ -15,16 +15,17 @@ package cli
 //   - THE vuln-sbom GATE STEP (vuln_gate_ci.go): `forge ci vuln-sbom` scans
 //     the source tree's lockfiles in `task ci`.
 //
-// WARN FIRST. Until this release an `enforce` blocked nothing, so nobody who
-// wrote one opted in to being blocked. Each place grades the declared mode
-// through the lint rollout rows vuln-gate and sbom-required
-// (internal/cli/lint/rollout_grade.go): while the project's forge pin is below
-// the rule's GatesFrom release, enforce is judged as audit and says "would
-// block (new in v1.10.0; gates from v1.11.0)". lint.rules dials it the way it
-// dials every rule ({vuln-gate: error} gates now, {vuln-gate: warn} keeps it a
-// warning). Both schema defaults are audit — vuln_gate (owner decision 5)
-// and provenance_sbom (owner, 2026-11-20) — so a project that declares
-// nothing records findings and blocks nothing, at any pin.
+// SECURE BY DEFAULT, WARN FIRST. Both schema defaults are enforce (owner,
+// 2026-11-26: vulnerability scanning gates every release by default, as lint
+// and tests do), so a project that declares nothing is refused a release with
+// a KEV or fixable critical, or with no SBOM. Each place grades the mode in
+// force, declared or default, through the lint rollout rows vuln-gate and
+// sbom-required (internal/cli/lint/rollout_grade.go): while the project's
+// forge pin is below the rule's GatesFrom release, enforce is judged as audit
+// and says "would block (new in v1.12.0; gates from v1.13.0)". lint.rules
+// dials it the way it dials every rule ({vuln-gate: error} gates now,
+// {vuln-gate: warn} keeps it a warning), and `mode = "audit"` in the env's
+// delivery_policy opts out for good.
 
 import (
 	"context"
@@ -33,6 +34,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/cli/lint"
 	"github.com/reliant-labs/forge/internal/cloud"
@@ -118,23 +121,31 @@ func shippingArtifacts(rel *release.Release) []string {
 
 // sbomEra reports whether rel was cut by a forge that records SBOMs, so the
 // ABSENCE of one is something to judge: an artifact names an SBOM ref (ok or
-// unavailable), or the forge that cut it is known and does not predate the
-// rule. A release an older forge cut is never refused for lacking what that
-// forge could not make (§5: "a release cut by an older forge ... is never
-// refused by vuln_gate_unscanned until its project's pin gates" — and not
-// then either, for an SBOM it could never have).
-func sbomEra(rel *release.Release, g lint.RuleGrade) bool {
+// unavailable), or the forge that cut it is known and does not predate
+// sbomFirstRelease. A release an older forge cut is never refused for lacking
+// what that forge could not make (§5: "a release cut by an older forge ... is
+// never refused by vuln_gate_unscanned until its project's pin gates" — and
+// not then either, for an SBOM it could never have).
+//
+// The era is the release that first cut SBOMs, not the rule's IntroducedIn:
+// the rule's row moved to the release that made enforce the default, but a
+// release v1.10.0 or v1.11.0 cut could carry an SBOM all the same.
+func sbomEra(rel *release.Release, _ lint.RuleGrade) bool {
 	for _, name := range shippingArtifacts(rel) {
 		if rel.Artifacts[name].SBOM != nil {
 			return true
 		}
 	}
-	v := releaseForgeVersion(rel)
-	if _, ok := lint.ForgeRelease(v); !ok {
+	v, ok := lint.ForgeRelease(releaseForgeVersion(rel))
+	if !ok {
 		return false
 	}
-	return !g.Predates(v)
+	return semver.Compare(v, sbomFirstRelease) >= 0
 }
+
+// sbomFirstRelease is the first forge release whose cut records an SBOM per
+// artifact (forge#2468).
+const sbomFirstRelease = "v1.10.0"
 
 // ─── The cut ────────────────────────────────────────────────────────────────
 
@@ -150,8 +161,30 @@ type cutVulnInput struct {
 	// Hosted reports that the env's ledger is a control plane, whose own
 	// scan is authoritative for it.
 	Hosted bool
-	// Log receives progress (a database refresh).
+	// Log receives progress (a database download or refresh).
 	Log io.Writer
+	// NoDBPull is --no-vuln-db-pull (or FORGE_VULN_DB_PULL=never): scan only
+	// with a database this machine already has, never download one.
+	NoDBPull bool
+}
+
+// envVulnDBPull is the machine-wide opt-out of the cut's database download:
+// FORGE_VULN_DB_PULL=never (or off, false, 0). A machine-wide switch beside
+// the flag because the database is the machine's, not the project's: an
+// air-gapped runner that imports it (`forge vuln db import`) says so once.
+const envVulnDBPull = "FORGE_VULN_DB_PULL"
+
+// cutDBPullDisabled reports whether the cut must not download the database:
+// the flag, or FORGE_VULN_DB_PULL naming an opt-out.
+func cutDBPullDisabled(flag bool, getenv func(string) string) bool {
+	if flag {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(getenv(envVulnDBPull))) {
+	case "never", "off", "false", "0", "no":
+		return true
+	}
+	return false
 }
 
 // cutVulnVerdict is what the cut prints under its release line.
@@ -170,19 +203,20 @@ type cutVulnVerdict struct {
 // the env's vuln_gate. It never fails the cut: anything that keeps it from
 // scanning is a "not scanned" line, never an error.
 //
-// THE DATABASE AT THE CUT. The first download is 205 MB and unpacks to 3.3
-// GiB with two minutes of import; a cut is a CLI verb, but it is also every
-// CI pipeline's release step, and a cut that silently grew by that much — or
-// filled a runner's disk — would be a regression in the one verb that must
-// stay predictable. So a cut NEVER downloads the first database: on a machine
-// that has none it prints "not scanned" and the one command that fetches it
-// (`forge vuln db pull`, said with its size). A machine that already has one
-// opted in: the cut refreshes it when it is more than a day old, with
-// grype's own progress line, exactly as `forge vuln scan` does — because a
-// cut that judged against a five-day-old database would print "stale" on
-// every run. The verdict at the cut is advisory either way (§1.8): the
-// promotion gate judges again, and refuses an unscanned release under a
-// graded enforce.
+// THE DATABASE AT THE CUT. A release is scanned the way it is linted and
+// tested: by default. So the cut fetches the database when this machine has
+// none (205 MB, unpacking to 3.3 GiB, once per machine and shared by every
+// project) and refreshes it when it is more than a day old, with grype's own
+// progress line, exactly as `forge vuln scan` does. A cut that recorded "not
+// scanned" on every fresh CI runner would leave enforce, the default
+// vuln_gate, refusing every promotion `vuln_gate_unscanned`. The opt-out is
+// explicit: --no-vuln-db-pull for one cut, FORGE_VULN_DB_PULL=never for a
+// machine (an air-gapped runner that imports the database). Then the cut
+// scans only with a database already here and otherwise prints "not
+// scanned" with the command that fetches it. A download that fails (no
+// network, a mirror down) is "not scanned" too: never a failed cut. The
+// verdict at the cut is advisory either way (§1.8): the promotion gate
+// judges again, and refuses an unscanned release under a graded enforce.
 func scanReleaseAtCut(ctx context.Context, in cutVulnInput) *cutVulnVerdict {
 	if in.Release == nil || in.Entities == nil || cloud.ClaimableActive() {
 		return nil
@@ -214,10 +248,13 @@ func scanReleaseAtCut(ctx context.Context, in cutVulnInput) *cutVulnVerdict {
 		return v
 	}
 	if !db.OnDisk() {
-		v.NotScanned = "no vulnerability database on this machine; `forge vuln db pull` downloads it once (~200 MB, shared by every project here)"
-		return v
+		if in.NoDBPull {
+			v.NotScanned = "no vulnerability database on this machine, and the cut was told not to download one (--no-vuln-db-pull or " + envVulnDBPull + "); `forge vuln db pull` downloads it once (~200 MB, shared by every project here)"
+			return v
+		}
+		_, _ = fmt.Fprintln(log, "[build] no vulnerability database on this machine: downloading it once (~200 MB, shared by every project here; --no-vuln-db-pull or "+envVulnDBPull+"=never skips this)")
 	}
-	local, err := db.Ensure(ctx, vulnscan.EnsureOptions{Fetch: true})
+	local, err := db.Ensure(ctx, vulnscan.EnsureOptions{Fetch: !in.NoDBPull})
 	if err != nil {
 		v.NotScanned = cutScanProblem(err)
 		return v

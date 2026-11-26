@@ -18,8 +18,6 @@ import (
 	"fmt"
 	"strings"
 
-	"golang.org/x/mod/semver"
-
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
@@ -128,20 +126,6 @@ func (g RuleGrade) OptIn() string {
 		return ""
 	}
 	return fmt.Sprintf("lint.rules: {%s: error}", g.Rule)
-}
-
-// Predates reports whether forgeVersion — the forge that cut a release — is a
-// release older than the one that introduced the rule. A release such a
-// forge cut could not carry what the rule asks for (an SBOM it never
-// generated), so its ABSENCE is never refused: a rule forge did not know
-// does not block what that forge made. An unknown or unparseable version
-// (a development build) does not predate anything.
-func (g RuleGrade) Predates(forgeVersion string) bool {
-	v, ok := rolloutPin(forgeVersion)
-	if !ok || g.IntroducedIn == "" {
-		return false
-	}
-	return semver.Compare(v, g.IntroducedIn) < 0
 }
 
 // ForgeRelease is a forge version as the release the rollout grades it as

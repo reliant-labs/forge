@@ -207,11 +207,19 @@ func TestVulnGateCleanReleasePasses(t *testing.T) {
 	}
 }
 
+// auditPolicy is the defaults with vuln_gate turned down to audit, the
+// opt-out from the enforce default.
+func auditPolicy() release.ShapeDeliveryPolicy {
+	p := release.DefaultDeliveryPolicy()
+	p.VulnGate.Mode = release.DeliveryAudit
+	return p
+}
+
 func TestVulnGateAuditNeverFetchesOrRefuses(t *testing.T) {
 	var fetched bool
 	src := blockingSource()
 	src.fetched = &fetched
-	gates, _, err := judge(t, vulnPromoteInput{Policy: release.DefaultDeliveryPolicy(), Release: sbomRelease(true), Grades: pinnedVulnGrades(gatingPin, nil)}, src)
+	gates, _, err := judge(t, vulnPromoteInput{Policy: auditPolicy(), Release: sbomRelease(true), Grades: pinnedVulnGrades(gatingPin, nil)}, src)
 	if err != nil {
 		t.Fatalf("audit refused: %v", err)
 	}
@@ -224,8 +232,7 @@ func TestVulnGateAuditNeverFetchesOrRefuses(t *testing.T) {
 }
 
 func TestSBOMRequiredIsGradedWarnFirst(t *testing.T) {
-	pol := release.DefaultDeliveryPolicy()
-	pol.ProvenanceSBOM.Mode = release.DeliveryEnforce // declared; the default is audit
+	pol := release.DefaultDeliveryPolicy() // provenance_sbom: enforce, the default
 	bare := sbomRelease(false)
 	gates, out, err := judge(t, vulnPromoteInput{Policy: pol, Release: bare, Grades: pinnedVulnGrades(warningPin, nil)}, nil)
 	if err != nil {
@@ -245,12 +252,15 @@ func TestSBOMRequiredIsGradedWarnFirst(t *testing.T) {
 	}
 }
 
-// The schema default (audit, owner 2026-11-20) never refuses a release with
-// no SBOM, at any pin: it records what enforce would have refused.
-func TestSBOMRequiredDefaultAuditsAtAnyPin(t *testing.T) {
-	gates, _, err := judge(t, vulnPromoteInput{Policy: release.DefaultDeliveryPolicy(), Release: sbomRelease(false), Grades: pinnedVulnGrades(gatingPin, nil)}, nil)
+// provenance_sbom = audit, the opt-out from the enforce default, never
+// refuses a release with no SBOM, at any pin: it records what enforce would
+// have refused.
+func TestSBOMRequiredAuditAuditsAtAnyPin(t *testing.T) {
+	pol := auditPolicy()
+	pol.ProvenanceSBOM.Mode = release.DeliveryAudit
+	gates, _, err := judge(t, vulnPromoteInput{Policy: pol, Release: sbomRelease(false), Grades: pinnedVulnGrades(gatingPin, nil)}, nil)
 	if err != nil {
-		t.Fatalf("the default provenance_sbom refused: %v", err)
+		t.Fatalf("provenance_sbom = audit refused: %v", err)
 	}
 	if g := gateNamed(gates, sbomGateName); g == nil || g.Details["mode"] != "audit" || g.Details["outcome"] != "audit" {
 		t.Fatalf("recorded %+v", g)
@@ -264,9 +274,16 @@ func TestPreSBOMReleaseIsNeverRefused(t *testing.T) {
 	old := &release.Release{Version: "v1.2.0", Provenance: &release.Provenance{ForgeVersion: "v1.8.0"}, Artifacts: map[string]release.Artifact{
 		"api": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{release.SharedVariant: "sha256:" + strings.Repeat("b", 64)}},
 	}}
-	gates, _, err := judge(t, vulnPromoteInput{Policy: release.DefaultDeliveryPolicy(), Release: old, Grades: pinnedVulnGrades(gatingPin, nil)}, nil)
+	gates, _, err := judge(t, vulnPromoteInput{Policy: auditPolicy(), Release: old, Grades: pinnedVulnGrades(gatingPin, nil)}, nil)
 	if err != nil || len(gates) != 0 {
-		t.Fatalf("default policy over a pre-SBOM release: %v %+v", err, gates)
+		t.Fatalf("audit policy over a pre-SBOM release: %v %+v", err, gates)
+	}
+	gates, _, err = judge(t, vulnPromoteInput{Policy: release.DefaultDeliveryPolicy(), Release: old, Grades: pinnedVulnGrades(gatingPin, nil)}, nil)
+	if err != nil {
+		t.Fatalf("the default (enforce) over a pre-SBOM release refused: %v", err)
+	}
+	if g := gateNamed(gates, sbomGateName); g != nil {
+		t.Fatalf("provenance_sbom judged a release cut before SBOMs: %+v", g)
 	}
 	gates, _, err = judge(t, vulnPromoteInput{Policy: enforcePolicy(), Release: old, Grades: pinnedVulnGrades(gatingPin, nil)}, nil)
 	if err != nil {
@@ -277,7 +294,7 @@ func TestPreSBOMReleaseIsNeverRefused(t *testing.T) {
 	}
 	// A release with no provenance at all (recorded before it existed).
 	old.Provenance = nil
-	if gates, _, err := judge(t, vulnPromoteInput{Policy: release.DefaultDeliveryPolicy(), Release: old, Grades: pinnedVulnGrades(gatingPin, nil)}, nil); err != nil || len(gates) != 0 {
+	if gates, _, err := judge(t, vulnPromoteInput{Policy: auditPolicy(), Release: old, Grades: pinnedVulnGrades(gatingPin, nil)}, nil); err != nil || len(gates) != 0 {
 		t.Fatalf("no provenance: %v %+v", err, gates)
 	}
 }
@@ -398,19 +415,85 @@ func TestCutSaysWhenItGatesAndForAControlPlaneEnv(t *testing.T) {
 	}
 }
 
-// The cut never downloads the first database: it says how to get one.
-func TestCutWithNoDatabaseSaysNotScanned(t *testing.T) {
+// A release is scanned by default, as it is linted and tested: with no
+// database on this machine the cut fetches one and scans, instead of
+// recording "not scanned".
+func TestCutWithNoDatabaseFetchesItAndScans(t *testing.T) {
 	h, projectDir := cutHarness(t, warningPin, false)
 	pol := release.DefaultDeliveryPolicy()
-	v := scanReleaseAtCut(context.Background(), cutVulnInput{ProjectDir: projectDir, Env: "staging", Entities: &KCLEntities{DeliveryPolicy: &pol}, Release: cutRelease(t, h)})
+	var log bytes.Buffer
+	v := scanReleaseAtCut(context.Background(), cutVulnInput{ProjectDir: projectDir, Env: "staging", Entities: &KCLEntities{DeliveryPolicy: &pol}, Release: cutRelease(t, h), Log: &log})
 	var out bytes.Buffer
 	printCutVulnVerdict(&out, v)
-	if !strings.Contains(out.String(), "not scanned: no vulnerability database on this machine; `forge vuln db pull`") ||
-		!strings.Contains(out.String(), "vuln_gate (staging, audit): could not determine") {
+	if !strings.Contains(log.String(), "no vulnerability database on this machine: downloading it once") {
+		t.Errorf("the cut did not say it fetches the database: %s", log.String())
+	}
+	if h.scans == 0 || !strings.Contains(out.String(), "vuln_gate (staging, enforce): would block: CVE-2026-4738") {
+		t.Errorf("scanned %d times:\n%s", h.scans, out.String())
+	}
+}
+
+// A fetch that fails (the listing is offline and grype has nothing) is "not
+// scanned", never a failed cut.
+func TestCutWhoseDatabaseFetchFailsSaysNotScanned(t *testing.T) {
+	h, projectDir := cutHarness(t, warningPin, false)
+	h.built = time.Time{}
+	pol := release.DefaultDeliveryPolicy()
+	v := scanReleaseAtCut(context.Background(), cutVulnInput{ProjectDir: projectDir, Env: "staging", Entities: &KCLEntities{DeliveryPolicy: &pol}, Release: cutRelease(t, h), Log: &bytes.Buffer{}})
+	var out bytes.Buffer
+	printCutVulnVerdict(&out, v)
+	if h.listingHit == 0 {
+		t.Error("the cut never tried to fetch the database")
+	}
+	if h.scans != 0 || !strings.Contains(out.String(), "not scanned:") || !strings.Contains(out.String(), "vuln_gate (staging, enforce): could not determine") {
+		t.Errorf("scanned %d times:\n%s", h.scans, out.String())
+	}
+}
+
+// The opt-out is explicit: --no-vuln-db-pull (or FORGE_VULN_DB_PULL=never)
+// scans only with a database already here, and says how to get one.
+func TestCutWithNoDBPullAndNoDatabaseSaysNotScanned(t *testing.T) {
+	h, projectDir := cutHarness(t, warningPin, false)
+	pol := release.DefaultDeliveryPolicy()
+	v := scanReleaseAtCut(context.Background(), cutVulnInput{ProjectDir: projectDir, Env: "staging", Entities: &KCLEntities{DeliveryPolicy: &pol}, Release: cutRelease(t, h), NoDBPull: true})
+	var out bytes.Buffer
+	printCutVulnVerdict(&out, v)
+	if !strings.Contains(out.String(), "not scanned: no vulnerability database on this machine, and the cut was told not to download one (--no-vuln-db-pull or FORGE_VULN_DB_PULL)") ||
+		!strings.Contains(out.String(), "`forge vuln db pull`") {
 		t.Errorf("%s", out.String())
 	}
 	if h.scans != 0 || h.listingHit != 0 {
-		t.Errorf("scanned %d / read the listing %d times with no database on disk", h.scans, h.listingHit)
+		t.Errorf("scanned %d / read the listing %d times under --no-vuln-db-pull", h.scans, h.listingHit)
+	}
+}
+
+func TestCutDBPullDisabled(t *testing.T) {
+	env := func(v string) func(string) string {
+		return func(k string) string {
+			if k == envVulnDBPull {
+				return v
+			}
+			return ""
+		}
+	}
+	for _, tc := range []struct {
+		flag bool
+		env  string
+		want bool
+	}{
+		{false, "", false},
+		{true, "", true},
+		{false, "never", true},
+		{false, " OFF ", true},
+		{false, "false", true},
+		{false, "0", true},
+		{false, "no", true},
+		{false, "always", false},
+		{false, "1", false},
+	} {
+		if got := cutDBPullDisabled(tc.flag, env(tc.env)); got != tc.want {
+			t.Errorf("cutDBPullDisabled(%v, %s=%q) = %v, want %v", tc.flag, envVulnDBPull, tc.env, got, tc.want)
+		}
 	}
 }
 

@@ -292,14 +292,32 @@ storage; a release is cut only when a checkpoint becomes a candidate
 
 ### 2.2 Where the weights live
 
-| Source                                                   | When                                                                                                      | Verified how                                                                                                                                                                                                                                            |
-| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **OCI, by digest** (default)                             | Reliant's registry under `models/` (ml-workloads Settled 7, workstream R1–R3), or the customer's registry | The digest is the identity. KServe pulls `oci://…` as a modelcar; whether its URI accepts `@sha256:` is unverified, and if not forge pins by a digest-addressed tag written at push                                                                     |
-| **Object storage with a verified digest** (escape hatch) | `s3://` / `gs://`, for teams whose weights cannot leave their bucket                                      | The version is the path plus a manifest of file SHA-256s (ml-workloads §3.5). forge renders a verify step that checks the downloaded files against the manifest before the server starts; how it attaches to KServe's storage initializer is unverified |
+| Source                                                   | When                                                                                                      | Verified how                                                                                                                                                                                                                                                          |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **OCI, by digest** (default)                             | Reliant's registry under `models/` (ml-workloads Settled 7, workstream R1–R3), or the customer's registry | The ModelPack digest is the model identity, not a runnable image reference. Modelcar requires a separately recorded, digest-pinned image whose payload is verified against that ModelPack; release is blocked until the pinned KServe integration proves this binding |
+| **Object storage with a verified digest** (escape hatch) | `s3://` / `gs://`, for teams whose weights cannot leave their bucket                                      | The version is the path plus a manifest of file SHA-256s (ml-workloads §3.5). forge renders a verify step that checks the downloaded files against the manifest before the server starts; how it attaches to KServe's storage initializer is unverified               |
 
 The OCI loading mode is a KServe setting: `modelcar` (a sidecar image, works on
 any containerd), `native` (a Kubernetes image volume) or `fetch` (an init
 container). The MVP uses `modelcar` ([decision 50](#7-open-owner-decisions)).
+
+**Modelcar identity is a release prerequisite, not a tag fallback.** A ModelPack
+is an OCI artifact; its manifest digest does not by itself name a runnable
+modelcar image. The release must separately record the ModelPack digest and the
+modelcar image digest, with a verified binding between the image's model files
+(weights, tokenizer and config) and the ModelPack's file manifest. The build
+verifies that binding before publishing the candidate. Eval and production use
+the same recorded image digest; `ml.model.digest` remains the ModelPack digest.
+
+Before enabling model releases, an integration test against the pinned KServe
+version must prove that the rendered `storageUri` results in a modelcar container
+image reference of `registry/repository@sha256:<modelcar-image-digest>` and that
+the served files match the recorded ModelPack. A digest-looking tag is still
+mutable and is not accepted. Digest URI support is unverified today: if the
+controller cannot preserve that immutable image reference, model release and
+promotion fail closed until a verified immutable loading path exists. No
+silent fallback to a tag, nor substituting the ModelPack digest as an image
+digest, is allowed.
 
 ### 2.3 Rendering the InferenceService
 
@@ -326,7 +344,9 @@ It renders:
 
 - a `serving.kserve.io/v1beta1` InferenceService in Standard mode (the annotation's
   exact spelling after KServe's rename of RawDeployment is unverified), with
-  `storageUri` set to the model's `oci://…` reference at the release's digest;
+  `storageUri` set to `oci://registry/repository@sha256:<modelcar-image-digest>`
+  from the release's verified ModelPack-to-image binding, **only after** the
+  integration prerequisite in section 2.2 passes (not the ModelPack digest);
 - the predictor's resources, accelerators and `/dev/shm` from ml-workloads §3.1;
 - `OTEL_RESOURCE_ATTRIBUTES` carrying `forge.release`, `ml.model.name` and
   `ml.model.digest`, and the release labels forge stamps on every workload.
@@ -662,7 +682,11 @@ projects' repositories at their latest tags on 2026-11-26:
   Kueue integrates TrainJob, RayJob, RayCluster and RayService. Trainer v2 has
   TrainJob, TrainingRuntime and ClusterTrainingRuntime. fake-gpu-operator
   advertises fake `nvidia.com/gpu` on labelled CPU nodes.
-- **Unverified:** a `@sha256:` digest in KServe's `oci://` storage URI; `gs://`
+- **Unverified, blocking OCI model release:** preservation of the modelcar image's
+  `@sha256:` digest through KServe's `oci://` storage URI into the serving pod,
+  and verification of its payload against the separate ModelPack digest
+  (section 2.2). There is no mutable-tag fallback.
+- **Other unverified:** `gs://`
   on the pinned KServe; how a verify step attaches to KServe's storage
   initializer; the Standard-mode annotation's exact spelling; a CPU vLLM image
   under KServe's modelcar; vLLM's OTLP span export on the pinned version; exact

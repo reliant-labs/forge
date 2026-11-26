@@ -34,9 +34,9 @@ import (
 // `db.EstimateStore` dep has a `{{.Name}}.MockEstimateStore`, and a
 // `Store` dep has a `{{.Name}}.MockStore`, sitting right there. Set its
 // `GetFunc` (etc.) to script the case; every call is recorded by the
-// embedded contractkit.Recorder, so `m.Calls("Get")` and
-// `m.CallCount("Get")` assert ordering and short-circuiting without
-// any bookkeeping of your own.
+// embedded contractkit.Recorder, so `m.GetCalls()` (each call's
+// arguments as named, typed fields) and `m.CallCount("Get")` assert
+// arguments and short-circuiting without any bookkeeping of your own.
 func TestContract(t *testing.T) {
 	t.Parallel()
 

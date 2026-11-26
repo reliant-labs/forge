@@ -16,14 +16,15 @@ import (
 )
 
 // forge:section MockBackend
-// forge:hash=aebe29fda49f95579d5ee75e6295bfbbc6ed50b036d4179adf860004b6136994
+// forge:hash=3b8685530200bfb892194e55e18caa4b661e2c7f89efa2de80fc6e1a75f4732b
 
 // MockBackend is a test mock for the Backend interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockBackend.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockBackend.<Method>Func not set" error.
 type MockBackend struct {
 	contractkit.Recorder
 	InfoFunc             func() Info
@@ -128,18 +129,215 @@ func (m *MockBackend) Query(ctx context.Context, req QueryRequest) (QueryResult,
 	return QueryResult{}, contractkit.MockNotSet("MockBackend", "Query")
 }
 
+// MockBackendInfoCall is one recorded call of MockBackend.Info, one
+// field per parameter.
+type MockBackendInfoCall struct {
+}
+
+// InfoCalls returns every recorded Info call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Info").
+func (m *MockBackend) InfoCalls() []MockBackendInfoCall {
+	var out []MockBackendInfoCall
+	for range m.Recorder.Calls("Info") {
+		var r MockBackendInfoCall
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockBackendLogsCall is one recorded call of MockBackend.Logs, one
+// field per parameter.
+type MockBackendLogsCall struct {
+	Ctx context.Context
+	Req LogsRequest
+}
+
+// LogsCalls returns every recorded Logs call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Logs").
+func (m *MockBackend) LogsCalls() []MockBackendLogsCall {
+	var out []MockBackendLogsCall
+	for _, c := range m.Recorder.Calls("Logs") {
+		var r MockBackendLogsCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(LogsRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockBackendTracesCall is one recorded call of MockBackend.Traces, one
+// field per parameter.
+type MockBackendTracesCall struct {
+	Ctx context.Context
+	Req TracesRequest
+}
+
+// TracesCalls returns every recorded Traces call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Traces").
+func (m *MockBackend) TracesCalls() []MockBackendTracesCall {
+	var out []MockBackendTracesCall
+	for _, c := range m.Recorder.Calls("Traces") {
+		var r MockBackendTracesCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(TracesRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockBackendTraceCall is one recorded call of MockBackend.Trace, one
+// field per parameter.
+type MockBackendTraceCall struct {
+	Ctx context.Context
+	Req TraceRequest
+}
+
+// TraceCalls returns every recorded Trace call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Trace").
+func (m *MockBackend) TraceCalls() []MockBackendTraceCall {
+	var out []MockBackendTraceCall
+	for _, c := range m.Recorder.Calls("Trace") {
+		var r MockBackendTraceCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(TraceRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockBackendEndpointsCall is one recorded call of MockBackend.Endpoints, one
+// field per parameter.
+type MockBackendEndpointsCall struct {
+	Ctx context.Context
+	Req EndpointsRequest
+}
+
+// EndpointsCalls returns every recorded Endpoints call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Endpoints").
+func (m *MockBackend) EndpointsCalls() []MockBackendEndpointsCall {
+	var out []MockBackendEndpointsCall
+	for _, c := range m.Recorder.Calls("Endpoints") {
+		var r MockBackendEndpointsCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(EndpointsRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockBackendMetricsListCall is one recorded call of MockBackend.MetricsList, one
+// field per parameter.
+type MockBackendMetricsListCall struct {
+	Ctx context.Context
+	Req MetricsListRequest
+}
+
+// MetricsListCalls returns every recorded MetricsList call, oldest first, with
+// its arguments typed. It reads the same log as Calls("MetricsList").
+func (m *MockBackend) MetricsListCalls() []MockBackendMetricsListCall {
+	var out []MockBackendMetricsListCall
+	for _, c := range m.Recorder.Calls("MetricsList") {
+		var r MockBackendMetricsListCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(MetricsListRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockBackendMetricsQueryCall is one recorded call of MockBackend.MetricsQuery, one
+// field per parameter.
+type MockBackendMetricsQueryCall struct {
+	Ctx context.Context
+	Req MetricsQueryRequest
+}
+
+// MetricsQueryCalls returns every recorded MetricsQuery call, oldest first, with
+// its arguments typed. It reads the same log as Calls("MetricsQuery").
+func (m *MockBackend) MetricsQueryCalls() []MockBackendMetricsQueryCall {
+	var out []MockBackendMetricsQueryCall
+	for _, c := range m.Recorder.Calls("MetricsQuery") {
+		var r MockBackendMetricsQueryCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(MetricsQueryRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockBackendMetricsDescribeCall is one recorded call of MockBackend.MetricsDescribe, one
+// field per parameter.
+type MockBackendMetricsDescribeCall struct {
+	Ctx context.Context
+	Req MetricsDescribeRequest
+}
+
+// MetricsDescribeCalls returns every recorded MetricsDescribe call, oldest first, with
+// its arguments typed. It reads the same log as Calls("MetricsDescribe").
+func (m *MockBackend) MetricsDescribeCalls() []MockBackendMetricsDescribeCall {
+	var out []MockBackendMetricsDescribeCall
+	for _, c := range m.Recorder.Calls("MetricsDescribe") {
+		var r MockBackendMetricsDescribeCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(MetricsDescribeRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockBackendMetricsExemplarsCall is one recorded call of MockBackend.MetricsExemplars, one
+// field per parameter.
+type MockBackendMetricsExemplarsCall struct {
+	Ctx context.Context
+	Req MetricsExemplarsRequest
+}
+
+// MetricsExemplarsCalls returns every recorded MetricsExemplars call, oldest first, with
+// its arguments typed. It reads the same log as Calls("MetricsExemplars").
+func (m *MockBackend) MetricsExemplarsCalls() []MockBackendMetricsExemplarsCall {
+	var out []MockBackendMetricsExemplarsCall
+	for _, c := range m.Recorder.Calls("MetricsExemplars") {
+		var r MockBackendMetricsExemplarsCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(MetricsExemplarsRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockBackendQueryCall is one recorded call of MockBackend.Query, one
+// field per parameter.
+type MockBackendQueryCall struct {
+	Ctx context.Context
+	Req QueryRequest
+}
+
+// QueryCalls returns every recorded Query call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Query").
+func (m *MockBackend) QueryCalls() []MockBackendQueryCall {
+	var out []MockBackendQueryCall
+	for _, c := range m.Recorder.Calls("Query") {
+		var r MockBackendQueryCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(QueryRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ Backend = (*MockBackend)(nil)
 
 // forge:section MockIssueReader
-// forge:hash=a106671bbd3a3a74402ec4bbba2f48ce50ba5f5a7c2ffbec9d61052bb0f08324
+// forge:hash=5b764b8d22b862b9024360a770a8ce90ed148ffd72ad56babac3885519429656
 
 // MockIssueReader is a test mock for the IssueReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockIssueReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockIssueReader.<Method>Func not set" error.
 type MockIssueReader struct {
 	contractkit.Recorder
 	ListIssuesFunc         func(context.Context, ListIssuesRequest) (ListIssuesResult, error)
@@ -234,18 +432,199 @@ func (m *MockIssueReader) AssignIssue(ctx context.Context, req AssignIssueReques
 	return AssignIssueResult{}, contractkit.MockNotSet("MockIssueReader", "AssignIssue")
 }
 
+// MockIssueReaderListIssuesCall is one recorded call of MockIssueReader.ListIssues, one
+// field per parameter.
+type MockIssueReaderListIssuesCall struct {
+	Ctx context.Context
+	Req ListIssuesRequest
+}
+
+// ListIssuesCalls returns every recorded ListIssues call, oldest first, with
+// its arguments typed. It reads the same log as Calls("ListIssues").
+func (m *MockIssueReader) ListIssuesCalls() []MockIssueReaderListIssuesCall {
+	var out []MockIssueReaderListIssuesCall
+	for _, c := range m.Recorder.Calls("ListIssues") {
+		var r MockIssueReaderListIssuesCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(ListIssuesRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockIssueReaderGetIssueCall is one recorded call of MockIssueReader.GetIssue, one
+// field per parameter.
+type MockIssueReaderGetIssueCall struct {
+	Ctx context.Context
+	Req GetIssueRequest
+}
+
+// GetIssueCalls returns every recorded GetIssue call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GetIssue").
+func (m *MockIssueReader) GetIssueCalls() []MockIssueReaderGetIssueCall {
+	var out []MockIssueReaderGetIssueCall
+	for _, c := range m.Recorder.Calls("GetIssue") {
+		var r MockIssueReaderGetIssueCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(GetIssueRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockIssueReaderListIssueEventsCall is one recorded call of MockIssueReader.ListIssueEvents, one
+// field per parameter.
+type MockIssueReaderListIssueEventsCall struct {
+	Ctx context.Context
+	Req ListIssueEventsRequest
+}
+
+// ListIssueEventsCalls returns every recorded ListIssueEvents call, oldest first, with
+// its arguments typed. It reads the same log as Calls("ListIssueEvents").
+func (m *MockIssueReader) ListIssueEventsCalls() []MockIssueReaderListIssueEventsCall {
+	var out []MockIssueReaderListIssueEventsCall
+	for _, c := range m.Recorder.Calls("ListIssueEvents") {
+		var r MockIssueReaderListIssueEventsCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(ListIssueEventsRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockIssueReaderUpdateIssueStatusCall is one recorded call of MockIssueReader.UpdateIssueStatus, one
+// field per parameter.
+type MockIssueReaderUpdateIssueStatusCall struct {
+	Ctx context.Context
+	Req UpdateIssueStatusRequest
+}
+
+// UpdateIssueStatusCalls returns every recorded UpdateIssueStatus call, oldest first, with
+// its arguments typed. It reads the same log as Calls("UpdateIssueStatus").
+func (m *MockIssueReader) UpdateIssueStatusCalls() []MockIssueReaderUpdateIssueStatusCall {
+	var out []MockIssueReaderUpdateIssueStatusCall
+	for _, c := range m.Recorder.Calls("UpdateIssueStatus") {
+		var r MockIssueReaderUpdateIssueStatusCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(UpdateIssueStatusRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockIssueReaderListIssueTimelineCall is one recorded call of MockIssueReader.ListIssueTimeline, one
+// field per parameter.
+type MockIssueReaderListIssueTimelineCall struct {
+	Ctx context.Context
+	Req ListIssueTimelineRequest
+}
+
+// ListIssueTimelineCalls returns every recorded ListIssueTimeline call, oldest first, with
+// its arguments typed. It reads the same log as Calls("ListIssueTimeline").
+func (m *MockIssueReader) ListIssueTimelineCalls() []MockIssueReaderListIssueTimelineCall {
+	var out []MockIssueReaderListIssueTimelineCall
+	for _, c := range m.Recorder.Calls("ListIssueTimeline") {
+		var r MockIssueReaderListIssueTimelineCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(ListIssueTimelineRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockIssueReaderAddIssueCommentCall is one recorded call of MockIssueReader.AddIssueComment, one
+// field per parameter.
+type MockIssueReaderAddIssueCommentCall struct {
+	Ctx context.Context
+	Req AddIssueCommentRequest
+}
+
+// AddIssueCommentCalls returns every recorded AddIssueComment call, oldest first, with
+// its arguments typed. It reads the same log as Calls("AddIssueComment").
+func (m *MockIssueReader) AddIssueCommentCalls() []MockIssueReaderAddIssueCommentCall {
+	var out []MockIssueReaderAddIssueCommentCall
+	for _, c := range m.Recorder.Calls("AddIssueComment") {
+		var r MockIssueReaderAddIssueCommentCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(AddIssueCommentRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockIssueReaderUpdateIssueCommentCall is one recorded call of MockIssueReader.UpdateIssueComment, one
+// field per parameter.
+type MockIssueReaderUpdateIssueCommentCall struct {
+	Ctx context.Context
+	Req UpdateIssueCommentRequest
+}
+
+// UpdateIssueCommentCalls returns every recorded UpdateIssueComment call, oldest first, with
+// its arguments typed. It reads the same log as Calls("UpdateIssueComment").
+func (m *MockIssueReader) UpdateIssueCommentCalls() []MockIssueReaderUpdateIssueCommentCall {
+	var out []MockIssueReaderUpdateIssueCommentCall
+	for _, c := range m.Recorder.Calls("UpdateIssueComment") {
+		var r MockIssueReaderUpdateIssueCommentCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(UpdateIssueCommentRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockIssueReaderDeleteIssueCommentCall is one recorded call of MockIssueReader.DeleteIssueComment, one
+// field per parameter.
+type MockIssueReaderDeleteIssueCommentCall struct {
+	Ctx context.Context
+	Req DeleteIssueCommentRequest
+}
+
+// DeleteIssueCommentCalls returns every recorded DeleteIssueComment call, oldest first, with
+// its arguments typed. It reads the same log as Calls("DeleteIssueComment").
+func (m *MockIssueReader) DeleteIssueCommentCalls() []MockIssueReaderDeleteIssueCommentCall {
+	var out []MockIssueReaderDeleteIssueCommentCall
+	for _, c := range m.Recorder.Calls("DeleteIssueComment") {
+		var r MockIssueReaderDeleteIssueCommentCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(DeleteIssueCommentRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockIssueReaderAssignIssueCall is one recorded call of MockIssueReader.AssignIssue, one
+// field per parameter.
+type MockIssueReaderAssignIssueCall struct {
+	Ctx context.Context
+	Req AssignIssueRequest
+}
+
+// AssignIssueCalls returns every recorded AssignIssue call, oldest first, with
+// its arguments typed. It reads the same log as Calls("AssignIssue").
+func (m *MockIssueReader) AssignIssueCalls() []MockIssueReaderAssignIssueCall {
+	var out []MockIssueReaderAssignIssueCall
+	for _, c := range m.Recorder.Calls("AssignIssue") {
+		var r MockIssueReaderAssignIssueCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(AssignIssueRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ IssueReader = (*MockIssueReader)(nil)
 
 // forge:section MockSessionReader
-// forge:hash=13d796969f73dd4f890fcef0345e8356bdffab382b53ce1604934dd2351b038a
+// forge:hash=bf2a6f40f48740cf6f119562df52aa35e985c6227b01b5c47c4c4fe7e9336567
 
 // MockSessionReader is a test mock for the SessionReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockSessionReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockSessionReader.<Method>Func not set" error.
 type MockSessionReader struct {
 	contractkit.Recorder
 	ListSessionsFunc func(context.Context, ListSessionsRequest) (ListSessionsResult, error)
@@ -270,18 +649,59 @@ func (m *MockSessionReader) GetSession(ctx context.Context, req GetSessionReques
 	return GetSessionResult{}, contractkit.MockNotSet("MockSessionReader", "GetSession")
 }
 
+// MockSessionReaderListSessionsCall is one recorded call of MockSessionReader.ListSessions, one
+// field per parameter.
+type MockSessionReaderListSessionsCall struct {
+	Ctx context.Context
+	Req ListSessionsRequest
+}
+
+// ListSessionsCalls returns every recorded ListSessions call, oldest first, with
+// its arguments typed. It reads the same log as Calls("ListSessions").
+func (m *MockSessionReader) ListSessionsCalls() []MockSessionReaderListSessionsCall {
+	var out []MockSessionReaderListSessionsCall
+	for _, c := range m.Recorder.Calls("ListSessions") {
+		var r MockSessionReaderListSessionsCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(ListSessionsRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockSessionReaderGetSessionCall is one recorded call of MockSessionReader.GetSession, one
+// field per parameter.
+type MockSessionReaderGetSessionCall struct {
+	Ctx context.Context
+	Req GetSessionRequest
+}
+
+// GetSessionCalls returns every recorded GetSession call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GetSession").
+func (m *MockSessionReader) GetSessionCalls() []MockSessionReaderGetSessionCall {
+	var out []MockSessionReaderGetSessionCall
+	for _, c := range m.Recorder.Calls("GetSession") {
+		var r MockSessionReaderGetSessionCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(GetSessionRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ SessionReader = (*MockSessionReader)(nil)
 
 // forge:section MockUserActivityReader
-// forge:hash=5ac79d39d558a6e2935b7d6fca76f7e1b1325e743ab3050612ddf04d0b63481d
+// forge:hash=9c9ef782bd90c5d9855180c3d62f3f67cffe63b5ce060b1f30af4afd3edf2fb1
 
 // MockUserActivityReader is a test mock for the UserActivityReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockUserActivityReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockUserActivityReader.<Method>Func not set" error.
 type MockUserActivityReader struct {
 	contractkit.Recorder
 	UserActivityFunc func(context.Context, UserActivityRequest) (UserActivityResult, error)
@@ -296,18 +716,39 @@ func (m *MockUserActivityReader) UserActivity(ctx context.Context, req UserActiv
 	return UserActivityResult{}, contractkit.MockNotSet("MockUserActivityReader", "UserActivity")
 }
 
+// MockUserActivityReaderUserActivityCall is one recorded call of MockUserActivityReader.UserActivity, one
+// field per parameter.
+type MockUserActivityReaderUserActivityCall struct {
+	Ctx context.Context
+	Req UserActivityRequest
+}
+
+// UserActivityCalls returns every recorded UserActivity call, oldest first, with
+// its arguments typed. It reads the same log as Calls("UserActivity").
+func (m *MockUserActivityReader) UserActivityCalls() []MockUserActivityReaderUserActivityCall {
+	var out []MockUserActivityReaderUserActivityCall
+	for _, c := range m.Recorder.Calls("UserActivity") {
+		var r MockUserActivityReaderUserActivityCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(UserActivityRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ UserActivityReader = (*MockUserActivityReader)(nil)
 
 // forge:section MockTelemetryArrivalReader
-// forge:hash=019b09df52026c5d18beb6e38271abd7a99d60234f1a84f599f83a7299d41d4e
+// forge:hash=851843fdc193f3d4cbbcac165e521b83a97c5404c0db50e7006eb6fc78428cea
 
 // MockTelemetryArrivalReader is a test mock for the TelemetryArrivalReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockTelemetryArrivalReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockTelemetryArrivalReader.<Method>Func not set" error.
 type MockTelemetryArrivalReader struct {
 	contractkit.Recorder
 	TelemetryArrivalFunc func(context.Context, TelemetryArrivalRequest) (TelemetryArrivalResult, error)
@@ -322,18 +763,39 @@ func (m *MockTelemetryArrivalReader) TelemetryArrival(ctx context.Context, req T
 	return TelemetryArrivalResult{}, contractkit.MockNotSet("MockTelemetryArrivalReader", "TelemetryArrival")
 }
 
+// MockTelemetryArrivalReaderTelemetryArrivalCall is one recorded call of MockTelemetryArrivalReader.TelemetryArrival, one
+// field per parameter.
+type MockTelemetryArrivalReaderTelemetryArrivalCall struct {
+	Ctx context.Context
+	Req TelemetryArrivalRequest
+}
+
+// TelemetryArrivalCalls returns every recorded TelemetryArrival call, oldest first, with
+// its arguments typed. It reads the same log as Calls("TelemetryArrival").
+func (m *MockTelemetryArrivalReader) TelemetryArrivalCalls() []MockTelemetryArrivalReaderTelemetryArrivalCall {
+	var out []MockTelemetryArrivalReaderTelemetryArrivalCall
+	for _, c := range m.Recorder.Calls("TelemetryArrival") {
+		var r MockTelemetryArrivalReaderTelemetryArrivalCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(TelemetryArrivalRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ TelemetryArrivalReader = (*MockTelemetryArrivalReader)(nil)
 
 // forge:section MockHealthReader
-// forge:hash=a800afb4b55c4883d596d1b42b98f8848ba9d26c6551f0aedc2f9efd1956c7b9
+// forge:hash=57097aa49ed3fd12c62a2d47730e1437005f2609f9ae7d32ce003a2244a2e39e
 
 // MockHealthReader is a test mock for the HealthReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockHealthReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockHealthReader.<Method>Func not set" error.
 type MockHealthReader struct {
 	contractkit.Recorder
 	ReleaseHealthFunc func(context.Context, HealthRequest) (HealthResult, error)
@@ -348,18 +810,39 @@ func (m *MockHealthReader) ReleaseHealth(ctx context.Context, req HealthRequest)
 	return HealthResult{}, contractkit.MockNotSet("MockHealthReader", "ReleaseHealth")
 }
 
+// MockHealthReaderReleaseHealthCall is one recorded call of MockHealthReader.ReleaseHealth, one
+// field per parameter.
+type MockHealthReaderReleaseHealthCall struct {
+	Ctx context.Context
+	Req HealthRequest
+}
+
+// ReleaseHealthCalls returns every recorded ReleaseHealth call, oldest first, with
+// its arguments typed. It reads the same log as Calls("ReleaseHealth").
+func (m *MockHealthReader) ReleaseHealthCalls() []MockHealthReaderReleaseHealthCall {
+	var out []MockHealthReaderReleaseHealthCall
+	for _, c := range m.Recorder.Calls("ReleaseHealth") {
+		var r MockHealthReaderReleaseHealthCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(HealthRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ HealthReader = (*MockHealthReader)(nil)
 
 // forge:section MockChangesReader
-// forge:hash=ace1e24a9a17e69076f6b1859431719da10ae39d184ef7b0967efd9fcf7fc6e5
+// forge:hash=d4aff21e049472018c175d81a04f1f0ba05f892f1ed4ad242381beb5a9036901
 
 // MockChangesReader is a test mock for the ChangesReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockChangesReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockChangesReader.<Method>Func not set" error.
 type MockChangesReader struct {
 	contractkit.Recorder
 	ChangesFunc func(context.Context, ChangesRequest) (ChangesResult, error)
@@ -374,18 +857,39 @@ func (m *MockChangesReader) Changes(ctx context.Context, req ChangesRequest) (Ch
 	return ChangesResult{}, contractkit.MockNotSet("MockChangesReader", "Changes")
 }
 
+// MockChangesReaderChangesCall is one recorded call of MockChangesReader.Changes, one
+// field per parameter.
+type MockChangesReaderChangesCall struct {
+	Ctx context.Context
+	Req ChangesRequest
+}
+
+// ChangesCalls returns every recorded Changes call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Changes").
+func (m *MockChangesReader) ChangesCalls() []MockChangesReaderChangesCall {
+	var out []MockChangesReaderChangesCall
+	for _, c := range m.Recorder.Calls("Changes") {
+		var r MockChangesReaderChangesCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(ChangesRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ ChangesReader = (*MockChangesReader)(nil)
 
 // forge:section MockOverviewReader
-// forge:hash=e3fd2d19a1ffb0cd4add2b579b022c5220be53e22c62fed241dce0e1ee3ec8bb
+// forge:hash=b55eecf1c12748d2b1338e1d69f3cf9476d046944c3d02f7db8c321de30f99fc
 
 // MockOverviewReader is a test mock for the OverviewReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockOverviewReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockOverviewReader.<Method>Func not set" error.
 type MockOverviewReader struct {
 	contractkit.Recorder
 	OverviewFunc func(context.Context, OverviewRequest) (OverviewResult, error)
@@ -400,18 +904,39 @@ func (m *MockOverviewReader) Overview(ctx context.Context, req OverviewRequest) 
 	return OverviewResult{}, contractkit.MockNotSet("MockOverviewReader", "Overview")
 }
 
+// MockOverviewReaderOverviewCall is one recorded call of MockOverviewReader.Overview, one
+// field per parameter.
+type MockOverviewReaderOverviewCall struct {
+	Ctx context.Context
+	Req OverviewRequest
+}
+
+// OverviewCalls returns every recorded Overview call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Overview").
+func (m *MockOverviewReader) OverviewCalls() []MockOverviewReaderOverviewCall {
+	var out []MockOverviewReaderOverviewCall
+	for _, c := range m.Recorder.Calls("Overview") {
+		var r MockOverviewReaderOverviewCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(OverviewRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ OverviewReader = (*MockOverviewReader)(nil)
 
 // forge:section MockOpsReader
-// forge:hash=3d037264bb35953b01f3280113a8373a5719b31b6dfa76660f75e744bfc08b0e
+// forge:hash=48aaf1fe3a0aed8a705c9ad73a0587e1f58d8ccb53bc4a9b112369627d7cc1e2
 
 // MockOpsReader is a test mock for the OpsReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockOpsReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockOpsReader.<Method>Func not set" error.
 type MockOpsReader struct {
 	contractkit.Recorder
 	OpsFunc func(context.Context, OpsRequest) (OpsResult, error)
@@ -426,18 +951,39 @@ func (m *MockOpsReader) Ops(ctx context.Context, req OpsRequest) (OpsResult, err
 	return OpsResult{}, contractkit.MockNotSet("MockOpsReader", "Ops")
 }
 
+// MockOpsReaderOpsCall is one recorded call of MockOpsReader.Ops, one
+// field per parameter.
+type MockOpsReaderOpsCall struct {
+	Ctx context.Context
+	Req OpsRequest
+}
+
+// OpsCalls returns every recorded Ops call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Ops").
+func (m *MockOpsReader) OpsCalls() []MockOpsReaderOpsCall {
+	var out []MockOpsReaderOpsCall
+	for _, c := range m.Recorder.Calls("Ops") {
+		var r MockOpsReaderOpsCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(OpsRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ OpsReader = (*MockOpsReader)(nil)
 
 // forge:section MockAlertReader
-// forge:hash=6b4f83d1c00daee2ec5591a1ac51e5f7b1721e2d1b102ab695a8302217c0323a
+// forge:hash=ece01d4e694f90f5dd176520f4cc23aeab74012512a08cb98895d35b69a78736
 
 // MockAlertReader is a test mock for the AlertReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockAlertReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockAlertReader.<Method>Func not set" error.
 type MockAlertReader struct {
 	contractkit.Recorder
 	AlertsFunc func(context.Context) ([]Alert, error)
@@ -452,18 +998,37 @@ func (m *MockAlertReader) Alerts(ctx context.Context) ([]Alert, error) {
 	return nil, contractkit.MockNotSet("MockAlertReader", "Alerts")
 }
 
+// MockAlertReaderAlertsCall is one recorded call of MockAlertReader.Alerts, one
+// field per parameter.
+type MockAlertReaderAlertsCall struct {
+	Ctx context.Context
+}
+
+// AlertsCalls returns every recorded Alerts call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Alerts").
+func (m *MockAlertReader) AlertsCalls() []MockAlertReaderAlertsCall {
+	var out []MockAlertReaderAlertsCall
+	for _, c := range m.Recorder.Calls("Alerts") {
+		var r MockAlertReaderAlertsCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ AlertReader = (*MockAlertReader)(nil)
 
 // forge:section MockAlertHistoryReader
-// forge:hash=41beb468c51278a626c7c712e7a11926481d00a88e3ec147ffc59d5ea22a4a82
+// forge:hash=011f13a5c1674d1395c602f8993755cc3623b875166bed235a5084ae84c38241
 
 // MockAlertHistoryReader is a test mock for the AlertHistoryReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockAlertHistoryReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockAlertHistoryReader.<Method>Func not set" error.
 type MockAlertHistoryReader struct {
 	contractkit.Recorder
 	AlertHistoryFunc func(context.Context, time.Time) ([]AlertTransition, error)
@@ -478,18 +1043,39 @@ func (m *MockAlertHistoryReader) AlertHistory(ctx context.Context, since time.Ti
 	return nil, contractkit.MockNotSet("MockAlertHistoryReader", "AlertHistory")
 }
 
+// MockAlertHistoryReaderAlertHistoryCall is one recorded call of MockAlertHistoryReader.AlertHistory, one
+// field per parameter.
+type MockAlertHistoryReaderAlertHistoryCall struct {
+	Ctx   context.Context
+	Since time.Time
+}
+
+// AlertHistoryCalls returns every recorded AlertHistory call, oldest first, with
+// its arguments typed. It reads the same log as Calls("AlertHistory").
+func (m *MockAlertHistoryReader) AlertHistoryCalls() []MockAlertHistoryReaderAlertHistoryCall {
+	var out []MockAlertHistoryReaderAlertHistoryCall
+	for _, c := range m.Recorder.Calls("AlertHistory") {
+		var r MockAlertHistoryReaderAlertHistoryCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Since, _ = c.Args[1].(time.Time)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ AlertHistoryReader = (*MockAlertHistoryReader)(nil)
 
 // forge:section MockDeliveryReader
-// forge:hash=0beec02cd11b95fde5af981de2c810547b3187b0312e9f808bb071ae2925dfe0
+// forge:hash=080bd3bf839591e19a0d95b01cb88f080d5c5e87fb59d9c558a096c8f08a7156
 
 // MockDeliveryReader is a test mock for the DeliveryReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockDeliveryReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockDeliveryReader.<Method>Func not set" error.
 type MockDeliveryReader struct {
 	contractkit.Recorder
 	TelemetryDeliveriesFunc func(context.Context) (DeliveriesResult, error)
@@ -504,18 +1090,37 @@ func (m *MockDeliveryReader) TelemetryDeliveries(ctx context.Context) (Deliverie
 	return DeliveriesResult{}, contractkit.MockNotSet("MockDeliveryReader", "TelemetryDeliveries")
 }
 
+// MockDeliveryReaderTelemetryDeliveriesCall is one recorded call of MockDeliveryReader.TelemetryDeliveries, one
+// field per parameter.
+type MockDeliveryReaderTelemetryDeliveriesCall struct {
+	Ctx context.Context
+}
+
+// TelemetryDeliveriesCalls returns every recorded TelemetryDeliveries call, oldest first, with
+// its arguments typed. It reads the same log as Calls("TelemetryDeliveries").
+func (m *MockDeliveryReader) TelemetryDeliveriesCalls() []MockDeliveryReaderTelemetryDeliveriesCall {
+	var out []MockDeliveryReaderTelemetryDeliveriesCall
+	for _, c := range m.Recorder.Calls("TelemetryDeliveries") {
+		var r MockDeliveryReaderTelemetryDeliveriesCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ DeliveryReader = (*MockDeliveryReader)(nil)
 
 // forge:section MockPromotionGateReader
-// forge:hash=86744f4ecc68d853e7a9ea6553a592134273a001628954d8e8d95967c9a26e2f
+// forge:hash=a0f939ebe45467863da0dbc6684bcead900c66e7e6822e8f1fcdef2d889589f6
 
 // MockPromotionGateReader is a test mock for the PromotionGateReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockPromotionGateReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockPromotionGateReader.<Method>Func not set" error.
 type MockPromotionGateReader struct {
 	contractkit.Recorder
 	PromotionGatesFunc func(context.Context, string) ([]release.Gate, error)
@@ -530,18 +1135,39 @@ func (m *MockPromotionGateReader) PromotionGates(ctx context.Context, promotionI
 	return nil, contractkit.MockNotSet("MockPromotionGateReader", "PromotionGates")
 }
 
+// MockPromotionGateReaderPromotionGatesCall is one recorded call of MockPromotionGateReader.PromotionGates, one
+// field per parameter.
+type MockPromotionGateReaderPromotionGatesCall struct {
+	Ctx         context.Context
+	PromotionID string
+}
+
+// PromotionGatesCalls returns every recorded PromotionGates call, oldest first, with
+// its arguments typed. It reads the same log as Calls("PromotionGates").
+func (m *MockPromotionGateReader) PromotionGatesCalls() []MockPromotionGateReaderPromotionGatesCall {
+	var out []MockPromotionGateReaderPromotionGatesCall
+	for _, c := range m.Recorder.Calls("PromotionGates") {
+		var r MockPromotionGateReaderPromotionGatesCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.PromotionID, _ = c.Args[1].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ PromotionGateReader = (*MockPromotionGateReader)(nil)
 
 // forge:section MockWorkloadReader
-// forge:hash=ea984bf40d210ed21cea28c276095d13951d90a0002d3f78751c8fba921e5b9c
+// forge:hash=d99a14ae62be84178b69cfbddb7050e31b1a6b1477f636291d391d1b1c7713bf
 
 // MockWorkloadReader is a test mock for the WorkloadReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockWorkloadReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockWorkloadReader.<Method>Func not set" error.
 type MockWorkloadReader struct {
 	contractkit.Recorder
 	WorkloadsFunc func(context.Context, Narrow) (WorkloadsResult, error)
@@ -556,18 +1182,39 @@ func (m *MockWorkloadReader) Workloads(ctx context.Context, n Narrow) (Workloads
 	return WorkloadsResult{}, contractkit.MockNotSet("MockWorkloadReader", "Workloads")
 }
 
+// MockWorkloadReaderWorkloadsCall is one recorded call of MockWorkloadReader.Workloads, one
+// field per parameter.
+type MockWorkloadReaderWorkloadsCall struct {
+	Ctx context.Context
+	N   Narrow
+}
+
+// WorkloadsCalls returns every recorded Workloads call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Workloads").
+func (m *MockWorkloadReader) WorkloadsCalls() []MockWorkloadReaderWorkloadsCall {
+	var out []MockWorkloadReaderWorkloadsCall
+	for _, c := range m.Recorder.Calls("Workloads") {
+		var r MockWorkloadReaderWorkloadsCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.N, _ = c.Args[1].(Narrow)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ WorkloadReader = (*MockWorkloadReader)(nil)
 
 // forge:section MockTraceExtentReader
-// forge:hash=5e4f9fdcfb23d4f08ca0396149bcf660457ebbea0564b282a036a420c15ac54f
+// forge:hash=1b3353e1446cfd096734feeeb6032073cef1f1eb5821bdff4189f23af011619e
 
 // MockTraceExtentReader is a test mock for the TraceExtentReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockTraceExtentReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockTraceExtentReader.<Method>Func not set" error.
 type MockTraceExtentReader struct {
 	contractkit.Recorder
 	TraceExtentFunc func(context.Context, TraceRequest) (TraceExtent, error)
@@ -582,18 +1229,39 @@ func (m *MockTraceExtentReader) TraceExtent(ctx context.Context, req TraceReques
 	return TraceExtent{}, contractkit.MockNotSet("MockTraceExtentReader", "TraceExtent")
 }
 
+// MockTraceExtentReaderTraceExtentCall is one recorded call of MockTraceExtentReader.TraceExtent, one
+// field per parameter.
+type MockTraceExtentReaderTraceExtentCall struct {
+	Ctx context.Context
+	Req TraceRequest
+}
+
+// TraceExtentCalls returns every recorded TraceExtent call, oldest first, with
+// its arguments typed. It reads the same log as Calls("TraceExtent").
+func (m *MockTraceExtentReader) TraceExtentCalls() []MockTraceExtentReaderTraceExtentCall {
+	var out []MockTraceExtentReaderTraceExtentCall
+	for _, c := range m.Recorder.Calls("TraceExtent") {
+		var r MockTraceExtentReaderTraceExtentCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(TraceRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ TraceExtentReader = (*MockTraceExtentReader)(nil)
 
 // forge:section MockDashboardReader
-// forge:hash=263eae50f87d1ab630ef59d0b972fcce31de38b11c3c1d253ecd3aefba94d02c
+// forge:hash=a58bddcec5307ee183c11006ece11e8c2e6270a224b3fe8495fdd515963b692a
 
 // MockDashboardReader is a test mock for the DashboardReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockDashboardReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockDashboardReader.<Method>Func not set" error.
 type MockDashboardReader struct {
 	contractkit.Recorder
 	ListDashboardsFunc    func(context.Context, string) ([]DashboardInfo, error)
@@ -628,18 +1296,79 @@ func (m *MockDashboardReader) QueryPanelReadout(ctx context.Context, req PanelRe
 	return PanelReadout{}, contractkit.MockNotSet("MockDashboardReader", "QueryPanelReadout")
 }
 
+// MockDashboardReaderListDashboardsCall is one recorded call of MockDashboardReader.ListDashboards, one
+// field per parameter.
+type MockDashboardReaderListDashboardsCall struct {
+	Ctx     context.Context
+	Project string
+}
+
+// ListDashboardsCalls returns every recorded ListDashboards call, oldest first, with
+// its arguments typed. It reads the same log as Calls("ListDashboards").
+func (m *MockDashboardReader) ListDashboardsCalls() []MockDashboardReaderListDashboardsCall {
+	var out []MockDashboardReaderListDashboardsCall
+	for _, c := range m.Recorder.Calls("ListDashboards") {
+		var r MockDashboardReaderListDashboardsCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Project, _ = c.Args[1].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockDashboardReaderGetDashboardCall is one recorded call of MockDashboardReader.GetDashboard, one
+// field per parameter.
+type MockDashboardReaderGetDashboardCall struct {
+	Ctx context.Context
+	Ref DashboardRef
+}
+
+// GetDashboardCalls returns every recorded GetDashboard call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GetDashboard").
+func (m *MockDashboardReader) GetDashboardCalls() []MockDashboardReaderGetDashboardCall {
+	var out []MockDashboardReaderGetDashboardCall
+	for _, c := range m.Recorder.Calls("GetDashboard") {
+		var r MockDashboardReaderGetDashboardCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Ref, _ = c.Args[1].(DashboardRef)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockDashboardReaderQueryPanelReadoutCall is one recorded call of MockDashboardReader.QueryPanelReadout, one
+// field per parameter.
+type MockDashboardReaderQueryPanelReadoutCall struct {
+	Ctx context.Context
+	Req PanelReadoutRequest
+}
+
+// QueryPanelReadoutCalls returns every recorded QueryPanelReadout call, oldest first, with
+// its arguments typed. It reads the same log as Calls("QueryPanelReadout").
+func (m *MockDashboardReader) QueryPanelReadoutCalls() []MockDashboardReaderQueryPanelReadoutCall {
+	var out []MockDashboardReaderQueryPanelReadoutCall
+	for _, c := range m.Recorder.Calls("QueryPanelReadout") {
+		var r MockDashboardReaderQueryPanelReadoutCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(PanelReadoutRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ DashboardReader = (*MockDashboardReader)(nil)
 
 // forge:section MockFlamegraphReader
-// forge:hash=0f6a9e8f2b85caca069f270726a7585b47eeb2816e321197bdc8a6ae93a7a135
+// forge:hash=7b2db3959a8c59a37a2e10632d8322f22831ef53b9705aef268a90c282cffe8d
 
 // MockFlamegraphReader is a test mock for the FlamegraphReader interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockFlamegraphReader.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockFlamegraphReader.<Method>Func not set" error.
 type MockFlamegraphReader struct {
 	contractkit.Recorder
 	FlamegraphFunc func(context.Context, FlamegraphRequest) (FlamegraphResult, error)
@@ -654,18 +1383,39 @@ func (m *MockFlamegraphReader) Flamegraph(ctx context.Context, req FlamegraphReq
 	return FlamegraphResult{}, contractkit.MockNotSet("MockFlamegraphReader", "Flamegraph")
 }
 
+// MockFlamegraphReaderFlamegraphCall is one recorded call of MockFlamegraphReader.Flamegraph, one
+// field per parameter.
+type MockFlamegraphReaderFlamegraphCall struct {
+	Ctx context.Context
+	Req FlamegraphRequest
+}
+
+// FlamegraphCalls returns every recorded Flamegraph call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Flamegraph").
+func (m *MockFlamegraphReader) FlamegraphCalls() []MockFlamegraphReaderFlamegraphCall {
+	var out []MockFlamegraphReaderFlamegraphCall
+	for _, c := range m.Recorder.Calls("Flamegraph") {
+		var r MockFlamegraphReaderFlamegraphCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(FlamegraphRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ FlamegraphReader = (*MockFlamegraphReader)(nil)
 
 // forge:section MockPGOExporter
-// forge:hash=5b8449c31554c182e9633c2c4c2427a9c1e96b3288c5998c95772232e8ee15fb
+// forge:hash=74842b0f91b098153e9ba7caf09842f88f4e5dd902bf787b5381a6b1c7dc843c
 
 // MockPGOExporter is a test mock for the PGOExporter interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockPGOExporter.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockPGOExporter.<Method>Func not set" error.
 type MockPGOExporter struct {
 	contractkit.Recorder
 	ExportPGOProfileFunc func(context.Context, ExportPGORequest) (ExportPGOResult, error)
@@ -678,6 +1428,26 @@ func (m *MockPGOExporter) ExportPGOProfile(ctx context.Context, req ExportPGOReq
 		return m.ExportPGOProfileFunc(ctx, req)
 	}
 	return ExportPGOResult{}, contractkit.MockNotSet("MockPGOExporter", "ExportPGOProfile")
+}
+
+// MockPGOExporterExportPGOProfileCall is one recorded call of MockPGOExporter.ExportPGOProfile, one
+// field per parameter.
+type MockPGOExporterExportPGOProfileCall struct {
+	Ctx context.Context
+	Req ExportPGORequest
+}
+
+// ExportPGOProfileCalls returns every recorded ExportPGOProfile call, oldest first, with
+// its arguments typed. It reads the same log as Calls("ExportPGOProfile").
+func (m *MockPGOExporter) ExportPGOProfileCalls() []MockPGOExporterExportPGOProfileCall {
+	var out []MockPGOExporterExportPGOProfileCall
+	for _, c := range m.Recorder.Calls("ExportPGOProfile") {
+		var r MockPGOExporterExportPGOProfileCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(ExportPGORequest)
+		out = append(out, r)
+	}
+	return out
 }
 
 // Compile-time check.

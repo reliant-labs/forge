@@ -12,14 +12,15 @@ import (
 )
 
 // forge:section MockService
-// forge:hash=44453bc2a5ca6ec72444294f2c3c02b1da47829f4e652b715e5b7a9bdf835c81
+// forge:hash=38fe30e5dfd37516699ea0efc924ea4ac1bbdb3791d2feaf83bac08875f0bc48
 
 // MockService is a test mock for the Service interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockService.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockService.<Method>Func not set" error.
 type MockService struct {
 	contractkit.Recorder
 	LoadSessionFunc  func(string) (*SessionInfo, error)
@@ -52,6 +53,62 @@ func (m *MockService) ClearSession(dir string) error {
 		return m.ClearSessionFunc(dir)
 	}
 	return contractkit.MockNotSet("MockService", "ClearSession")
+}
+
+// MockServiceLoadSessionCall is one recorded call of MockService.LoadSession, one
+// field per parameter.
+type MockServiceLoadSessionCall struct {
+	Dir string
+}
+
+// LoadSessionCalls returns every recorded LoadSession call, oldest first, with
+// its arguments typed. It reads the same log as Calls("LoadSession").
+func (m *MockService) LoadSessionCalls() []MockServiceLoadSessionCall {
+	var out []MockServiceLoadSessionCall
+	for _, c := range m.Recorder.Calls("LoadSession") {
+		var r MockServiceLoadSessionCall
+		r.Dir, _ = c.Args[0].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceSaveSessionCall is one recorded call of MockService.SaveSession, one
+// field per parameter.
+type MockServiceSaveSessionCall struct {
+	Dir     string
+	Session *SessionInfo
+}
+
+// SaveSessionCalls returns every recorded SaveSession call, oldest first, with
+// its arguments typed. It reads the same log as Calls("SaveSession").
+func (m *MockService) SaveSessionCalls() []MockServiceSaveSessionCall {
+	var out []MockServiceSaveSessionCall
+	for _, c := range m.Recorder.Calls("SaveSession") {
+		var r MockServiceSaveSessionCall
+		r.Dir, _ = c.Args[0].(string)
+		r.Session, _ = c.Args[1].(*SessionInfo)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceClearSessionCall is one recorded call of MockService.ClearSession, one
+// field per parameter.
+type MockServiceClearSessionCall struct {
+	Dir string
+}
+
+// ClearSessionCalls returns every recorded ClearSession call, oldest first, with
+// its arguments typed. It reads the same log as Calls("ClearSession").
+func (m *MockService) ClearSessionCalls() []MockServiceClearSessionCall {
+	var out []MockServiceClearSessionCall
+	for _, c := range m.Recorder.Calls("ClearSession") {
+		var r MockServiceClearSessionCall
+		r.Dir, _ = c.Args[0].(string)
+		out = append(out, r)
+	}
+	return out
 }
 
 // Compile-time check.

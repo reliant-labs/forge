@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // projectDeclaresIdentity is the regenerate lane's answer to "does this
@@ -172,6 +173,15 @@ type projectTemplateData struct {
 	// selects (internal/connectmajor). Templates that name a connect-go
 	// module branch on it; false, the zero value, keeps every v1 render.
 	ConnectV2 bool
+}
+
+// ForgeAtLeast reports whether the project's pinned forge (ForgeVersion) has
+// everything release has. A scaffold template that RUNS a forge command newer
+// than the release a checkout build pins renders it only inside
+// `{{if .ForgeAtLeast "vX.Y.Z"}}` (templates.ForgeAtLeast). The upgrade lane
+// sets no ForgeVersion, so it renders every guarded block's older form.
+func (d projectTemplateData) ForgeAtLeast(release string) bool {
+	return templates.ForgeAtLeast(d.ForgeVersion, release)
 }
 
 // BinaryBuild is one buildable entrypoint: the cmd/<Dir>/ leaf, which is

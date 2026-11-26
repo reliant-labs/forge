@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 var coverFlags = []string{"-cover", "-covermode=atomic", "-coverpkg=example.com/shop/internal/..."}
@@ -113,14 +115,22 @@ func TestBuildCmd_GoRunKeepsAFlagWithSpacesWhole(t *testing.T) {
 // commands, so forge's cover flags reach air's `go build`; an older config
 // does not, and forge says so instead of reporting coverage it never built.
 func TestAirExpandsBuildFlags(t *testing.T) {
-	tmpl, err := filepath.Abs(filepath.Join("..", "templates", "project", "air.toml.tmpl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !(RunnerSpec{AirConfig: tmpl}).AirExpandsBuildFlags() {
-		t.Errorf("the scaffolded air.toml.tmpl does not expand $%s", GoBuildFlagsEnv)
-	}
 	dir := t.TempDir()
+	// Both forms the template renders: for a pin with `forge dev air-build`
+	// and for an older one.
+	for _, pin := range []string{"v1.12.0", "v1.11.0"} {
+		b, err := templates.ProjectTemplates().Render("air.toml.tmpl", scaffoldAirData{Name: "app", ForgeVersion: pin})
+		if err != nil {
+			t.Fatal(err)
+		}
+		scaffolded := filepath.Join(dir, "scaffolded-"+pin+".toml")
+		if err := os.WriteFile(scaffolded, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if !(RunnerSpec{AirConfig: scaffolded}).AirExpandsBuildFlags() {
+			t.Errorf("the .air.toml scaffolded for forge %s does not expand $%s", pin, GoBuildFlagsEnv)
+		}
+	}
 	old := filepath.Join(dir, ".air.toml")
 	if err := os.WriteFile(old, []byte("[build]\ncmd = \"go build -o ./tmp/app ./cmd/app\"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -131,4 +141,12 @@ func TestAirExpandsBuildFlags(t *testing.T) {
 	if (RunnerSpec{AirConfig: filepath.Join(dir, "missing.toml")}).AirExpandsBuildFlags() {
 		t.Error("an unreadable config was read as expanding it")
 	}
+}
+
+// scaffoldAirData is the air templates' payload: the binary name and the pin
+// their ForgeAtLeast guards read.
+type scaffoldAirData struct{ Name, ForgeVersion string }
+
+func (d scaffoldAirData) ForgeAtLeast(release string) bool {
+	return templates.ForgeAtLeast(d.ForgeVersion, release)
 }

@@ -121,10 +121,15 @@ func pinGateFor(rel string) (readOnlyFlags []string, gated bool) {
 //     status: a hand-off that failed (the pinned forge cannot be built
 //     offline) would fail a lane the tests passed.
 //
+//   - dev air-build: air's build step, run on every rebuild by the forge
+//     `forge env up` put on the workload's PATH. It runs the build the air
+//     config names and reads nothing of the project's, so a skew line on
+//     every save would be noise in the server's log.
+//
 // `storage` is deliberately absent: it runs THIS forge's cache-trimming rules
 // (handOffExempt says why), and those differ between forges, so which forge
 // trimmed the cache is worth saying.
-var pinIndependentCommands = []string{"slot", "test begin", "test capture"}
+var pinIndependentCommands = []string{"slot", "test begin", "test capture", "dev air-build"}
 
 // pinIndependent reports whether rel (relative to forge's root) is, or is
 // under, a pinIndependentCommands group.

@@ -192,7 +192,7 @@ func airWindowsCurrentCmd(cmd string) (string, bool) {
 	if len(m) != 3 || m[1] != m[2] {
 		return "", false
 	}
-	rendered, err := templates.ProjectTemplates().Render("air.toml.tmpl", map[string]any{"Name": m[1]})
+	rendered, err := templates.ProjectTemplates().Render("air.toml.tmpl", airTemplateData{Name: m[1]})
 	if err != nil {
 		return "", false
 	}

@@ -161,7 +161,7 @@ func TestTrimpathDefault_KCLEditsWhatItCanAndReportsTheRest(t *testing.T) {
 // airTemplate is the current .air.toml forge scaffolds for a binary.
 func airTemplate(t *testing.T, name string) string {
 	t.Helper()
-	b, err := templates.ProjectTemplates().Render("air.toml.tmpl", map[string]any{"Name": name})
+	b, err := templates.ProjectTemplates().Render("air.toml.tmpl", airTemplateData{Name: name})
 	if err != nil {
 		t.Fatal(err)
 	}

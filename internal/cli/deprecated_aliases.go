@@ -109,7 +109,7 @@ type commandNoun struct {
 
 // commandNouns are created, in order, before the rows mount under them.
 var commandNouns = []commandNoun{
-	{Path: "dev", Short: "The local inner loop: the k3d dev cluster, a debugger, and curl for an rpc"},
+	{Path: "dev", Short: "The local inner loop: the k3d dev cluster, a debugger, curl for an rpc, and air's build step"},
 	{Path: "dev cluster", Short: "Manage the local k3d cluster and inspect dev state",
 		Long: `Manage the local k3d development cluster and inspect dev-loop state: k3d
 cluster lifecycle, ingress URLs, status and logs. The cluster config is read

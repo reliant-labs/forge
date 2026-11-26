@@ -415,6 +415,9 @@ path from an empty directory to authored protos, in one call.`,
 	// at its new path from the same constructor as its old one. Old paths
 	// stay exactly where they are.
 	mountMovedCommands(rootCmd, &moveBuilder{f: f, groups: groups})
+	// `dev air-build` is new under the `dev` noun, not moved there: it has
+	// no old spelling, so it is mounted after the noun exists.
+	mustFindRel(rootCmd, "dev", "dev air-build").AddCommand(newDevAirBuildCmd())
 	groupEnvCommands(findChildCommand(rootCmd, "env"))
 	hideDeprecatedPaths(rootCmd)
 

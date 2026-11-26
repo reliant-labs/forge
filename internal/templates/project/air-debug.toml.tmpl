@@ -3,12 +3,26 @@ testdata_dir = "testdata"
 tmp_dir = "tmp"
 
 [build]
+{{- if .ForgeAtLeast "v1.12.0"}}
+  # The build writes ./tmp/{{.Name}}.tmp and `forge dev air-build` moves it
+  # onto ./tmp/{{.Name}} only when it succeeds (an atomic replace, unix), and
+  # holds a failed build until air exits, so air leaves the running debug
+  # session alone instead of restarting the old binary (see .air.toml).
+  # Windows is overridden in [build.windows] below: air stops the running .exe
+  # before building there (a running .exe cannot be replaced), so it builds in
+  # place.
+{{- else}}
   # Atomic binary replacement: build to .tmp then mv (unix). Windows is
   # overridden in [build.windows] below: air stops the running .exe before
   # building there (a running .exe cannot be replaced), so it builds in place.
+{{- end}}
   # -trimpath=false beats a -trimpath in GOFLAGS/go env: a debugger sets
   # breakpoints by absolute source path, which a trimmed binary does not record.
+{{- if .ForgeAtLeast "v1.12.0"}}
+  cmd = "forge storage check ./tmp; CGO_ENABLED=0 forge dev air-build --precheck-status $? --out ./tmp/{{.Name}} -- go build -gcflags='all=-N -l' -trimpath=false -buildvcs=false -o ./tmp/{{.Name}}.tmp ./cmd/{{.Name}}"
+{{- else}}
   cmd = "forge storage check ./tmp && CGO_ENABLED=0 go build -gcflags='all=-N -l' -trimpath=false -buildvcs=false -o ./tmp/{{.Name}}.tmp ./cmd/{{.Name}} && mv ./tmp/{{.Name}}.tmp ./tmp/{{.Name}}"
+{{- end}}
   delay = 1000
   # exclude_dir entries are root-relative: the bare "node_modules" only
   # covers a top-level node_modules. "frontends" excludes the whole
@@ -37,6 +51,9 @@ tmp_dir = "tmp"
   rerun = false
   rerun_delay = 500
   send_interrupt = true
+{{- if .ForgeAtLeast "v1.12.0"}}
+  # false, deliberately: see .air.toml.
+{{- end}}
   stop_on_error = false
 
 [build.windows]

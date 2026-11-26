@@ -54,9 +54,12 @@ the same `_api` staging and prod host (`deploy/hosting`). A new service or
 worker needs no line here.
 
 `_on_host` binds `forge.OnHost {runner = ..., listen_ports = [...]}`. `server`
-runs under **air** — rebuilt and restarted when a .go file changes;
-`.air.toml`'s `entrypoint` is the same `server`, and `forge env up` refuses
-to start, naming the fix, when air is not installed (`go install
+runs under **air** — rebuilt and restarted when a .go file changes. A build
+that fails leaves the running server alone (`.air.toml` builds through
+`forge dev air-build`, which never hands a failed build back to air, so air
+never restarts the server for it): it keeps serving the last good build, and the next good
+build restarts it once. `.air.toml`'s `entrypoint` is the same `server`, and
+`forge env up` refuses to start, naming the fix, when air is not installed (`go install
 github.com/air-verse/air@latest`, or `runner = "go-run"` to give up the
 reload). Anything else runs `go run`, its argv DERIVED from the workload's
 `build` + `args`. `_on_k3d` binds `forge.OnCluster {target = _k3d}`: the image

@@ -641,9 +641,9 @@ type BuildImagesWorkflowData struct {
 }
 
 // ForgeAtLeast reports whether the project's pinned forge has everything
-// release has; see forgeAtLeast.
+// release has; see ForgeAtLeast.
 func (d BuildImagesWorkflowData) ForgeAtLeast(release string) bool {
-	return forgeAtLeast(d.ForgeVersion, release)
+	return ForgeAtLeast(d.ForgeVersion, release)
 }
 
 // ReleaseWorkflowData holds data for release.yml and the vendored

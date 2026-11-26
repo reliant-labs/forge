@@ -37,7 +37,8 @@ package cli
 // FORGE_VERSION_DELEGATED, which stops the pinned forge handing off again —
 // that forge alone: it is addressed to the exec'd pid and consumed at start-up,
 // so nothing the delegate starts inherits it; see forgedelegate.MarkerEnv),
-// stdio and exit status. One line on stderr says it happened.
+// stdio and exit status. One line on stderr says it happened, once a day per
+// project, pin and forge, and never under --quiet (forge_pin_notice.go).
 //
 // It is skipped when --allow-version-skew or FORGE_ALLOW_VERSION_SKEW is set
 // (the explicit "run THIS forge"; the skew warning and refusals then apply),
@@ -317,7 +318,7 @@ func HandOffToPinned(ctx context.Context, args []string, stderr io.Writer) (hand
 		// The tree reports a bad -C itself, with its own message.
 		return false, nil
 	}
-	return handOff(ctx, stderr, inv.rel, inv.machineWide, inv.implicitTarget, inv.allow, root, args)
+	return handOff(ctx, stderr, inv, root, args)
 }
 
 // skewFlagBeforeCommand refuses --allow-version-skew written before the
@@ -372,6 +373,9 @@ type invocation struct {
 	implicitTarget bool
 	// projectDir is -C / --project-dir.
 	projectDir string
+	// quiet is the command's --quiet (quietRun): the run asked for its
+	// failures only, so the hand-off notice is not printed.
+	quiet bool
 }
 
 // parseInvocation resolves args against a throwaway copy of this forge's
@@ -384,7 +388,7 @@ func parseInvocation(args []string) invocation {
 	if err != nil || cmd == nil {
 		// An unknown top-level command: this forge cannot run it, the
 		// pinned one may.
-		return invocation{rel: firstCommandWord(root, args), projectDir: scanProjectDir(args)}
+		return invocation{rel: firstCommandWord(root, args), projectDir: scanProjectDir(args), quiet: quietRun(nil, args)}
 	}
 	cmd.FParseErrWhitelist.UnknownFlags = true
 	// This parse is a dry run: a deprecated flag's notice is printed by the
@@ -398,6 +402,7 @@ func parseInvocation(args []string) invocation {
 	inv.machineWide = machineWideRun(inv.rel, cmd.Flags())
 	inv.implicitTarget = implicitTargetRun(inv.rel, cmd.Flags())
 	inv.projectDir, _ = cmd.Flags().GetString("project-dir")
+	inv.quiet = quietRun(cmd.Flags(), rest)
 	if cmd.HasSubCommands() {
 		// `forge project <a subcommand this forge lacks>`.
 		if w := firstWord(cmd.Flags().Args()); w != "" {
@@ -531,17 +536,17 @@ func projectRootFrom(dir string) (string, error) {
 	}
 }
 
-// handOff is the decision both entry points share: hand the command at rel to
-// the forge projectRoot wants, run this forge, or fail. args are the forge
-// arguments of this invocation; machineWide, whether the run spans every
-// project on the machine (machineWideRun); implicitTarget, whether it moves
-// the pin to this forge (implicitTargetRun).
-func handOff(ctx context.Context, w io.Writer, rel string, machineWide, implicitTarget, allow bool, projectRoot string, args []string) (handed bool, err error) {
-	mode := handOffModeOf(rel, machineWide, implicitTarget)
+// handOff is the decision both entry points share: hand the command inv names
+// to the forge projectRoot wants, run this forge, or fail. args are the forge
+// arguments of this invocation (inv.projectDir is not read: projectRoot is
+// its answer).
+func handOff(ctx context.Context, w io.Writer, inv invocation, projectRoot string, args []string) (handed bool, err error) {
+	rel, implicitTarget := inv.rel, inv.implicitTarget
+	mode := handOffModeOf(rel, inv.machineWide, implicitTarget)
 	if mode == runHere {
 		return false, nil
 	}
-	t, ok, unpinned := pinTargetOf(rel, implicitTarget, allow, projectRoot)
+	t, ok, unpinned := pinTargetOf(rel, implicitTarget, inv.allow, projectRoot)
 	// An upgrade with no pin to compare has nothing to hand off and never
 	// printed the notice; it reports the unpinned project itself.
 	if unpinned != "" && !implicitTarget {
@@ -573,7 +578,31 @@ func handOff(ctx context.Context, w io.Writer, rel string, machineWide, implicit
 	// The pinned forge may predate the 14 nouns: it is given the spelling
 	// every forge has (legacyArgs), and told not to warn about it.
 	args, rewritten := legacyArgs(args)
-	return true, execPinned(w, t, res, args, rewritten)
+	if pinNoticeDue("handoff", projectRoot, t.String(), t.binary, inv.quiet) {
+		_, _ = fmt.Fprint(w, handOffNotice(t, res))
+	}
+	return true, execPinned(t, res, args, rewritten)
+}
+
+// handOffNotice is the one line that says a command was handed to the
+// project's forge. It leads with what runs — the command did run, under the
+// forge the project asked for — and ends with how to run this one instead.
+// pinNoticeDue decides whether it prints.
+func handOffNotice(t delegateTarget, res forgedelegate.Result) string {
+	tail := fmt.Sprintf("this forge is %s; --%s, or %s=1, runs it instead", t.binary, allowVersionSkewFlag, allowVersionSkewEnv)
+	if t.checkout != "" {
+		return fmt.Sprintf("forge: running %s, which this project is linked to (%s)\n", res.Source, tail)
+	}
+	from := res.Source
+	switch res.Kind {
+	case forgedelegate.KindTools:
+		from = "the project's .tools/bin/forge"
+	case forgedelegate.KindCache:
+		from = "the cached build"
+	case forgedelegate.KindBuilt:
+		from = "just built"
+	}
+	return fmt.Sprintf("forge: running forge_version %s, which forge.yaml pins (%s — %s)\n", t.pin, from, tail)
 }
 
 // pinTarget is the forge the command at rel must run under in projectRoot,
@@ -780,9 +809,7 @@ func delegateTargetFor(projectRoot string) (t delegateTarget, ok bool) {
 // delegate's exit status IS this process's, and it returns only when exec(2)
 // itself failed; on Windows it relays the delegate's exit status; a test seam
 // returns the delegate's error. Callers propagate that error unchanged.
-func execPinned(w io.Writer, t delegateTarget, res forgedelegate.Result, args []string, respelled bool) error {
-	_, _ = fmt.Fprintf(w, "forge: this forge is %s, but the project wants %s — running %s instead (%s, or %s=1, to run this one)\n",
-		t.binary, t, res.Source, "--"+allowVersionSkewFlag, allowVersionSkewEnv)
+func execPinned(t delegateTarget, res forgedelegate.Result, args []string, respelled bool) error {
 	env := forgedelegate.Env(t.String())
 	if respelled {
 		env = append(env, noDeprecationWarningsEnv+"=1")

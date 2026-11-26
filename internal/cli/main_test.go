@@ -50,6 +50,10 @@ func TestMain(m *testing.M) {
 	}
 	// No test hands its command to another forge: see pinDelegationDisabled.
 	pinDelegationDisabled = true
+	// Nor does a pin notice stamp the developer's cache, or stay silent
+	// because an earlier run printed it today: no stamp store, so every
+	// notice prints. forge_pin_notice_test.go gives the throttle its own.
+	pinNoticeDir = func() (string, error) { return "", nil }
 	// Nor does `forge version` or `forge start` run the forges on the
 	// developer's PATH: what they report is not the test's input.
 	// version_path_shadow_test.go sets a scan of its own.

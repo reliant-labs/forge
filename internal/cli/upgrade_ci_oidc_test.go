@@ -81,9 +81,40 @@ func TestCIOIDCPermissions_Table(t *testing.T) {
 		"write-all": {
 			in: "on: push\npermissions: write-all\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: forge test report\n",
 		},
-		"declined": {
-			in:   "on: push\njobs:\n  test:\n    permissions:\n      contents: read\n      id-token: none\n    runs-on: ubuntu-latest\n    steps:\n      - run: forge test report\n",
-			note: "sets `id-token: none`",
+		"declined on the job": {
+			in:      "on: push\njobs:\n  test:\n    permissions:\n      contents: read\n      id-token: none\n    runs-on: ubuntu-latest\n    steps:\n      - run: forge test report\n",
+			note:    "job test (line 3) uploads test results but sets `id-token: none`",
+			pending: true,
+		},
+		"declined by the workflow, none": {
+			in:      "on: push\npermissions:\n  contents: read\n  id-token: none\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: forge test report\n",
+			note:    "inherits the workflow's `id-token: none`",
+			pending: true,
+		},
+		"declined by the workflow, read": {
+			in:      "on: push\npermissions:\n  contents: read\n  id-token: read\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: forge test report\n",
+			note:    "inherits the workflow's `id-token: read`",
+			pending: true,
+		},
+		"declined, but that job does not upload": {
+			in: "on: push\npermissions:\n  id-token: none\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: forge test report --upload=false\n",
+		},
+		"the report named outside steps[].run": {
+			in: "# runs forge test report later\non: push\nenv:\n  NOTE: forge test report\njobs:\n  test:\n    name: forge test report\n    runs-on: ubuntu-latest\n    env:\n      run: forge test report --upload\n    steps:\n      - name: task test:report\n        with:\n          run: forge test report\n      - run: go test ./... # then forge test report\n",
+		},
+		"a compound command": {
+			in:       "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: task test && forge test report --upload || echo skipped\n",
+			want:     "on: push\njobs:\n  test:\n" + ciOIDCBlock(t, "contents: read", "id-token: write") + "    runs-on: ubuntu-latest\n    steps:\n      - run: task test && forge test report --upload || echo skipped\n",
+			rewrites: 1,
+			note:     "default GITHUB_TOKEN permissions",
+		},
+		"one invocation off, another uploads": {
+			in:       "on: push\npermissions:\n  contents: read\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: forge test report --upload=false; forge test report --upload\n",
+			want:     "on: push\npermissions:\n  contents: read\njobs:\n  test:\n" + ciOIDCBlock(t, "contents: read", "id-token: write") + "    runs-on: ubuntu-latest\n    steps:\n      - run: forge test report --upload=false; forge test report --upload\n",
+			rewrites: 1,
+		},
+		"every invocation off": {
+			in: "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          forge test report --upload false\n          task test:report -- --upload=off\n",
 		},
 		"read-all is a hand edit": {
 			in:      "on: push\npermissions: read-all\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: forge test report\n",
@@ -201,13 +232,16 @@ func TestUpgradeMigrationCIOIDC_DetectionIsTheCodemods(t *testing.T) {
 	for name, tc := range map[string]struct {
 		files map[string]string
 		want  bool
+		stays bool // still offered after the codemod: a hand edit is left
 	}{
-		"no workflows":          {nil, false},
-		"a job lacking it":      {map[string]string{".github/workflows/ci.yml": lacking}, true},
-		"in a .yaml workflow":   {map[string]string{".github/workflows/tests.yaml": lacking}, true},
-		"granted":               {map[string]string{".github/workflows/ci.yml": strings.Replace(lacking, "    runs-on", "    permissions:\n      id-token: write\n    runs-on", 1)}, false},
-		"no report":             {map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  test:\n    runs-on: x\n    steps:\n      - run: go test\n"}, false},
-		"outside the workflows": {map[string]string{"ci.yml": lacking}, false},
+		"no workflows":          {files: nil, want: false},
+		"a job lacking it":      {files: map[string]string{".github/workflows/ci.yml": lacking}, want: true},
+		"in a .yaml workflow":   {files: map[string]string{".github/workflows/tests.yaml": lacking}, want: true},
+		"granted":               {files: map[string]string{".github/workflows/ci.yml": strings.Replace(lacking, "    runs-on", "    permissions:\n      id-token: write\n    runs-on", 1)}, want: false},
+		"no report":             {files: map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  test:\n    runs-on: x\n    steps:\n      - run: go test\n"}, want: false},
+		"outside the workflows": {files: map[string]string{"ci.yml": lacking}, want: false},
+		// An explicit `id-token: none` is never overridden, and never complete.
+		"declined by the workflow": {files: map[string]string{".github/workflows/ci.yml": strings.Replace(lacking, "jobs:", "permissions:\n  id-token: none\njobs:", 1)}, want: true, stays: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -222,8 +256,8 @@ func TestUpgradeMigrationCIOIDC_DetectionIsTheCodemods(t *testing.T) {
 			}
 			if tc.want {
 				runCIOIDCFix(t, dir, true)
-				if migrationApplies(m, "v1.11.0", dir) {
-					t.Errorf("still applies after the fix:\n%s", readString(t, filepath.Join(dir, ".github/workflows", firstKey(tc.files))))
+				if got := migrationApplies(m, "v1.11.0", dir); got != tc.stays {
+					t.Errorf("applies after the fix = %v, want %v:\n%s", got, tc.stays, readString(t, filepath.Join(dir, ".github/workflows", firstKey(tc.files))))
 				}
 			}
 		})
@@ -235,4 +269,43 @@ func firstKey(m map[string]string) string {
 		return filepath.Base(k)
 	}
 	return ""
+}
+
+// A step's script uploads when any simple command in it runs the report
+// without turning upload off; ambiguous scripts that name it count.
+func TestCIOIDCRunUploads(t *testing.T) {
+	for run, want := range map[string]bool{
+		"forge test report":                                          true,
+		"forge test report --upload":                                 true,
+		"forge test report --upload=required":                        true,
+		"forge test report --upload=false":                           false,
+		"forge test report --upload false":                           false,
+		"forge test report --upload=OFF":                             false,
+		"forge test report --upload=false --upload":                  true, // the last flag wins
+		"forge test report --upload=false; forge test report":        true,
+		"forge test report; forge test report --upload=false":        true,
+		"forge test report --upload=false && echo forge test report": false,
+		"task test:report -- --upload || echo \"exited $?\"":         true,
+		"task test:report -- --upload=false":                         false,
+		"task lint test:report":                                      true,
+		"task test -- test:report":                                   false,
+		"FORGE_TESTS=on env forge test report":                       true,
+		"/usr/local/bin/forge test report":                           true,
+		"reliant forge test report --upload":                         true,
+		"\"$FORGE\" test report":                                     true,
+		"forge test \\\n  report --upload":                           true,
+		"go test ./... | tee out.txt":                                false,
+		"echo 'forge test report'":                                   false,
+		"echo forge test report":                                     false,
+		"# forge test report\ngo test ./...":                         false,
+		"go test ./... # then forge test report":                     false,
+		"forge test capture -- go test ./...":                        false,
+		"(cd sub && forge test report)":                              true,
+		"echo \"$(forge test report --upload=false)\"":               true, // ambiguous: granted
+		"forge test report 'unterminated":                            true, // ambiguous: granted
+	} {
+		if got := ciOIDCRunUploads(run); got != want {
+			t.Errorf("ciOIDCRunUploads(%q) = %v, want %v", run, got, want)
+		}
+	}
 }

@@ -51,8 +51,13 @@ forge fix ci-oidc-permissions
 git diff -- .github/workflows
 ```
 
-It edits each job of `.github/workflows/*.yml` whose steps run `forge test
-report` or `task test:report` (a step with `--upload=false` does not count):
+It edits each job of `.github/workflows/*.yml` with a step whose `run:`
+script uploads: some command in it (split at newlines, `;`, `&&`, `||` and
+`|`) is `forge test report` or `task test:report` without `--upload=false`
+(or `--upload false`). Text anywhere else in the file, a comment included,
+does not count. A script forge cannot read reliably that names the report
+counts as an upload: an unneeded `id-token` costs nothing, a missing one skips
+the upload.
 
 | The job has | It gets |
 |---|---|
@@ -60,7 +65,7 @@ report` or `task test:report` (a step with `--upload=false` does not count):
 | no `permissions`, under a workflow-level mapping | a job-level block that repeats the workflow's permissions plus `id-token: write`, above `runs-on:` with the scaffold's comment: a job-level block replaces the workflow's, so `contents: read` must be restated |
 | no `permissions` anywhere | `contents: read` and `id-token: write`; the run says so, because the job ran with the repository's default token permissions and now has only these two: add any other its steps need |
 | `id-token: write` already, its own or inherited, or `write-all` | nothing |
-| `id-token` set to anything else | nothing: that is a decision; the run names it |
+| `id-token` explicitly set to anything else (`none`, `read`), its own or the workflow's | nothing: forge never overrides it. The run names the job, and the playbook stays listed until you set `id-token: write` on it or pass `--upload=false` to its report |
 
 No other job changes. The file is edited in place at the lines the YAML
 parser reports, so comments and quoting stay; the result must decode to the

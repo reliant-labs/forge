@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strings"
 	"sync"
 
@@ -37,8 +36,11 @@ import (
 //     carries. Placed where the scaffold places it (above `runs-on:`), an
 //     older scaffolded ci.yml becomes the current template byte for byte.
 //   - A job that already gets it (its own block, or a workflow-level one it
-//     inherits, or `write-all`) is left alone, and so is one that sets
-//     `id-token` to anything else: that is a decision, not an old shape.
+//     inherits, or `write-all`) is left alone.
+//   - A job whose `id-token` is explicitly anything else, its own or
+//     inherited, is never overridden: the run names it as a hand edit, and
+//     the playbook stays pending until the person grants it or turns that
+//     job's upload off.
 //
 // The file is edited as text at the positions the YAML parser reports, never
 // re-marshalled, so every comment and quoting choice stays. The result must
@@ -58,17 +60,13 @@ const ciOIDCPlaybookSkill = "migrations/" + ciOIDCPlaybookID
 // ciOIDCWorkflowsDir holds the workflows the codemod reads.
 const ciOIDCWorkflowsDir = ".github/workflows"
 
-// ciOIDCTestReportRun matches a step command that runs the report, which
-// uploads by default in CI.
-var ciOIDCTestReportRun = regexp.MustCompile(`\bforge\s+test\s+report\b|\btask\s+test:report\b`)
-
 func init() {
 	codemod.Register(codemod.Codemod{
 		Name:    "ci-oidc-permissions",
 		Version: ciOIDCRelease,
 		Short:   "Grant id-token: write to each GitHub Actions job that runs forge test report, so it uploads with OIDC and no secret",
-		Long: `Give each job of .github/workflows/*.yml whose steps run ` + "`forge test report`" + `
-(or ` + "`task test:report`" + `) the ` + "`id-token: write`" + ` permission. With it, forge
+		Long: `Give each job of .github/workflows/*.yml whose steps' ` + "`run:`" + ` scripts run
+` + "`forge test report`" + ` (or ` + "`task test:report`" + `) without ` + "`--upload=false`" + ` the ` + "`id-token: write`" + ` permission. With it, forge
 ` + ciOIDCRelease + ` and later exchange the job's GitHub OIDC token for a short-lived
 tests:write token, so the upload needs no FORGE_CONTROL_PLANE_TOKEN secret once
 the Reliant GitHub App is linked to the organization.
@@ -77,7 +75,9 @@ A job with its own ` + "`permissions`" + ` gets the line added. A job with none 
 job-level block repeating the workflow-level permissions plus ` + "`id-token: write`" + `,
 because a job-level block replaces the workflow's. No other job changes, and
 comments are kept: the file is edited in place, never re-written from a parse.
-A job that sets ` + "`id-token`" + ` to anything else is left alone. Re-running it changes
+A job whose ` + "`id-token`" + ` is explicitly anything else, its own or inherited, is
+never overridden: the run names it, and the playbook stays listed until you
+grant it or pass ` + "`--upload=false`" + ` to that job's report. Re-running it changes
 nothing.
 
 The rest of the story (linking the App, retiring the secret): ` + "`forge skill load " + ciOIDCPlaybookSkill + "`" + `.`,
@@ -202,7 +202,9 @@ type ciOIDCJobEdit struct {
 // planCIOIDCWorkflow plans one workflow file.
 func planCIOIDCWorkflow(rel string, src []byte) ciOIDCPlan {
 	p := ciOIDCPlan{rel: rel}
-	if !ciOIDCTestReportRun.Match(src) {
+	// A cheap pre-filter on the text; which jobs upload is decided from
+	// their steps' `run:` scripts alone (ciOIDCJobUploads).
+	if !ciOIDCNamesReport(string(src)) {
 		return p
 	}
 	handEdit := func(why string) {
@@ -268,8 +270,9 @@ func planCIOIDCWorkflow(rel string, src []byte) ciOIDCPlan {
 	return p
 }
 
-// ciOIDCJobUploads reports whether one of the job's steps runs the report
-// without turning its upload off.
+// ciOIDCJobUploads reports whether one of the job's steps
+// (jobs.<id>.steps[].run, nothing else in the file) runs the report without
+// turning its upload off (ciOIDCRunUploads).
 func ciOIDCJobUploads(job *yaml.Node) bool {
 	_, steps := yamlMapGet(job, "steps")
 	if steps == nil || steps.Kind != yaml.SequenceNode {
@@ -277,7 +280,7 @@ func ciOIDCJobUploads(job *yaml.Node) bool {
 	}
 	for _, s := range steps.Content {
 		_, run := yamlMapGet(s, "run")
-		if run != nil && run.Kind == yaml.ScalarNode && ciOIDCTestReportRun.MatchString(run.Value) && !strings.Contains(run.Value, "--upload=false") {
+		if run != nil && run.Kind == yaml.ScalarNode && ciOIDCRunUploads(run.Value) {
 			return true
 		}
 	}
@@ -300,6 +303,15 @@ func ciOIDCIDToken(perm *yaml.Node) (value string, set bool) {
 	return v.Value, true
 }
 
+// ciOIDCDeclined is the hand-edit reason for a job whose `id-token` is
+// explicitly something other than write. forge never overrides that, and the
+// playbook stays pending until the person decides: grant it, or stop the
+// job uploading (--upload=false on its report step).
+func ciOIDCDeclined(how, v string) string {
+	return fmt.Sprintf("uploads test results but %s `id-token: %s`, which forge does not override: the playbook stays listed until the job gets `id-token: write` "+
+		"(a FORGE_CONTROL_PLANE_TOKEN secret on the step still wins over OIDC) or its report command passes `--upload=false`", how, v)
+}
+
 // planCIOIDCJob decides one uploading job. skip: nothing to do (note may say
 // why); why: a hand edit is needed; otherwise e is the edit.
 func planCIOIDCJob(y *yamlText, key, job, wfPerm *yaml.Node, comment []string) (e ciOIDCJobEdit, skip bool, why, note string) {
@@ -308,9 +320,9 @@ func planCIOIDCJob(y *yamlText, key, job, wfPerm *yaml.Node, comment []string) (
 		// It inherits the workflow's permissions.
 		if v, set := ciOIDCIDToken(wfPerm); set {
 			if v != "write" {
-				note = fmt.Sprintf("inherits the workflow's `id-token: %s`, which forge left as a decision: with it the upload needs the FORGE_CONTROL_PLANE_TOKEN secret", v)
+				return e, false, ciOIDCDeclined("inherits the workflow's", v), ""
 			}
-			return e, true, "", note
+			return e, true, "", ""
 		}
 		if job.Style&yaml.FlowStyle != 0 {
 			return e, false, "is a flow mapping", ""
@@ -362,9 +374,9 @@ func planCIOIDCJob(y *yamlText, key, job, wfPerm *yaml.Node, comment []string) (
 
 	if v, set := ciOIDCIDToken(jp); set {
 		if v != "write" {
-			note = fmt.Sprintf("sets `id-token: %s`, which forge left as a decision: with it the upload needs the FORGE_CONTROL_PLANE_TOKEN secret", v)
+			return e, false, ciOIDCDeclined("sets", v), ""
 		}
-		return e, true, "", note
+		return e, true, "", ""
 	}
 	if jp.Kind != yaml.MappingNode {
 		return e, false, fmt.Sprintf("has `permissions: %s`, which forge cannot extend: list the permissions its steps need plus `id-token: write`", jp.Value), ""

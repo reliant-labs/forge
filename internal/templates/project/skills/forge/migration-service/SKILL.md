@@ -71,19 +71,9 @@ forge lint
 
 All four must pass on the empty scaffold. Fix failures here, not after porting.
 
-## Set the contracts floor
+## Check package contracts before porting
 
-Before porting any internal package, edit `forge.yaml`:
-
-```yaml
-contracts:
-  strict: true
-  allow_exported_vars: false
-  allow_exported_funcs: false
-  exclude: []
-```
-
-`forge lint --contract` then joins the per-phase gate. See `contracts` for the per-package pattern (a `//forge:contract` struct whose exported methods are the interface, or `contract.go` first for a strategy interface; `forge generate`, then implementation behind it).
+Run `forge lint --contract` on the baseline and after each port phase. The lane does not need strictness settings in `forge.yaml`; use `contracts.exclude` only for packages that intentionally have no contract. See `contracts` for the per-package pattern (a `//forge:contract` struct whose exported methods are the interface, or `contract.go` first for a strategy interface; `forge generate`, then implementation behind it).
 
 ## Porting order
 

@@ -340,7 +340,7 @@ If any of those three fail, the phase isn't done. Catching a contract gap at int
 - Never hand-edit `mock_gen.go` or `contract_gen.go`. Edit `contract.go` (or the marked type's exported methods) and re-run `forge generate`. (Pre-1.7 projects also had `middleware_gen.go` / `tracing_gen.go` / `metrics_gen.go`; those are removed by the next `forge generate`.)
 - Naming: `Service` for single-impl, `<Name>er` for multi-impl pluggable backends.
 - Pure utilities: pick (A), (B), or (C) explicitly. Don't leave the package half-mocked.
-- `contracts.strict: true` from day one. Backfilling later is the most expensive option.
+- Run the contract lane from day one. Fix findings before porting the next package.
 
 ## When this skill is not enough
 

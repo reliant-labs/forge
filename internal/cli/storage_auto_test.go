@@ -107,6 +107,37 @@ func TestRunAutoGCIsBoundedAndRecorded(t *testing.T) {
 	}
 }
 
+// TestAutoGCPressureFlag: `auto-gc --pressure` (the Reliant daemon's disk
+// guard) runs the pass with Runner.Pressure, which halves the build-cache
+// budget; without the flag, and on the path `forge env up` starts, it is off.
+func TestAutoGCPressureFlag(t *testing.T) {
+	path := storagePolicyForOpportunisticGC(t)
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{{nil, false}, {[]string{"--pressure"}, true}} {
+		var got, ran bool
+		nonDisruptiveGCFn = func(_ context.Context, r storage.Runner) error {
+			got, ran = r.Pressure, true
+			return nil
+		}
+		cmd := newStorageAutoGCCmd(&path)
+		cmd.SetArgs(tc.args)
+		cmd.SetOut(io.Discard)
+		if err := cmd.ExecuteContext(context.Background()); err != nil {
+			t.Fatalf("auto-gc %v: %v", tc.args, err)
+		}
+		if !ran || got != tc.want {
+			t.Fatalf("auto-gc %v: ran=%v Pressure=%v, want %v", tc.args, ran, got, tc.want)
+		}
+	}
+	var got bool
+	nonDisruptiveGCFn = func(_ context.Context, r storage.Runner) error { got = r.Pressure; return nil }
+	if err := runAutoGC(context.Background(), path, io.Discard); err != nil || got {
+		t.Fatalf("runAutoGC: err=%v Pressure=%v, want no pressure", err, got)
+	}
+}
+
 // TestUpReclaimsStorage_OnlyForAStackThatRunsHere: the pass shells out to
 // docker, so a frontend-only env — nothing of ours on this machine but its dev
 // servers — never starts it, and neither does a run that failed its cluster

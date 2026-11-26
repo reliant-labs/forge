@@ -53,6 +53,13 @@ type Runner struct {
 	// to a pass nobody invoked either looks exactly like garbage.
 	Explicit bool
 
+	// Pressure marks a pass started because the disk is short of room (the
+	// Reliant daemon's disk guard passes `auto-gc --pressure`). It prunes each
+	// builder's cache toward half of build_cache_gib instead of all of it,
+	// under the same safety floor (builders.go). Every other layer is
+	// unchanged.
+	Pressure bool
+
 	// afterQuarantine is a test seam run between the quarantine move and the
 	// final classification, where a concurrent writer would land.
 	afterQuarantine func(original, quarantined string)

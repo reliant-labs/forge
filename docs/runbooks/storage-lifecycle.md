@@ -12,7 +12,7 @@ anonymous ones only under the rules in
 | Storage                                                          | Policy                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Physical host filesystem                                         | Refuse a build below 20 GiB available                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| BuildKit                                                         | Remove cache unused for 7 days toward 20 GiB per registered local builder                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| BuildKit                                                         | Per registered local builder, evict least recently used cache down to 20 GiB (`build_cache_gib`), never cache used in the last 2h (`build_cache_floor`); half the budget under disk pressure (see BuildKit cache)                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | k3d node images                                                  | Kubelet removes unused images after 7 days; pressure GC at 80%, down to 70%                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Node container logs                                              | 10 MiB × 3 files per container                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Registered local registry repositories                           | Keep 14 days and newest 5 distinct digests; protect workloads, release pins and stable aliases                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -142,6 +142,32 @@ GOFLAGS=-trimpath` on a host that is not the workspace image; on 2026-11-22 a
 shared build host without it filled ~100 GiB/h. A `go env GOFLAGS` that says
 `-trimpath` now does not clear a fill already in the window: entries built
 before the setting stay path-keyed until they age out.
+
+## BuildKit cache
+
+Every full and automatic pass prunes each registered builder's cache with
+`docker buildx prune --max-used-space <build_cache_gib> --filter until=<floor>`:
+BuildKit removes least recently used records until the cache fits the budget,
+and never a record used inside the floor (default 2h, `build_cache_floor`) or
+one a running build holds. The floor is never longer than
+`build_cache_unused`.
+
+Before v1.12 the filter was `until=<build_cache_unused>` (7 days). BuildKit
+removes a record only when it is older than the filter and the cache is over
+budget, so a cache that a week of builds had filled was never pruned, however
+far over budget: on a shared build machine at 92% disk the pass freed 0 B. The
+budget is now enforced by size alone, under the floor.
+
+`forge storage auto-gc --pressure` is the same pass for a disk that is short of
+room. The Reliant daemon's disk guard runs it this way. It prunes each builder
+toward half of `build_cache_gib` (at least 1 GiB), under the same floor. Every
+other layer is unchanged.
+
+To opt out, set `"build_cache_floor": "off"` in the policy, or
+`FORGE_STORAGE_BUILD_CACHE_FLOOR=off` for one run. That restores the age-gated
+budget: only cache unused for `build_cache_unused` is pruned toward
+`build_cache_gib`. The variable also takes a floor (`3h`) and overrides the
+policy's. A floor must be at least 1h.
 
 ## Bounded deletion
 

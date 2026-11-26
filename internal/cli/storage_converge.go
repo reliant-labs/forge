@@ -248,6 +248,12 @@ func reportEnvRegistryRetention(out io.Writer, path string, policy storage.Polic
 // cut pinning its images): it does not start while one waits, and stops at its
 // next safe point when one starts to (storage.WithMaintenance).
 func runAutoGC(ctx context.Context, path string, out io.Writer) error {
+	return runAutoGCWith(ctx, path, out, false)
+}
+
+// runAutoGCWith is runAutoGC with the pass's pressure: true prunes each
+// builder's cache toward half of build_cache_gib (storage.Runner.Pressure).
+func runAutoGCWith(ctx context.Context, path string, out io.Writer, pressure bool) error {
 	policy, err := storage.Load(path)
 	if err != nil {
 		return err
@@ -256,6 +262,7 @@ func runAutoGC(ctx context.Context, path string, out io.Writer) error {
 	defer cancel()
 	err = storage.WithMaintenance(ctx, path, out, func(ctx context.Context) error {
 		r, trims := recordingGoCacheTrims(maintenanceRunner(policy, path, out))
+		r.Pressure = pressure
 		gcErr := nonDisruptiveGCFn(ctx, r)
 		// Recorded whether or not it succeeded: the interval rate-limits
 		// ATTEMPTS, so a machine where this reliably fails (no Docker
@@ -284,7 +291,8 @@ func runAutoGC(ctx context.Context, path string, out io.Writer) error {
 // `gc`, because it is a different pass: non-disruptive layers only, bounded,
 // and recorded as an opportunistic attempt rather than a full GC.
 func newStorageAutoGCCmd(policyPath *string) *cobra.Command {
-	return &cobra.Command{
+	var pressure bool
+	cmd := &cobra.Command{
 		Use:    "auto-gc",
 		Short:  "Run the bounded, non-disruptive maintenance pass forge env up starts in the background",
 		Hidden: true,
@@ -295,9 +303,11 @@ func newStorageAutoGCCmd(policyPath *string) *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			return runAutoGC(ctx, *policyPath, cmd.OutOrStdout())
+			return runAutoGCWith(ctx, *policyPath, cmd.OutOrStdout(), pressure)
 		},
 	}
+	cmd.Flags().BoolVar(&pressure, "pressure", false, "the disk is short of room: prune each builder's cache toward half of build_cache_gib (still never cache used inside build_cache_floor)")
+	return cmd
 }
 
 // recordingGoCacheTrims returns r set to collect what each Go-cache trim did,

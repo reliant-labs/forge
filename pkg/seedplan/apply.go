@@ -89,7 +89,7 @@ func BuildLivePlan(ctx context.Context, db *sql.DB, migDir, shadowBaseURL string
 // shadow migrated by that tool. migDir still locates the vocabulary overlay
 // (VocabPath).
 func BuildLivePlanFromTables(ctx context.Context, db *sql.DB, tables []schemadef.Table, migDir string, cfg Config) (*Plan, error) {
-	plan, err := planFromTables(ctx, db, tables, cfg)
+	plan, err := planDevDataset(ctx, db, tables, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -188,11 +188,12 @@ func AllSeedableTablesEmpty(ctx context.Context, db *sql.DB, plan *Plan) (bool, 
 }
 
 // Reset wipes seeded rows and re-applies. It TRUNCATEs all seeded tables in a
-// single CASCADE statement rather than issuing per-table DELETEs: a child-first
+// single RESTRICT statement rather than issuing per-table DELETEs: a child-first
 // DELETE aborts on the first // forge:append-only table (its BEFORE DELETE guard
-// raises), whereas TRUNCATE bypasses that row-level trigger, resolves FK order
-// via CASCADE, and RESTART IDENTITY resets sequences for a deterministic
-// reseed. A dev convenience; destructive (removes ALL rows, as the DELETE did).
+// raises), whereas TRUNCATE bypasses that row-level trigger. Listing all planned
+// tables together handles their mutual FKs; RESTRICT refuses references from
+// outside the plan without deleting any rows. RESTART IDENTITY resets sequences
+// for a deterministic reseed. Destructive only within the plan (removes ALL rows).
 //
 // The plan is validated BEFORE the TRUNCATE. Apply validates too, but by then
 // the rows are gone: a refusal (a vocab null on a NOT NULL column, an
@@ -209,9 +210,9 @@ func Reset(ctx context.Context, db *sql.DB, plan *Plan) (*Result, error) {
 	for i, tp := range plan.tables {
 		idents[i] = QualifiedTable(tp.table)
 	}
-	stmt := "TRUNCATE " + strings.Join(idents, ", ") + " RESTART IDENTITY CASCADE"
+	stmt := "TRUNCATE " + strings.Join(idents, ", ") + " RESTART IDENTITY RESTRICT"
 	if _, err := db.ExecContext(ctx, stmt); err != nil {
-		return nil, fmt.Errorf("reset truncate: %w", err)
+		return nil, fmt.Errorf("reset truncate (references from tables outside the seed plan must be resolved first): %w", err)
 	}
 	return Apply(ctx, db, plan)
 }

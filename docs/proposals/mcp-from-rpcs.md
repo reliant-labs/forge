@@ -1,10 +1,13 @@
 # MCP from RPCs: serve an app's opted-in RPCs as MCP tools
 
-**Status:** proposed. The owner asked on 2026-11-25 whether forge should expose
+**Status:** approved. The owner asked on 2026-11-25 whether forge should expose
 an app's RPCs as an MCP server automatically, offer an easy opt-in, or not
 bother. The recommendation given was **opt-in, not default**; this document
-writes that design up. Nothing here is built. The open owner decisions are in
-[section 9](#9-open-owner-decisions), and each says what it blocks.
+writes that design up. Nothing here is built. On 2026-11-26 the owner accepted
+every recommendation of [section 9](#9-owner-decisions-decided-2026-11-26)
+("take your recommendations on all"); they are the
+[Settled](#settled-owner-2026-11-26) list. Slices land as their own pull
+requests ([section 13](#13-rollout)).
 **Date:** 2026-11-25
 **Related:** [docs/mcp.md](../mcp.md) (forge's own MCP server),
 control-plane#2133 ("forge APIs as tools", parked), control-plane#2531 (MCP
@@ -38,6 +41,33 @@ developer picks as MCP tools with almost no new surface:
 
 Everything is additive within v1: new optional proto fields, a new `pkg/`
 library, a new zero-value-off field on `serverkit.ListenerDeps`.
+
+## Settled (owner, 2026-11-26)
+
+The owner accepted each recommendation of
+[section 9](#9-owner-decisions-decided-2026-11-26) ("take your recommendations
+on all"):
+
+1. **Opt-in, per rpc or per service.** Nothing is exposed by default.
+2. **Declaration:** `mcp` and `mcp_mutating` fields on the existing
+   `(forge.v1.method)` and `(forge.v1.service)` options.
+3. **Mutations are served in v1**, only with `mcp_mutating: true`, and are
+   announced with `destructiveHint`.
+4. **Schemas** come from the pinned `protoc-gen-connect-openapi` in
+   `jsonschema` format at generate time. A forge-owned projection over the buf
+   image is the fallback only if the plugin's shape fails clients.
+5. **Public (`auth_required: false`) rpcs** are served only when they are also
+   opted in.
+6. **MCP OAuth:** tokens only first, then an OAuth façade in the login broker
+   as its own slice.
+7. **Per-env control:** a listener config field, default on, that an env can
+   turn off.
+8. **Dogfood:** control-plane's read-only `ObservabilityService` rpcs in
+   dev/e2e, not published as a connector.
+9. **control-plane#2133:** this proposal is its forge half (annotation,
+   `/mcp`). Registration with an org tool registry and partners stay there.
+
+These are not reopened below.
 
 ## 1. Problem and experience
 
@@ -372,19 +402,21 @@ The options:
 - **(d) Wait for Zitadel** to offer registration natively, and point the
   metadata at it.
 
-Recommendation: (a) in the first runtime slice, (b) as its own slice, both
+Decided (owner, 2026-11-26, decision 6): (a) in the first runtime slice, (b) as its own slice, both
 behind the same `mcpkit` resource metadata so a client needs no change when
 OAuth arrives. A bring-your-own-issuer project (Auth0, Okta) points the
 metadata at its issuer and uses that issuer's registration support.
 
-## 9. Open owner decisions
+## 9. Owner decisions (decided 2026-11-26)
 
-Per project rules the owner decides architectural choices. Each row gives the
-realistic options, a recommendation and what it blocks.
+**All settled (owner, 2026-11-26): each row is decided on its recommended
+option** ("take your recommendations on all"), recorded as the
+[Settled](#settled-owner-2026-11-26) list. The table keeps the options that
+were weighed, as the record of why. Reopening a row is the owner's call.
 
-| #   | Decision                             | Options                                                                                                                                                                                                             | Recommendation                                                                                                                                                                                               | Blocks                                     |
+| #   | Decision                             | Options                                                                                                                                                                                                             | Decided (owner, 2026-11-26)                                                                                                                                                                                  | Blocked                                    |
 | --- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------ |
-| 1   | Default exposure                     | (a) opt-in per rpc/service; (b) auto-expose every rpc; (c) don't build it.                                                                                                                                          | (a), as recommended to the owner on 2026-11-25. Confirm.                                                                                                                                                     | Everything.                                |
+| 1   | Default exposure                     | (a) opt-in per rpc/service; (b) auto-expose every rpc; (c) don't build it.                                                                                                                                          | (a), as recommended to the owner on 2026-11-25, and confirmed.                                                                                                                                               | Everything.                                |
 | 2   | Declaration shape                    | (a) `mcp` / `mcp_mutating` fields on the existing `(forge.v1.method)` and `(forge.v1.service)`; (b) a nested `mcp: { mutating: … }` message; (c) a new `(forge.v1.tool)` extension, as control-plane#2133 sketched. | (a): one proto line, beside `auth_required` and `activity` where reviewers already look. (b) stays possible for later fields (an action class).                                                              | Proto PR, codegen, lint.                   |
 | 3   | Mutations in v1                      | (a) served with `mcp_mutating: true` and `destructiveHint`; (b) read-only tools only in v1.                                                                                                                         | (a). Agents that can only read are half the value; the explicit flag plus client confirmation is the guard, and the handler's own authorization still applies.                                               | `mcpkit` call path, lint rule.             |
 | 4   | Schema projection                    | (a) the pinned `protoc-gen-connect-openapi` in `jsonschema` format at generate time; (b) a forge-owned projection over the buf image; (c) runtime from `protoregistry`.                                             | (a), falling back to (b) only if the plugin's shape fails clients. (c) has no comments, so no descriptions.                                                                                                  | Generated tool table.                      |

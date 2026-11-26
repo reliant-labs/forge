@@ -128,6 +128,32 @@ func TestReads(t *testing.T) {
 	}
 }
 
+// A familiar helper name is not proof of a repository read. Without a
+// proven reader the planner must retain its full-suite fallback.
+func TestAffectedReaders_UnprovenRootHelpers(t *testing.T) {
+	for _, helper := range []struct{ declaration, call string }{
+		{`func repoRoot() string { return t.TempDir() }`, `repoRoot()`},
+		{`func RepoRoot() string { return "fixtures" }`, `RepoRoot()`},
+		{`func findRoot() string { return "fixtures" }`, `findRoot()`},
+		{`func repoRootFromTest() string { return t.TempDir() }`, `repoRootFromTest()`},
+		{`func repoRoot() string { return ".." }`, `fixture.repoRoot()`},
+		{`func (fixture) repoRoot() string { return ".." }; func repoRoot() string { return t.TempDir() }`, `repoRoot()`},
+	} {
+		t.Run(helper.call+helper.declaration, func(t *testing.T) {
+			root, tracked := readerRoot(t)
+			write(t, root, "c/c_test.go", `package c
+`+helper.declaration+`
+func TestReads(t *testing.T) { os.ReadDir(filepath.Join(`+helper.call+`, "deploy", "kcl")) }
+`)
+			g := readerGit{fakeGit: fakeGit{branch: "f", changed: []string{"deploy/kcl/main.k"}}, tracked: tracked}
+			a := ComputeAffected(context.Background(), AffectedInput{Root: root, Git: g.run, GoList: listed(root), Readers: true})
+			if !a.Full {
+				t.Fatalf("unproven helper narrowed to %v", a.Packages)
+			}
+		})
+	}
+}
+
 func TestReaderScan_PackageNotLocatingRootIsNotScanned(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "c/c_test.go", "package c\n\nvar _ = \"config/settings.yaml\"\n")

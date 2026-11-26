@@ -86,6 +86,11 @@ overrides = {
 }
 ```
 
+Not for a workload that declares `autoscale`: its HorizontalPodAutoscaler
+owns `spec.replicas`, so a patch to that field, or to
+`HorizontalPodAutoscaler/<name>`, is refused at load. Change `autoscale`
+instead.
+
 **Container resources, by container name.** A Deployment's pod template has
 several containers (yours, plus any sidecar forge injects). Name the one you
 mean and the patch merges into it; the others are untouched:

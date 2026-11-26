@@ -20,9 +20,13 @@ import (
 type Invalidate string
 
 const (
+	// InvalidateEntrypoints invalidates only the HTML entry points and the
+	// runtime config document. The default.
 	InvalidateEntrypoints Invalidate = "entrypoints"
-	InvalidateNone        Invalidate = "none"
-	InvalidateAll         Invalidate = "all"
+	// InvalidateNone invalidates nothing.
+	InvalidateNone Invalidate = "none"
+	// InvalidateAll purges /*.
+	InvalidateAll Invalidate = "all"
 )
 
 // StaticSiteCDN is the CDN in front of the site's bucket, and what a deploy

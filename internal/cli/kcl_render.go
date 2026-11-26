@@ -230,6 +230,10 @@ type KCLEntities struct {
 	// UptimeChecks are Bundle.uptime resolved: the declared checks plus the
 	// ones forge derives for a hosted env. Empty when the env has none.
 	UptimeChecks []release.ShapeUptimeCheck `json:"uptime_checks,omitempty"`
+	// StatusPage is Bundle.status_page, resolved against UptimeChecks (every
+	// check a component names is one of them). Nil when the env declares
+	// none.
+	StatusPage *release.ShapeStatusPage `json:"status_page,omitempty"`
 
 	// Telemetry is every forge.Telemetry the env declares (output.telemetry),
 	// decoded and normalized: what a collector consumes. Nil when none is
@@ -747,6 +751,9 @@ type HelmChartEntity struct {
 	// Patches are merge patches for the objects the chart renders, keyed
 	// `Kind/name` (see cluster.HelmChartSpec.Patches).
 	Patches map[string]any `json:"patches,omitempty"`
+	// Labels are stamped on every object the chart renders: set on the chart
+	// an MLStack Install lowers to (kcl/ml.k), absent on a declared one.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // PruneEnabled reports the chart's prune setting: on unless declared off.
@@ -1794,6 +1801,7 @@ type kclRenderRaw struct {
 	DataAccess               *release.ShapeDataAccess                  `json:"data_access,omitempty"`
 	ReleaseHealth            *release.ShapeReleaseHealth               `json:"release_health,omitempty"`
 	UptimeChecks             []release.ShapeUptimeCheck                `json:"uptime_checks,omitempty"`
+	StatusPage               *release.ShapeStatusPage                  `json:"status_page,omitempty"`
 	Identity                 *release.ShapeIdentity                    `json:"identity,omitempty"`
 	Identities               []release.ShapeIdentity                   `json:"identities,omitempty"`
 	Telemetry                json.RawMessage                           `json:"telemetry,omitempty"`
@@ -2246,6 +2254,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		DataAccess:               raw.DataAccess,
 		ReleaseHealth:            raw.ReleaseHealth,
 		UptimeChecks:             raw.UptimeChecks,
+		StatusPage:               raw.StatusPage,
 		Identity:                 raw.Identity,
 		Identities:               raw.Identities,
 		RenderedSecrets:          raw.RenderedSecrets,

@@ -53,4 +53,6 @@ assert_route_resolved = _by["billing-health"].url == "https://app.example.com/bi
 assert_route_defaults_written = _by["billing-health"].method == "GET" and _by["billing-health"].interval_seconds == 60 and _by["billing-health"].timeout_seconds == 10
 assert_target_path = _by["api-ready"].target == "api" and _by["api-ready"].path == "/readyz" and _by["api-ready"].method == "HEAD"
 assert_declared_replaces_derived = _by.site.source == "user" and _by.site.interval_seconds == 120 and "path" not in _by.site
+# A status page is opt-in only: checks alone render none.
+assert_no_status_page = "status_page" not in output
 assert_derived_kept = _by.api.source == "default" and _by["route-billing"].source == "default"

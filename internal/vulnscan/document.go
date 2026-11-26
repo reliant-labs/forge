@@ -2,6 +2,7 @@ package vulnscan
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -99,6 +100,18 @@ type DocumentFinding struct {
 	Exemption *Exemption `json:"exemption,omitempty"`
 	// Action is what the vuln_gate rule makes of it: block, warn or none.
 	Action Action `json:"action"`
+	// Occurrences are each place it was found: an artifact, and a path of
+	// the package inside it, one per pair. What a scoped exemption's
+	// artifacts and locations are matched against (forge.VulnExemption).
+	Occurrences []Occurrence `json:"occurrences,omitempty"`
+}
+
+// Occurrence is one place a finding was found. Artifact is absent for a
+// finding attributed to the release as a whole, Location when the scan
+// names no path.
+type Occurrence struct {
+	Artifact string `json:"artifact,omitempty"`
+	Location string `json:"location,omitempty"`
 }
 
 // ArtifactScan is one artifact of a release and what is known of it.
@@ -178,8 +191,11 @@ type DocumentInput struct {
 	// declared mode (EvaluateInput.GradedAs).
 	GradedAs  release.DeliveryMode
 	Artifacts []ArtifactScan
-	Filter    Filter
-	Now       time.Time
+	// NotApplicable are the release's artifacts no SBOM describes
+	// (Coverage.NotApplicable); never part of Artifacts.
+	NotApplicable []NotApplicableArtifact
+	Filter        Filter
+	Now           time.Time
 	// Notes are carried into the document (Document.Notes).
 	Notes []string
 	// Stale marks the findings stale whatever the database's build time
@@ -225,7 +241,16 @@ func ScanIsCurrent(s *Scan, now time.Time) bool {
 func BuildDocument(in DocumentInput) Document {
 	doc := Document{Schema: DocumentSchema, Env: in.Env, Release: in.Release, Findings: []DocumentFinding{}, Notes: append([]string(nil), in.Notes...)}
 	doc.Coverage.Artifacts = len(in.Artifacts)
+	doc.Coverage.NotApplicable = append([]NotApplicableArtifact(nil), in.NotApplicable...)
 	byKey := map[string]*DocumentFinding{}
+	occ := map[string][]release.VulnOccurrence{}
+	addOcc := func(k string, f Finding, artifact string) {
+		for _, o := range occurrencesOf(f, []string{artifact}) {
+			if !slices.Contains(occ[k], o) {
+				occ[k] = append(occ[k], o)
+			}
+		}
+	}
 	var order []string
 	var oldest *Scan
 	for _, a := range in.Artifacts {
@@ -254,6 +279,7 @@ func BuildDocument(in DocumentInput) Document {
 			if seen.IsZero() {
 				seen = a.Latest.ScannedAt
 			}
+			addOcc(k, f, a.Artifact)
 			if d, ok := byKey[k]; ok {
 				d.Artifacts = appendUnique(d.Artifacts, a.Artifact)
 				if seen.Before(d.FirstSeen) {
@@ -268,12 +294,14 @@ func BuildDocument(in DocumentInput) Document {
 	for _, rf := range in.ReleaseFindings {
 		k := rf.Finding.Key()
 		if d, ok := byKey[k]; ok {
+			// An artifact's finding: the artifact already says where it is.
 			if !rf.FirstSeen.IsZero() && (d.FirstSeen.IsZero() || rf.FirstSeen.Before(d.FirstSeen)) {
 				d.FirstSeen = rf.FirstSeen
 			}
 			continue
 		}
 		byKey[k] = &DocumentFinding{Finding: rf.Finding, Artifacts: []string{}, FirstSeen: rf.FirstSeen}
+		addOcc(k, rf.Finding, "")
 		order = append(order, k)
 	}
 	// The document is as fresh as its oldest artifact: when that
@@ -292,7 +320,7 @@ func BuildDocument(in DocumentInput) Document {
 	for _, k := range order {
 		all = append(all, byKey[k].Finding)
 	}
-	ev := Evaluate(EvaluateInput{Gate: in.Gate, GradedAs: in.GradedAs, Findings: all, Coverage: doc.Coverage, Stale: doc.DB.Stale, Now: in.Now, Judged: in.Judged})
+	ev := Evaluate(EvaluateInput{Gate: in.Gate, GradedAs: in.GradedAs, Findings: all, Coverage: doc.Coverage, Stale: doc.DB.Stale, Now: in.Now, Judged: in.Judged, Occurrences: occ})
 	doc.Gate = ev.Gate
 	doc.Gate.JudgedBy = in.JudgedBy
 	switch {
@@ -306,6 +334,7 @@ func BuildDocument(in DocumentInput) Document {
 		d := byKey[order[i]]
 		d.Action, d.Exemption = j.Action, j.Exemption
 		sort.Strings(d.Artifacts)
+		d.Occurrences = documentOccurrences(occ[order[i]])
 		if in.Filter.keep(*d) {
 			doc.Findings = append(doc.Findings, *d)
 			doc.Counts.add(d.Severity)
@@ -313,6 +342,24 @@ func BuildDocument(in DocumentInput) Document {
 	}
 	sortDocumentFindings(doc.Findings)
 	return doc
+}
+
+// documentOccurrences is where a finding was found, as the document lists
+// it: sorted, and absent when nothing names an artifact or a path.
+func documentOccurrences(in []release.VulnOccurrence) []Occurrence {
+	var out []Occurrence
+	for _, o := range in {
+		if o.Artifact != "" || o.Location != "" {
+			out = append(out, Occurrence{Artifact: o.Artifact, Location: o.Location})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Artifact != out[j].Artifact {
+			return out[i].Artifact < out[j].Artifact
+		}
+		return out[i].Location < out[j].Location
+	})
+	return out
 }
 
 // firstSeenIn maps each finding key to the first scan in history that

@@ -50,7 +50,7 @@ func TestMergeGeneratedPath_UncertifiedConflictKeepsOursOnlyWhenNoSideDisowns(t 
 		{"theirs disowned it", [][]byte{nil, disowns, nil}, true, false},
 		{"the base disowned it", [][]byte{nil, nil, disowns}, true, false},
 		{"a record that does not parse", [][]byte{nil, []byte("{not json"), nil}, true, false},
-		{"a present but empty record", [][]byte{[]byte{}, nil, nil}, true, false},
+		{"a present but empty record", [][]byte{{}, nil, nil}, true, false},
 		{"the sides cannot be named", nil, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

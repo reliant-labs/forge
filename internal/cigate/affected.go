@@ -108,6 +108,9 @@ type Affected struct {
 	// Files reports each changed file's package and claiming rules; set
 	// whenever the package graph was read.
 	Files []FileReport
+	// Modules are the nested replaced modules' own tests
+	// (ci.gate.affected_modules: auto; WithModuleTests).
+	Modules []ModuleTests
 }
 
 // Line is the one line the gate prints about the unit lane's mode.
@@ -143,6 +146,13 @@ type AffectedInput struct {
 	// Rules are ci.gate.affected_rules: what a changed file the package
 	// graph cannot place selects.
 	Rules []config.CIGateAffectedRule
+	// Readers turns on the reader scan (ci.gate.affected_readers): a changed
+	// file nothing else places selects the test packages whose sources name
+	// it (affected_readers.go).
+	Readers bool
+	// Modules is ci.gate.affected_modules: "auto" maps changes in nested
+	// modules the root go.mod replaces onto ./dir (affected_modules.go).
+	Modules string
 	// Reach is ci.gate.affected_reach; nil is full transitive reach.
 	Reach *config.CIGateAffectedReach
 	// ChangesOnly stops once the changed files are known, without go list:
@@ -218,13 +228,21 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 	baseRef, short, changed := a.BaseRef, a.Base, a.Changed
 	// After the diff, the unit lane may still run whole; the changed files
 	// stay recorded, so path-gated checks are still judged by them.
+	var modules []ModuleTests
 	fullAfterDiff := func(reason string) Affected {
-		return Affected{Full: true, Reason: reason, BaseRef: baseRef, Base: short, Changed: changed, FullChecks: a.FullChecks}
+		return Affected{Full: true, Reason: reason, BaseRef: baseRef, Base: short, Changed: changed, FullChecks: a.FullChecks, Modules: modules}
 	}
 
 	list := in.GoList
 	if list == nil {
 		list = runGoList
+	}
+	rootChanged := changed
+	nested := nestedChanges{}
+	if in.Modules == AffectedModulesAuto {
+		nested = splitNestedModules(ctx, in, list, changed)
+		rootChanged, modules = nested.rest, nested.tests
+		a.Modules = modules
 	}
 	r, err := list(ctx, in.Root, in.Env)
 	if err != nil {
@@ -234,12 +252,67 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 	if err != nil {
 		return fullAfterDiff("cannot read go list output: " + err.Error())
 	}
-	sel, reason := selectChanges(changed, g, in.Ignore, in.Rules)
+	if in.Readers {
+		git := in.Git
+		if git == nil {
+			git = runGit
+		}
+		// No tracked list means no readers: every unplaced file still runs
+		// the full suite.
+		if tracked, terr := trackedFiles(ctx, git, in.Root); terr == nil {
+			g.readers = scanReaders(g, tracked)
+		}
+	}
+	sel, reason := selectChanges(rootChanged, g, in.Ignore, in.Rules)
 	files := explainFiles(changed, g, in.Ignore, ruleMatchers(in.Rules))
+	files = annotateModuleFiles(files, nested, modules)
 	if reason != "" {
 		full := fullAfterDiff(reason)
 		full.Files = files
 		return full
+	}
+	if nested.unresolved != "" {
+		return fullAfterDiff(nested.unresolved)
+	}
+	for _, d := range nested.embedDirs {
+		// A nested package embedding a changed file: the root's own graph
+		// names it when any root test binary links it; unlisted, none does.
+		if pkg, ok := g.dirPkg[d]; ok {
+			sel.changedPkgs[pkg] = true
+		}
+	}
+	// A nested module's Go file is Go source too: rules `on: go-source`
+	// (tree-wide walkers) select their packages for it.
+	inRoot := map[string]bool{}
+	for _, f := range rootChanged {
+		inRoot[f] = true
+	}
+	for _, f := range changed {
+		if inRoot[f] || !strings.HasSuffix(f, ".go") {
+			continue
+		}
+		for i, rule := range in.Rules {
+			if rule.On != config.CIGateOnGoSource {
+				continue
+			}
+			if matched, _ := ruleMatch(f, rule); !matched {
+				continue
+			}
+			if rule.Full {
+				return fullAfterDiff(fmt.Sprintf("%s changed — %s (ci.gate.affected_rules[%d])", f, rule.Reason, i))
+			}
+			sel.hits[i]++
+			for _, pkg := range g.rulePackages(f, rule) {
+				sel.rulePkgs[pkg] = true
+			}
+		}
+	}
+	for _, f := range nested.rootFiles {
+		pkg, ok := g.owner(f)
+		if !ok {
+			return fullAfterDiff(f + " cannot be mapped to a package in the root graph")
+		}
+		sel.changedPkgs[pkg] = true
 	}
 	a.Files = files
 	a.Total = len(g.testDeps)
@@ -266,6 +339,7 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 			a.Selections = append(a.Selections, selectionLine(i, rule, sel.hits[i], g))
 		}
 	}
+	a.Selections = append(a.Selections, sel.readerLines...)
 	a.Build = g.buildSet(sel.changedPkgs)
 	a.Why = explainPackages(a.Packages, files, g, ruleMatchers(in.Rules))
 	return a
@@ -278,6 +352,7 @@ type selection struct {
 	rulePkgs    map[string]bool // test packages an affected rule names
 	frontends   map[string]bool // frontends an affected rule names
 	hits        []int           // per rule, how many changed files it claimed
+	readerLines []string        // per file the reader scan placed, what it selected
 }
 
 // selectChanges maps each changed file to what it selects, or returns why the
@@ -307,14 +382,27 @@ func selectChanges(changed []string, g *packageGraph, ignore []string, rules []c
 				sel.frontends[fe] = true
 			}
 		}
+		// Explicit rules still apply, but ignored files do not select their
+		// owners or readers and cannot force the unowned-file fallback.
 		if matchGlobs(f, ignore) {
 			continue
 		}
 		pkg, ok := g.owner(f)
+		read := false
+		if !strings.HasSuffix(f, ".go") {
+			if readers := g.readers.readersOf(f); len(readers) > 0 {
+				for p := range readers {
+					sel.rulePkgs[p] = true
+				}
+				sel.readerLines = append(sel.readerLines, readerLine(f, readers))
+				read = true
+			}
+		}
 		switch {
 		case ok:
 			sel.changedPkgs[pkg] = true
-		case !claimed:
+		case claimed, read:
+		default:
 			return sel, fmt.Sprintf("%s changed, and it is not Go source, an embedded file or testdata of a package — nothing proves which tests read it (ci.gate.affected_ignore lists files none do; ci.gate.affected_rules says what a path selects)", f)
 		}
 	}
@@ -458,12 +546,17 @@ type packageGraph struct {
 	dirPkg map[string]string
 	// embedPkg maps an embedded file (absolute) to the package embedding it.
 	embedPkg map[string]string
+	// prodEmbedPkg is embedPkg for non-test embeds only: the files a
+	// package's importers link (affected_modules.go).
+	prodEmbedPkg map[string]string
 	// directImports maps each module package to what it and its tests
 	// (internal and external test files) import directly.
 	directImports map[string][]string
 	// testDeps maps each module package that has tests to every package its
 	// test binary links.
 	testDeps map[string][]string
+	// readers is the reader scan's index; nil unless it is on.
+	readers readerIndex
 	// testImports maps a module package to what its test files import.
 	testImports map[string]map[string]bool
 	// buildDeps maps each module package to every package its build (not
@@ -505,7 +598,7 @@ func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
 	if r, rerr := filepath.EvalSymlinks(absRoot); rerr == nil {
 		realRoot = r
 	}
-	g := &packageGraph{root: absRoot, dirPkg: map[string]string{}, embedPkg: map[string]string{}, testDeps: map[string][]string{}, testImports: map[string]map[string]bool{}, buildDeps: map[string][]string{}, directImports: map[string][]string{}}
+	g := &packageGraph{root: absRoot, dirPkg: map[string]string{}, embedPkg: map[string]string{}, prodEmbedPkg: map[string]string{}, testDeps: map[string][]string{}, testImports: map[string]map[string]bool{}, buildDeps: map[string][]string{}, directImports: map[string][]string{}}
 	dec := json.NewDecoder(r)
 	for {
 		var p listedPackage
@@ -553,6 +646,9 @@ func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
 			for _, f := range files {
 				g.embedPkg[filepath.Join(dir, filepath.FromSlash(f))] = path
 			}
+		}
+		for _, f := range p.EmbedFiles {
+			g.prodEmbedPkg[filepath.Join(dir, filepath.FromSlash(f))] = path
 		}
 	}
 	// Only the module's own packages are candidates to test.

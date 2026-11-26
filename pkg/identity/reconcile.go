@@ -132,12 +132,19 @@ func New(opts Options) (*Reconciler, error) {
 type Action string
 
 const (
+	// Created made an object that did not exist.
 	Created Action = "created"
+	// Updated changed an existing object to match the spec.
 	Updated Action = "updated"
+	// Granted added a role or an identity provider to what an object holds.
 	Granted Action = "granted"
+	// Revoked took a role grant or an identity provider away.
 	Revoked Action = "revoked"
-	Issued  Action = "issued"
-	Pruned  Action = "pruned"
+	// Issued minted a credential: a key, a token, a secret, a code or an
+	// invitation.
+	Issued Action = "issued"
+	// Pruned deleted a superseded credential whose overlap had elapsed.
+	Pruned Action = "pruned"
 )
 
 // Change is one write.

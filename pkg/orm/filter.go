@@ -9,50 +9,65 @@ import (
 // Filter convenience functions that return QueryOption.
 // Each wraps WithWhere using the appropriate Operator.
 
+// WhereEq matches rows whose column equals value.
 func WhereEq(column string, value any) QueryOption {
 	return WithWhere(column, Eq, value)
 }
 
+// WhereNotEq matches rows whose column differs from value (SQL !=, so a
+// NULL column never matches).
 func WhereNotEq(column string, value any) QueryOption {
 	return WithWhere(column, NotEq, value)
 }
 
+// WhereGt matches rows whose column is greater than value.
 func WhereGt(column string, value any) QueryOption {
 	return WithWhere(column, GreaterThan, value)
 }
 
+// WhereGte matches rows whose column is at least value.
 func WhereGte(column string, value any) QueryOption {
 	return WithWhere(column, GreaterThanOrEq, value)
 }
 
+// WhereLt matches rows whose column is less than value.
 func WhereLt(column string, value any) QueryOption {
 	return WithWhere(column, LessThan, value)
 }
 
+// WhereLte matches rows whose column is at most value.
 func WhereLte(column string, value any) QueryOption {
 	return WithWhere(column, LessThanOrEq, value)
 }
 
+// WhereLike matches rows whose column matches the LIKE pattern value. The
+// pattern's wildcards are live; use WherePrefix or EscapeLike to match text
+// literally.
 func WhereLike(column string, value any) QueryOption {
 	return WithWhere(column, Like, value)
 }
 
+// WhereILike is WhereLike, case-insensitive (ILIKE).
 func WhereILike(column string, value any) QueryOption {
 	return WithWhere(column, ILike, value)
 }
 
+// WhereIn matches rows whose column is one of values, a slice.
 func WhereIn(column string, values any) QueryOption {
 	return WithWhere(column, In, values)
 }
 
+// WhereNotIn matches rows whose column is none of values, a slice.
 func WhereNotIn(column string, values any) QueryOption {
 	return WithWhere(column, NotIn, values)
 }
 
+// WhereIsNull matches rows whose column is NULL.
 func WhereIsNull(column string) QueryOption {
 	return WithWhere(column, IsNull, nil)
 }
 
+// WhereIsNotNull matches rows whose column is not NULL.
 func WhereIsNotNull(column string) QueryOption {
 	return WithWhere(column, IsNotNull, nil)
 }

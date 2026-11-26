@@ -748,6 +748,10 @@ func TestClaimableIneligibilityChecksTheClaimableCaps(t *testing.T) {
 		w.Spec.Replicas = replicas
 		return &KCLEntities{Workloads: []WorkloadEntity{w}}
 	}
+	autoscaled := func(e *KCLEntities, minReplicas, maxReplicas int32) *KCLEntities {
+		e.Workloads[0].Spec.Autoscale = &v1alpha1.Autoscale{MinReplicas: minReplicas, MaxReplicas: maxReplicas}
+		return e
+	}
 	const mib = 1 << 20
 	cases := []struct {
 		name string
@@ -771,6 +775,10 @@ func TestClaimableIneligibilityChecksTheClaimableCaps(t *testing.T) {
 		{"100m / 128Mi passes: no 125m granularity either", svc(v1alpha1.Resources{CPURequestMillicores: 100, MemoryRequestBytes: 128 * mib}, 1), nil},
 		{"two replicas", svc(v1alpha1.Resources{CPURequestMillicores: 125, MemoryRequestBytes: 128 * mib}, 2),
 			[]string{`workload "api" asks for 2 replicas (1 is allowed)`}},
+		// An autoscaled service is judged by its maxReplicas: every replica
+		// its autoscaler may ask for counts against the one allowed.
+		{"autoscale up to three", autoscaled(svc(v1alpha1.Resources{CPURequestMillicores: 125, MemoryRequestBytes: 128 * mib}, 0), 1, 3),
+			[]string{`workload "api" asks for 3 replicas (1 is allowed)`}},
 	}
 	for _, c := range cases {
 		got := strings.Join(claimableIneligibility(c.e, deploy.ClaimableLimitsFallback()), "|")

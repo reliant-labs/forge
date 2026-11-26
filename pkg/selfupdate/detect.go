@@ -33,19 +33,20 @@ type Kind int
 const (
 	// Unknown is the zero Kind; it never permits a swap.
 	Unknown Kind = iota
-	// SelfOwned: nothing else owns the install, so it may replace itself.
+	// SelfOwned means nothing else owns the install, so it may replace itself.
 	SelfOwned
-	// Stamped: a managed-by stamp names the owner. Authoritative.
+	// Stamped means a managed-by stamp names the owner. Authoritative.
 	Stamped
-	// Bundle: the binary sits inside an app bundle or AppImage, whose own
+	// Bundle means the binary sits inside an app bundle or AppImage, whose own
 	// updater replaces it.
 	Bundle
-	// PackageManager: Homebrew, dpkg, rpm, pacman, snap or nix installed it.
+	// PackageManager means Homebrew, dpkg, rpm, pacman, snap or nix installed
+	// it.
 	PackageManager
-	// Managed: something else runs it and replaces it: the app's own
+	// Managed means something else runs it and replaces it: the app's own
 	// predicate, a Kubernetes pod or a container (the image is the unit).
 	Managed
-	// ReadOnly: this user cannot write the binary's directory.
+	// ReadOnly means this user cannot write the binary's directory.
 	ReadOnly
 )
 

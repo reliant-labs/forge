@@ -59,6 +59,11 @@ type LibrarySpec struct {
 	// Symbols is the package's exported surface, present only for the
 	// packages --signatures selected. See libraries_signatures.go.
 	Symbols []LibrarySymbol `json:"symbols,omitempty"`
+	// Subpackages names the inventory packages nested under this one
+	// (`observe` → `observe/genai`, `observe/metrics`, …), present only for
+	// the packages --signatures selected: a package's API never includes
+	// its subpackages', so the reader is told they exist and how to ask.
+	Subpackages []string `json:"subpackages,omitempty"`
 }
 
 // LibrariesSpec is the whole dump: the resolved Go module and its packages,
@@ -141,9 +146,14 @@ methods at all, so 'go doc .../crud' never mentions crud.Repo.UpdateMasked.
 'go doc -all <pkg>' is complete but roughly ten times larger, most of it
 prose. Neither needs the source directory, and neither does reading files.
 
+A nested package is named by its path under pkg/ (observe/metrics); the full
+import path, a pkg/ or forge/pkg/ prefix, and the bare last element when only
+one package ends in it (metrics) name it too. A package's API stops at its own
+directory, so a selected package also lists its subpackages.
+
 A selector naming a package or symbol that does not exist is an error listing
-what does, so a briefing script whose list has gone stale fails loudly rather
-than quietly shipping an incomplete API.
+the closest names and then what does exist, so a briefing script whose list
+has gone stale fails loudly rather than quietly shipping an incomplete API.
 
 Examples:
   forge project libraries
@@ -587,6 +597,15 @@ func writeLibraries(w io.Writer, spec LibrariesSpec, asJSON bool) error {
 	if err := p("FORGE LIBRARIES — %s\n", label); err != nil {
 		return err
 	}
+	if spec.SignatureSelectors != "" {
+		if err := p("Resolves to: %s\n", spec.Dir); err != nil {
+			return err
+		}
+		if err := writeLibraryDivergence(w, spec.Module, spec.Divergence); err != nil {
+			return err
+		}
+		return writeSignatures(w, spec)
+	}
 	if err := writeLibrarySourceLine(w, spec); err != nil {
 		return err
 	}
@@ -610,7 +629,7 @@ func writeLibraries(w io.Writer, spec LibrariesSpec, asJSON bool) error {
 			return err
 		}
 	}
-	if err := p("\nImport as %s/<name>.\n\n%s", spec.Module, deeperAPIGuidance(spec)); err != nil {
+	if err := p("\nImport as %s/<name>.\n\n%s", spec.Module, deeperAPIGuidance(spec.Module)); err != nil {
 		return err
 	}
 	if err := p("Adopt before porting: if a package covers the surface, use it; if it covers\n" +
@@ -618,52 +637,19 @@ func writeLibraries(w io.Writer, spec LibrariesSpec, asJSON bool) error {
 		"forge-libraries` has the when-to-adopt guidance.\n"); err != nil {
 		return err
 	}
-	if err := writeSignatures(w, spec); err != nil {
-		return err
-	}
 	return writeWebRuntime(w, spec.WebRuntime)
 }
 
-// deeperAPIGuidance is the paragraph that tells a reader how to get past a
-// one-line synopsis.
-//
-// It has to change with --signatures, because the untouched version is a
-// measurable liability: it names `go doc .../svcerr` as THE way to see an
-// API, and in a ten-unit wave that instruction was followed 36 times, four
-// of them for svcerr alone. Left unscoped it would keep saying "go look it
-// up" directly above a block that already contains the answer.
-//
-// So: with no selection, keep it — it is still the only route for 24
-// packages — but advertise the one-shot alternative. With a selection,
-// point at the block and reserve `go doc` for what is NOT in it, using a
-// package that really was left out as the example, so the output never
-// tells the reader to fetch something it just printed.
-func deeperAPIGuidance(spec LibrariesSpec) string {
-	if spec.SignatureSelectors == "" {
-		return "" +
-			"For what a package EXPORTS, name it — one call, any number of packages:\n" +
-			"  forge project libraries crud\n" +
-			"  forge project libraries crud orm svcerr\n" +
-			"  forge project libraries orm.Context\n" +
-			"Prefer that over `go doc`, which prints a struct or interface as\n" +
-			"`struct{ ... }` with no methods: `go doc " + shortModuleRef(spec.Module) + "/crud` never\n" +
-			"mentions Repo.UpdateMasked. Reading the source files is slower still.\n"
-	}
-	example := ""
-	for _, l := range spec.Packages {
-		if len(l.Symbols) == 0 {
-			example = l.Name
-			break
-		}
-	}
-	if example == "" {
-		return fmt.Sprintf("The complete exported API of every package is printed below (%s).\n", spec.SignatureSelectors)
-	}
-	return fmt.Sprintf(
-		"The complete exported API of %s is printed below.\n"+
-			"For a package that is NOT down there, name it the same way:\n"+
-			"  forge project libraries %s\n",
-		spec.SignatureSelectors, example)
+// deeperAPIGuidance tells a reader how to get past the inventory's one-line
+// synopsis. It belongs only in the index, not alongside a selected API.
+func deeperAPIGuidance(module string) string {
+	return "For what a package EXPORTS, name it — one call, any number of packages:\n" +
+		"  forge project libraries crud\n" +
+		"  forge project libraries crud orm svcerr\n" +
+		"  forge project libraries orm.Context\n" +
+		"Prefer that over `go doc`, which prints a struct or interface as\n" +
+		"`struct{ ... }` with no methods: `go doc " + shortModuleRef(module) + "/crud` never\n" +
+		"mentions Repo.UpdateMasked. Reading the source files is slower still.\n"
 }
 
 // shortModuleRef renders the module for a one-line mention of `go doc`.

@@ -29,6 +29,7 @@ func TestClassifyPhase(t *testing.T) {
 		{"nats-cluster", "StatefulSet", nil, PhaseRollout},
 		{"kata-prepull", "DaemonSet", nil, PhaseRollout},
 		{"backup-prune", "CronJob", nil, PhaseRollout},
+		{"admin-server", "HorizontalPodAutoscaler", nil, PhaseRollout},
 		// support: what a pre-rollout Job rests on
 		{"control-plane-prod", "Namespace", nil, PhasePre},
 		{"workspaces.example", "CustomResourceDefinition", nil, PhasePre},

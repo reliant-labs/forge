@@ -44,13 +44,13 @@ import (
 type FindingClass string
 
 const (
-	// ClassInfo: a change the operator should see. Approval covers it.
+	// ClassInfo is a change the operator should see. Approval covers it.
 	ClassInfo FindingClass = "info"
-	// ClassWarn: something to read before approving — a missing secret,
+	// ClassWarn is something to read before approving — a missing secret,
 	// drift the deploy will overwrite, a section that could not be
 	// computed. Approval covers it.
 	ClassWarn FindingClass = "warn"
-	// ClassStop: a change a general approval must NOT cover — a stateful
+	// ClassStop is a change a general approval must NOT cover — a stateful
 	// deletion, a load balancer's identity changing. It needs its own
 	// acknowledgement BY CODE, even with --yes, because --yes is the flag
 	// that ends up hard-coded in CI and would otherwise pre-approve every

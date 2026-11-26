@@ -49,6 +49,79 @@ func RegisterFlags(cmd *cobra.Command, msg proto.Message) error {
 	return RegisterFlagsFor(cmd.Flags(), msg)
 }
 
+// RegisterFieldFlags is RegisterFlags narrowed to the fields a command reads:
+// it registers the --config file flag and, as LOCAL flags on cmd, the flags of
+// the fields named by paths — and nothing else. A path names a field the way
+// RequiredWithin does ("log_level", "stripe.secret_key"); a path naming a
+// config block registers every flagged leaf of that block.
+//
+// It is for a command that is not a server: an admin task, a backfill, a
+// report. RegisterFlags would list every one of the server's flags (CORS,
+// OIDC, TLS, pprof, ...) in that command's --help, burying the few it takes,
+// and none of them would do anything there. Loading needs no registration at
+// all — Load reads the env and file layers whether or not a flag exists — so
+// a command registers flags only for what it wants settable on its command
+// line, and with no paths it registers --config alone.
+//
+// A path that names no field, a field with no `flag:` annotation, or a
+// sensitive field (which never takes a flag: a secret on a command line leaks
+// through ps and shell history) is an error, so a typo fails where the
+// command is built rather than leaving a flag silently missing.
+func RegisterFieldFlags(cmd *cobra.Command, msg proto.Message, paths ...string) error {
+	desc := msg.ProtoReflect().Descriptor()
+	resolved := make([]protoreflect.FieldDescriptor, 0, len(paths))
+	for _, p := range paths {
+		fd, err := fieldAtPath(desc, p)
+		if err != nil {
+			return err
+		}
+		if !isConfigBlock(fd) {
+			opt := fieldOptions(fd)
+			switch {
+			case opt.GetSensitive():
+				return fmt.Errorf("config field %s is sensitive, so it takes no flag (env only: %s)", p, envSourcesPhrase(opt))
+			case opt.GetFlag() == "":
+				return fmt.Errorf("config field %s declares no flag: add `flag:` to its (forge.v1.config) annotation, or set it through %s", p, envSourcesPhrase(opt))
+			}
+		}
+		resolved = append(resolved, fd)
+	}
+	registerConfigFileFlag(cmd, msg)
+	recordFileMessage(cmd, msg)
+	for _, fd := range resolved {
+		if isConfigBlock(fd) {
+			if err := registerFlagsForDesc(cmd.Flags(), fd.Message(), scopeAll); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := registerLeafFlag(cmd.Flags(), fd, fieldOptions(fd)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fieldAtPath resolves a dotted config path ("stripe.secret_key") to its
+// field: every segment but the last must name a config block.
+func fieldAtPath(desc protoreflect.MessageDescriptor, path string) (protoreflect.FieldDescriptor, error) {
+	segs := strings.Split(path, ".")
+	for i, seg := range segs {
+		fd := desc.Fields().ByName(protoreflect.Name(seg))
+		if fd == nil || (!isConfigBlock(fd) && fieldOptions(fd) == nil) {
+			return nil, fmt.Errorf("config %s has no field %s", desc.Name(), path)
+		}
+		if i == len(segs)-1 {
+			return fd, nil
+		}
+		if !isConfigBlock(fd) {
+			return nil, fmt.Errorf("config %s has no field %s: %s is not a config block", desc.Name(), path, seg)
+		}
+		desc = fd.Message()
+	}
+	return nil, fmt.Errorf("config %s has no field %q", desc.Name(), path)
+}
+
 // RegisterSharedFlags registers a per-binary config's SHARED half — the
 // leaves of the config blocks it composes (conventionally BaseConfig) — as
 // PERSISTENT flags on cmd, so every subcommand beneath it inherits them and

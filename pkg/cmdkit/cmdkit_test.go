@@ -80,3 +80,25 @@ func TestOpenDBRequiresDSN(t *testing.T) {
 		t.Error("expected error for empty DSN")
 	}
 }
+
+func TestContextWithLoggerRoundTrips(t *testing.T) {
+	var buf bytes.Buffer
+	ctx, logger := ContextWithLogger(context.Background(), LoggerOptions{Name: "backfill", Format: "text", Out: &buf})
+
+	got := LoggerFromContext(ctx)
+	if got != logger {
+		t.Fatal("LoggerFromContext did not return the logger ContextWithLogger stored")
+	}
+	got.Info("hello")
+	for _, want := range []string{"cmd=backfill", "msg=hello"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("output %q missing %q", buf.String(), want)
+		}
+	}
+}
+
+func TestLoggerFromContextFallsBackToDefault(t *testing.T) {
+	if got := LoggerFromContext(context.Background()); got != slog.Default() {
+		t.Error("with no logger on ctx, LoggerFromContext must return slog.Default()")
+	}
+}

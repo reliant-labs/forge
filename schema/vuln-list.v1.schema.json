@@ -105,7 +105,7 @@
       "type": "object",
       "properties": {
         "artifacts": {
-          "description": "Artifacts is how many artifacts the release has.",
+          "description": "Artifacts is how many artifacts of the release an SBOM applies to (release.SBOMApplicable): the N of \"N of N applicable\".",
           "type": [
             "integer",
             "null"
@@ -133,6 +133,16 @@
           ],
           "items": {
             "$ref": "#/$defs/UnscannedArtifact"
+          }
+        },
+        "not_applicable": {
+          "description": "NotApplicable names each artifact of the release no SBOM describes (source maps, a git source pin), with why. They are outside Artifacts, and never unscanned.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/NotApplicableArtifact"
           }
         }
       },
@@ -307,6 +317,16 @@
         "action": {
           "description": "Action is what the vuln_gate rule makes of it: block, warn or none.",
           "type": "string"
+        },
+        "occurrences": {
+          "description": "Occurrences are each place it was found: an artifact, and a path of the package inside it, one per pair. What a scoped exemption's artifacts and locations are matched against (forge.VulnExemption).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/Occurrence"
+          }
         }
       },
       "required": [
@@ -320,7 +340,7 @@
       "additionalProperties": false
     },
     "Exemption": {
-      "description": "Exemption is an accepted advisory, as the env declares it (forge.VulnExemption): time-boxed, with its reason.",
+      "description": "Exemption is an accepted advisory, as the env declares it (forge.VulnExemption): time-boxed, with its reason, and the scope it covers the advisory in (none: everywhere).",
       "type": "object",
       "properties": {
         "id": {
@@ -340,6 +360,34 @@
             "string",
             "null"
           ]
+        },
+        "packages": {
+          "description": "Packages, Artifacts and Locations are the exemption's scope (release.ShapeVulnScopedExempt), absent when it covers the advisory everywhere.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "artifacts": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "locations": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -386,6 +434,44 @@
         "blocking",
         "determined"
       ],
+      "additionalProperties": false
+    },
+    "NotApplicableArtifact": {
+      "description": "NotApplicableArtifact is an artifact no SBOM describes, so no scan covers.",
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Occurrence": {
+      "description": "Occurrence is one place a finding was found. Artifact is absent for a finding attributed to the release as a whole, Location when the scan names no path.",
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "location": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
       "additionalProperties": false
     },
     "Package": {

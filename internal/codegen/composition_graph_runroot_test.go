@@ -200,6 +200,8 @@ func TestServeGraphTemplate_ReadsTheCommandConfigs(t *testing.T) {
 	for _, want := range []string{
 		"skCfg, err := serverkitConfig(cfg, root.Configs)",
 		"func serverkitConfig(cfg *config.Config, configs rootConfigs) (serverkit.Config, error) {",
+		// A test boots the graph with the projection a process runs under.
+		"func ServerConfig(cfg *config.Config) (serverkit.Config, error) { return serverkitConfig(cfg, rootConfigs{}) }",
 		`Addr: ":8080",`,
 		"if c := configs.ApiConfig; c != nil { skCfg.Addr = fmt.Sprintf(\":%d\", c.Port) skCfg.PreStopDelay = c.PreStopDelay.AsDuration() skCfg.ShutdownTimeout = c.ShutdownTimeout.AsDuration() }",
 		"if c := configs.GatewayConfig; c != nil { skCfg.Addr = fmt.Sprintf(\":%d\", c.Port) skCfg.PprofAddr = c.PprofAddr skCfg.ShutdownTimeout = c.ShutdownTimeout.AsDuration() }",
@@ -256,6 +258,10 @@ func TestServeGraphTemplate_OneConfigRendersAsBefore(t *testing.T) {
 	src := string(out)
 	if strings.Contains(src, "rootConfigs") || strings.Contains(src, "root.Configs") || !strings.Contains(src, "func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {") {
 		t.Errorf("a one-config serve.go changed shape:\n%s", src)
+	}
+	// A test boots the graph with the projection a process runs under.
+	if flat := strings.Join(strings.Fields(src), " "); !strings.Contains(flat, "func ServerConfig(cfg *config.Config) (serverkit.Config, error) { return serverkitConfig(cfg) }") {
+		t.Errorf("serve.go exports no ServerConfig over the projection:\n%s", src)
 	}
 }
 

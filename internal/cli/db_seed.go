@@ -94,11 +94,13 @@ Examples:
   forge db seed apply -C ~/src/app       # from anywhere
   forge db seed apply --dsn postgres://postgres:postgres@localhost:55432/scratch?sslmode=disable
   forge db seed status                   # per-table seeded-row counts
-  forge db seed reset                    # wipe seeded tables and re-seed`,
+  forge db seed reset                    # wipe seeded tables and re-seed
+  forge db seed clear                    # delete rows with matching seed keys, seed nothing`,
 	}
 	cmd.AddCommand(newDBSeedApplyCommand())
 	cmd.AddCommand(newDBSeedStatusCommand())
 	cmd.AddCommand(newDBSeedResetCommand())
+	cmd.AddCommand(newDBSeedClearCommand())
 	return cmdutil.StrictGroup(cmd)
 }
 
@@ -154,9 +156,8 @@ func newDBSeedResetCommand() *cobra.Command {
 	var o seedOptions
 	cmd := &cobra.Command{
 		Use:   "reset",
-		Short: "Delete seeded rows (child-first) and re-seed (dev-only)",
-		Long: `Delete the rows forge seeded, child-first so foreign keys stay satisfied,
-then seed again from the applied schema.
+		Short: "Empty seeded tables and re-seed (dev-only)",
+		Long: `Empty the tables in the seed plan, then seed again from the applied schema.
 
 This is the command to reach for instead of dropping and recreating the
 database by hand. It is the supported way to get back to a clean dev dataset
@@ -168,13 +169,49 @@ a fully-migrated schema, so on a database with pending or dirty migrations it
 refuses exactly as 'seed apply' does — clear that first with
 'forge db migrate up' or 'forge db migrate force <version>'.
 
-Only rows matching forge's deterministic seed data are deleted; rows you or
-your application created are left in place.`,
+The wipe is a TRUNCATE ... CASCADE of every seeded table: it empties those
+tables outright — rows you or your application created included — and
+postgres extends it to every table holding a foreign key into them. To remove
+rows by matching seed keys instead, without re-seeding, use 'forge db seed clear'.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDBSeedReset(cmd.Context(), o)
 		},
 	}
 	bindSeedWriteFlags(cmd, &o)
+	return cmd
+}
+
+func newDBSeedClearCommand() *cobra.Command {
+	var o seedOptions
+	var confirm bool
+	var table string
+	cmd := &cobra.Command{
+		Use:   "clear",
+		Short: "Delete rows matching the seed plan's keys without re-seeding (dev-only)",
+		Long: `Delete rows whose primary keys match the current seed plan, and insert nothing.
+
+WARNING: forge does not track seed provenance. Any matching application row
+is deleted too, including rows with small integer or caller-assigned keys.
+PostgreSQL's ON DELETE actions still apply (including CASCADE to related rows).
+A restrictive foreign key or append-only guard rolls back the whole operation.
+
+Clear never truncates tables or reapplies db/seeds/custom/. It checks the whole
+manual seed plan, including tables outside today's auto-seed scope. To limit
+cleanup to one table, use --table <name>; matching still uses the full plan.
+Rows synthesized under a different schema or seed model may not match.
+
+The next 'forge env up' may seed the database again; pass --no-seed to skip it.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !confirm {
+				return errors.New("clear deletes any row matching a seed key (including application rows); pass --confirm to proceed")
+			}
+			return runDBSeedClear(cmd.Context(), o, table)
+		},
+	}
+	bindSeedWriteFlags(cmd, &o)
+	cmd.Flags().BoolVar(&confirm, "confirm", false, "Confirm deletion of all matching keys, even if the app wrote them")
+	cmd.Flags().StringVar(&table, "table", "", "Limit direct deletions to this table in the seed plan")
 	return cmd
 }
 
@@ -201,14 +238,32 @@ func seedShadowServer(projectDir string) string {
 // hook): a replay of *.up.sql there reads no schema at all, so the applied
 // schema comes from internal/shadowdb, whose shadow that tool migrates.
 func buildLiveSeedPlan(ctx context.Context, db *sql.DB, projectDir, migDir, shadowServer string, cfg seedplan.Config) (*seedplan.Plan, error) {
-	if _, hooked := migrationhook.ResolveForDir(projectDir, migDir); !hooked {
-		return seedplan.BuildLivePlan(ctx, db, migDir, shadowServer, cfg)
+	tables, err := liveSeedTables(projectDir, migDir, shadowServer)
+	if err != nil {
+		return nil, err
 	}
-	tables, err := shadowdb.Tables(projectDir, migDir)
+	return seedplan.BuildLivePlanFromTables(ctx, db, tables, migDir, cfg)
+}
+
+// liveSeedTables is the applied schema a live seed plan is built from: the
+// shadow replay seedplan.BuildLivePlan makes, or, in a project that keeps its
+// own migration tool, the shadow that tool migrates (internal/shadowdb).
+// Split from buildLiveSeedPlan for the auto-seed, whose scope is a function
+// of the schema (autoSeedFirstBoot) and must not cost a second apply.
+func liveSeedTables(projectDir, migDir, shadowServer string) ([]schemadef.Table, error) {
+	var (
+		tables []schemadef.Table
+		err    error
+	)
+	if _, hooked := migrationhook.ResolveForDir(projectDir, migDir); hooked {
+		tables, err = shadowdb.Tables(projectDir, migDir)
+	} else {
+		tables, err = schemadef.ApplyAndIntrospectAt(migDir, shadowServer)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("introspect applied schema: %w", err)
 	}
-	return seedplan.BuildLivePlanFromTables(ctx, db, tables, migDir, cfg)
+	return tables, nil
 }
 
 // seedConfigFromProject is the project's dev dataset configuration: the
@@ -599,10 +654,12 @@ func runDBSeedApply(ctx context.Context, o seedOptions) error {
 // worst outcome a seeder has, because the next step (a UI, a test, an agent)
 // trusts it.
 //
-// Nothing is legitimate in exactly three cases, and each is checked:
+// Nothing is legitimate in exactly four cases, and each is checked:
 //
 //   - forge.yaml says `database.seed.tables: []` — synthesize nothing, on
 //     purpose; db/seeds/custom/ is the dataset.
+//   - every table the plan would have written declares `forge:no-seed` or
+//     requires one that does — opted out in the schema itself.
 //   - the database was already seeded — apply is idempotent, so a re-run
 //     inserts nothing and the tables still hold rows.
 //   - there is nothing to seed: the migrations define no tables AND the
@@ -617,6 +674,9 @@ func seedOutcomeError(ctx context.Context, db *sql.DB, plan *seedplan.Plan, cfg 
 		return nil
 	}
 	if len(plan.Tables()) == 0 {
+		if len(plan.NoSeedTables()) > 0 {
+			return nil // every table opted out with forge:no-seed: nothing is the answer
+		}
 		if len(cfg.Tables) > 0 {
 			return fmt.Errorf("seeded nothing: database.seed.tables in forge.yaml names %s, but none of them is a table the migrations in %s define",
 				strings.Join(cfg.Tables, ", "), migDir)
@@ -668,6 +728,9 @@ func printSeedResult(verb string, plan *seedplan.Plan, cfg seedplan.Config, res 
 	switch {
 	case cfg.Tables != nil && len(cfg.Tables) == 0:
 		fmt.Fprintln(os.Stdout, "database.seed.tables is [] in forge.yaml — no rows synthesized; applying db/seeds/custom/ only.")
+		return
+	case len(plan.Tables()) == 0 && len(plan.NoSeedTables()) > 0:
+		fmt.Fprintf(os.Stdout, "No seedable tables: every table is %s, or requires one (%s).\n", schemadef.TableMarkerNoSeed, strings.Join(plan.NoSeedTables(), ", "))
 		return
 	case len(plan.Tables()) == 0:
 		fmt.Fprintln(os.Stdout, "No seedable tables: the migrations define none.")
@@ -772,6 +835,37 @@ func runDBSeedStatus(ctx context.Context, dsn, flagDir string) error {
 	fmt.Fprintf(os.Stdout, "%-32s %8s %10s\n", "TABLE", "ROWS", "SEED_TARGET")
 	for _, r := range rows {
 		fmt.Fprintf(os.Stdout, "%-32s %8d %10d\n", r.Table, r.Count, r.Expected)
+	}
+	return nil
+}
+
+// runDBSeedClear matches the manual seed plan's keys, including historical
+// non-roots, without truncating tables or reapplying any seed data.
+func runDBSeedClear(ctx context.Context, o seedOptions, table string) error {
+	if err := requireDevSeedTarget(o.env); err != nil {
+		return err
+	}
+	migDir, err := requireMigrationsDir(o.migDir)
+	if err != nil {
+		return err
+	}
+	db, err := openSeedDB(ctx, o, migDir, true)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	plan, err := buildLiveSeedPlan(ctx, db, dbProjectRoot(), migDir, seedShadowServer(dbProjectRoot()), liveSeedConfig())
+	if err != nil {
+		return err
+	}
+	deleted, skipped, err := seedplan.Clear(ctx, db, plan, table)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "Cleared %d matching row(s), not counting foreign-key cascades.\n", deleted)
+	if len(skipped) > 0 {
+		fmt.Fprintf(os.Stdout, "warning: skipped %s: no primary key forge writes\n", strings.Join(skipped, ", "))
 	}
 	return nil
 }

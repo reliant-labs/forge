@@ -24,6 +24,14 @@
 // gave this one mount with WithHandlerOptions (a per-service interceptor on
 // top of the shared chain).
 //
+// What it does own is the protobuf JSON codec forge serves with
+// (JSONCodecOption, JSONCodecOptionV2; json_codec.go): connect-go's, whose
+// unmarshal errors also name the spelling to send when a Duration, Timestamp
+// or FieldMask arrives in Go or JavaScript syntax ("1h" → "3600s"). MountV2
+// installs it on every v2 mount, ahead of the caller's options;
+// serverkit.Chain puts it first in a v1 chain's handler options. A caller's
+// own codec still wins.
+//
 // mountkit does not build the HTTP middleware stack the optional
 // registrars consume — that stack (recovery / logging / audit, e.g.
 // forge/pkg/middleware.HTTPStack) is wired from the project's middleware

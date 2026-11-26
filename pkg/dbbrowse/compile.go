@@ -29,17 +29,28 @@ const (
 type Op string
 
 const (
-	OpEq  Op = "eq"
-	OpNeq Op = "neq" // SQL <>: a NULL is neither equal nor unequal, so it never matches
-	OpLt  Op = "lt"
+	// OpEq matches a column equal to its one value (SQL =).
+	OpEq Op = "eq"
+	// OpNeq matches a column unequal to its one value (SQL <>): a NULL is
+	// neither equal nor unequal, so it never matches.
+	OpNeq Op = "neq"
+	// OpLt matches a column less than its one value (SQL <). OpLt, OpLte,
+	// OpGt and OpGte refuse a column whose type has no ordering.
+	OpLt Op = "lt"
+	// OpLte matches a column at most its one value (SQL <=).
 	OpLte Op = "lte"
-	OpGt  Op = "gt"
+	// OpGt matches a column greater than its one value (SQL >).
+	OpGt Op = "gt"
+	// OpGte matches a column at least its one value (SQL >=).
 	OpGte Op = "gte"
 	// OpLike and OpIlike match the column's text form against a LIKE
 	// pattern (% and _ wildcards, backslash escapes).
-	OpLike    Op = "like"
-	OpIlike   Op = "ilike"
-	OpIsNull  Op = "is_null"
+	OpLike Op = "like"
+	// OpIlike is OpLike, case-insensitive (SQL ILIKE).
+	OpIlike Op = "ilike"
+	// OpIsNull matches a NULL column. It takes no value.
+	OpIsNull Op = "is_null"
+	// OpNotNull matches a column that is not NULL. It takes no value.
 	OpNotNull Op = "not_null"
 	// OpIn matches any of 1..MaxInValues values.
 	OpIn Op = "in"

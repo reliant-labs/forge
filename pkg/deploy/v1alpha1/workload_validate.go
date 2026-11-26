@@ -7,12 +7,21 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
+
+	// The IANA database, embedded, so validateTimeZone answers the same on a
+	// host with no zoneinfo. It is consulted only when the system's is missing.
+	_ "time/tzdata"
 )
 
 var (
 	// cronFieldRE is one field of a 5-field cron expression: digits, *, and
 	// the - , / operators, or a three-letter month/day name.
-	cronFieldRE    = regexp.MustCompile(`^([0-9*,/\-]+|[A-Za-z]{3}([,\-][A-Za-z]{3})*)$`)
+	cronFieldRE = regexp.MustCompile(`^([0-9*,/\-]+|[A-Za-z]{3}([,\-][A-Za-z]{3})*)$`)
+	// timeZoneRE is the shape of an IANA zone name (Area/Location[/Sub], or
+	// a bare name like UTC). time.LoadLocation is the real test; this keeps a
+	// path such as "../etc" from ever reaching it.
+	timeZoneRE     = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$`)
 	namedSchedules = map[string]bool{"@hourly": true, "@daily": true, "@weekly": true, "@monthly": true, "@yearly": true, "@annually": true}
 	// annotationNameRE / annotationPrefixRE are the Kubernetes annotation
 	// key grammar: [prefix/]name.
@@ -54,6 +63,7 @@ const PreStopShutdownSeconds = 5
 var kindCapabilities = map[string]map[WorkloadKind]bool{
 	"ports":                         {KindService: true, KindWorker: true, KindOperator: true},
 	"replicas":                      {KindService: true, KindWorker: true, KindOperator: true},
+	"autoscale":                     {KindService: true, KindWorker: true},
 	"probes":                        {KindService: true, KindWorker: true, KindOperator: true},
 	"storageGiB":                    {KindService: true, KindWorker: true, KindOperator: true},
 	"namespacedRBAC":                scheduledKinds,
@@ -63,6 +73,9 @@ var kindCapabilities = map[string]map[WorkloadKind]bool{
 	"version":                       {KindOperator: true},
 	"leaderElection":                {KindOperator: true},
 	"schedule":                      {KindCron: true},
+	"concurrencyPolicy":             {KindCron: true},
+	"startingDeadlineSeconds":       {KindCron: true},
+	"timeZone":                      {KindCron: true},
 	"before":                        {KindJob: true},
 	"deployPhase":                   {KindJob: true},
 	"serviceAccountAnnotations":     {KindService: true, KindWorker: true, KindJob: true, KindCron: true, KindOperator: true},
@@ -97,6 +110,7 @@ var deploymentKinds = map[WorkloadKind]bool{KindService: true, KindWorker: true,
 var kindCapabilityReasons = map[string]string{
 	"ports":                         "a batch kind (job/cron) runs to completion and a tool is never scheduled, so there is no pod anything can dial; use kind service or worker",
 	"replicas":                      "a batch pod's concurrency belongs to its Job or CronJob and a tool is never scheduled, so Kubernetes has nowhere to put this value",
+	"autoscale":                     "only a service or a worker scales on load: an operator elects one leader, so more pods buy it nothing, and a batch kind (job/cron) or a tool has no Deployment to scale; use replicas",
 	"probes":                        "probes gate traffic and restart long-running pods; a batch pod runs to completion and a tool is never scheduled",
 	"storageGiB":                    "a ReadWriteOnce volume is mounted by a long-running pod; a batch pod or a tool has nothing to keep it for",
 	"namespacedRBAC":                "a tool is never scheduled, so it has no pod to grant permission to",
@@ -106,6 +120,9 @@ var kindCapabilityReasons = map[string]string{
 	"version":                       "version is the API version of an operator's CRDs; declare kind operator",
 	"leaderElection":                "only an operator's manager elects a leader",
 	"schedule":                      "only a cron runs on a schedule; a one-shot is kind job",
+	"concurrencyPolicy":             "only a cron has a next tick for a run still going to overlap",
+	"startingDeadlineSeconds":       "only a cron has ticks that can start late",
+	"timeZone":                      "only a cron has a schedule to read in a time zone",
 	"before":                        "before orders a one-shot job ahead of other workloads; it is only valid for kind job",
 	"deployPhase":                   "deployPhase places a standalone job in the deploy; it is only valid for kind job",
 	"serviceAccountAnnotations":     "a tool is never scheduled, so forge renders no ServiceAccount to annotate",
@@ -164,8 +181,8 @@ func (s WorkloadSpec) Validate(p Profile) error {
 	// --- kind capabilities ---
 	if validKind {
 		for _, field := range []string{
-			"ports", "replicas", "probes", "storageGiB", "namespacedRBAC", "clusterRBAC", "crds", "group",
-			"version", "leaderElection", "schedule", "before", "deployPhase", "serviceAccountAnnotations",
+			"ports", "replicas", "autoscale", "probes", "storageGiB", "namespacedRBAC", "clusterRBAC", "crds", "group",
+			"version", "leaderElection", "schedule", "concurrencyPolicy", "startingDeadlineSeconds", "timeZone", "before", "deployPhase", "serviceAccountAnnotations",
 			"sidecars", "volumes", "serviceAccount", "nodeSelector", "tolerations", "podAnnotations",
 			"priorityClassName", "enableServiceLinks", "strategy", "terminationGracePeriodSeconds", "preStopSeconds",
 			"activeDeadlineSeconds", "successfulJobsHistoryLimit", "failedJobsHistoryLimit", "ttlSecondsAfterFinished", "securityContext",
@@ -194,6 +211,9 @@ func (s WorkloadSpec) Validate(p Profile) error {
 	if s.StorageGiB > 0 && s.Replicas > 1 {
 		errs = append(errs, fmt.Errorf("storageGiB requires replicas 1 (got %d): the volume is ReadWriteOnce, so a second replica can never mount it, and the workload rolls out with Recreate", s.Replicas))
 	}
+	if s.Autoscale != nil {
+		errs = append(errs, s.autoscaleErrors()...)
+	}
 
 	// --- job / cron ---
 	if kind == KindJob && len(s.Command) == 0 && len(s.Args) == 0 {
@@ -210,6 +230,7 @@ func (s WorkloadSpec) Validate(p Profile) error {
 	if s.Schedule != "" && !validSchedule(s.Schedule) {
 		errs = append(errs, fmt.Errorf("schedule %q must be a 5-field cron expression or one of @hourly, @daily, @weekly, @monthly, @yearly", s.Schedule))
 	}
+	errs = append(errs, s.cronScheduleErrors()...)
 	errs = append(errs, validateBefore(s.Before)...)
 	switch s.DeployPhase {
 	case "", DeployPhasePreRollout, DeployPhasePostRollout:
@@ -351,6 +372,37 @@ func (s WorkloadSpec) Validate(p Profile) error {
 	return errors.Join(errs...)
 }
 
+// autoscaleErrors checks an autoscaled spec: the range itself, and the
+// fields that contradict a count the autoscaler moves. The kind is checked
+// with the other kind capabilities.
+func (s WorkloadSpec) autoscaleErrors() []error {
+	var errs []error
+	a := s.Autoscale
+	if a.MinReplicas < 1 {
+		errs = append(errs, fmt.Errorf("autoscale.minReplicas must be at least 1 (got %d): scale to zero is not offered", a.MinReplicas))
+	}
+	if a.MaxReplicas > MaxAutoscaleReplicas {
+		errs = append(errs, fmt.Errorf("autoscale.maxReplicas must be at most %d (got %d): the platform caps an autoscaled workload at %d replicas", MaxAutoscaleReplicas, a.MaxReplicas, MaxAutoscaleReplicas))
+	}
+	if a.MinReplicas > a.MaxReplicas {
+		errs = append(errs, fmt.Errorf("autoscale.minReplicas (%d) must not exceed autoscale.maxReplicas (%d)", a.MinReplicas, a.MaxReplicas))
+	}
+	if t := a.CPUTargetPercent; t != 0 && (t < MinAutoscaleCPUTargetPercent || t > MaxAutoscaleCPUTargetPercent) {
+		errs = append(errs, fmt.Errorf("autoscale.cpuTargetPercent must be %d-%d (got %d): it is a percent of the CPU request, and a limit at the request caps utilization near 100%%, so a higher target never triggers a scale-up; omit it for %d",
+			MinAutoscaleCPUTargetPercent, MaxAutoscaleCPUTargetPercent, t, DefaultAutoscaleCPUTargetPercent))
+	}
+	if s.Replicas > 1 {
+		errs = append(errs, fmt.Errorf("replicas %d is set beside autoscale: autoscale owns the replica count; set autoscale.minReplicas", s.Replicas))
+	}
+	if s.StorageGiB > 0 {
+		errs = append(errs, errors.New("autoscale is not allowed with storageGiB: the volume is ReadWriteOnce, so a second replica can never mount it; drop autoscale, or keep the data somewhere every replica can reach (a managed database or bucket)"))
+	}
+	if s.Strategy == StrategyRecreate {
+		errs = append(errs, errors.New("autoscale is not allowed with strategy Recreate: Recreate declares the replica count a correctness bound (one version, one pod set), which a count the autoscaler moves contradicts; drop one"))
+	}
+	return errs
+}
+
 // gatingPodFields are the fields that describe a pod of the workload's OWN.
 // A job with `before` has none: it runs as an initContainer INSIDE the pods
 // it gates, under their ServiceAccount, on their nodes, with their volumes.
@@ -385,6 +437,8 @@ func (s WorkloadSpec) declares(field string) bool {
 		return len(s.Ports) > 0
 	case "replicas":
 		return s.Replicas > 1
+	case "autoscale":
+		return s.Autoscale != nil
 	case "probes":
 		return s.Probes != nil
 	case "storageGiB":
@@ -403,6 +457,12 @@ func (s WorkloadSpec) declares(field string) bool {
 		return s.LeaderElection != nil
 	case "schedule":
 		return s.Schedule != ""
+	case "concurrencyPolicy":
+		return s.ConcurrencyPolicy != ""
+	case "startingDeadlineSeconds":
+		return s.StartingDeadlineSeconds != nil
+	case "timeZone":
+		return s.TimeZone != ""
 	case "before":
 		return len(s.Before) > 0
 	case "deployPhase":
@@ -459,6 +519,45 @@ func validSchedule(s string) bool {
 		}
 	}
 	return true
+}
+
+// cronScheduleErrors checks the fields that say how a cron's schedule fires:
+// its concurrency policy, its starting deadline and its time zone. Which
+// kinds may set them is checked with the other kind capabilities.
+func (s WorkloadSpec) cronScheduleErrors() []error {
+	var errs []error
+	switch s.ConcurrencyPolicy {
+	case "", CronConcurrencyAllow, CronConcurrencyForbid, CronConcurrencyReplace:
+	default:
+		errs = append(errs, fmt.Errorf("concurrencyPolicy %q must be Allow, Forbid or Replace", s.ConcurrencyPolicy))
+	}
+	if d := s.StartingDeadlineSeconds; d != nil && (*d < MinCronStartingDeadlineSeconds || *d > MaxCronStartingDeadlineSeconds) {
+		errs = append(errs, fmt.Errorf("startingDeadlineSeconds must be %d-%d (got %d): the CronJob controller checks its schedules about every %d seconds, so a shorter deadline can skip a tick that was on time; omit it for no deadline",
+			MinCronStartingDeadlineSeconds, MaxCronStartingDeadlineSeconds, *d, MinCronStartingDeadlineSeconds))
+	}
+	if tz := s.TimeZone; tz != "" {
+		errs = append(errs, validateTimeZone(tz)...)
+	}
+	return errs
+}
+
+// validateTimeZone checks a cron's time zone the way the Kubernetes API
+// server does: a name time.LoadLocation resolves. The time/tzdata import
+// makes the answer the same on every host, including a container image with
+// no zoneinfo, so a spec the CLI admits is not refused by a control plane
+// built FROM scratch. "Local" resolves too, but to the zone of whatever
+// process reads it, so it is refused.
+func validateTimeZone(tz string) []error {
+	if tz == "Local" {
+		return []error{errors.New(`timeZone "Local" is the zone of whatever controller reads it, not a zone; name one, such as "Etc/UTC"`)}
+	}
+	if len(tz) > 64 || !timeZoneRE.MatchString(tz) {
+		return []error{fmt.Errorf("timeZone %q must be an IANA time zone name, such as \"Europe/Berlin\" or \"Etc/UTC\"", tz)}
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return []error{fmt.Errorf("timeZone %q is not a known IANA time zone, such as \"Europe/Berlin\" or \"Etc/UTC\"", tz)}
+	}
+	return nil
 }
 
 func validateBefore(before []string) []error {

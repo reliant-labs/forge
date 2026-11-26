@@ -7,8 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jinzhu/inflection"
-
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/database"
@@ -16,6 +14,7 @@ import (
 	"github.com/reliant-labs/forge/internal/hostinfra"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
@@ -332,8 +331,7 @@ func maybeAutoSeed(ctx context.Context, store *projectstore.Store, cfg *config.P
 	}
 	defer func() { _ = db.Close() }()
 
-	seedCfg := autoSeedConfig(liveSeedConfig(), crudEntityTablesForSeed)
-	autoSeedFirstBoot(ctx, db, resolveMigrationsDir(""), seedShadowServer(dbProjectRoot()), seedCfg)
+	autoSeedFirstBoot(ctx, db, resolveMigrationsDir(""), seedShadowServer(dbProjectRoot()), liveSeedConfig(), crudEntityTablesForSeed)
 }
 
 // autoSeedFirstBoot is maybeAutoSeed past its guards (dev target, a DSN this
@@ -347,7 +345,16 @@ func maybeAutoSeed(ctx context.Context, store *projectstore.Store, cfg *config.P
 // `forge env up`, although db/seeds/README.md says env up seeds a fresh
 // database, and they arrived only on a manual `forge db seed apply`. growth
 // hit it: its tenant row lives in db/seeds/custom/001_reliant.sql.
-func autoSeedFirstBoot(ctx context.Context, db *sql.DB, migDir, shadow string, seedCfg seedplan.Config) {
+//
+// entityTables scopes the seed (autoSeedConfig) from the applied schema the
+// plan is built from, so the scope costs no second shadow apply.
+func autoSeedFirstBoot(ctx context.Context, db *sql.DB, migDir, shadow string, base seedplan.Config, entityTables func([]schemadef.Table) []string) {
+	tables, err := liveSeedTables(dbProjectRoot(), migDir, shadow)
+	if err != nil {
+		fmt.Printf("[up] auto-seed skipped: %v\n", err)
+		return
+	}
+	seedCfg := autoSeedConfig(base, func() []string { return entityTables(tables) })
 	if seedCfg.Tables != nil && len(seedCfg.Tables) == 0 {
 		// quiet-ish: nothing is in scope — no CRUD entity, or `tables: []`.
 		// One line, because "why is my dev DB empty?" deserves an answer.
@@ -355,7 +362,7 @@ func autoSeedFirstBoot(ctx context.Context, db *sql.DB, migDir, shadow string, s
 			"`forge db seed apply` applies db/seeds/custom/")
 		return
 	}
-	plan, err := buildLiveSeedPlan(ctx, db, dbProjectRoot(), migDir, shadow, seedCfg)
+	plan, err := seedplan.BuildLivePlanFromTables(ctx, db, tables, migDir, seedCfg)
 	if err != nil {
 		fmt.Printf("[up] auto-seed skipped: %v\n", err)
 		return
@@ -401,12 +408,13 @@ func autoSeedFirstBoot(ctx context.Context, db *sql.DB, migDir, shadow string, s
 		fmt.Printf("[up] auto-seed: %v — fix the file, then `forge db seed apply` (idempotent) applies it\n", err)
 	}
 	if res.Total() > 0 {
-		// Name the tables and BOTH opt-outs. The per-project one used to go
-		// unmentioned, so the only discoverable way to stop a project from
-		// being seeded was a flag every run had to remember.
+		// Name the tables and BOTH opt-outs. The persistent one used to go
+		// unmentioned, so the only discoverable way to stop a table from
+		// being seeded was a flag every run had to remember — and before
+		// forge:no-seed the line named forge.yaml keys forge.yaml rejects.
 		fmt.Printf("[up] auto-seeded %d rows across %d tables (%s) — first boot only.\n"+
-			"[up]   skip once: --no-seed · never for this project: database.seed.auto: false · choose tables: database.seed.tables in forge.yaml\n",
-			res.Total(), len(res.Tables), strings.Join(seededTableNames(res), ", "))
+			"[up]   skip once: --no-seed · never for a table: COMMENT ON TABLE <t> IS '%s' in a migration\n",
+			res.Total(), len(res.Tables), strings.Join(seededTableNames(res), ", "), schemadef.TableMarkerNoSeed)
 	}
 }
 
@@ -447,14 +455,18 @@ func autoSeedConfig(base seedplan.Config, entityTables func() []string) seedplan
 }
 
 // crudEntityTablesForSeed lists the tables behind the project's CRUD entities
-// — each entity a service declares Create/Get/List/Update/Delete RPCs for,
-// mapped to the tables codegen.EntityTableCandidates names for it (the
-// pluralized snake_case of the entity name, then the singular). Tables that
-// do not exist are harmless: seedplan.ScopeTables ignores unknown roots.
+// in the applied schema tables: the CRUD join `forge generate` makes for the
+// CRUD wiring and the list/detail pages (codegen.CRUDEntityTables), so the
+// auto-seed fills exactly the tables those pages show.
+//
+// It used to match rpc NAMES to candidate table names, which is not the join:
+// a lone `GetAssignment` rpc made Ranger's `assignments` a root although the
+// table is `forge:no-entity` (and composite-keyed), so forge wrote 20 rows of
+// synthesized protobuf payloads the app could not decode.
 //
 // nil (not empty) when the service descriptor cannot be read, so the caller
 // can tell "no entities" from "could not look".
-func crudEntityTablesForSeed() []string {
+func crudEntityTablesForSeed(tables []schemadef.Table) []string {
 	root, err := projectRoot()
 	if err != nil {
 		return nil
@@ -463,30 +475,7 @@ func crudEntityTablesForSeed() []string {
 	if err != nil || services == nil {
 		return nil
 	}
-	return crudEntityTables(services)
-}
-
-func crudEntityTables(services []codegen.ServiceDef) []string {
-	seen := map[string]bool{}
-	out := []string{}
-	for _, svc := range services {
-		for _, m := range svc.Methods {
-			op, name := codegen.CRUDShape(m) // unary, not forge:custom
-			if op == "" {
-				continue
-			}
-			if op == "list" {
-				name = inflection.Singular(name)
-			}
-			for _, table := range codegen.EntityTableCandidates(name) {
-				if !seen[table] {
-					seen[table] = true
-					out = append(out, table)
-				}
-			}
-		}
-	}
-	return out
+	return codegen.CRUDEntityTables(tables, services)
 }
 
 // resolveSeedDSN finds the DATABASE_URL that ensureDevDatabase, the

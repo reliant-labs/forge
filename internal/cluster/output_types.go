@@ -52,4 +52,9 @@ type BundledChartOutput struct {
 	Namespace string         `json:"namespace"`
 	Values    map[string]any `json:"values"`
 	Cluster   string         `json:"cluster"`
+	// Labels are stamped on every object the chart renders. Set for the
+	// chart an MLStack Install lowers to (kcl/ml.k): the component-owner
+	// stamp and the component, so discovery tells forge's installs from
+	// the cluster's own. Absent on a declared HelmChart.
+	Labels map[string]string `json:"labels,omitempty"`
 }

@@ -12,8 +12,9 @@ package cluster
 // permission that granted it, and the broker refused it. `nats-broker` before
 // its consumers is a declaration; direct apply now keeps it.
 //
-// THE SHAPE. Only the WORKLOADS are ordered (release.RolloutWorkloadKind).
-// Everything a release already sends ahead of its workloads still goes first,
+// THE SHAPE. The WORKLOADS are ordered (release.RolloutWorkloadKind), with
+// their HPAs alongside them but not awaited as workloads.
+// Everything else a release already sends ahead of its workloads still goes first,
 // for the whole env and every unit at once, exactly as before: CRDs and
 // Namespaces, the config pass, the secret-store stages, the support objects,
 // and the pre-rollout Jobs (a migration still completes before any new code,
@@ -127,15 +128,41 @@ func splitUnitStages(rest string, waves [][]string, namespace string) (head stri
 			waveOf[u] = i
 		}
 	}
+	// Index targets before splitting: an HPA may precede its target, or
+	// carry no delivery-unit label of its own. It must travel with the
+	// target so KubectlApply sees the pair for metrics checks and handover.
+	targetUnits := map[workloadRef]string{}
+	resolveNamespace := func(ns string) string {
+		if ns == "" {
+			return namespace
+		}
+		return ns
+	}
+	for _, doc := range splitDocs(rest) {
+		if m, ok := parseDoc(doc); ok && release.RolloutWorkloadKind(m.Kind) {
+			targetUnits[workloadRef{Kind: m.Kind, Namespace: resolveNamespace(m.Metadata.Namespace), Name: m.Metadata.Name}] = docUnit(m)
+		}
+	}
 	var headDocs, finalDocs []string
 	waveDocs := make([][]string, len(waves))
 	for _, doc := range splitDocs(rest) {
 		m, ok := parseDoc(doc)
+		unit := docUnit(m)
+		if ok && m.Kind == "HorizontalPodAutoscaler" {
+			obj, _ := docJSON(doc)
+			spec, _ := obj["spec"].(map[string]any)
+			target, _ := spec["scaleTargetRef"].(map[string]any)
+			kind, _ := target["kind"].(string)
+			name, _ := target["name"].(string)
+			if u, found := targetUnits[workloadRef{Kind: kind, Namespace: resolveNamespace(m.Metadata.Namespace), Name: name}]; found {
+				unit = u
+			}
+		}
 		switch {
 		case !ok, m.Kind == "Job":
 			finalDocs = append(finalDocs, doc)
-		case release.RolloutWorkloadKind(m.Kind):
-			i, known := waveOf[docUnit(m)]
+		case release.RolloutWorkloadKind(m.Kind), m.Kind == "HorizontalPodAutoscaler":
+			i, known := waveOf[unit]
 			if !known {
 				// planUnitWaves read every unit of the env stream, so this
 				// cannot happen; the safe place for a stranger is last.

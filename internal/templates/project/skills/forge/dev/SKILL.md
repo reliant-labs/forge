@@ -61,6 +61,16 @@ reload). Anything else runs `go run`, its argv DERIVED from the workload's
 `build` + `args`. `_on_k3d` binds `forge.OnCluster {target = _k3d}`: the image
 `forge build dev` pushes, with the same `args`.
 
+air rebuilds only for edits that can change the binary. At launch `forge env
+up` runs `go list -deps` on the workload's `build.cmd` and adds every top-level
+directory holding Go packages the binary does not import (`examples/`,
+`benchmarks/`, a `tools/` module) to air's `exclude_dir` for that run, after
+the config's own entries; it prints `air ignores examples/, … (no package
+./cmd/<bin> imports)`. `.air.toml` is never edited, and directories without Go
+code stay watched. An air config that sets `[build] include_dir` chooses its
+watch set itself and gets nothing added, as does one whose build command does
+not name the package (`make build`).
+
 Rebinding is editing one line: `_on_k3d(_api)` runs the API as a pod. To run
 ONE service alone (to debug it), bind `_on_host(wl.item)` and give it a root
 of its own (a `//forge:root` struct in internal/app — `architecture`, "Roots

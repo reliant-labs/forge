@@ -525,6 +525,74 @@ func IsScaffoldTestFile(name string) bool {
 		(strings.HasPrefix(name, scaffoldTestPrefix) && strings.HasSuffix(name, "_test.go"))
 }
 
+// WithheldScaffoldTest is why `forge generate` would not write a per-RPC
+// scaffold test into a handler package: the facts WithholdingOfScaffoldTest
+// finds, for `forge project rescaffold` to name when it refuses the file.
+type WithheldScaffoldTest struct {
+	// Method is the *Service method the file's name maps to (ScaffoldTestFileName).
+	Method string
+	// MethodFile is the file in the package declaring Method, "" when the
+	// package does not declare it.
+	MethodFile string
+	// UnwiredStub reports that Method is still forge's pristine Unimplemented stub.
+	UnwiredStub bool
+	// TestFunc is the Test<Rpc>_Generated func the scaffold test declares,
+	// and TestFuncFile the other _test.go of the package already declaring
+	// it — the scaffold test, renamed ("" when no other file declares it).
+	TestFunc, TestFuncFile string
+}
+
+// WithholdingOfScaffoldTest reports whether generate would withhold the
+// per-RPC scaffold test named name (a bare file name) from the handler
+// package at dir, and why.
+//
+// An RPC's scaffold test is born only in the run that writes the RPC's
+// Unimplemented stub (GenerateMissingHandlerStubs), because its rows assert
+// CodeUnimplemented: while the package declares the method — implemented, or
+// still the stub — no run writes the test. And writeScaffoldTests declines it
+// while another test file declares its Test<Rpc>_Generated func. Either is
+// reported; a file name that maps to neither a declared method nor a declared
+// scaffold test func is not withheld by these rules (ok is false).
+func WithholdingOfScaffoldTest(dir, name string) (WithheldScaffoldTest, bool) {
+	var w WithheldScaffoldTest
+	if !IsScaffoldTestFile(name) {
+		return w, false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return w, false
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		f, perr := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, parser.ParseComments|parser.SkipObjectResolution)
+		if perr != nil {
+			continue
+		}
+		for _, decl := range f.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok || fd.Name == nil || !receiverIsService(fd) || ScaffoldTestFileName(fd.Name.Name) != name {
+				continue
+			}
+			w.Method, w.MethodFile = fd.Name.Name, e.Name()
+			w.UnwiredStub = isPristineUnwiredStub(fd, map[string]bool{fd.Name.Name: true})
+		}
+	}
+	for fn, file := range declaredTestFuncs(dir) {
+		rpc, ok := strings.CutSuffix(strings.TrimPrefix(fn, "Test"), "_Generated")
+		if !ok || !strings.HasPrefix(fn, "Test") || file == name || ScaffoldTestFileName(rpc) != name {
+			continue
+		}
+		if w.Method == "" {
+			w.Method = rpc
+		}
+		w.TestFunc, w.TestFuncFile = fn, file
+	}
+	return w, w.MethodFile != "" || w.TestFuncFile != ""
+}
+
 // writeScaffoldTests renders one scaffold test file per method in
 // data.Methods, writing each ONLY when it is absent.
 //

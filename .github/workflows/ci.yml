@@ -674,7 +674,7 @@ jobs:
           run=$(scripts/ci-forge.sh test begin)
           mkdir -p "$run/integration-storage"
           scripts/ci-forge.sh test capture --run "$run" --lane integration-storage -- \
-            scripts/ci-go-test.sh -race -tags=integration -count=1 -json -covermode=atomic -coverprofile="$run/integration-storage/cover.out" -timeout=5m ./internal/storage
+            scripts/ci-go-test.sh -race -tags=integration -json -covermode=atomic -coverprofile="$run/integration-storage/cover.out" -timeout=5m ./internal/storage
       # Main only: the runs the steps above recorded, for test-upload.yml.
       - name: Keep the recorded test runs (for test-upload.yml)
         if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
@@ -1283,7 +1283,7 @@ jobs:
           run=$(scripts/ci-forge.sh test begin)
           mkdir -p "$run/integration-clickhouse"
           scripts/ci-forge.sh test capture --run "$run" --lane integration-clickhouse -- \
-            scripts/ci-go-test.sh -tags=integration -count=1 -json -coverprofile="$run/integration-clickhouse/cover.out" -timeout=20m ./pkg/obsquery ./pkg/alerting
+            scripts/ci-go-test.sh -tags=integration -json -coverprofile="$run/integration-clickhouse/cover.out" -timeout=20m ./pkg/obsquery ./pkg/alerting
       # The rest of forge's `integration`-tagged tests, which no lane ran
       # either until decision 17 of the 2026-11-10 triage: db squash against
       # real Postgres containers, OpenBao (the secret-store writer, and the
@@ -1310,7 +1310,7 @@ jobs:
           run=$(scripts/ci-forge.sh test begin)
           mkdir -p "$run/integration"
           scripts/ci-forge.sh test capture --run "$run" --lane integration -- \
-            scripts/ci-go-test.sh -tags=integration -count=1 -json -coverprofile="$run/integration/cover.out" -timeout=25m \
+            scripts/ci-go-test.sh -tags=integration -json -coverprofile="$run/integration/cover.out" -timeout=25m \
             -run '^(TestServiceDockerBuild_ReproducibleImageID|TestSmoke_UploadedJWKSLogsInToARealOpenBao|TestSmoke_WriterPathAgainstARealOpenBao|TestDBSquash_FromDSN_AdoptsTheGooseDatabaseItWasCutFrom|TestDBSquash_BaselineAndTheNextMigrationApplyInOneMigratekitRun|TestDBSquash_TheDatabaseItsHistoryBuiltAdoptsTheBaseline|TestDBSquash_IsByteForByteReproducible|TestGeneratedProjectDeliversTelemetryToClickStack|TestDockerfile_ProductionLoadLocation|TestScaffoldedMinIOReconcilesAnonymousAccess|TestWhyRoundTripsThroughInstancesAndEvents|TestMigrateAddsTheWhyColumnToAnOlderSchema|TestS3AgainstMinIO|TestConcurrentRunsBehindASessionModePgBouncer|TestConcurrentRunsOverCreateIndexConcurrentlyBehindASessionModePgBouncer|TestSlowSkipsInTheIntegrationLane)$' \
             ./internal/cli ./internal/templates ./pkg/alerting/pgstore ./pkg/blobstore ./pkg/migratekit ./pkg/testkit
       # Main only: the runs the integration steps recorded, for test-upload.yml.

@@ -1,5 +1,7 @@
 {{- $m := index .Methods 0 -}}
 // yours: scaffolded once, never touched again — forge will not overwrite this file.
+// Rename it freely once it holds real tests (e.g. to {{$m.RenamedTestFileName}}, beside the handler), or delete it:
+// .forge/scaffolded/ records that forge wrote it, so forge never writes it again, even if {{$m.Name | goName}} is re-stubbed.
 // ONE RPC PER FILE, no package-level identifiers, so two RPCs' owners never collide; CRUD RPCs are
 // tested in handlers_crud_test.go.
 {{- if and $m.ClientStreaming $m.ServerStreaming}}

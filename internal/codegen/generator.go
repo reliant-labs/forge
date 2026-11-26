@@ -60,6 +60,13 @@ func (m MethodTemplateData) OutputRef() string {
 // spelling, which is what descriptor lookups and CRUD matching key on.
 func (m MethodTemplateData) GoName() string { return naming.GoCamelCase(m.Name) }
 
+// RenamedTestFileName is the name the scaffold test's header offers for
+// it once it holds real tests: the RPC's handler file (RPCHandlerFileName)
+// with a _test suffix, so the handler and its tests sort side by side.
+func (m MethodTemplateData) RenamedTestFileName() string {
+	return strings.TrimSuffix(RPCHandlerFileName(m.Name), ".go") + "_test.go"
+}
+
 // InputGoName / OutputGoName are the pb Go types protoc-gen-go generates
 // for the request and response messages, unqualified.
 func (m MethodTemplateData) InputGoName() string { return naming.GoCamelCase(m.InputType) }

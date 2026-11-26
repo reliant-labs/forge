@@ -222,9 +222,10 @@ func pushReleaseSBOMs(ctx context.Context, up sbomUploader, store sbomLedger, ru
 		out.Notes = append(out.Notes, fmt.Sprintf("this machine's SBOM index of release %s could not be read: %v", run.Version, err))
 		idx = nil
 	}
-	// Never attribute another target's (or an unbound legacy) mappings to
-	// this caller. Explicit overrides and digest-proven metadata still work.
-	if idx != nil && run.Target != "" && idx.Target != run.Target {
+	// Index mappings are usable only with a resolved, matching identity.
+	// An unresolved caller must not adopt even an unbound legacy index.
+	// Explicit overrides and digest-proven metadata still work.
+	if idx != nil && (run.Target == "" || idx.Target != run.Target) {
 		idx = nil
 	}
 	names := map[string]bool{}
@@ -547,6 +548,7 @@ func recordTargetSBOMIndex(store sbomLedger, r release.Release, target string) e
 		if x.Target != target {
 			x.Artifacts, x.Uploads = nil, nil
 			x.Target = target
+			x.Project, x.CutAt = r.Project, r.CreatedAt
 		}
 		return nil
 	}); err != nil {
@@ -636,9 +638,11 @@ func setSBOMUploadState(store sbomLedger, endpoint string, run sbomPushRun, arti
 			return errors.New("cannot update a bound SBOM index without resolving its target")
 		}
 		if x.Target != run.Target {
-			// Switching targets must not adopt mappings or retry state.
+			// Switching targets must not adopt mappings or retry state,
+			// including the project name used to address later retries.
 			x.Artifacts, x.Uploads = nil, nil
 			x.Target = run.Target
+			x.Project, x.CutAt = run.Project, run.CutAt
 		}
 		if x.Project == "" {
 			x.Project = run.Project

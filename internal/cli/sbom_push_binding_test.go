@@ -9,6 +9,63 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
+// An unavailable identity lookup still permits fresh cut refs, but never
+// borrows an existing index's mappings, whether bound or legacy.
+func TestSBOMUnresolvedTargetDoesNotReplayIndex(t *testing.T) {
+	t.Parallel()
+	for _, target := range []string{"foreign-target", ""} {
+		t.Run(target, func(t *testing.T) {
+			fake := &fakeVulnService{features: []string{hostedVulnFeatureSBOMUpload}, noIdentity: true}
+			hs, r, warn := hostedSBOMCut(t, fake, "api", "worker")
+			store, _ := hs.sboms()
+			if err := recordTargetSBOMIndex(store, r, target); err != nil {
+				t.Fatal(err)
+			}
+			worker := r.Artifacts["worker"]
+			worker.SBOM = nil
+			r.Artifacts["worker"] = worker
+			hs.recordReleaseSBOMs(context.Background(), r)
+			if len(fake.records) != 1 || fake.records[0]["artifactName"] != "api" {
+				t.Fatalf("unresolved target replayed indexed SBOM: %+v", fake.records)
+			}
+			if !strings.Contains(warn.String(), "could not resolve SBOM target identity") {
+				t.Fatalf("missing identity warning: %s", warn)
+			}
+		})
+	}
+}
+
+func TestSBOMTargetSwitchReplacesProjectForRetries(t *testing.T) {
+	t.Parallel()
+	for _, viaPush := range []bool{false, true} {
+		t.Run(map[bool]string{false: "cut", true: "push"}[viaPush], func(t *testing.T) {
+			fake := &fakeVulnService{features: []string{hostedVulnFeatureSBOMUpload}}
+			hs, r, warn := hostedSBOMCut(t, fake, "api")
+			store, _ := hs.sboms()
+			r.Project = "project-a"
+			if err := recordTargetSBOMIndex(store, r, "target-a"); err != nil {
+				t.Fatal(err)
+			}
+			r.Project = "project-b"
+			run := sbomPushRun{Version: r.Version, Project: r.Project, Target: "target-b", CutAt: r.CreatedAt, Artifacts: r.Artifacts}
+			if !viaPush {
+				if err := recordTargetSBOMIndex(store, r, run.Target); err != nil {
+					t.Fatal(err)
+				}
+			}
+			setSBOMUploadState(store, hs.endpoint, run, nil, ledgerfile.SBOMUploadPending, "retry")
+			pending, _, err := store.PendingSBOMUploads(hs.endpoint)
+			if err != nil || len(pending) != 1 || pending[0].Project != "project-b" {
+				t.Fatalf("stale retry project: %+v, %v", pending, err)
+			}
+			hs.drainPendingSBOMs(context.Background(), sbomUploader{client: hs.client, endpoint: hs.endpoint}, store, pending, warn)
+			if len(fake.records) != 1 || fake.records[0]["project"] != "project-b" {
+				t.Fatalf("retry addressed old project: %+v", fake.records)
+			}
+		})
+	}
+}
+
 func TestSBOMIndexKeepsAcceptedReleaseAfterRejectedRebuild(t *testing.T) {
 	t.Parallel()
 	fake := &fakeVulnService{features: []string{hostedVulnFeatureSBOMUpload}}

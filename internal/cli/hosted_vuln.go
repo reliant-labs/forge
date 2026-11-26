@@ -255,7 +255,11 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 	// credential's display identity. If unavailable, do not replay anything.
 	var target string
 	if store != nil {
-		target, _ = resolveSBOMTarget(ctx, s.client, s.endpoint, s.project)
+		var err error
+		target, err = resolveSBOMTarget(ctx, s.client, s.endpoint, s.project)
+		if err != nil {
+			fmt.Fprintf(warn, "[ledger] warning: could not resolve SBOM target identity: %v; indexed SBOMs will not be replayed\n", err)
+		}
 	}
 	var pending []ledgerfile.ReleaseSBOMIndex
 	if store != nil && target != "" {

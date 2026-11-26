@@ -42,6 +42,7 @@ type fakeVulnService struct {
 	// answers GetCapabilities Unimplemented (a control plane predating it).
 	features       []string
 	noCapabilities bool
+	noIdentity     bool // ResolveHostedProject is unavailable on an older server.
 	// unimplemented answers every VulnerabilityService rpc Unimplemented.
 	unimplemented bool
 	// refuse answers every read PermissionDenied.
@@ -73,6 +74,10 @@ type fakeVulnService struct {
 func (f *fakeVulnService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	const svc = "/controlplane.v1.VulnerabilityService/"
 	if r.URL.Path == "/controlplane.v1.DeployService/ResolveHostedProject" {
+		if f.noIdentity {
+			connectErr(w, http.StatusNotFound, "unimplemented", "identity lookup unavailable")
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"orgId": "org-acme", "projectId": "project-acme"})
 		return
 	}

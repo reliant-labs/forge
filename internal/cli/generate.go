@@ -109,7 +109,11 @@ What it writes, in order:
 then go mod tidy, goimports, and a validating go build of the whole tree.
 A failed build rolls back every file the run wrote; --keep-on-build-failure
 keeps them past a failed build or post generate hook, for a migration that
-ports hand-written code after generating.
+ports hand-written code after generating. Compile errors the run did not
+cause — in packages it did not write, failing the same way against the tree
+as it was before the run (another agent's half-edited package) — fail
+nothing: the run keeps its files, names them, and exits 0 (--strict fails on
+them).
 
 Hand-written code is never overwritten. Files that are yours from birth
 (handlers' rpc_<name>.go, internal/app/providers.go, compose.go) are written
@@ -301,7 +305,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().Var((*stepPresetValue)(&steps), "steps", "Narrow the pipeline to a named step preset. Valid values: \"bootstrap-only\" (used internally by 'forge scaffold worker'), \"mocks\" (regen both kinds of mock_gen.go — contract-derived and service-derived — after a contract.go or proto change; skips the Tier-1 drift guard since mocks cannot stomp Tier-1 files), \"harness\" (regen only each component's helpers_gen_test.go — NewTest<Svc>, With<Svc>Deps, the doubles it installs — and the contract mock_gen.go files it installs them from, after a Deps edit; a proto or migration change needs the full run), \"env-config\" (write only the config modules every env's KCL imports — config_gen.k, frontend_config_gen.k, each env's config.k — so the envs render; used internally by 'forge project rescaffold').")
 	// Loud-by-default architecture flags. See the per-flag fields on
 	// pipelineFlags for the rationale; runGeneratePlan + warnOrFail consume them.
-	cmd.Flags().BoolVar(&strict, "strict", false, "Stop at the first failed step and roll the tree back, instead of running the steps that do not depend on it. Either way a failed step makes generate exit non-zero.")
+	cmd.Flags().BoolVar(&strict, "strict", false, "Stop at the first failed step and roll the tree back, instead of running the steps that do not depend on it. Either way a failed step makes generate exit non-zero. Also fails the compile check on errors the run did not cause (in packages it did not write, failing the same way before it), which otherwise are reported and kept.")
 	// -v works here. It used to be swallowed by a root PersistentFlag bound
 	// to a variable nobody read, so `forge generate -v` parsed cleanly and
 	// changed nothing — the long form was declared without a shorthand
@@ -616,6 +620,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	if cache.skip(os.Stdout) {
 		return nil
 	}
+	ctx.preRun = preRun
 
 	announceSkippedChecks(flags)
 	resetChecksumRunState(flags)
@@ -1220,6 +1225,15 @@ func (c runCaveats) explain(w io.Writer) {
 		fmt.Fprintf(w, "   %d compile error(s) in %d _test.go file(s) you own, listed above: forge does not rewrite them, "+
 			"and `go test` fails on them. Fix or delete them before lint or commit.\n", n, c.compile.UserTestFiles)
 	}
+	if n := c.compile.ForeignErrors; n > 0 {
+		fmt.Fprintf(w, "   %d compile error(s) in %d package(s) this run did not write, listed above: they fail the same way without "+
+			"this run's changes, so they are not generate's and its files were kept. `go build` fails on them until they are fixed; "+
+			"--strict fails the run on them instead.\n", n, c.compile.ForeignPackages)
+		if u := c.compile.Unverified; u > 0 {
+			fmt.Fprintf(w, "   %d package(s) this run's changes reach could not be compiled because they import one of those, "+
+				"so its output there is unchecked: the next generate checks it.\n", u)
+		}
+	}
 	if c.compile.PinLag {
 		fmt.Fprintf(w, "   The project compiles only against an in-tree producer that is not published at the version it pins (above): "+
 			"publish it and move the pin.\n")
@@ -1539,16 +1553,28 @@ type validateCaveats struct {
 	// PinLag is set when the root compiles only against an in-tree
 	// producer that is not published at the version it pins yet.
 	PinLag bool
+	// ForeignErrors are the compile errors in ForeignPackages packages the
+	// run did not write that fail the same way without its writes
+	// (generate_validate_scope.go); Unverified counts the packages the run
+	// wrote into that import one of them, and so could not be compiled.
+	ForeignErrors, ForeignPackages, Unverified int
 }
 
 // any reports whether the project does not compile despite the passed check.
-func (c validateCaveats) any() bool { return c.UserTestErrors > 0 || c.PinLag }
+func (c validateCaveats) any() bool { return c.UserTestErrors > 0 || c.PinLag || c.ForeignErrors > 0 }
 
 // checkGoBuild is runGoBuildValidate with its caveats: what it found that
 // does not compile but does not fail the run.
 func checkGoBuild(projectDir string) (validateCaveats, error) {
+	return checkGoBuildScoped(projectDir, nil)
+}
+
+// checkGoBuildScoped is checkGoBuild for a generate run whose writes are
+// scope: a compile failure the run did not cause (scope.attribute) is a
+// caveat, not an error. A nil scope makes every compile error fail.
+func checkGoBuildScoped(projectDir string, scope *generateWriteScope) (validateCaveats, error) {
 	fmt.Println("\n🔨 Validating generated code...")
-	rep, err := compileTree(projectDir, true)
+	rep, pkgs, err := compileTreePackages(projectDir, true, nil, nil)
 	if err != nil {
 		// go list could not run at all. Its verdict is unknown, so ask the
 		// build it replaced, whose report of the same problem (a broken
@@ -1569,6 +1595,14 @@ func checkGoBuild(projectDir string) (validateCaveats, error) {
 			fmt.Fprintf(os.Stderr, "\n⚠️  %s\n", lag)
 			caveats, err := validateTestFiles(projectDir, local.TestFiles)
 			caveats.PinLag = true
+			return caveats, err
+		}
+		if foreign, ok := scope.attribute(projectDir, pkgs); ok {
+			foreign.report(os.Stderr)
+			caveats, err := validateTestFiles(projectDir, rep.TestFiles)
+			caveats.ForeignErrors = foreign.errors
+			caveats.ForeignPackages = len(foreign.packages)
+			caveats.Unverified = len(foreign.unverified)
 			return caveats, err
 		}
 		fmt.Fprint(os.Stderr, rep.Build)

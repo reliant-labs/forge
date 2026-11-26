@@ -48,7 +48,7 @@ import (
 //     generates, and catching them is exactly the link this stopped paying for.
 
 // compileFields are the `go list -json` fields compileTree reads.
-const compileFields = "ImportPath,Name,Dir,ForTest,DepOnly,GoFiles,CgoFiles,Error,DepsErrors"
+const compileFields = "ImportPath,Name,Dir,ForTest,DepOnly,GoFiles,CgoFiles,Deps,Error,DepsErrors"
 
 // listedPackage is one package from `go list -json`. Only the JSON decoder
 // in compileTree writes it; the tags name cmd/go's field spellings, which
@@ -62,6 +62,7 @@ type listedPackage struct {
 	DepOnly    bool                  `json:"DepOnly"`
 	GoFiles    []string              `json:"GoFiles"`
 	CgoFiles   []string              `json:"CgoFiles"`
+	Deps       []string              `json:"Deps"`
 	Error      *listedPackageError   `json:"Error"`
 	DepsErrors []*listedPackageError `json:"DepsErrors"`
 }
@@ -130,12 +131,30 @@ func compileTree(projectDir string, tests bool) (compileReport, error) {
 // compileTreeWith is compileTree with extra go flags (before the package
 // pattern) and extra environment.
 func compileTreeWith(projectDir string, tests bool, flags, env []string) (compileReport, error) {
+	rep, _, err := compileTreePackages(projectDir, tests, flags, env)
+	return rep, err
+}
+
+// compileTreePackages is compileTreeWith that also returns every package go
+// list reported, for a caller that attributes the failures (validate
+// scope, generate_validate_scope.go).
+func compileTreePackages(projectDir string, tests bool, flags, env []string) (compileReport, []*listedPackage, error) {
+	pkgs, err := listCompiled(projectDir, tests, flags, env, "./...")
+	if err != nil {
+		return compileReport{}, nil, err
+	}
+	return classifyCompile(projectDir, pkgs), pkgs, nil
+}
+
+// listCompiled runs `go list -e -export -deps` over patterns in projectDir
+// and decodes every package it reports.
+func listCompiled(projectDir string, tests bool, flags, env []string, patterns ...string) ([]*listedPackage, error) {
 	args := []string{"list", "-e", "-export", "-deps", "-json=" + compileFields}
 	if tests {
 		args = append(args, "-test")
 	}
 	args = append(args, flags...)
-	args = append(args, "./...")
+	args = append(args, patterns...)
 	cmd := exec.Command("go", args...)
 	cmd.Dir = projectDir
 	// Never the caller's -mod=mod: see goexec.Env. -trimpath, so the
@@ -149,7 +168,7 @@ func compileTreeWith(projectDir string, tests bool, flags, env []string) (compil
 	// all, so stderr is kept only to explain a failure of go list itself.
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return compileReport{}, &listFailure{stderr: stderr.String(), err: err}
+		return nil, &listFailure{stderr: stderr.String(), err: err}
 	}
 	var pkgs []*listedPackage
 	dec := json.NewDecoder(&stdout)
@@ -158,11 +177,11 @@ func compileTreeWith(projectDir string, tests bool, flags, env []string) (compil
 		if err := dec.Decode(p); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
-			return compileReport{}, &listFailure{stderr: stderr.String(), err: fmt.Errorf("decode go list output: %w", err)}
+			return nil, &listFailure{stderr: stderr.String(), err: fmt.Errorf("decode go list output: %w", err)}
 		}
 		pkgs = append(pkgs, p)
 	}
-	return classifyCompile(projectDir, pkgs), nil
+	return pkgs, nil
 }
 
 // classifyCompile splits go list's verdict into the non-test build and the

@@ -997,13 +997,15 @@ func TestGatesWhenIsOneWording(t *testing.T) {
 // crud-table-unowned, declared v1.10.0, ships in v1.11.0 (#2461 merged after
 // tag v1.10.0). The owner's rule for both (forge#2638): a project that pins
 // the shipping release — from the one before it, from an older pin, or with
-// no history — sees the rule warn, and the next pin gates.
+// no history — sees the rule warn, and the next pin gates. vuln-gate and
+// sbom-required shipped as opt-ins in v1.10.0 and were tightened in v1.12.0,
+// which made enforce their default, so their window is v1.12.0's.
 func TestGraceRowsWarnThroughTheReleaseThatShipsThem(t *testing.T) {
 	prev := previousPinFromHistory
 	t.Cleanup(func() { previousPinFromHistory = prev })
 	for rule, want := range map[string]ruleRollout{
-		RuleVulnGate:                   {IntroducedIn: "v1.10.0", GatesFrom: "v1.11.0"},
-		RuleSBOMRequired:               {IntroducedIn: "v1.10.0", GatesFrom: "v1.11.0"},
+		RuleVulnGate:                   {IntroducedIn: "v1.12.0", GatesFrom: "v1.13.0"},
+		RuleSBOMRequired:               {IntroducedIn: "v1.12.0", GatesFrom: "v1.13.0"},
 		ruleFrontendNoInstall:          {IntroducedIn: "v1.10.0", GatesFrom: "v1.11.0"},
 		ruleTelemetryMetricUncollected: {IntroducedIn: "v1.10.0", GatesFrom: "v1.11.0"},
 		ruleCRUDTableUnowned:           {IntroducedIn: "v1.11.0", GatesFrom: "v1.12.0"},

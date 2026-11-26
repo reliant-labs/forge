@@ -120,6 +120,25 @@ jobs:
           go-version-file: go.mod
       - name: Install forge
 {{installForgeRun 8}}
+      # The cut scans each artifact's SBOM with grype, and fetches its 205 MB
+      # database (3.3 GiB unpacked) when the runner has none: a release is
+      # scanned by default, as it is linted and tested. Cached per UTC day,
+      # as build-images.yml caches it: a later run today restores today's
+      # database exactly; the first run of a day restores the newest earlier
+      # one, and the cut refreshes it only when the listing names a newer
+      # build. Drop these steps to download on every run instead.
+      - name: Name today's vulnerability database cache
+        id: vulndb-key
+        run: |
+          echo "FORGE_VULN_DB_DIR=$HOME/.cache/forge/vulndb" >> "$GITHUB_ENV"
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - name: Restore the vulnerability database
+        id: vulndb
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{"{{"}} env.FORGE_VULN_DB_DIR {{"}}"}}
+          key: forge-vulndb-v6-${{"{{"}} steps.vulndb-key.outputs.day {{"}}"}}
+          restore-keys: forge-vulndb-v6-
       - name: Build, push and record the release
         # ONE command: --release implies --push (a release pins registry
         # digests, and a local tag cannot be promoted anywhere) and records the
@@ -140,6 +159,15 @@ jobs:
         #   printf '%s' "$TOKEN" | forge registry login {{.BuildEnv}} \
         #     --username <user> --password-stdin
         run: forge env build {{.BuildEnv}} --release "$VERSION" --gate-json build.json
+      - name: Save the vulnerability database
+        # Under today's key, whatever the cut found; never after an exact hit.
+        # A cut that fetched nothing (--no-vuln-db-pull, or no network)
+        # leaves no directory, which this step warns about and skips.
+        if: always() && steps.vulndb.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{"{{"}} env.FORGE_VULN_DB_DIR {{"}}"}}
+          key: forge-vulndb-v6-${{"{{"}} steps.vulndb-key.outputs.day {{"}}"}}
       - name: Summary
         if: always()
         run: forge ci summarize build.json >> "$GITHUB_STEP_SUMMARY" || true

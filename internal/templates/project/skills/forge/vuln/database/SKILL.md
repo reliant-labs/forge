@@ -1,6 +1,6 @@
 ---
 name: vuln/database
-description: The machinery under `forge vuln` — the one grype vulnerability database per machine (location, size, refresh, the 5-day freshness rule and why stale outranks block, `forge vuln db status|pull|import`, the CI cache key, `FORGE_VULN_DB_URL` mirrors, offline import), and the pinned syft and grype release binaries (sha256 compiled into forge, `forge tools install`, `FORGE_TOOLS_MIRROR`, the tool cache's Unix permission and Windows ACL trust check, `forge tools pins --archives` and the public `pkg/toolpins` package). Use when a verdict says stale or not scanned, when caching the database in CI, on an offline or mirrored machine, or when a tool cache is refused as untrusted.
+description: The machinery under `forge vuln` — the one grype vulnerability database per machine (location, size, refresh, the cut's own download and its `--no-vuln-db-pull` / `FORGE_VULN_DB_PULL=never` opt-out, the 5-day freshness rule and why stale outranks block, `forge vuln db status|pull|import`, the CI cache key, `FORGE_VULN_DB_URL` mirrors, offline import), and the pinned syft and grype release binaries (sha256 compiled into forge, `forge tools install`, `FORGE_TOOLS_MIRROR`, the tool cache's Unix permission and Windows ACL trust check, `forge tools pins --archives` and the public `pkg/toolpins` package). Use when a verdict says stale or not scanned, when caching the database in CI, on an offline or mirrored machine, or when a tool cache is refused as untrusted.
 ---
 
 # The vulnerability database, syft and grype
@@ -13,7 +13,8 @@ One grype database per machine, shared by every project, never one per project.
 |---|---|
 | Where | `$FORGE_VULN_DB_DIR`, default `<UserCacheDir>/forge/vulndb` |
 | Size | ~205 MB download, **3.3 GiB** unpacked, ~2 minutes of CPU to import |
-| Refresh | `forge vuln scan` refreshes it when it is more than a day old; `forge vuln db pull` refreshes now; `list`, `show` and the cut never download it |
+| Refresh | the cut and `forge vuln scan` download it when this machine has none and refresh it when it is more than a day old; `forge vuln db pull` refreshes now; `list` and `show` never download it |
+| Opt out at the cut | `--no-vuln-db-pull` on `forge env build --release` / `forge env deploy`, or `FORGE_VULN_DB_PULL=never` (also `off`, `false`, `0`, `no`) for every cut on the machine: the cut then scans only with a database already here, and otherwise records "not scanned". A download that fails is the same, never a failed cut |
 | Fresh enough | built within **5 days** (grype's own limit; grype refuses an older one). Below, the freshness rule says what that means for a verdict |
 | Mirror | `FORGE_VULN_DB_URL`: a mirror of `https://grype.anchore.io/databases` with the same layout (`<url>/v6/latest.json` and the archives it names); grype verifies each archive against the listing's sha256 |
 | Offline | `forge vuln db import <vulnerability-db_v6.*.tar.zst>` loads an archive downloaded elsewhere |
@@ -36,6 +37,12 @@ verdict is "could not determine" whatever they found; the blocking ids are still
 listed (`gate.blocking`, and "the old data would block: …"), so you see what the old
 data found. A blocking finding from a current scan outranks an unscanned artifact.
 `forge vuln db pull` then `forge vuln scan --release <v>` replaces a stale scan.
+
+**An air-gapped or pre-provisioned runner.** The cut's download (205 MB, once per
+machine) needs the network. Where there is none, set `FORGE_VULN_DB_PULL=never` and
+load the database with `forge vuln db import`, or point `FORGE_VULN_DB_URL` at a
+mirror. A cut with neither a database nor a download records "not scanned", which
+an enforced `vuln_gate` refuses at promote as `vuln_gate_unscanned`.
 
 **Cache it in CI.** Set `FORGE_VULN_DB_DIR` explicitly and cache that directory
 under a key computed before the restore: today's UTC date

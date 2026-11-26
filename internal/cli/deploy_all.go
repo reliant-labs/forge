@@ -265,6 +265,7 @@ func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f dep
 		targets:                 f.targets,
 		run:                     f.promote.run,
 		noSBOM:                  f.noSBOM,
+		noVulnDBPull:            f.noVulnDBPull,
 	}
 	if err := runDeployBuild(ctx, opts); err != nil {
 		return deployCutResult{}, fmt.Errorf("build env %s for deploy: %w", envName, err)

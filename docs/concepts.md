@@ -451,24 +451,26 @@ the artifact's own digest; the bytes live in the machine ledger, and for an
 image or a hosted static site also beside the artifact in its registry as an OCI
 referrer (the `sha256-<hex>` tag fallback where a registry has no referrers API).
 forge then scans each SBOM with `grype` against one vulnerability database shared
-by every project on the machine, and the cut prints what it found (on a machine
-that has the database; the cut never downloads its first 200 MB, so `forge vuln
-db pull` once, and until then the cut says "not scanned"). `forge vuln list`,
-`show`, `scan` and `sbom` read it back. A static site's SBOM comes from its
+by every project on the machine, and the cut prints what it found. The cut
+downloads that database when the machine has none (200 MB, once) and refreshes it
+when it is a day old; `--no-vuln-db-pull` or `FORGE_VULN_DB_PULL=never` stops that,
+and the cut then says "not scanned" unless a database is already there. `forge vuln
+list`, `show`, `scan` and `sbom` read it back. A static site's SBOM comes from its
 lockfile, not from the bundle, so it can overstate what was bundled; an artifact
 forge could not describe is recorded as `unavailable` and reads "not scanned",
 never "clean".
 
 Whether any of that can stop a deploy is the env's `vuln_gate` (and
-`provenance_sbom`). They default to `audit`: findings are recorded and never
-block. One line (`vuln_gate = forge.VulnPolicy { mode = "enforce" }`) makes a
-self-hosted env refuse a promotion that carries a KEV-listed or fixable critical
+`provenance_sbom`). They default to `enforce`, as lint and tests do: a
+self-hosted env refuses a promotion that carries a KEV-listed or fixable critical
 advisory, or a release nobody scanned; a control-plane env is judged by its
-control plane instead. A new gate warns for one forge release before it blocks
-(the `vuln-gate` and `sbom-required` lint rollout rows), so a bump never turns a
-pipeline red by surprise. `forge vuln patch <env> --verify` bumps each vulnerable Go
-or npm/pnpm/yarn dependency to the lowest version that fixes it and runs your gate
-over the result. See the `vuln` skill for every verb.
+control plane instead. A project that pins a forge older than v1.13.0 is warned
+"would block" first (the `vuln-gate` and `sbom-required` lint rollout rows), so a
+bump never turns a pipeline red by surprise. To record findings and refuse
+nothing, set the mode to `audit` in the env's `delivery_policy`
+(`vuln_gate = forge.VulnPolicy { mode = "audit" }`). `forge vuln patch <env>
+--verify` bumps each vulnerable Go or npm/pnpm/yarn dependency to the lowest
+version that fixes it and runs your gate over the result. See the `vuln` skill for every verb.
 
 What is generated into the scaffolded `build-images.yml` is the part forge does
 not do itself: a keyless cosign signature and a build-provenance attestation on

@@ -1,7 +1,9 @@
 """
 Positive test — `forge.DeliveryPolicy {}` resolves every control to its
-default: every control that can block a deploy audits (provenance_sbom
-included: it refuses a release with no SBOM), and signing / flux_verify audit with a control plane.
+default: every control that can block a deploy audits, except the release's
+own evidence — provenance_sbom and vuln_gate enforce (secure by default, warn
+first through the rollout rows sbom-required and vuln-gate) — and signing /
+flux_verify audit with a control plane.
 This env has none, so signing and flux_verify resolve OFF: nothing signs a
 self-hosted env's bundles yet (positive_delivery_policy_defaults_hosted.k is
 the same env with a control plane).
@@ -22,13 +24,13 @@ _p = output.delivery_policy
 # no control plane: nothing signs, nothing verifies
 assert_signing_off_self_hosted = _p.signing.mode == "off" and _p.signing.key == "org_kms"
 assert_flux_verify_off_self_hosted = _p.flux_verify.mode == "off"
-# can refuse a promotion with no SBOM (sbom-required): audit
-assert_provenance_sbom_audits = _p.provenance_sbom.mode == "audit"
+# the release's own evidence: enforce by default (sbom-required, warn first)
+assert_provenance_sbom_enforces = _p.provenance_sbom.mode == "enforce"
 # can block a deploy: audit
 assert_trusted_builder_audits = _p.trusted_builder.mode == "audit" and _p.trusted_builder.builders == []
 assert_admission_audits = _p.admission_verify.mode == "audit"
 assert_signed_promotions_audits = _p.signed_promotions.mode == "audit"
-assert_vuln_gate_audits = _p.vuln_gate.mode == "audit"
+assert_vuln_gate_enforces = _p.vuln_gate.mode == "enforce"
 assert_bundle_kinds_audits = _p.bundle_kinds.mode == "audit" and _p.bundle_kinds.allow == [] and _p.bundle_kinds.deny == []
 assert_approvals_audit_one_person = _p.approvals.mode == "audit" and _p.approvals.required == 1 and _p.approvals.approvers == []
 # the vuln gate's default policy: KEV and fixable criticals block, highs warn

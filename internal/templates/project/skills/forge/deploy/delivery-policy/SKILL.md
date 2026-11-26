@@ -10,15 +10,14 @@ ships: who built it, that it is signed, that it has no blocking vulnerabilities,
 that enough people approved it. forge **validates the declaration and records it
 in the release shape**. The control plane enforces it, and forge itself enforces
 the controls it can (below): `vuln_gate` and `provenance_sbom` for an env with
-no control plane, `required_gates` and `approval_hook` wherever the env's ledger
-lives.
+no control plane, `required_gates` and `approval_hook` wherever the ledger lives.
 
 ```kcl
 delivery_policy = forge.DeliveryPolicy {
     trusted_builder   = forge.TrustedBuilder {mode = "enforce", builders = ["cloudbuild:acme-prod/delivery"]}
     admission_verify  = forge.Control {mode = "enforce"}
     signed_promotions = forge.Control {mode = "enforce"}
-    vuln_gate         = forge.VulnPolicy {mode = "enforce"}      # KEV + fixable criticals block
+    vuln_gate         = forge.VulnPolicy {mode = "enforce"}      # the default: KEV + fixable criticals block
     approvals         = forge.Approvals {mode = "enforce"}       # one person
 }
 ```
@@ -55,12 +54,12 @@ in the release path reads those signatures.)
 | Control | Default | Why that default | `enforce` does | Enforced by | Status |
 |---|---|---|---|---|---|
 | `signing` | **audit** with a control plane; **off** without one | the platform signs every recorded bundle for you; enforcing it refuses a rollback to a release recorded before signing, so an env opts in | Promote refuses a bundle without a published, verified signature by the org's key (`key = "org_kms"`: a per-org OpenBao transit key the control plane holds). `audit` signs, verifies server-side, records the verdict and alerts, never blocks | control-plane delivery signer + publisher (bundles); images: forge F15 | **bundles: enforced** (control plane); images, `customer`, `keyless`: not yet |
-| `provenance_sbom` | **audit** | forge writes the SBOM at every cut, but enforcing refuses a promotion whose artifacts have none, so it can block a deploy | every artifact a release ships has an SBOM (forge writes a CycloneDX one per artifact at the cut; `vuln` skill). A self-hosted promotion of a release that lacks one is refused `sbom_missing`; a SLSA provenance statement is not produced by forge yet | forge, before its promotion write, for an env with no control plane (rollout row `sbom-required`); provenance: forge F15, control-plane C13 | **SBOM half: enforced by forge** for a self-hosted env (warn first); a control-plane env: the control plane's, not yet. **Provenance half: recorded, not enforced yet** |
+| `provenance_sbom` | **enforce** | secure by default: every cut writes one. Warn first (below) | every artifact a release ships has an SBOM (`vuln` skill); a self-hosted promotion of a release that lacks one is refused `sbom_missing`; a SLSA provenance statement is not produced by forge yet | forge, before its promotion write, for an env with no control plane (rollout row `sbom-required`); provenance: forge F15, control-plane C13 | **SBOM half: enforced by forge** for a self-hosted env (warn first); a control-plane env: the control plane's, not yet. **Provenance half: recorded, not enforced yet** |
 | `flux_verify` | **audit** with a control plane; **off** without one | as `signing` | the converger writes `OCIRepository.spec.verify` (cosign, the org's public keys in the hub Secret `delivery-signing-keys`), so the hub applies only what the control plane signed; Promote refuses an unverified bundle. `audit` records the verdict and alerts, writes no `spec.verify` | control-plane converger | **enforced** (control plane) |
 | `trusted_builder` | **audit** | enforcing refuses an artifact built on a laptop or an unlisted CI, so it can block a deploy | RecordBundle refuses a bundle whose provenance names a builder or repo not allowed; the registry issues push tokens to builder identities only | forge F14 (`--builder`); control-plane C14 | recorded, not enforced yet |
 | `admission_verify` | **audit** | a pod without a valid signature cannot start; turning this on before every running image is signed takes the env down | the env's namespaces are opted in to Sigstore policy-controller; unsigned images are denied (`audit`: warn only) | forge F17 (policy render); control-plane C15 | recorded, not enforced yet |
 | `signed_promotions` | **audit** | the converger refuses an unsigned or replayed promotion; a signing outage then blocks every deploy | a promotion is an in-toto statement signed by the org's pipeline identity; the converger and a webhook verify it, including `previous_digest` | forge F18; control-plane C13, C16 | recorded, not enforced yet |
-| `vuln_gate` | **audit** | a new advisory can block a release nobody changed | grype over the release's SBOMs, judged by the rule below: a KEV-listed advisory or a fixable critical blocks, an unscanned artifact or a database older than 5 days is "could not determine", never a pass. Self-hosted: refused `vuln_gate_blocked` / `vuln_gate_unscanned` (exit 4) | forge, before its promotion write, for an env with no control plane (rollout row `vuln-gate`); a control-plane env: the control plane scans the SBOM it is sent and judges at promote, once it advertises `enforces-vuln-gate` | **enforced by forge** for a self-hosted env (warn first); a control-plane env: the control plane's, not yet |
+| `vuln_gate` | **enforce**; **audit** when `provenance_sbom` is `off` and no mode is declared | a release must prove it ships no known KEV or fixable critical, as it must pass lint and tests; no SBOM, nothing to scan. Warn first (below) | grype over the release's SBOMs, judged by the rule below: a KEV-listed advisory or a fixable critical blocks; unscanned is never a pass. Self-hosted: refused `vuln_gate_blocked` / `vuln_gate_unscanned` (exit 4) | forge, before its promotion write, for an env with no control plane (rollout row `vuln-gate`); a control-plane env: the control plane scans the SBOM it is sent and judges at promote, once it advertises `enforces-vuln-gate` | **enforced by forge** for a self-hosted env (warn first); a control-plane env: the control plane's, not yet |
 | `bundle_kinds` | **audit** | a narrowing can reject a bundle that built yesterday | narrows the kinds a bundle may carry for this env (`allow` / `deny`), on top of the mandatory ingest baseline; empty lists narrow nothing | control-plane C19 (ingest) | recorded, not enforced yet |
 | `approvals` | **audit** | `enforce` makes every promotion wait for a person | a promotion stays pending until `required` distinct people approve; `--yes` cannot bypass it | control-plane C12 | recorded, not enforced yet |
 | `health_gate` | **enforce**, gating nothing until `after` names an env | the order is declared, never inferred: declaring `after` is the opt-in | a promotion of release R is refused until every env in `after` holds a PASS release-health verdict for R; see below | the control plane, at promote, in the promotion's transaction | **enforced** by a control plane that advertises `shape-health-gate`; recorded only by one that does not, and by a self-hosted env |
@@ -72,9 +71,13 @@ you nothing defaults to `enforce`; a control that can refuse a deploy defaults t
 `audit`**, and one line moves it to `enforce`. `audit` is the safe way to turn a
 blocking control on: read its would-deny verdicts for a while, then enforce.
 `signing` and `flux_verify` CAN block (a rollback to a release signed before
-them), so they are `audit`. So is `provenance_sbom`: it can refuse a self-hosted
-promotion (`sbom_missing`), so it is `audit` unless an env opts in, and an opted-in
-`enforce` still warns for one release first (below).
+them), so they are `audit`.
+
+**The exception: the release's own evidence.** `provenance_sbom` and `vuln_gate`
+can refuse a self-hosted promotion and are `enforce` anyway: forge writes the SBOM
+and scans it itself, as lint and tests gate a change. Both warn first (below);
+`audit` is the per-env opt-out. An undeclared `vuln_gate` mode is `enforce`, or
+`audit` when `provenance_sbom` is `off` (no SBOM to scan).
 
 **Where the env delivers decides `signing` and `flux_verify`.** Unset, they are
 `audit` for an env with `control_plane = forge.ControlPlane {}`, and **`off`** for
@@ -203,36 +206,33 @@ vuln_gate = forge.VulnPolicy {
 ```
 
 The defaults are the prod-tier policy: block KEV-listed and fixable-critical
-findings, warn on the rest. An exemption always carries a reason and an expiry
-date and stops applying at that date; it is the same vocabulary as forge's own
-`ci.vuln_scan.exemptions`. `warn_severity` must not be stricter than
-`block_severity`, and a gate that blocks nothing is refused.
+findings, warn on the rest. An exemption carries a reason and an expiry date and
+stops applying then. `warn_severity` must not be stricter than `block_severity`,
+and a gate that blocks nothing is refused.
 
 **Who judges it.** The findings come from the SBOMs the release recorded (`vuln`).
 
 - **No control plane**: forge judges before its own promotion write, beside
-  `required_gates`. Under `enforce` a blocking finding refuses the promotion
-  `vuln_gate_blocked`; an artifact with no SBOM or scan, or a database older than 5
-  days, refuses it `vuln_gate_unscanned` (could not determine is never a pass);
-  `provenance_sbom = enforce` over an artifact with no SBOM refuses it `sbom_missing`.
-  All exit 4. Under `audit` they print "would block" and refuse nothing. Each check
-  records a gate (`vuln_gate`, `provenance_sbom`) on the promotion.
-- **A control plane**: forge uploads each SBOM after the cut, the control plane scans
-  it, and its findings are the record; forge's cut-time scan is advisory and forge
-  refuses nothing. It enforces once it advertises `enforces-vuln-gate`; until then
-  the declaration is intent.
-- A release cut before SBOMs existed is never refused for lacking one.
+  `required_gates`. Under `enforce`, a blocking finding refuses the promotion
+  `vuln_gate_blocked`, an artifact with no SBOM or scan (or a database older than 5
+  days) `vuln_gate_unscanned`, and `provenance_sbom` over an artifact with no SBOM
+  `sbom_missing`: all exit 4. Under `audit` they print "would block". Each check
+  records a gate on the promotion.
+- **A control plane**: the control plane scans the SBOM it is sent and its findings
+  are the record; forge refuses nothing. It enforces once it advertises
+  `enforces-vuln-gate`; until then the declaration is intent.
+- A release cut by a forge older than v1.10.0 is never refused for lacking an SBOM.
 
 **Warn first.** Both are graded through the lint rollout rows `vuln-gate` and
-`sbom-required` (introduced v1.10.0, gating from v1.11.0, `ci/lint-rollout`):
-while the project's `forge_version` is below v1.11.0, `enforce` is judged as `audit`
-and says `would block (new in v1.10.0; gates from v1.11.0)`. `lint.rules: {vuln-gate:
-error}` gates now. Both defaults stay `audit`.
+`sbom-required` (new in v1.12.0, gating from v1.13.0, `ci/lint-rollout`): below
+v1.13.0, `enforce`, declared or default, is judged as `audit` and says `would block
+(new in v1.12.0; gates from v1.13.0)`. `lint.rules: {vuln-gate: error}` gates now.
+**To opt out**, set both to `mode = "audit"`. Upgrading, and the database the cut
+fetches: `migrations/v1.12.0/vuln-gate-default`, `vuln`.
 
-**Getting past it.** Fix the advisory (`forge vuln patch`, `vuln/patch`), or accept it in the env's own file:
-`forge vuln exempt prod CVE-2026-0001 --reason "..." --expires 2026-12-31`. For one
-promotion, `forge env deploy prod v1.2.0 --override-vuln-gate "<why>"` records who,
-why and which findings.
+**Getting past it.** Fix the advisory (`forge vuln patch`), accept it with `forge vuln
+exempt prod CVE-2026-0001 --reason "..." --expires 2026-12-31`, or for one promotion
+pass `--override-vuln-gate "<why>"` to `forge env deploy`, which records who and why.
 
 ### `approvals`
 

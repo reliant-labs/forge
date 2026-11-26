@@ -29,7 +29,7 @@ func TestDeliveryPolicyAllDefaultsLeavesTheBundleDigestAlone(t *testing.T) {
 // the control plane reads what the env declared.
 func TestDeliveryPolicyIsSealedInTheBundleShape(t *testing.T) {
 	p := release.DefaultDeliveryPolicy()
-	p.VulnGate.Mode = release.DeliveryEnforce
+	p.VulnGate.Mode = release.DeliveryAudit // off the enforce default
 	plain := deliveryPolicyBuild(t, nil)
 	built := deliveryPolicyBuild(t, &p)
 	if built.Digest == plain.Digest {
@@ -39,7 +39,7 @@ func TestDeliveryPolicyIsSealedInTheBundleShape(t *testing.T) {
 	if len(cfg) == 0 {
 		t.Fatal("no config blob")
 	}
-	if !bytes.Contains(cfg, []byte(`"delivery_policy"`)) || !bytes.Contains(cfg, []byte(`"vuln_gate":{"mode":"enforce"`)) {
+	if !bytes.Contains(cfg, []byte(`"delivery_policy"`)) || !bytes.Contains(cfg, []byte(`"vuln_gate":{"mode":"audit"`)) {
 		t.Errorf("the bundle's recorded shape lacks the policy: %s", cfg)
 	}
 	if bytes.Contains(plain.ConfigBlob(), []byte("delivery_policy")) {

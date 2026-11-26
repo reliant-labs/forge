@@ -2198,9 +2198,9 @@ Every release forge cuts records a CycloneDX SBOM of each artifact's shipped byt
 
 _Recorded · Forge, on any infrastructure_
 
-**Use:** Nothing to set up: `forge env build <env> --release v1.0.0` (or the cut inside `forge env deploy`) does it. Read it back with `forge vuln list <env>`; `forge vuln db pull` fetches the vulnerability database once per machine. `forge vuln patch <env> --verify` bumps each vulnerable Go or npm/pnpm/yarn dependency to its fix and runs your gate over the result.
+**Use:** Nothing to set up: `forge env build <env> --release v1.0.0` (or the cut inside `forge env deploy`) does it, fetching the vulnerability database once per machine when it has none (`--no-vuln-db-pull` or `FORGE_VULN_DB_PULL=never` opts out). Read it back with `forge vuln list <env>`. `forge vuln patch <env> --verify` bumps each vulnerable Go or npm/pnpm/yarn dependency to its fix and runs your gate over the result.
 
-**Why:** forge installs syft and grype as pinned release binaries whose sha256 is compiled into forge. An artifact it could not describe is recorded `unavailable` with the reason, a static site's SBOM is its lockfile (it can overstate the bundle), and nothing is refused unless an env opts in (`vuln-gate-self-hosted`). `--no-sbom` and `provenance_sbom = off` turn it off.
+**Why:** forge installs syft and grype as pinned release binaries whose sha256 is compiled into forge. An artifact it could not describe is recorded `unavailable` with the reason, and a static site's SBOM is its lockfile (it can overstate the bundle). A promotion is refused by default (`vuln-gate-self-hosted`, warn first); `mode = "audit"` records and refuses nothing. `--no-sbom` and `provenance_sbom = off` turn the SBOM off.
 
 **Evidence:**
 
@@ -3235,13 +3235,13 @@ _Enforced · Forge, on any infrastructure_
 
 ### Vulnerability gate, warn first
 
-Every release cut prints what its SBOMs are known to be vulnerable to and what each env's `vuln_gate` would do, and an env with no control plane has `vuln_gate = enforce` and `provenance_sbom` judged before forge writes its promotion, warning for one release before it refuses.
+Every release cut prints what its SBOMs are known to be vulnerable to and what each env's `vuln_gate` would do, and an env with no control plane has `vuln_gate` and `provenance_sbom` judged before forge writes its promotion: `enforce` by default, warning for one release before it refuses.
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** `delivery_policy = forge.DeliveryPolicy { vuln_gate = forge.VulnPolicy { mode = "enforce" } }`; accept one advisory with `forge vuln exempt <env> <id> --reason "..." --expires YYYY-MM-DD`
+**Use:** Nothing to set up; accept one advisory with `forge vuln exempt <env> <id> --reason "..." --expires YYYY-MM-DD`, or opt an env out with `delivery_policy = forge.DeliveryPolicy { vuln_gate = forge.VulnPolicy { mode = "audit" } }`
 
-**Why:** Graded through the lint rollout rows `vuln-gate` and `sbom-required`: below their `gates_from` release an enforce is judged as audit and says "would block". From it, a self-hosted promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` (no SBOM or scan, or a stale database: could not determine is never a pass) or `sbom_missing`, each exit 4; `--override-vuln-gate "<why>"` records who overrode it, why, and which findings. `lint.rules: {vuln-gate: error}` gates now.
+**Why:** Graded through the lint rollout rows `vuln-gate` and `sbom-required` (new in v1.12.0, gating from v1.13.0): below `gates_from`, an enforce, declared or default, is judged as audit and says "would block". From it, a self-hosted promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` (no SBOM or scan, or a stale database: could not determine is never a pass) or `sbom_missing`, each exit 4; `--override-vuln-gate "<why>"` records who overrode it, why, and which findings. `lint.rules: {vuln-gate: error}` gates now. With `provenance_sbom = off` and no `vuln_gate` mode declared, the gate is `audit`: there is no SBOM to scan.
 
 **Evidence:**
 
@@ -3250,22 +3250,22 @@ _Enforced · Forge, on any infrastructure_
 - skill `vuln` (`forge skill load vuln`)
 - source [`internal/cli/vuln_gate.go`](../internal/cli/vuln_gate.go)
 
-| Rule            | Bug class it prevents                                                                                                                | Lane               |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------ |
-| `vuln-gate`     | An env that declares `vuln_gate = enforce` promoting a release with a fixable critical or KEV-listed advisory, or one nobody scanned | `forge env deploy` |
-| `sbom-required` | A release promoted with no SBOM for an artifact it ships, so nothing can say what it contains or what it is vulnerable to            | `forge env deploy` |
+| Rule            | Bug class it prevents                                                                                                                         | Lane               |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| `vuln-gate`     | An env whose `vuln_gate` is `enforce` (the default) promoting a release with a fixable critical or KEV-listed advisory, or one nobody scanned | `forge env deploy` |
+| `sbom-required` | A release promoted with no SBOM for an artifact it ships, so nothing can say what it contains or what it is vulnerable to                     | `forge env deploy` |
 
 <a id="delivery-policy-recorded"></a>
 
 ### Per-env delivery policy controls
 
-`forge.DeliveryPolicy` declares per env what a release must prove, each control `off`, `audit` or `enforce`: `health_gate`, `signing` and `flux_verify` are enforced on a control plane, `required_gates` and `approval_hook` wherever the env's ledger lives, `vuln_gate` and `provenance_sbom` are judged by forge itself for an env with no control plane (warn first, and `audit` unless you opt in), while `trusted_builder`, `admission_verify`, `signed_promotions`, `bundle_kinds` and `approvals` are recorded and refuse nothing yet.
+`forge.DeliveryPolicy` declares per env what a release must prove, each control `off`, `audit` or `enforce`: `health_gate`, `signing` and `flux_verify` are enforced on a control plane, `required_gates` and `approval_hook` wherever the env's ledger lives, `vuln_gate` and `provenance_sbom` are judged by forge itself for an env with no control plane (`enforce` by default, warn first), while `trusted_builder`, `admission_verify`, `signed_promotions`, `bundle_kinds` and `approvals` are recorded and refuse nothing yet.
 
 _Recorded · Forge, on any infrastructure_
 
 **Use:** `delivery_policy = forge.DeliveryPolicy { ... }` in `deploy/kcl/<env>/main.k`
 
-**Why:** Setting a recorded control to `enforce` today is a declaration of intent. `vuln_gate` and `provenance_sbom` are not recorded-only for a self-hosted env (`vuln-gate-self-hosted`); on a control-plane env they are the control plane's to judge, once it advertises `enforces-vuln-gate`. `forge env build` does not sign images; only an env with a control plane gets its bundles signed, by the platform. A control that cannot block a deploy defaults to `enforce`; one that can defaults to `audit`, so you read its would-deny verdicts before turning it on.
+**Why:** Setting a recorded control to `enforce` today is a declaration of intent. `vuln_gate` and `provenance_sbom` are not recorded-only for a self-hosted env (`vuln-gate-self-hosted`); on a control-plane env they are the control plane's to judge, once it advertises `enforces-vuln-gate`. `forge env build` does not sign images; only an env with a control plane gets its bundles signed, by the platform. A control that cannot block a deploy defaults to `enforce`; one that can defaults to `audit`, so you read its would-deny verdicts before turning it on. The exception is the release's own evidence: `vuln_gate` and `provenance_sbom` default to `enforce`, warn first.
 
 **Evidence:**
 

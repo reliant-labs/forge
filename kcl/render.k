@@ -2367,7 +2367,7 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
         "admission_verify": {"mode": p.admission_verify.mode}
         "signed_promotions": {"mode": p.signed_promotions.mode}
         "vuln_gate": {
-            "mode": p.vuln_gate.mode
+            "mode": _delivery_vuln_gate_mode(p)
             "block_severity": p.vuln_gate.block_severity
             "warn_severity": p.vuln_gate.warn_severity
             "block_kev": p.vuln_gate.block_kev

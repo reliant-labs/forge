@@ -129,6 +129,9 @@ type buildOptions struct {
 	// noSBOM is --no-sbom: cut the release without generating SBOMs
 	// (build_sbom.go). Each artifact records why it has none.
 	noSBOM bool
+	// noVulnDBPull is --no-vuln-db-pull: the cut scans its SBOMs only with a
+	// vulnerability database already on this machine (vuln_gate.go).
+	noVulnDBPull bool
 	// checkForgeBridge: refuse, before any build, a project image that cannot
 	// compile against the go.work-bridged forge the host compiles against
 	// (build_forge_bridge.go). Set by `forge env build` and `forge env
@@ -2096,6 +2099,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	// Never fails the cut (vuln_gate.go).
 	vulns := scanReleaseAtCut(ctx, cutVulnInput{
 		ProjectDir: projectDir, Env: env, Entities: entities, Release: &rel, Hosted: ledger.Hosted, Log: os.Stderr,
+		NoDBPull: cutDBPullDisabled(opts.noVulnDBPull, os.Getenv),
 	})
 	created, err := ledger.Releases.Cut(ctx, rel)
 	if err != nil {

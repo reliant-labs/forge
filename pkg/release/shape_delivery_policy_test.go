@@ -36,22 +36,30 @@ func TestDefaultDeliveryPolicyIsValidAndIsItsOwnDefault(t *testing.T) {
 	}
 }
 
-// The hybrid rule, pinned: what cannot block a deploy enforces, what can audits.
-// Signing and flux_verify audit: enforcing them refuses a rollback to a
-// release signed before them, so an env opts in once its history is signed.
-// provenance_sbom audits (owner, 2026-11-20): enforced, it refuses a promotion
-// whose artifacts have no SBOM (the sbom-required rule), so it can block one.
+// The hybrid rule, pinned: a control that can block a deploy audits until the
+// env turns it up. Signing and flux_verify audit: enforcing them refuses a
+// rollback to a release signed before them, so an env opts in once its
+// history is signed. The release's own evidence is the exception (owner,
+// 2026-11-26: vulnerability scanning gates every release by default, as lint
+// and tests do): provenance_sbom and vuln_gate enforce, graded warn-first by
+// the rollout rows sbom-required and vuln-gate.
 func TestDefaultDeliveryPolicyFollowsTheHybridRule(t *testing.T) {
 	d := DefaultDeliveryPolicy()
 	for name, got := range map[string]DeliveryMode{
-		"provenance_sbom": d.ProvenanceSBOM.Mode,
-		"signing":         d.Signing.Mode, "flux_verify": d.FluxVerify.Mode,
+		"signing": d.Signing.Mode, "flux_verify": d.FluxVerify.Mode,
 		"trusted_builder": d.TrustedBuilder.Mode, "admission_verify": d.AdmissionVerify.Mode,
-		"signed_promotions": d.SignedPromotions.Mode, "vuln_gate": d.VulnGate.Mode,
-		"bundle_kinds": d.BundleKinds.Mode, "approvals": d.Approvals.Mode,
+		"signed_promotions": d.SignedPromotions.Mode,
+		"bundle_kinds":      d.BundleKinds.Mode, "approvals": d.Approvals.Mode,
 	} {
 		if got != DeliveryAudit {
 			t.Errorf("%s defaults to %s, want audit: it can block a deploy", name, got)
+		}
+	}
+	for name, got := range map[string]DeliveryMode{
+		"provenance_sbom": d.ProvenanceSBOM.Mode, "vuln_gate": d.VulnGate.Mode,
+	} {
+		if got != DeliveryEnforce {
+			t.Errorf("%s defaults to %s, want enforce: a release must prove what it ships", name, got)
 		}
 	}
 	if d.Approvals.Required != 1 {
@@ -116,7 +124,7 @@ func TestShape_DeliveryPolicyOmittedWhenEveryValueIsTheDefault(t *testing.T) {
 // One value off the default is recorded, and ONLY that makes the difference.
 func TestShape_DeliveryPolicyRecordedWhenAnyValueDiffers(t *testing.T) {
 	for name, mut := range map[string]func(*ShapeDeliveryPolicy){
-		"a mode":  func(p *ShapeDeliveryPolicy) { p.VulnGate.Mode = DeliveryEnforce },
+		"a mode":  func(p *ShapeDeliveryPolicy) { p.VulnGate.Mode = DeliveryAudit },
 		"a param": func(p *ShapeDeliveryPolicy) { p.VulnGate.BlockSeverity = "high" },
 		"a list":  func(p *ShapeDeliveryPolicy) { p.TrustedBuilder.Builders = []string{"github:acme/api"} },
 		"an exemption": func(p *ShapeDeliveryPolicy) {
@@ -320,7 +328,9 @@ func TestShape_DeliveryPolicyAuditOverMissingPrerequisiteIsAllowed(t *testing.T)
 	p.Signing.Mode = DeliveryOff
 	p.FluxVerify.Mode = DeliveryOff
 	p.ProvenanceSBOM.Mode = DeliveryOff
-	// admission, signed_promotions, trusted_builder and vuln_gate stay audit.
+	// With no SBOM to scan, vuln_gate audits (an unset mode resolves so in
+	// KCL); admission, signed_promotions and trusted_builder stay audit.
+	p.VulnGate.Mode = DeliveryAudit
 	if err := (Shape{Kind: EnvLocal, DeliveryPolicy: &p}.Canonical().Validate()); err != nil {
 		t.Fatalf("audit over a missing prerequisite must be valid: %v", err)
 	}
@@ -400,14 +410,14 @@ func TestShape_DeliveryPolicyPromotionChecksCanonical(t *testing.T) {
 	}
 }
 
-// provenance_sbom's default is audit (owner, 2026-11-20). An env that leaves
-// it unset records no delivery_policy, as before; one that writes
-// provenance_sbom = enforce — which the old default could not tell from
-// silence — now records the policy, so whoever enforces it can see it.
-func TestExplicitProvenanceSBOMEnforceIsRecorded(t *testing.T) {
+// provenance_sbom's default is enforce (owner, 2026-11-26). An env that
+// leaves it unset records no delivery_policy, as before; one that writes
+// provenance_sbom = audit — which the default cannot tell from silence —
+// records the policy, so whoever enforces it can see it.
+func TestExplicitProvenanceSBOMAuditIsRecorded(t *testing.T) {
 	d := DefaultDeliveryPolicy()
-	if d.ProvenanceSBOM.Mode != DeliveryAudit {
-		t.Fatalf("provenance_sbom defaults to %s, want audit", d.ProvenanceSBOM.Mode)
+	if d.ProvenanceSBOM.Mode != DeliveryEnforce {
+		t.Fatalf("provenance_sbom defaults to %s, want enforce", d.ProvenanceSBOM.Mode)
 	}
 	if !(&d).IsDefault() {
 		t.Fatal("the default policy is not IsDefault")
@@ -423,17 +433,19 @@ func TestExplicitProvenanceSBOMEnforceIsRecorded(t *testing.T) {
 		t.Errorf("a default policy was recorded: %s", got)
 	}
 	explicit := DefaultDeliveryPolicy()
-	explicit.ProvenanceSBOM.Mode = DeliveryEnforce
+	explicit.ProvenanceSBOM.Mode = DeliveryAudit
 	if (&explicit).IsDefault() {
-		t.Fatal("provenance_sbom = enforce reads as the default")
+		t.Fatal("provenance_sbom = audit reads as the default")
 	}
-	if got := enc(&explicit); !strings.Contains(got, `"provenance_sbom":{"mode":"enforce"}`) {
-		t.Errorf("an explicit provenance_sbom = enforce was not recorded: %s", got)
+	if got := enc(&explicit); !strings.Contains(got, `"provenance_sbom":{"mode":"audit"}`) {
+		t.Errorf("an explicit provenance_sbom = audit was not recorded: %s", got)
 	}
-	// A shape recorded before the change, with no delivery_policy, reads as
-	// the new default: audit, which refuses nothing — as no forge ever did.
+	// A shape with no delivery_policy reads as the default: enforce. Whoever
+	// judges it grades it warn-first by the forge that cut the release, so a
+	// shape an older forge recorded (when silence meant audit) is warned
+	// "would refuse", never refused for it.
 	var none *ShapeDeliveryPolicy
-	if none.Resolved().ProvenanceSBOM.Mode != DeliveryAudit {
-		t.Error("a shape without delivery_policy does not resolve to audit")
+	if none.Resolved().ProvenanceSBOM.Mode != DeliveryEnforce {
+		t.Error("a shape without delivery_policy does not resolve to enforce")
 	}
 }

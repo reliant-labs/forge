@@ -1,6 +1,6 @@
 ---
 name: vuln
-description: SBOMs and vulnerabilities in forge — what every release cut records by default (a CycloneDX SBOM per artifact, stored in the release, the machine ledger and beside the image as an OCI referrer, then scanned with grype), every `forge vuln` verb (scan, list, show, sbom, db status|pull|import, exempt, patch) with exit codes and the `forge.dev/vuln-list/v1` JSON, the shared 3.3 GiB grype database (location, CI cache key, mirror, offline import, the 5-day freshness rule), pinned syft/grype installs, mirrors, `pkg/toolpins` and the tool cache's trust check, SBOM sources per artifact kind (static sites are "from lockfile"), `--no-sbom`, `provenance_sbom = off`, `vuln.attach_sbom`, registry referrer support and the GAR cleanup-policy caveat, `vuln_gate` audit/enforce and its warn-first rollout, `forge vuln exempt`, `--override-vuln-gate`, `forge vuln patch` and `vuln.patch.verify`, recording an SBOM for a deploy your own CI did, the `vuln-sbom` gate step, and control-plane envs. Use when a cut says "not scanned", when a finding needs a dependency bump, before turning `vuln_gate` to enforce, or when a promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` or `sbom_missing`.
+description: SBOMs and vulnerabilities in forge — what every release cut records by default (a CycloneDX SBOM per artifact, stored in the release, the machine ledger and beside the image as an OCI referrer, then scanned with grype), every `forge vuln` verb (scan, list, show, sbom, db status|pull|import, exempt, patch) with exit codes and the `forge.dev/vuln-list/v1` JSON, the shared 3.3 GiB grype database (location, CI cache key, mirror, offline import, the 5-day freshness rule, the cut's own download and its opt-out), pinned syft/grype installs, mirrors, `pkg/toolpins` and the tool cache's trust check, SBOM sources per artifact kind (static sites are "from lockfile"), `--no-sbom`, `provenance_sbom = off`, `vuln.attach_sbom`, registry referrer support and the GAR cleanup-policy caveat, `vuln_gate` enforce (the default) and audit (the opt-out) and its warn-first rollout, `forge vuln exempt`, `--override-vuln-gate`, `forge vuln patch` and `vuln.patch.verify`, recording an SBOM for a deploy your own CI did, the `vuln-sbom` gate step, and control-plane envs. Use when a cut says "not scanned", when a finding needs a dependency bump, before `vuln_gate` starts gating (v1.13.0) or when opting out of it, or when a promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` or `sbom_missing`.
 ---
 
 # SBOMs and vulnerabilities
@@ -8,7 +8,8 @@ description: SBOMs and vulnerabilities in forge — what every release cut recor
 forge answers "what is in this release, and what is it known to be vulnerable
 to?" without any setup. Every release it cuts describes each artifact with an
 SBOM, keeps that SBOM with the release, and scans it. Whether a finding can stop
-a deploy is a separate, opt-in decision: the env's `vuln_gate`.
+a deploy is the env's `vuln_gate`, which is `enforce` unless the env says
+otherwise (below).
 
 ## What you get by default
 
@@ -25,19 +26,26 @@ At every cut (`forge env build <env> --release v1.2.0`, or the cut inside
    an OCI 1.1 referrer (the `sha256-<hex>` tag fallback where the registry has no
    referrers API); an env whose ledger is a control plane gets it uploaded, and
    keeps its own copy there (see "Control-plane envs").
-4. **A scan.** If this machine already has the vulnerability database, grype
-   scans each SBOM and the cut prints the counts and the env's `vuln_gate`
-   verdict. A cut **never downloads the first database** (205 MB): without one it
-   prints `not scanned` and the command that fetches it. A cut never fails over
-   an SBOM or a scan: an artifact forge could not describe is recorded
-   `unavailable` with the reason, and reads as **not scanned, never clean**.
+4. **A scan.** grype scans each SBOM and the cut prints the counts and the env's
+   `vuln_gate` verdict. When this machine has no vulnerability database the cut
+   **downloads it** (205 MB, 3.3 GiB unpacked, once per machine, shared by every
+   project), and refreshes it when it is more than a day old. `--no-vuln-db-pull`
+   or `FORGE_VULN_DB_PULL=never` stops that: the cut then scans only with a
+   database already here and otherwise prints `not scanned` and the command that
+   fetches it. A cut never fails over an SBOM or a scan, a download that fails
+   (offline, mirror down) included: an artifact forge could not describe is
+   recorded `unavailable` with the reason, and reads as **not scanned, never
+   clean**.
 
-Nothing is refused by default: `vuln_gate` and `provenance_sbom` are `audit`
-(`deploy/delivery-policy`), so findings are recorded and a promotion goes ahead.
+A finding can stop a promotion by default: `vuln_gate` and `provenance_sbom` are
+`enforce` (`deploy/delivery-policy`), so a self-hosted promotion of a release with
+a KEV-listed or fixable critical advisory, or one nobody scanned, is refused. A
+project pinned below forge v1.13.0 is warned `would block` instead, and nothing is
+refused until it moves its pin ("Warn first", below). `vuln_gate = forge.VulnPolicy
+{mode = "audit"}` records findings and refuses nothing.
 
 ```bash
-forge vuln db pull                  # once per machine: grype + the database
-forge env build prod --release v1.2.0
+forge env build prod --release v1.2.0   # fetches the database on the first cut of a machine
 forge vuln list prod                # what the release prod runs is known to be vulnerable to
 ```
 
@@ -70,9 +78,12 @@ first cut; SBOMs are generated concurrently.
 | skip SBOMs for one cut | `--no-sbom` on `forge env build --release` / `forge env deploy` (warns; each artifact records `skipped: --no-sbom`, which later reads "not scanned") |
 | skip them for an env, recording nothing and saying nothing | `provenance_sbom = forge.Control {mode = "off"}` in that env's `delivery_policy` (also turns the cut's scan off) |
 | keep the SBOM but not the registry referrer | `vuln.attach_sbom: false` in forge.yaml (the release and the machine ledger still hold it) |
+| record findings and refuse nothing, for good | `vuln_gate = forge.VulnPolicy {mode = "audit"}` (or `"off"`) and `provenance_sbom = forge.Control {mode = "audit"}` in that env's `delivery_policy` |
+| not download the database at a cut | `--no-vuln-db-pull` on `forge env build --release` / `forge env deploy` (when it cuts), or `FORGE_VULN_DB_PULL=never` (also `off`, `false`, `0`, `no`) for every cut on the machine. With no database the cut records "not scanned", which an enforced `vuln_gate` refuses at promote as `vuln_gate_unscanned`: import one (`forge vuln db import`) or cache `$FORGE_VULN_DB_DIR` |
 
-`vuln_gate = enforce` over `provenance_sbom = off` is refused at render: the gate
-scans the SBOM.
+`provenance_sbom = off` leaves a `vuln_gate` that declares no mode at `audit`,
+because there is no SBOM to scan. A declared `vuln_gate = enforce` over
+`provenance_sbom = off` is refused at render: the gate scans the SBOM.
 
 ## The verbs
 
@@ -106,7 +117,7 @@ forge vuln patch prod --verify               # bump what prod's findings name to
 ```
 
 - `list` and `show` judge by the env's own `vuln_gate` and **never download** the
-  database or grype; an SBOM never scanned, or scanned with an older database than
+  database or grype (the cut does, above); an SBOM never scanned, or scanned with an older database than
   this machine's, is scanned again first and the scan stored. Filters (`--severity`,
   `--fixable`, `--kev`, `--include-exempt`) narrow what is listed, never the verdict.
   `show` matches an advisory id or alias, or a package name or purl, exempt ones
@@ -133,8 +144,10 @@ forge vuln patch prod --verify               # bump what prod's findings name to
 
 One grype database per machine (`$FORGE_VULN_DB_DIR`, default
 `<UserCacheDir>/forge/vulndb`; ~205 MB to download, 3.3 GiB unpacked), shared by
-every project. `forge vuln scan` refreshes it when it is a day old, `forge vuln db
-pull` now; `list`, `show` and the cut never download it. A verdict is determined only
+every project. The cut and `forge vuln scan` fetch it when it is missing and
+refresh it when it is a day old, `forge vuln db pull` now; `list` and `show` never
+download it, and `--no-vuln-db-pull` / `FORGE_VULN_DB_PULL=never` stops the cut
+from doing so. A verdict is determined only
 if each artifact's newest scan used a database built within **5 days**; otherwise it
 is `stale` (exit 2), and stale outranks block. syft and grype are pinned upstream
 release binaries whose sha256 is compiled into forge, in a tool cache forge refuses
@@ -196,25 +209,31 @@ delivery_policy = forge.DeliveryPolicy {
 
 | Mode | Means |
 |---|---|
-| `audit` (default) | findings are recorded and printed as "would block"; nothing is refused |
-| `enforce` | a self-hosted promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` or `sbom_missing` (exit 4) |
+| `enforce` (default) | a self-hosted promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` or `sbom_missing` (exit 4) |
+| `audit` | findings are recorded and printed as "would block"; nothing is refused |
+
+An unset `vuln_gate` mode is `enforce`, except under `provenance_sbom = off`, where
+it is `audit` (no SBOM to scan). A mode the env declares always wins.
 
 - `vuln_gate_blocked`: a KEV-listed advisory, or one at or above `block_severity`
   (default critical) that has a fix.
 - `vuln_gate_unscanned`: an artifact with no SBOM or no scan, or findings from a
   database older than 5 days. Could not determine is never a pass.
-- `sbom_missing`: a declared `provenance_sbom = forge.Control {mode = "enforce"}`
-  (the schema default is `audit`) and an artifact the release ships has no SBOM.
+- `sbom_missing`: `provenance_sbom` is `enforce` (the schema default) and an
+  artifact the release ships has no SBOM.
 
 **Warn first.** Both are graded through the lint rollout rows `vuln-gate` and
-`sbom-required`: introduced in v1.10.0 (the first release with SBOMs and `forge
-vuln`), gating from **v1.11.0** (`ci/lint-rollout`). While the project's
-`forge_version` is below v1.11.0, an `enforce` is judged as `audit` and says `would
-block (new in v1.10.0; gates from v1.11.0)`; a pin that jumps the window warns at
-that pin and gates from the next.
-`lint.rules: {vuln-gate: error}` (or `{sbom-required: error}`) gates now; `{vuln-gate:
-warn}` extends the warning. A release an older forge cut (no SBOMs) is never refused
-for lacking one.
+`sbom-required`: new in v1.12.0, the release that made `enforce` the default, and
+gating from **v1.13.0** (`ci/lint-rollout`). While the project's `forge_version` is
+below v1.13.0, an `enforce`, declared or default, is judged as `audit` and says
+`would block (new in v1.12.0; gates from v1.13.0; gate now with lint.rules:
+{vuln-gate: error})`; a pin that jumps the window warns at that pin and gates from
+the next. This also reopens the window for an env that declared `enforce` under an
+older pin: it warns again until v1.13.0. `lint.rules: {vuln-gate: error}` (or
+`{sbom-required: error}`) gates now; `{vuln-gate: warn}` extends the warning. To opt
+out for good, set the mode to `audit` (above). A release an older forge cut (before
+v1.10.0, which first recorded SBOMs) is never refused for lacking one.
+Upgrading an existing project: `migrations/v1.12.0/vuln-gate-default`.
 
 **Accepting an advisory.** `forge vuln exempt` writes a time-boxed
 `forge.VulnExemption` into the env's `deploy/kcl/<env>/main.k` (or its env document),
@@ -279,8 +298,8 @@ finding is printed and exits 0 and a machine with no scanner or database is an a
 SKIP (exit 78); from it, a blocking finding exits 1 and a scan that cannot run exits 77,
 a SKIP that fails the gate unless `CI_SKIP=vuln-sbom` names it.
 
-Below the row it never downloads the database, so on a fresh CI runner it skips and
-scans nothing. `forge ci vuln-sbom --pull` downloads it first (into `$FORGE_VULN_DB_DIR`
+Unlike the cut, it never downloads the database unless asked, so on a fresh CI runner
+it skips and scans nothing. `forge ci vuln-sbom --pull` downloads it first (into `$FORGE_VULN_DB_DIR`
 when set; point that at the runner's temp directory or a cached one, `vuln/database`).
 
 ## Control-plane envs
@@ -314,3 +333,5 @@ holds). `forge vuln scan --image <ref@sha256:…>` scans an image of that env yo
 - The scaffolded workflows, including the scan job: `ci`; the local gate: `ci/gate`.
 - A project scaffolded before v1.10.0, whose build-images.yml still runs the
   anchore SBOM action and Trivy: `migrations/v1.11.0/sbom-vulnerabilities`.
+- `enforce` becoming the default, and what to do before it gates:
+  `migrations/v1.12.0/vuln-gate-default`.

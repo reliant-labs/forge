@@ -334,3 +334,58 @@ func TestCloudAssignIssueRefusesAnotherEnvironmentsIssue(t *testing.T) {
 		t.Error("an issue of another env was written")
 	}
 }
+
+// TestCloudUpdateAndDeleteIssueComment: the edit and delete verbs reach
+// IssuesService.UpdateIssueComment / DeleteIssueComment with the issue and
+// comment ids (agent report 855d1b57: they were served, but only reachable by
+// raw Connect calls).
+func TestCloudUpdateAndDeleteIssueComment(t *testing.T) {
+	reply := `{"comment":{"id":"cm1","issueId":"ISS-7f3a","body":"edited","createdAt":"2026-10-22T10:10:00Z","updatedAt":"2026-10-22T11:00:00Z","author":{"id":"u-1","name":"Ada"}}}`
+	f := &fakeCaller{replies: map[string]string{procUpdateIssueComment: reply, procDeleteIssueComment: `{}`}}
+	res, err := cloudWith(f).UpdateIssueComment(context.Background(), UpdateIssueCommentRequest{ID: "ISS-7f3a", CommentID: "cm1", Body: "edited"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req := f.reqs[procUpdateIssueComment]; req["issueId"] != "ISS-7f3a" || req["commentId"] != "cm1" || req["body"] != "edited" {
+		t.Errorf("update request = %v", req)
+	}
+	if c := res.Comment; c.ID != "cm1" || c.Body != "edited" || c.UpdatedAt.IsZero() {
+		t.Errorf("comment = %+v", c)
+	}
+	if err := cloudWith(f).DeleteIssueComment(context.Background(), DeleteIssueCommentRequest{ID: "ISS-7f3a", CommentID: "cm1"}); err != nil {
+		t.Fatal(err)
+	}
+	if req := f.reqs[procDeleteIssueComment]; req["issueId"] != "ISS-7f3a" || req["commentId"] != "cm1" {
+		t.Errorf("delete request = %v", req)
+	}
+
+	// Refused before calling: no comment id, or an empty edit.
+	g := &fakeCaller{}
+	if _, err := cloudWith(g).UpdateIssueComment(context.Background(), UpdateIssueCommentRequest{ID: "x", CommentID: " ", Body: "hi"}); exitOf(err) != ExitWrong {
+		t.Errorf("edit without a comment id: exit %d", exitOf(err))
+	}
+	if _, err := cloudWith(g).UpdateIssueComment(context.Background(), UpdateIssueCommentRequest{ID: "x", CommentID: "cm1", Body: " \n"}); exitOf(err) != ExitWrong {
+		t.Errorf("empty edit: exit %d", exitOf(err))
+	}
+	if err := cloudWith(g).DeleteIssueComment(context.Background(), DeleteIssueCommentRequest{ID: "x"}); exitOf(err) != ExitWrong {
+		t.Errorf("delete without a comment id: exit %d", exitOf(err))
+	}
+	if g.reqs != nil {
+		t.Errorf("a refused edit or delete must not call the control plane: %v", g.reqs)
+	}
+	for code, want := range map[string]int{"permission_denied": ExitUndetermined, "not_found": ExitWrong, "unimplemented": ExitUndetermined} {
+		h := &fakeCaller{errs: map[string]error{procDeleteIssueComment: &cloud.Error{Code: code}}}
+		if err := cloudWith(h).DeleteIssueComment(context.Background(), DeleteIssueCommentRequest{ID: "x", CommentID: "cm1"}); exitOf(err) != want {
+			t.Errorf("delete %s: exit %d, want %d", code, exitOf(err), want)
+		}
+	}
+
+	// A local env has no discussion.
+	var l Local
+	if _, err := l.UpdateIssueComment(context.Background(), UpdateIssueCommentRequest{ID: "x", CommentID: "c", Body: "b"}); exitOf(err) != ExitUndetermined {
+		t.Errorf("local edit: exit %d", exitOf(err))
+	}
+	if err := l.DeleteIssueComment(context.Background(), DeleteIssueCommentRequest{ID: "x", CommentID: "c"}); exitOf(err) != ExitUndetermined {
+		t.Errorf("local delete: exit %d", exitOf(err))
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
@@ -114,6 +115,9 @@ type PlanInput struct {
 	// set GOROOT for the pinned go-licenses the row checked nothing and
 	// passed, so its findings are new to every project that ran it.
 	LicenseWarnFirst string
+	// Now is the clock date-bound policy is judged by (a ci.license
+	// exception's expiry). nil is the wall clock.
+	Now func() time.Time
 }
 
 // warn passes msg to PlanInput.Warn, when there is one.
@@ -183,7 +187,37 @@ func Plan(in PlanInput) ([]Check, error) {
 	if err := validateGraph(out); err != nil {
 		return nil, err
 	}
+	if err := p.checkFullChecks(out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// checkFullChecks uses the assembled rows, after extra checks replace built-ins,
+// so a rule cannot silently name a missing or non-path-gated check. Frontend
+// test rows are added later by WithFrontendTests, from the discovered frontends.
+func (p planner) checkFullChecks(checks []Check) error {
+	if p.Cfg == nil {
+		return nil
+	}
+	known := map[string]bool{}
+	for _, c := range checks {
+		known[c.Name] = len(c.Paths) > 0
+	}
+	for _, fe := range p.CI.Frontends {
+		name := FrontendTestName(fe.Name)
+		if _, exists := known[name]; !exists {
+			known[name] = true
+		}
+	}
+	for i, r := range p.Cfg.CI.Gate.AffectedRules {
+		for j, name := range r.FullChecks {
+			if !known[name] {
+				return fmt.Errorf("ci.gate.affected_rules[%d].full_checks[%d]: %q is not a path-gated check or a configured frontend test row", i, j, name)
+			}
+		}
+	}
+	return nil
 }
 
 // checkAffectedRules rejects a ci.gate.affected_rules entry naming a frontend
@@ -584,19 +618,50 @@ func (p planner) scanChecks() []Check {
 	out = append(out, p.vulnSBOM()...)
 	out = append(out, p.secretScan())
 	if ci.LicenseCheck {
-		out = append(out, Check{
-			Name:  "license-check",
-			Lane:  LaneChecks,
-			Group: GroupStatic,
-			Heavy: true,
-			Tools: []Tool{goLicenses},
-			Argv:  licenseCheckArgv(p.Root),
-			// The verdict is new (Tool.NeedsGOROOT): warn first.
-			WarnOnFail: p.LicenseWarnFirst,
-			IsFinding:  licenseFindingsOnly,
-		})
+		out = append(out, p.licenseCheck())
 	}
 	return out
+}
+
+// licenseCheck is the license-check row: go-licenses under the project's
+// ci.license policy (planLicenseCheck). An exception past its review date
+// makes the row FAIL without running, naming the entry.
+func (p planner) licenseCheck() Check {
+	var policy config.CILicenseConfig
+	if p.Cfg != nil {
+		policy = p.Cfg.CI.License
+	}
+	lp := planLicenseCheck(p.Root, policy, p.now())
+	c := Check{
+		Name:  "license-check",
+		Lane:  LaneChecks,
+		Group: GroupStatic,
+		Heavy: true,
+		Tools: []Tool{goLicenses},
+		Argv:  lp.argv,
+		// The verdict is new (Tool.NeedsGOROOT): warn first, unless the
+		// project declared a license policy, which asks for this verdict.
+		WarnOnFail: p.LicenseWarnFirst,
+		IsFinding:  licenseFindingsOnly,
+	}
+	if len(policy.Allowed) > 0 || len(policy.Exceptions) > 0 {
+		c.WarnOnFail = ""
+	}
+	if len(lp.expired) > 0 {
+		c.Failed = expiredLicenseNote(lp.expired)
+	}
+	if lp.overbroad != "" {
+		c.Failed = strings.TrimPrefix(c.Failed+"; "+lp.overbroad, "; ")
+	}
+	return c
+}
+
+// now is PlanInput.Now, or the wall clock.
+func (p planner) now() time.Time {
+	if p.Now != nil {
+		return p.Now()
+	}
+	return time.Now()
 }
 
 // SecretScanCheck is the name of the gate's secret-scan row.
@@ -793,6 +858,7 @@ func (p planner) extras(owned []Check) (map[string]Check, []Check, error) {
 			return nil, nil, err
 		}
 		if e.Replaces != "" {
+			e.Replaces = p.sharedDirRow(e.Replaces, ownedBy)
 			orig, ok := ownedBy[e.Replaces]
 			switch {
 			case !ok:
@@ -842,6 +908,28 @@ func (p planner) extras(owned []Check) (map[string]Check, []Check, error) {
 	return replaced, added, nil
 }
 
+// sharedDirRow resolves a row name that refers to a frontend sharing its
+// directory with another to the row forge plans for that directory. Frontends
+// declared on one directory get one set of rows, named for the frontend that
+// stands for it (templates.UniqueFrontendDirs); a `replaces: lint-<other>`
+// written when each frontend had its own rows still names that directory's
+// lint row. Any other name is returned unchanged.
+func (p planner) sharedDirRow(name string, owned map[string]Check) string {
+	if _, ok := owned[name]; ok {
+		return name
+	}
+	for other, canon := range templates.FrontendsSharingDir(p.CI.Frontends) {
+		prefix, ok := strings.CutSuffix(name, "-"+other)
+		if !ok || prefix == "" {
+			continue
+		}
+		if row := prefix + "-" + canon; owned[row].Name != "" {
+			return row
+		}
+	}
+	return name
+}
+
 // extraCheck validates one extra_checks entry and turns it into a Check.
 func (p planner) extraCheck(where string, e config.CIGateCheck) (Check, error) {
 	switch {
@@ -870,6 +958,7 @@ func (p planner) extraCheck(where string, e config.CIGateCheck) (Check, error) {
 		Env:          envList(e.Env),
 		SkipExitCode: e.SkipExitCode,
 		Paths:        append([]string(nil), e.Paths...),
+		GoClosure:    append([]string(nil), e.PathsGoClosure...),
 	}
 	if e.Lane != "" {
 		c.Lane = Lane(e.Lane)

@@ -251,9 +251,10 @@ func TestBothBrowserKindsShipNativeSignIn(t *testing.T) {
 // TestCredentialsGoToTheAppsOwnAPI pins the four endpoints and, more
 // importantly, the fetch option that makes them work.
 //
-// `credentials: "include"` is the assertion worth having. In the dev loop the
-// API is on its own port, so every auth call is cross-origin — and under the
-// default ("same-origin") the browser SILENTLY DROPS the Set-Cookie. Login
+// The credentials mode is the assertion worth having. When the API is on its
+// own host (FORGE_DEV_API_PROXY=off, a literal API_URL) every auth call is
+// cross-origin — and under the default ("same-origin") the browser SILENTLY
+// DROPS the Set-Cookie, so apiCredentials must answer "include" there. Login
 // returns 200, the identity comes back, and the user stays signed out, with
 // nothing in the console to explain it. It is the single most confusing way
 // this flow can fail, and a one-word edit reintroduces it.
@@ -287,19 +288,28 @@ func TestCredentialsGoToTheAppsOwnAPI(t *testing.T) {
 				kind, rel)
 		}
 
-		// Every fetch must send and accept cookies. Counted rather than
-		// merely present: one uncredentialed call among several is the same
-		// silent-failure bug, confined to whichever endpoint it is on.
+		// Every fetch must send and accept cookies. The file has exactly one
+		// fetch(), inside apiFetch, and it asks api-base's apiCredentials:
+		// "include" for an API on another origin (anything less drops the
+		// session cookie without a word: login returns 200 and the user stays
+		// signed out), "same-origin" on the page's own, where a hard-coded
+		// "include" gets a page in an opaque origin (an unclaimed preview)
+		// refused the platform's wildcard CORS grant. A second fetch() is a
+		// call that skipped that choice.
 		fetches := regexp.MustCompile(`\bfetch\(`).FindAllString(src, -1)
-		if len(fetches) == 0 {
-			t.Fatalf("%s: %s calls fetch() nowhere — either the file no longer talks to the API or this guard has gone blind:\n%s", kind, rel, src)
+		if len(fetches) != 1 {
+			t.Errorf("%s: %s calls fetch() %d times; every auth call must go through apiFetch, its one fetch(), so none chooses its own credentials:\n%s",
+				kind, rel, len(fetches), src)
 		}
-		includes := regexp.MustCompile(`credentials:\s*"include"`).FindAllString(src, -1)
-		if len(includes) != len(fetches) {
-			t.Errorf("%s: %s has %d fetch() call(s) but %d `credentials: \"include\"`.\n"+
-				"    Every auth call is CROSS-ORIGIN in the dev loop, and the default (\"same-origin\") makes the browser drop the session cookie without a word:\n"+
-				"    login returns 200, the identity comes back, and the user stays signed out. The server pairs this with cors_allow_credentials.",
-				kind, rel, len(fetches), len(includes))
+		apiFetch := regexp.MustCompile(`(?s)function apiFetch\(.*?\n\}`).FindString(src)
+		if !strings.Contains(apiFetch, "fetch(url, { ...init, credentials: apiCredentials(url) })") {
+			t.Errorf("%s: %s has no apiFetch that sends credentials: apiCredentials(url) — the session cookie is dropped cross-origin, or a same-origin page in an opaque origin is refused", kind, rel)
+		}
+		if m := regexp.MustCompile(`credentials:\s*"[a-z-]+"`).FindString(src); m != "" {
+			t.Errorf("%s: %s hard-codes %s; ask apiCredentials (src/lib/api-base.ts), which picks \"include\" or \"same-origin\" by the API's origin", kind, rel, m)
+		}
+		if !regexp.MustCompile(`import \{[^}]*\bapiCredentials\b[^}]*\} from "@/lib/api-base"`).MatchString(src) {
+			t.Errorf("%s: %s does not import apiCredentials from @/lib/api-base", kind, rel)
 		}
 	}
 }

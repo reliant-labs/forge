@@ -1928,7 +1928,7 @@ func runFrontend(ctx context.Context, f *factory.Factory, a frontendArgs) error 
 	// + packages/hooks + pnpm-workspace.yaml exist if this is the first
 	// frontend added since flipping the flag) need to know.
 	workspaces := cfg.IsFrontendWorkspacesEnabled()
-	if err := generator.WriteFrontendWorkspaceFiles(root, cfg.Name, workspaces); err != nil {
+	if err := generator.WriteFrontendWorkspaceFilesForFrontend(root, cfg.Name, workspaces, authMode == authModeNone); err != nil {
 		return fmt.Errorf("write frontend workspace files: %w", err)
 	}
 	// Declare this frontend's public runtime config, then render its files

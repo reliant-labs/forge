@@ -7,9 +7,7 @@ with a Dockerfile, with a managed Postgres when the app uses one. Sign in free,
 and your agent reads the release's traces, errors and pass/fail verdict through
 the same CLI, or the verdict, errors and logs through Forge's MCP server.
 
-<!-- TODO(owner): 30-45s GIF/video of the deploy-and-verify loop goes here: an
-agent deploys, a request fails, it runs `forge obs issues`, follows the trace,
-fixes the code, redeploys, and `forge obs check` passes. No asset exists yet. -->
+![A recorded terminal session with forge v1.11.0: an anonymous deploy prints a live URL and a claim link; signed in, the same app is deployed, a request with an empty name fails, forge obs issues and forge obs issue point at the panic in rpc_greet.go, forge obs check fails the release, a one-line fix is redeployed, and forge obs check --wait passes with exit 0](docs/images/forge-deploy-verify.gif)
 
 ```bash
 npx -y @reliantlabs/forge@latest env deploy prod --claimable
@@ -17,11 +15,11 @@ npx -y @reliantlabs/forge@latest env deploy prod --claimable
 
 Run it in your app's directory. No account is needed: it prints a live URL
 and a claim link. The deploy goes offline after 72 hours unless someone opens
-the link, which signs them up free and makes the deploy theirs, so treat the
-link like a password. Until it is claimed, a service (not a static site) has no
-outbound internet. Watching the release afterwards, its traces, errors and
-`forge obs check` verdict, needs that free sign-in: there is no anonymous
-monitoring. The limits: [Deploying with no account](docs/mcp.md#deploying-with-no-account).
+the link, which signs them up free and makes the deploy theirs. It is a
+one-time link for you: keep it out of commits, issues and public places.
+Until it is claimed, a service (not a static site) has no outbound internet.
+Watching the release afterwards, its traces, errors and `forge obs check`
+verdict, needs that free sign-in: there is no anonymous monitoring. The limits: [Deploying with no account](docs/mcp.md#deploying-with-no-account).
 
 1. **One command deploys your app.** A Vite or static Next.js site, or a
    Dockerfile app in any language, is adopted where it stands, leaving its own
@@ -100,9 +98,10 @@ Deploy this app with Reliant Forge. Run
 MCP server's deploy_claimable tool), then give me the live URL and the claim link.
 ```
 
-The claim link is good for 72 hours; treat it like a password. Opening it signs
-you up free and makes the deploy yours. It fits one static site, or one service
-with one database: [Deploying with no account](docs/mcp.md#deploying-with-no-account).
+The claim link is a one-time link for you, good for 72 hours: whoever opens it
+first signs up free and owns the deploy, so keep it out of commits, issues and
+public places. It fits one static site, or one service with one database:
+[Deploying with no account](docs/mcp.md#deploying-with-no-account).
 
 Install `forge`, and the other ways to run it: [Install](#install).
 

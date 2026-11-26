@@ -132,7 +132,7 @@ Reliant account and may never have heard of forge:
    ordinary hosted publish as the anonymous account.
 3. It returns the URL, the claim link, `expires_at` / `purge_after`, the
    plan's limits and `next_steps`: the text the agent relays to its user (give
-   them the claim link, it expires in 72 h, treat it like a password).
+   them the claim link, it expires in 72 h, it is one-time and for them alone).
    `rollout_verified` is true only when the call waited for the rollout and it
    came up healthy; only then does the result call the app live. With
    `no_wait` the deploy was only accepted, and `next_steps` says to confirm the

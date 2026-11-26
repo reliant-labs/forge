@@ -1,6 +1,7 @@
 package release
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -129,7 +130,11 @@ func (c ShapeUptimeCheck) validate() error {
 		return bad("path %q must start with '/'", c.Path)
 	}
 	if c.URL != "" {
-		if err := ValidateUptimeURL(c.URL); err != nil {
+		// A DERIVED check with a wildcard host is tolerated, and only that:
+		// forges before this one derived route checks for wildcard
+		// hostnames, and a shape recorded by one must still decode. A
+		// render no longer derives them, and a declared one is refused.
+		if err := ValidateUptimeURL(c.URL); err != nil && !(c.Source == UptimeSourceDefault && errors.Is(err, ErrUptimeWildcardHost)) {
 			return bad("%v", err)
 		}
 	}
@@ -168,6 +173,10 @@ func (c ShapeUptimeCheck) validate() error {
 // predicate the prober's dialer enforces (pkg/netguard), applied early so the
 // author hears about a bad address when it is declared; it resolves no name,
 // so the dial-time guard remains the boundary.
+//
+// A wildcard host (`*.example.com`) is refused with ErrUptimeWildcardHost: it
+// names many hosts and resolves as none, so the check could only ever report
+// the endpoint down.
 func ValidateUptimeURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -182,11 +191,17 @@ func ValidateUptimeURL(raw string) error {
 	if u.Hostname() == "" {
 		return fmt.Errorf("url %q has no host", raw)
 	}
+	if strings.Contains(u.Hostname(), "*") {
+		return fmt.Errorf("url %q: %w", raw, ErrUptimeWildcardHost)
+	}
 	if reason, refused := netguard.RefusedHost(u.Hostname()); refused {
 		return fmt.Errorf("url %q: %s. A check probes public endpoints only", raw, reason)
 	}
 	return nil
 }
+
+// ErrUptimeWildcardHost is ValidateUptimeURL's refusal of a wildcard host.
+var ErrUptimeWildcardHost = errors.New("the host is a wildcard, which no prober can reach: check one concrete hostname")
 
 // canonicalUptimeChecks is the checks sorted by name, with each check's
 // statuses spelled the way the default is: a producer that lists the default

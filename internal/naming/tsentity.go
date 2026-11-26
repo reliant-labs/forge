@@ -20,3 +20,15 @@ const EntityTypeLocalSuffix = "Entity"
 // EntityTypeLocal is the local name a generated frontend file binds entity's
 // message type to: "Link" → "LinkEntity".
 func EntityTypeLocal(entity string) string { return entity + EntityTypeLocalSuffix }
+
+// EnumTypeLocalSuffix is what a generated page appends to a protobuf-es enum's
+// exported name to bind it: `import { Link as LinkEnum }`. An enum is named by
+// the user just as an entity is, so an enum `Link` beside next/link's `Link`
+// declared the identifier twice in the same way (see EntityTypeLocalSuffix).
+// Every reference the page makes to the enum — a member (`LinkEnum.PRIMARY`),
+// a StatusBadge's enumType, a zod pipe — goes through the local name.
+const EnumTypeLocalSuffix = "Enum"
+
+// EnumTypeLocal is the local name a generated page binds the protobuf-es enum
+// exported as tsName to: "Link" → "LinkEnum", "Brand_Status" → "Brand_StatusEnum".
+func EnumTypeLocal(tsName string) string { return tsName + EnumTypeLocalSuffix }

@@ -1906,16 +1906,23 @@ func (p HostedProvider) pollOnce(ctx context.Context, c HostedCaller, envID stri
 }
 
 // printHostedURLs is the deploy summary's answer to "where is it?": the
-// platform URL of every workload that has one, in plan order. Printed once,
+// platform URL of every workload that has one, in plan order, then the
+// same-origin API address of each site the platform serves its API on
+// (planSiteAPIURLs) — the line `forge env status` prints too. Printed once,
 // when the deploy is ready — a URL printed mid-rollout may still serve the
 // previous release.
 func printHostedURLs(plan []hostedPlanItem, published map[string]hostedPublished) {
+	fmt.Print(formatHostedDeployURLs(plan, published))
+}
+
+// formatHostedDeployURLs is printHostedURLs' text.
+func formatHostedDeployURLs(plan []hostedPlanItem, published map[string]hostedPublished) string {
 	ws := make([]HostedWorkloadStatus, 0, len(plan))
 	for _, item := range plan {
 		pub := published[item.Name]
 		ws = append(ws, HostedWorkloadStatus{Name: item.Name, URL: pub.URL, ServingPath: pub.ServingPath})
 	}
-	fmt.Print(FormatHostedURLs("  ", ws))
+	return FormatHostedURLs("  ", ws) + FormatSiteAPIURLs("  ", planSiteAPIURLs(plan, published))
 }
 
 // FormatHostedURLs renders one "url <name>: <url>" line per workload that has

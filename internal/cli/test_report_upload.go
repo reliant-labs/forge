@@ -32,6 +32,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/testlocal"
+	"github.com/reliant-labs/forge/pkg/accesstoken"
 	"github.com/reliant-labs/forge/pkg/credentials"
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
@@ -223,13 +224,30 @@ func uploadTestReport(ctx context.Context, in testUploadInput) *testUpload {
 	if pid := boundProjectID(ep); pid != "" {
 		ep.ProjectID = pid
 	}
-	cred, err := cloud.ResolveCredential("", ep)
+	// tests:write is federatable: in a GitHub Actions job granted
+	// `id-token: write`, the job's own OIDC identity is exchanged for it.
+	cred, err := cloud.ResolveCredentialFor("", ep, accesstoken.ScopeTestsWrite)
+	if why, refused := cloud.CIIdentityRefusal(err); refused {
+		return finish(testUploadSkipped, fmt.Sprintf("%s refused this job's GitHub Actions OIDC token: %s (or set %s to a token with tests:write)",
+			ep.URL, why, ep.TokenEnv))
+	}
 	if err != nil {
-		return finish(testUploadSkipped, fmt.Sprintf("not signed in to %s (%v); sign in with `%s login`, or set %s to a token with tests:write (%s)",
+		return finish(testUploadSkipped, fmt.Sprintf("not signed in to %s (%v); sign in with `%s login`, set %s to a token with tests:write (%s), "+
+			"or in GitHub Actions grant the job `permissions: id-token: write`",
 			ep.URL, firstLine(err.Error()), Name(), ep.TokenEnv, cloud.TokenSettingsWhere(ep.URL)))
 	}
 	client := cloud.NewClient(ep, cred)
 	client.HTTP.Timeout = testUploadTimeout
+	// RecordTestRun takes tests:write (or deploy:write) from a machine
+	// credential. A session's credential — a Reliant daemon's, through the
+	// credential helper, or a stored `forge login` — is minted for
+	// LoginScopes, which hold deploy:write only for a person granted it, so
+	// the client elevates for tests:write before the first upload: the person
+	// behind the session may hold that narrow scope without deploy:write. An
+	// explicit token (FORGE_CONTROL_PLANE_TOKEN, --token) and a CI-identity
+	// token (minted for exactly tests:write) are presented as they are, and a
+	// refused elevation falls back to the base credential.
+	client.DeclareScope(testUploadScope, procRecordTestRun)
 	features, err := hostedTestFeatures(ctx, client)
 	if err != nil {
 		return finish(testUploadFailed, fmt.Sprintf("could not ask %s whether it records test runs: %v", ep.URL, err))

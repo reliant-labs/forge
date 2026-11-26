@@ -17,7 +17,10 @@ import (
 // An outside evaluator's first project ("linkbox", entity Link) failed here on
 // v1.10.0: the list page bound the entity type as `import type { Link }` beside
 // `import Link from "next/link"`. Pages now bind it as `Link as LinkEntity`
-// (naming.EntityTypeLocal).
+// (naming.EntityTypeLocal). An enum is named by the user too: Link's `style`
+// is an enum `Button`, which the create and edit pages would otherwise bind
+// beside the component library's Button; pages bind it as `Button as
+// ButtonEnum` (naming.EnumTypeLocal).
 //
 // Pages are scaffold-once, so the second half proves the repair for a project
 // that already has the old page: it writes the pre-v1.11.0 import back, checks
@@ -43,8 +46,13 @@ func TestE2EFrameworkNamedEntitiesTypecheck(t *testing.T) {
 	protoPath := filepath.Join(projectDir, "proto", "services", "links", "v1", "links.proto")
 	var entities strings.Builder
 	for _, name := range []string{"Link", "Image", "Head", "Script", "Form"} {
-		entities.WriteString("\n// forge:entity\nmessage " + name + " {\n  string id = 1;\n  string title = 2;\n}\n")
+		style := ""
+		if name == "Link" {
+			style = "  Button style = 3;\n"
+		}
+		entities.WriteString("\n// forge:entity\nmessage " + name + " {\n  string id = 1;\n  string title = 2;\n" + style + "}\n")
 	}
+	entities.WriteString("\nenum Button {\n  BUTTON_UNSPECIFIED = 0;\n  BUTTON_PRIMARY = 1;\n  BUTTON_GHOST = 2;\n}\n")
 	if err := os.WriteFile(protoPath, []byte(readFileE2E(t, protoPath)+entities.String()), 0o644); err != nil {
 		t.Fatalf("author %s: %v", protoPath, err)
 	}
@@ -57,6 +65,10 @@ func TestE2EFrameworkNamedEntitiesTypecheck(t *testing.T) {
 	page := readFileE2E(t, pagePath)
 	if !strings.Contains(page, "import type { Link as LinkEntity }") {
 		t.Fatalf("links list page does not alias the entity type:\n%s", page)
+	}
+	createPath := filepath.Join(webDir, "src", "app", "links", "new", "page.tsx")
+	if create := readFileE2E(t, createPath); !strings.Contains(create, "Button as ButtonEnum") || !strings.Contains(create, "ButtonEnum.PRIMARY") {
+		t.Fatalf("links create page does not alias the enum type Button:\n%s", create)
 	}
 
 	prebuildWebRuntimeE2E(t)

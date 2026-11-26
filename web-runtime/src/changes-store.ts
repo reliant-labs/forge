@@ -17,11 +17,16 @@
 // A missing, unreachable or malformed snapshot is an empty store: every
 // change evaluates as `unknown` and every call site gets its own default.
 //
+// An app not on Reliant hosting serves that file itself, from a server that
+// fetches it from the control plane (`./changes-server`); server rendering
+// can hand loadChanges the same fetch as its `source`.
+//
 // ── What gets recorded ───────────────────────────────────────────────────
 //
 // evaluate() records `flag_evaluated` through exposure.ts with
 // provider=forge plus the change's `run`, `unit`, `reason` and the snapshot
-// `revision`, once per person, change, variant and run per day. Only
+// `revision` (and, for an account unit, the `account` it assigned), once per
+// person, change, variant and run per day. Only
 // results a readout or dashboard can use are recorded: enrolled ones
 // (`rollout`, `experiment`), which are a unit's assignment and are recorded
 // before the app renders the treatment, plus `preview` and `everyone`.
@@ -32,6 +37,7 @@
 // loadChanges is called, nothing on import.
 import {
   changeUnit,
+  changeUnitId,
   evaluate,
   parseSnapshot,
   type EvalContext,
@@ -50,6 +56,15 @@ export interface LoadChangesOptions {
   url?: string;
   /** The fetch to use (tests, server rendering). Default the global one. */
   fetch?: typeof fetch;
+  /**
+   * Where the snapshot document comes from, instead of fetching `url`: a
+   * function resolving to its JSON text, or to null or "" for none. For
+   * server rendering an app not on Reliant hosting, pass one that calls
+   * `fetchChangesSnapshot` from `@reliantlabs/forge-web-runtime/changes-server`
+   * — on the server only, since it holds the control plane token. A
+   * rejection is an empty store, like an unreachable url.
+   */
+  source?: () => Promise<string | null | undefined>;
 }
 
 /** A loaded snapshot, ready to evaluate. */
@@ -78,12 +93,17 @@ function store(snapshot: Snapshot | null): ChangesStore {
     evaluate(key: string, ctx: EvalContext = {}): Result {
       const r = evaluate(snapshot, key, ctx);
       if (RECORDED.has(r.reason) && r.variant !== "") {
+        const unit = changeUnit(snapshot, key);
         trackExposure(key, r.variant, {
           provider: FORGE_CHANGES_PROVIDER,
           run: r.run,
-          unit: changeUnit(snapshot, key),
+          unit,
           reason: r.reason,
           revision,
+          // A user or visitor id is a column of every event; an account id
+          // is not, so the assignment names the one the change hashed.
+          account:
+            unit === "account" ? changeUnitId(snapshot, key, ctx) : undefined,
         });
       }
       return r;
@@ -100,8 +120,15 @@ function store(snapshot: Snapshot | null): ChangesStore {
 export async function loadChanges(
   options?: LoadChangesOptions,
 ): Promise<ChangesStore> {
-  const url = options?.url ?? CHANGES_SNAPSHOT_URL;
+  const source = options?.source;
+  const url = source
+    ? "the changes source"
+    : (options?.url ?? CHANGES_SNAPSHOT_URL);
   try {
+    if (source) {
+      const text = await source();
+      return store(text ? parseSnapshot(text) : null);
+    }
     const fetchImpl = options?.fetch ?? globalThis.fetch;
     if (typeof fetchImpl !== "function") {
       return store(null);

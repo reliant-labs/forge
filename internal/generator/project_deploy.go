@@ -75,7 +75,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	born := g.bornComponents()
 	hasFrontend := g.forScaffold().HasFrontend
 	hasBackend := len(born) > 0 || g.Features.MigrationsEnabled()
-	hasDatabase := g.Features.MigrationsEnabled() || g.Features.ORMEnabled() || (hasBackend && hasFrontend)
+	hasDatabase := g.scaffoldsDatabase()
 	envs := []struct{ env, template string }{{codegen.DevEnvName, "kcl/dev/main.k.tmpl"}}
 	for _, env := range hostedEnvNames() {
 		envs = append(envs, struct{ env, template string }{env, "kcl/cloud/main.k.tmpl"})
@@ -101,7 +101,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			FrontendIdent:   naming.KCLIdentifier(g.FrontendName),
 			FrontendRoutes:  g.FrontendRoutes,
 			Bindings:        scaffoldEnvBindings(e.env, born, g.Features.MigrationsEnabled()),
-			APIWorkload:     codegen.APIWorkloadStanza(g.ModulePath, g.Name, apiSecrets...),
+			APIWorkload:     codegen.APIWorkloadStanzaFor(g.ModulePath, g.Name, hasDatabase, apiSecrets...),
 			// Only prod is the anonymous env: an anonymous deploy is the
 			// project's one public deploy, and staging stays an ordinary
 			// signed-in env.
@@ -256,6 +256,19 @@ func scaffoldEnvBindings(env string, components codegen.Inventory, migrations bo
 		lines = append(lines, "    "+codegen.EnvBinder(env, codegen.WorkloadKindService)+"("+codegen.APIWorkloadIdent+")")
 	}
 	return strings.Join(append(lines, others...), "\n")
+}
+
+// scaffoldsDatabase reports whether the new project gets a database: migrations
+// or the ORM on, or an API serving a frontend. Without one the envs declare no
+// database, the API names no DATABASE_URL secret, and the config proto's
+// database_url is optional, so the server starts and the first hosted deploy
+// is not waiting on a secret nothing provides.
+func (g *ProjectGenerator) scaffoldsDatabase() bool {
+	if g.Features.MigrationsEnabled() || g.Features.ORMEnabled() {
+		return true
+	}
+	hasBackend := len(g.bornComponents()) > 0
+	return hasBackend && g.forScaffold().HasFrontend
 }
 
 // bornComponents is the component set a freshly-scaffolded project declares:

@@ -84,6 +84,59 @@ ci:
   rules, and the `test-<name>` rows still run. In full mode there are no
   `test-<name>` rows: `task test` runs every frontend's suite.
 
+### Walkers, helper importers, generated code and whole rows
+
+Four optional rule fields cover what a path list cannot say:
+
+```yaml
+ci:
+  gate:
+    affected_rules:
+      - on: go-source                        # every changed .go file (paths optional)
+        packages: ["./internal/guard"]       # a test that reads the whole tree's Go source
+      - paths: ["db/migrations/**"]
+        packages_importing: ["./internal/db/testutil"]  # tests whose test files import it
+      - paths: ["proto/**"]
+        packages: ["./gen/{dir}"]            # proto/x/v1/a.proto → ./gen/x/v1
+        full_checks: [test-web, electron]    # these rows run whole
+```
+
+- `on: go-source` matches any changed `.go` file besides `paths`. It adds what
+  the rule selects but claims nothing: a Go file outside every package still
+  runs the full suite.
+- `packages_importing` names helper packages (import path or `./dir`). The test
+  packages whose test files import one run (go list's `TestImports` and
+  `XTestImports`); packages that only link it transitively do not.
+- `{dir}` in a `packages` pattern is the matched file's directory below the
+  matching glob's literal prefix (`proto/**` → `proto/`), substituted per file.
+- `full_checks` names gate rows: a path-gated check runs although no change is
+  under its `paths`, and a `test-<frontend>` row is added if needed and runs
+  the whole `test` script instead of `test:related`. `full: true` still means
+  the whole unit lane.
+
+## Capping the reach: `ci.gate.affected_reach`
+
+By default a changed package selects every test package whose binary links
+it, however far up the import graph. A hub package can make that most of the
+module. `affected_reach` caps it:
+
+```yaml
+ci:
+  gate:
+    affected_reach:
+      mode: direct        # all (default) | direct
+      transitive_cap: 20  # transitive importers allowed to join a direct run
+```
+
+Under `direct`, unit-tests runs the changed packages, the packages a rule
+names, and their direct importers (a package or its tests import a changed
+package). The transitive importers join too when there are at most
+`transitive_cap` of them; past the cap none of them run, and each is named as
+deferred to the full gate: one `deferred to the full gate: <pkg>` line each,
+the count on the unit-tests row's note, and `affected.deferred` in the
+`--json` document. Nothing is dropped silently, and the full suite (the main
+tier, `CI_FULL=1`) still runs them.
+
 ## Extra checks that run only when their paths change
 
 An extra check with `paths: [globs]` runs on a branch in affected mode only when
@@ -100,4 +153,61 @@ lists them too (no Go test reads `electron/**`) or a rule claims them.
         command: [npm, --prefix, electron, test]
         lane: test
         paths: ["electron/**"]
+```
+
+### `paths_go_closure`: run when a tool's Go build changed
+
+A check that runs a generator or tool built from the module (a docs generator,
+a codegen hook) depends on that tool's whole compile closure, which no glob list
+tracks. `paths_go_closure: [<go package patterns>]` makes it run on a branch
+when a changed file is in their build closure (`go list -deps`: the module's
+packages they compile, their Go and embedded files, a new `.go` file in one of
+those directories, `go.mod`/`go.sum`), besides any `paths` glob it matches.
+Test files are not part of a build and do not count. When go list fails the
+check runs (reach unknown is never N/A); in full mode it always runs.
+
+```yaml
+      - name: docs-generate
+        command: [go, run, ./tools/docgen, -check]
+        paths: ["docs/**"]
+        paths_go_closure: ["./tools/docgen/..."]
+```
+
+## Lockfile rows: lockfile-<frontend>
+
+On a branch in affected mode, when a frontend's `package.json`, its lockfile (the
+nearest one, a workspace root's included) or a pnpm `pnpm-workspace.yaml`
+changed, the gate adds a `lockfile-<name>` row just before `deps-<name>`. It asks
+the frontend's own package manager whether a frozen install still accepts the
+lockfile, without touching the checkout's `node_modules`: `pnpm install
+--frozen-lockfile --lockfile-only`, `npm ci --dry-run --offline` (no registry
+requests), or an isolated Yarn install in a disposable workspace copy:
+`yarn install --immutable --mode=skip-build` (berry, scripts disabled) or
+`yarn install --frozen-lockfile --ignore-scripts` (classic). Yarn may fetch
+packages, but its install output is removed with the copy. This validates
+manifest/lock consistency, not offline package availability. The
+tests run against whatever `node_modules` is on disk, so without this row a
+hand-edited lockfile that every fresh install rejects passes the gate. No
+manifest or lockfile changed, full mode, or no lockfile: no row.
+
+## Why each package runs, the build set, and a what-if
+
+Under the mode line the gate prints one line per selected package (up to 30):
+`ex.com/m/b ← a/x.go (imports ex.com/m/a)` — the first changed file that
+reached it and the edge: `changed` (the file is part of it), `imports <pkg>`
+(its test binary links the changed package) or `ci.gate.affected_rules[<i>]`.
+
+`--json` adds an `affected` object to the forge.ci.gate/v1 document whenever the
+gate computed the mode: `full`, `reason`, `changed`, `packages`, `why` (per
+package: `package`, `file`, `edge`), `files` (per changed file: `package`,
+`rules`, `ignored`, `note`), and `build`: every module package, with tests or
+not, whose build contains a changed package, the set a compile phase needs.
+
+`--plan` prints that decision without running a check; `--files` judges the
+files you name instead of the diff:
+
+```bash
+forge ci gate --plan                                    # this branch
+forge ci gate --plan --files internal/a/a.go,docs/x.md  # what would these run, and why
+forge ci gate --plan --json | jq '.build'               # the compile set
 ```

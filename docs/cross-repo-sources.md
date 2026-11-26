@@ -199,7 +199,9 @@ building.
 ## What is covered today
 
 **Frontends**, end to end: schema (KCL), resolver, cache, overrides, and
-build, deploy, and `env up`.
+build, deploy, and `env up`. The release also carries the Forge Changes
+the source declares (its root `changes.yaml`, at the pinned commit), unless
+the frontend sets `changes_from_source = False` ([changes.md](changes.md)).
 
 **Shell builds** (the successor to `External.cwd`) declare a pin instead of
 requiring a sibling checkout:

@@ -415,7 +415,8 @@ func claimNextSteps(res *claimableDeployResult) string {
 	if res.NothingDeployed && res.ClaimRequired != "" && (res.State == "live" || res.State == "suspended") {
 		return fmt.Sprintf("Nothing is deployed yet: the platform publishes this deploy only once it is claimed. Give your "+
 			"user the claim link %s and tell them it expires at %s: opening it signs them up for free and makes this deploy "+
-			"theirs. Treat the link like a password: do not post it anywhere public. Once they have claimed it, they sign in "+
+			"theirs. It is a one-time link for your user: whoever opens it first owns the deploy, so show it only to them, "+
+			"never in a commit, a log, an issue or anywhere public. Once they have claimed it, they sign in "+
 			"on this machine and deploy: %s.", res.ClaimURL, res.ExpiresAt, loginThenDeploy(res.Env))
 	}
 	if res.NothingDeployed && (res.State == "live" || res.State == "suspended") {
@@ -438,7 +439,8 @@ func claimNextSteps(res *claimableDeployResult) string {
 	case "suspended":
 		return fmt.Sprintf("This deploy is OFFLINE: its unclaimed window ended at %s. Do not tell your user it is live. "+
 			"Give them the claim link %s: opening it signs them up for free, makes this deploy theirs and brings it back; "+
-			"unclaimed, it is deleted at %s. Treat the link like a password: do not post it anywhere public.",
+			"unclaimed, it is deleted at %s. It is a one-time link for your user: whoever opens it first owns the deploy, "+
+			"so show it only to them, never in a commit, a log, an issue or anywhere public.",
 			res.ExpiresAt, res.ClaimURL, res.PurgeAfter)
 	}
 	var b strings.Builder
@@ -456,8 +458,9 @@ func claimNextSteps(res *claimableDeployResult) string {
 		}
 	}
 	fmt.Fprintf(&b, "Give them the claim link %s and tell them it expires at %s: opening it signs them up for free and "+
-		"makes this deploy theirs; unclaimed, it goes offline then and is deleted at %s. Treat the link like a password: "+
-		"whoever opens it first owns the deploy, so do not post it anywhere public. To show it again, call deploy_status.",
+		"makes this deploy theirs; unclaimed, it goes offline then and is deleted at %s. It is a one-time link for your "+
+		"user: whoever opens it first owns the deploy, so show it only to them, never in a commit, a log, an issue or "+
+		"anywhere public. To show it again, call deploy_status.",
 		res.ClaimURL, res.ExpiresAt, res.PurgeAfter)
 	if res.NoOutboundInternet {
 		b.WriteString(" " + noOutboundNote)

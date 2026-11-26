@@ -114,6 +114,11 @@ type envShapeDoc struct {
 	// PLACEHOLDER digests because no release pins them yet. Fine for a shape
 	// a human reads; a bundle must never seal it.
 	hostedPlaceholder bool
+	// changeOrigins names, for each declared change a pinned source's
+	// changes.yaml contributed, where it came from ("<repo>@<commit>"); the
+	// root's changes are not listed. Printed by the summary, never part of
+	// the shape (docs/proposals/changes-from-sources.md, decision 4).
+	changeOrigins map[string]string
 }
 
 // reconciled reports whether a reconciler may apply the WHOLE of this env's
@@ -415,9 +420,11 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 	}
 	// The project's changes are one declaration (changes.yaml), the same in
 	// every env, so a release declares what each change can be wherever it
-	// ships. An invalid file is the declaration's error, not a missing
-	// feature: a release must never ship a declaration nobody validated.
-	changes, cerr := changesdecl.Load(projectDir)
+	// ships, plus what each frontend built from a pinned source declares in
+	// its own repository (env_shape_changes_sources.go). An invalid file is
+	// the declaration's error, not a missing feature: a release must never
+	// ship a declaration nobody validated.
+	changes, changeOrigins, cerr := envShapeChanges(ctx, errOut, projectDir, entities)
 	if cerr != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, cerr)
 	}
@@ -454,7 +461,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		HostInfra:           len(entities.Infra) > 0,
 		Buckets:             shapeBucketsOf(entities),
 		Preview:             entities.Preview,
-		Changes:             changes.Shape(),
+		Changes:             changes,
 		Store:               store,
 	})
 	if err != nil {
@@ -473,6 +480,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		units:             entities.DeliveryUnits,
 		images:            digests,
 		hostedPlaceholder: placeholder,
+		changeOrigins:     changeOrigins,
 	}, nil
 }
 
@@ -1180,10 +1188,18 @@ func writeShapeSummary(w io.Writer, doc envShapeDoc) {
 	}
 	if len(doc.Shape.Changes) > 0 {
 		keys := slices.Sorted(maps.Keys(doc.Shape.Changes))
-		fmt.Fprintf(w, "  changes:   %d declared in %s (who gets which variant is the control plane's)\n", len(keys), changesdecl.FileName)
+		where := "in " + changesdecl.FileName
+		if len(doc.changeOrigins) > 0 {
+			where = "in " + changesdecl.FileName + " and the pinned sources"
+		}
+		fmt.Fprintf(w, "  changes:   %d declared %s (who gets which variant is the control plane's)\n", len(keys), where)
 		for _, k := range keys {
 			c := doc.Shape.Changes[k]
-			fmt.Fprintf(w, "    %s [%s]: %d variant(s), default %s\n", k, c.Type, len(c.Variants), c.Default)
+			from := ""
+			if o := doc.changeOrigins[k]; o != "" {
+				from = " (from " + o + ")"
+			}
+			fmt.Fprintf(w, "    %s [%s]: %d variant(s), default %s%s\n", k, c.Type, len(c.Variants), c.Default, from)
 		}
 	}
 	fmt.Fprintf(w, "  objects:   %d\n", len(doc.Shape.Objects))

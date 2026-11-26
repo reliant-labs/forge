@@ -225,17 +225,23 @@ type ListFilterField struct {
 	// EnumType / EnumImport / EnumValues are populated only for Kind "enum":
 	// the protobuf-es TS enum identifier, the _pb module to import it from,
 	// and the <option> refs/labels — the real members only, never the zero
-	// value (see formEnumMeta.Values).
-	EnumType   string
-	EnumImport string
-	EnumValues []PageEnumValue
+	// value (see formEnumMeta.Values). EnumType is the page's local name for
+	// the enum (naming.EnumTypeLocal); EnumTypeName the name it is exported
+	// under, which the import line aliases.
+	EnumType     string
+	EnumTypeName string
+	EnumImport   string
+	EnumValues   []PageEnumValue
 }
 
 // PageEnumImport is one `import { A, B } from "path"` line a form page
 // needs for its enum-typed fields.
 type PageEnumImport struct {
-	Path  string   // TS module: "@/gen/services/brand/v1/brand_pb"
-	Types []string // enum type identifiers, sorted: ["BrandStatus"]
+	Path string // TS module: "@/gen/services/brand/v1/brand_pb"
+	// Types are the import specifiers, sorted: each binds the exported enum
+	// under its page-local name, ["BrandStatus as BrandStatusEnum"]
+	// (enumImportSpecifier).
+	Types []string
 }
 
 // PageEnumValue is one option of a generated enum <select>.
@@ -261,7 +267,10 @@ type EntityPageField struct {
 	// <StatusBadge value={item.field} enumType={EnumType}>, which resolves the
 	// value to its member name once for BOTH the label and the colour. Empty
 	// for enum-LIKE string columns (already a string) and non-enum columns.
+	// EnumType is the page-local name (naming.EnumTypeLocal), EnumTypeName
+	// the exported one the import line aliases.
 	EnumType       string
+	EnumTypeName   string
 	EnumImportPath string
 	// IsMoney marks integer minor-unit (cents) columns — proto field name
 	// ends in "_cents". The cell formats them as currency (formatMoneyCents)
@@ -363,9 +372,13 @@ type PageField struct {
 	// entirely: the pre-fix z.string() text-input projection guaranteed
 	// a frontend type error at the mutate() call.
 	IsEnum bool
-	// EnumType is the TS enum identifier ("BrandStatus", or
-	// "Brand_Status" for an enum nested in a message).
-	EnumType string
+	// EnumType is the page's local name for the TS enum ("BrandStatusEnum",
+	// naming.EnumTypeLocal), which every reference on the page uses;
+	// EnumTypeName is the name protobuf-es exports it under ("BrandStatus",
+	// or "Brand_Status" for an enum nested in a message), which the import
+	// line aliases.
+	EnumType     string
+	EnumTypeName string
 	// EnumValues are the select options in proto declaration order: the
 	// REAL members, never the zero value (see formEnumMeta.Values).
 	EnumValues []PageEnumValue
@@ -643,6 +656,12 @@ func protobufESEnumSharedPrefix(enumShortName string, valueNames []string) strin
 
 // formEnumMeta is the resolved TS projection of one enum type.
 type formEnumMeta struct {
+	// Name is the enum's exported protobuf-es identifier ("BrandStatus");
+	// TSType the page-local name it is imported as (naming.EnumTypeLocal:
+	// "BrandStatusEnum"), so an enum named like something the page imports
+	// for itself (`Link`, `Image`, `Button`) cannot declare it twice. Every
+	// ref below is spelled with TSType.
+	Name       string
 	TSType     string
 	ImportPath string
 	// Values are the CHOICES a form select or list filter offers: every
@@ -709,8 +728,10 @@ func resolveFormEnum(svc ServiceDef, entityName, enumFQ string) (formEnumMeta, b
 		return formEnumMeta{}, false
 	}
 
+	pageName := naming.EnumTypeLocal(tsType)
 	meta := formEnumMeta{
-		TSType:     tsType,
+		Name:       tsType,
+		TSType:     pageName,
 		ImportPath: "@/gen/" + ProtoFileToTSImportPath(declFile),
 	}
 	// The zero is identified by its declared wire NUMBER — the fact proto3
@@ -728,7 +749,7 @@ func resolveFormEnum(svc ServiceDef, entityName, enumFQ string) (formEnumMeta, b
 		if prefix != "" {
 			member = v[len(prefix):]
 		}
-		ref := tsType + "." + member
+		ref := pageName + "." + member
 		if (numbered && numbers[i] == 0) || (!numbered && i == 0) {
 			if meta.ZeroRef == "" {
 				meta.ZeroRef = ref
@@ -772,6 +793,7 @@ func formPageField(svc ServiceDef, entityName string, f formFieldDef) (PageField
 		pf.Type = "select"
 		pf.IsEnum = true
 		pf.EnumType = meta.TSType
+		pf.EnumTypeName = meta.Name
 		pf.EnumValues = meta.Values
 		pf.EnumZeroRef = meta.ZeroRef
 		pf.EnumImportPath = meta.ImportPath
@@ -791,6 +813,16 @@ func formPageField(svc ServiceDef, entityName string, f formFieldDef) (PageField
 	return pf, true
 }
 
+// enumImportSpecifier is the import specifier that binds the enum exported
+// as name under the page-local name local: "BrandStatus as BrandStatusEnum".
+// A field whose exported name was not recorded is imported as it is named.
+func enumImportSpecifier(name, local string) string {
+	if name == "" || name == local {
+		return local
+	}
+	return name + " as " + local
+}
+
 // collectEnumImports aggregates the per-field enum import needs of one
 // form into sorted, deduped import lines.
 func collectEnumImports(fields []PageField) []PageEnumImport {
@@ -802,7 +834,7 @@ func collectEnumImports(fields []PageField) []PageEnumImport {
 		if byPath[f.EnumImportPath] == nil {
 			byPath[f.EnumImportPath] = map[string]bool{}
 		}
-		byPath[f.EnumImportPath][f.EnumType] = true
+		byPath[f.EnumImportPath][enumImportSpecifier(f.EnumTypeName, f.EnumType)] = true
 	}
 	if len(byPath) == 0 {
 		return nil
@@ -896,6 +928,7 @@ func attachListMeta(page *PageTemplateData, svc ServiceDef, entityName, listReq,
 					}
 					lf.Kind = "enum"
 					lf.EnumType = meta.TSType
+					lf.EnumTypeName = meta.Name
 					lf.EnumImport = meta.ImportPath
 					lf.EnumValues = meta.Values
 				case base == "bool":
@@ -926,6 +959,7 @@ func attachListMeta(page *PageTemplateData, svc ServiceDef, entityName, listReq,
 			asPageFields = append(asPageFields, PageField{
 				IsEnum:         true,
 				EnumType:       lf.EnumType,
+				EnumTypeName:   lf.EnumTypeName,
 				EnumImportPath: lf.EnumImport,
 			})
 		}
@@ -1834,6 +1868,7 @@ func AttachEntityMeta(page *PageTemplateData, entity EntityDef, svc ServiceDef) 
 		if f.Kind == FieldKindEnum && !repeated && f.MessageType != "" {
 			if meta, ok := resolveFormEnum(svc, entity.Name, f.MessageType); ok {
 				col.EnumType = meta.TSType
+				col.EnumTypeName = meta.Name
 				col.EnumImportPath = meta.ImportPath
 			}
 		}
@@ -1936,7 +1971,7 @@ func collectColumnEnumImports(cols []EntityPageField) []PageEnumImport {
 		if c.EnumType == "" || c.EnumImportPath == "" {
 			continue
 		}
-		fields = append(fields, PageField{IsEnum: true, EnumType: c.EnumType, EnumImportPath: c.EnumImportPath})
+		fields = append(fields, PageField{IsEnum: true, EnumType: c.EnumType, EnumTypeName: c.EnumTypeName, EnumImportPath: c.EnumImportPath})
 	}
 	return collectEnumImports(fields)
 }

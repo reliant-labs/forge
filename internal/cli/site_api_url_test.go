@@ -58,21 +58,6 @@ func TestSiteAPIFrontends(t *testing.T) {
 	}
 }
 
-// The route is at the host root, whatever path the site URL carries.
-func TestSiteAPIURL(t *testing.T) {
-	for in, want := range map[string]string{
-		"https://copper-cricket.reliantpreview.dev":   "https://copper-cricket.reliantpreview.dev/_api",
-		"https://copper-cricket.reliantpreview.dev/":  "https://copper-cricket.reliantpreview.dev/_api",
-		"https://ancient-quokka.sites.example/admin/": "https://ancient-quokka.sites.example/_api",
-		"":          "",
-		"not a url": "",
-	} {
-		if got := siteAPIURL(in); got != want {
-			t.Errorf("siteAPIURL(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 // `forge env status` names the API's same-origin address under the site's
 // URL, so an author never has to guess the /_api prefix (new.txt F26), and
 // --json carries it as hosted_api_urls.
@@ -106,11 +91,6 @@ func TestWriteHostedStatusNamesTheSiteAPI(t *testing.T) {
 		t.Errorf("an env with no site API must not carry hosted_api_urls: %s", b)
 	}
 
-	// Several sites: each is named.
-	if got := formatSiteAPIURLs("  ", map[string]string{"web": "https://a/_api", "admin": "https://b/_api"}); got !=
-		"  API (admin): https://b/_api\n  API (web): https://a/_api\n" {
-		t.Errorf("formatSiteAPIURLs = %q", got)
-	}
 }
 
 // A claimable full-stack deploy prints the API address under the live URL,

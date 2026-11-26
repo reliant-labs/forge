@@ -376,13 +376,17 @@ jobs:
       # Flux e2e tests (flux_reconcile_e2e_test.go) create real k3d clusters
       # and need k3d, kubectl, helm and docker. docker, kubectl and helm ship
       # on ubuntu-latest; k3d does not. Pinned, not "latest", so the install
-      # cannot change the verdict without a commit.
+      # cannot change the verdict without a commit: the release binary,
+      # checked against its published sha256 (the same release and checksum
+      # scaffolded workflows install, internal/templates/ci_install_k3d.go).
       - name: Install k3d
         env:
           K3D_VERSION: v5.8.3
+          K3D_SHA256: dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e
         run: |
-          curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh \
-            | TAG="$K3D_VERSION" bash
+          curl -fsSLo "$RUNNER_TEMP/k3d" "https://github.com/k3d-io/k3d/releases/download/${K3D_VERSION}/k3d-linux-amd64"
+          echo "${K3D_SHA256}  $RUNNER_TEMP/k3d" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/k3d" /usr/local/bin/k3d
           k3d version
 
       # dlv: TestE2EDebugEnvUpAttachAndStart drives `forge debug` against a

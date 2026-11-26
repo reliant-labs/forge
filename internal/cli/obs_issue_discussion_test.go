@@ -15,6 +15,8 @@ const (
 	cloudTimeline = "controlplane.v1.IssuesService/ListIssueTimeline"
 	cloudComment  = "controlplane.v1.IssuesService/AddIssueComment"
 	cloudAssign   = "controlplane.v1.IssuesService/AssignIssue"
+	cloudEditCmt  = "controlplane.v1.IssuesService/UpdateIssueComment"
+	cloudDelCmt   = "controlplane.v1.IssuesService/DeleteIssueComment"
 )
 
 // discussedIssueJSON is cloudIssueJSON with an assignee and an incident.
@@ -388,6 +390,57 @@ func TestObsIssueCommentFailures(t *testing.T) {
 	_, _, err := obsRun(t, devFacts(), &scriptedRunner{}, "issue", "comment", "sfp1-"+issueFP, "hi", "dev")
 	if exitCodeForError(err) != 2 {
 		t.Errorf("local: exit %d, want 2 (%v)", exitCodeForError(err), err)
+	}
+}
+
+// TestObsIssueEditAndDeleteComment: `obs issue edit-comment` and
+// `delete-comment` reach the control plane's UpdateIssueComment and
+// DeleteIssueComment (agent report 855d1b57), and a local env refuses both.
+func TestObsIssueEditAndDeleteComment(t *testing.T) {
+	edited := strings.Replace(commentReply, `"body":"checked the pool"`, `"body":"checked it twice","updatedAt":"2026-10-22T13:00:00Z"`, 1)
+	fc := &fakeCloudCaller{replies: map[string]string{cloudEditCmt: edited}}
+	out, _, err := obsRunCloud(t, fc, "issue", "edit-comment", "ISS-7f3a", "cm9", "checked it twice", "prod", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fc.calls) != 1 || fc.calls[0].procedure != cloudEditCmt || !strings.Contains(fc.calls[0].body, `"commentId":"cm9"`) || !strings.Contains(fc.calls[0].body, `"body":"checked it twice"`) {
+		t.Errorf("edit calls = %v", fc.calls)
+	}
+	doc := decode(t, out)
+	if c := doc["comment"].(map[string]any); doc["ok"] != true || c["id"] != "cm9" || c["body"] != "checked it twice" || c["updated_at"] == nil {
+		t.Errorf("edit document = %v", doc)
+	}
+
+	fc = &fakeCloudCaller{replies: map[string]string{cloudDelCmt: `{}`}}
+	out, _, err = obsRunCloud(t, fc, "issue", "delete-comment", "ISS-7f3a", "cm9", "prod", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fc.calls) != 1 || fc.calls[0].procedure != cloudDelCmt || !strings.Contains(fc.calls[0].body, `"issueId":"ISS-7f3a"`) || !strings.Contains(fc.calls[0].body, `"commentId":"cm9"`) {
+		t.Errorf("delete calls = %v", fc.calls)
+	}
+	doc = decode(t, out)
+	if doc["ok"] != true || doc["schema"] != "forge.obs.issue/v1" || doc["deleted_comment"].(map[string]any)["id"] != "cm9" || doc["issue"].(map[string]any)["id"] != "ISS-7f3a" {
+		t.Errorf("delete document = %v", doc)
+	}
+	text, _, err := obsRunCloud(t, &fakeCloudCaller{replies: map[string]string{cloudDelCmt: `{}`}}, "issue", "delete-comment", "ISS-7f3a", "cm9", "prod")
+	if err != nil || text != "deleted comment cm9 from ISS-7f3a\n" {
+		t.Errorf("delete text = %q %v", text, err)
+	}
+
+	// Someone else's comment: the control plane refuses, and nothing is retried.
+	fc = &fakeCloudCaller{errs: map[string]error{cloudDelCmt: &cloud.Error{Code: "permission_denied"}}}
+	if _, _, err := obsRunCloud(t, fc, "issue", "delete-comment", "ISS-7f3a", "cm9", "prod", "--json"); exitCodeForError(err) != 2 || len(fc.calls) != 1 {
+		t.Errorf("refused delete: exit %d, calls %d", exitCodeForError(err), len(fc.calls))
+	}
+
+	for _, args := range [][]string{
+		{"issue", "edit-comment", "sfp1-" + issueFP, "cm9", "hi", "dev"},
+		{"issue", "delete-comment", "sfp1-" + issueFP, "cm9", "dev"},
+	} {
+		if _, _, err := obsRun(t, devFacts(), &scriptedRunner{}, args...); exitCodeForError(err) != 2 {
+			t.Errorf("local %s: exit %d, want 2 (%v)", args[1], exitCodeForError(err), err)
+		}
 	}
 }
 

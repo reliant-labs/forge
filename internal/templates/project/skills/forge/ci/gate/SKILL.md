@@ -40,18 +40,9 @@ credential committed long ago. A false positive is silenced the gitleaks way:
 its fingerprint in `.gitleaksignore`, or a `gitleaks:allow` comment on the
 line. A real one must be revoked: deleting it in a new commit leaves it in the
 history. `forge ci secret-scan` with no flag scans every commit.
-`license-check` judges the licenses of your dependencies, not your own code:
-it passes go-licenses `--ignore` for the module in `go.mod` and for the modules
-a root `go.work` uses from inside the project, so a project needs no LICENSE
-file of its own for the check to run clean. go-licenses runs with `GOROOT` set
-(`go env GOROOT` in the project, unless the environment sets one): the pinned
-binary is built with `-trimpath` and has no GOROOT of its own, and without one
-it takes every package for the standard library and passes having checked
-nothing, which it did before v1.11.0. Its findings are therefore new to every
-project, so they warn first, through the `license-check` lint rollout row: below
-its `gates_from` release a failing row is an allowed `SKIPPED` "would fail"
-naming the dependency, and from it the row FAILs. `lint.rules:
-{license-check: error}` gates now; `{license-check: warn}` keeps it a warning.
+`license-check` judges your Go dependencies' licenses with go-licenses: a
+forbidden/restricted blocklist by default, an allowlist with per-module
+exceptions under `ci.license`. **Load `ci/license`.**
 
 Four rules every run obeys:
 
@@ -323,6 +314,7 @@ ci:
     affected_rules:                          # what other paths select (above)
       - paths: ["frontends/web/**"]
         frontends: [web]
+    affected_reach: { mode: direct, transitive_cap: 20 }  # cap the import-graph reach (affected)
     extra_checks:
       - name: gen-llm-gateway        # the row; what CI_SKIP / CI_ONLY match; unique
         command: [go, run, ./cmd/gen-llm-gateway, -check]  # argv, no shell; exit 0 = PASS

@@ -1029,6 +1029,10 @@ type CIConfig struct {
 	// Gate extends `forge ci gate` — the local gate behind `task ci` and
 	// `task ci:checks` — with the project's own checks.
 	Gate CIGateConfig `yaml:"gate,omitempty"`
+	// License is the policy of the gate's license-check row: an allowlist
+	// of license names and per-module exceptions. Absent, the row keeps its
+	// forbidden/restricted blocklist. See CILicenseConfig.
+	License CILicenseConfig `yaml:"license,omitempty"`
 
 	Workflows map[string]bool `yaml:"workflows,omitempty"` // per-workflow opt-out; see ci_workflows.go
 }
@@ -1058,6 +1062,10 @@ type CIGateConfig struct {
 	// full suite; a file no rule matches behaves as without rules. See
 	// CIGateAffectedRule and internal/cigate/affected.go.
 	AffectedRules []CIGateAffectedRule `yaml:"affected_rules,omitempty"`
+	// AffectedReach caps how far affected mode follows the import graph.
+	// Unset is every test package whose binary links a changed package
+	// (full transitive reach). See CIGateAffectedReach.
+	AffectedReach *CIGateAffectedReach `yaml:"affected_reach,omitempty"`
 	// ExtraChecks are the project's own rows. By default each runs in the
 	// `checks` lane, so the scaffolded CI job (`task ci:checks`) and a
 	// developer's `task ci` run the same ones.
@@ -1129,6 +1137,12 @@ type CIGateCheck struct {
 	// default branch, CI_FULL=1 / --full, --tier main or full, no base to
 	// diff against) it always runs.
 	Paths []string `yaml:"paths,omitempty"`
+	// PathsGoClosure, when set, are Go package patterns (`./tools/docgen/...`):
+	// on a branch in affected mode the check also runs when a changed file
+	// is in their build closure (`go list -deps`), besides any Paths glob it
+	// matches. For a check that runs a generator or tool built from the
+	// module. In full mode it always runs.
+	PathsGoClosure []string `yaml:"paths_go_closure,omitempty"`
 }
 
 // CIGateAffectedRule is one ci.gate.affected_rules entry: the changed files
@@ -1154,7 +1168,34 @@ type CIGateAffectedRule struct {
 	// Reason is printed beside what the rule selected; for a Full rule it is
 	// the cause the gate gives for running the full suite.
 	Reason string `yaml:"reason,omitempty"`
+	// On widens what the rule matches. "go-source" matches every changed
+	// .go file as well as Paths (which may then be empty): a walker test
+	// that reads the whole tree's Go source runs on any Go change. A Go file
+	// matched only this way keeps its own mapping and is not claimed.
+	On string `yaml:"on,omitempty"`
+	// PackagesImporting are import paths (or ./dir patterns) of helper
+	// packages: when the rule matches, every test package whose test files
+	// import one of them runs (go list's TestImports and XTestImports).
+	PackagesImporting []string `yaml:"packages_importing,omitempty"`
+	// FullChecks name gate rows that run whole when the rule matches: a
+	// path-gated check runs even with no change under its paths, and a
+	// test-<frontend> row runs the frontend's whole `test` script.
+	FullChecks []string `yaml:"full_checks,omitempty"`
 }
+
+// CIGateAffectedReach is ci.gate.affected_reach. Mode "direct" selects the
+// changed packages and their direct importers, plus the transitive importers
+// only when they add at most TransitiveCap packages; otherwise those are
+// deferred to the full gate and named in the gate's output. Mode "all" (or
+// unset) is the full transitive reach.
+type CIGateAffectedReach struct {
+	Mode          string `yaml:"mode,omitempty"`
+	TransitiveCap int    `yaml:"transitive_cap,omitempty"`
+}
+
+// CIGateOnGoSource is the CIGateAffectedRule.On value that matches every
+// changed .go file.
+const CIGateOnGoSource = "go-source"
 
 // CIGateProbe is a command whose success a check needs before it runs.
 type CIGateProbe struct {

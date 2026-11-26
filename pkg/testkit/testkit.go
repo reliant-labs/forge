@@ -67,6 +67,7 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/auth"
 	"github.com/reliant-labs/forge/pkg/dbgrants"
+	"github.com/reliant-labs/forge/pkg/mountkit"
 	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/orm"
 	"github.com/reliant-labs/forge/pkg/pgtest"
@@ -382,7 +383,9 @@ func NewConnectClient[C any](
 	handlerOpts ...connect.HandlerOption,
 ) (*httptest.Server, C) {
 	t.Helper()
-	opts := append([]connect.HandlerOption(nil), handlerOpts...)
+	// Production's JSON codec first (serverkit.Chain's), so a JSON request a
+	// test sends gets the error a client would; a handlerOpts codec wins.
+	opts := append([]connect.HandlerOption{mountkit.JSONCodecOption()}, handlerOpts...)
 	if warn := newWarnInvalidRequests(t); warn != nil {
 		opts = append(opts, connect.WithInterceptors(warn))
 	}

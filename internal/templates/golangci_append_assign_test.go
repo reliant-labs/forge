@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // gocritic's appendAssign flags `a = append(b, x)`, which is usually a typo
@@ -105,7 +107,7 @@ func TypoOnReslice(a, b []int) []int {
 	}
 	cmd := exec.Command("golangci-lint", "run", "--enable-only=gocritic", "./...")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off"))
 	out, _ := cmd.CombinedOutput()
 	report := string(out)
 	if !strings.Contains(report, "fx.go:19") || !strings.Contains(report, "appendAssign") {

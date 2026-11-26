@@ -933,8 +933,13 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	projectDir := projectDirForKCL()
 	timingsRun.projectDir = projectDir
 	// Host runners and frontend dependency installs can build even with
-	// --no-build. Check physical headroom before rendering or starting work.
-	if err := checkBuildStorageFn(projectDir); err != nil {
+	// --no-build. Check physical headroom before rendering or starting work —
+	// under the HOST lane: what env up itself builds is host binaries and
+	// node_modules. An image build checks the full reserve when it starts
+	// (prepareDockerBuildStorage, buildGoTarget), so holding the whole run to
+	// that reserve here only refused a host-process dev loop with 50 GiB free
+	// (Ranger friction #1).
+	if err := checkHostBuildStorageFn(projectDir); err != nil {
 		return err
 	}
 	// Stable identity of THIS project, stamped onto every child and required to
@@ -3286,7 +3291,7 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 		if !inTargetSet(targets, w.Name) {
 			continue
 		}
-		if err := checkBuildStorageFn(projectDirForKCL()); err != nil {
+		if err := checkHostBuildStorageFn(projectDirForKCL()); err != nil {
 			fmt.Printf("[up] host %s: %v\n", w.Name, err)
 			failures++
 			continue

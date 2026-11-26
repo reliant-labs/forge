@@ -197,6 +197,27 @@ prefix to existing/custom Air configs to guard their internal rebuild loop.
 These are admission checks, not disk reservations: concurrent builds and one
 large in-progress build can still consume the reserve.
 
+The reserve a build is held to depends on what it writes (its lane):
+
+| Lane    | What it builds                                                        | Refused below                             | Warned below       |
+| ------- | --------------------------------------------------------------------- | ----------------------------------------- | ------------------ |
+| `heavy` | images, external/shell and whole-project builds                       | `host_reserve_gib`                        | —                  |
+| `host`  | one binary for a process `forge env up` runs, and air's rebuild of it | 10 GiB (or `host_reserve_gib` if smaller) | `host_reserve_gib` |
+| `light` | no go build and no image build (a static site's `npm run build`)      | 5 GiB (or `host_reserve_gib` if smaller)  | `host_reserve_gib` |
+
+`forge env up` admits its own start and its host launches under `host`, and
+sets `FORGE_STORAGE_LANE=host` in every host process's environment, so the
+bare `forge storage check ./tmp` in an existing air config admits its rebuild
+under `host` with no edit. An image build re-checks the full reserve when it
+starts. `forge storage check --lane heavy|host|light` picks the lane explicitly
+(default `$FORGE_STORAGE_LANE`, else `heavy`).
+
+To build under a different reserve for one run without touching the
+machine-wide policy, set `FORGE_STORAGE_RESERVE_GIB=<GiB>` (every check in the
+process and the processes it starts, air's rebuilds included) or pass
+`forge storage check --reserve <GiB>`. The override is exact, whatever the
+lane, and is never written to `storage.json`; zero is refused.
+
 On a CI runner (`CI` or `GITHUB_ACTIONS` set) a shortfall is printed as a
 warning and the build proceeds. The reserve guards a persistent machine against
 accumulated caches; an ephemeral runner's disk is discarded with the job, and a

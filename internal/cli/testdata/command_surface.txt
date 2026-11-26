@@ -269,7 +269,7 @@ forge machine slot	group	project-dir/C:string
 forge machine slot run	cmd	class:string project-dir/C:string slots:int
 forge machine slot status	cmd	class:string json:bool project-dir/C:string
 forge machine storage	group	policy:string project-dir/C:string
-forge machine storage check	cmd	policy:string project-dir/C:string
+forge machine storage check	cmd	lane:string policy:string project-dir/C:string reserve:uint64
 forge machine storage configure-nodes	cmd	apply:bool policy:string project-dir/C:string
 forge machine storage daemon	cmd	interval:duration policy:string project-dir/C:string
 forge machine storage gc	cmd	apply:bool dry-run:bool policy:string project-dir/C:string scheduled:bool
@@ -426,7 +426,7 @@ forge slot status	cmd	class:string json:bool project-dir/C:string
 forge start	cmd	allow-version-skew:bool project-dir/C:string
 forge start app	cmd	allow-version-skew:bool project-dir/C:string
 forge storage	group	policy:string project-dir/C:string
-forge storage check	cmd	policy:string project-dir/C:string
+forge storage check	cmd	lane:string policy:string project-dir/C:string reserve:uint64
 forge storage configure-nodes	cmd	apply:bool policy:string project-dir/C:string
 forge storage daemon	cmd	interval:duration policy:string project-dir/C:string
 forge storage gc	cmd	apply:bool dry-run:bool policy:string project-dir/C:string scheduled:bool

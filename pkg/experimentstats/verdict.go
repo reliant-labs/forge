@@ -11,18 +11,18 @@ import (
 type Verdict string
 
 const (
-	// VerdictNoData: no unit has been assigned.
+	// VerdictNoData means no unit has been assigned.
 	VerdictNoData Verdict = "no_data"
-	// VerdictSRMFailed: the arms' sizes do not match the planned split, so
-	// assignment or its recording is broken and no effect can be trusted.
+	// VerdictSRMFailed means the arms' sizes do not match the planned split,
+	// so assignment or its recording is broken and no effect can be trusted.
 	// It overrides every other verdict.
 	VerdictSRMFailed Verdict = "srm_failed"
-	// VerdictInconclusive: the data cannot support a decision (Reason says
-	// why).
+	// VerdictInconclusive means the data cannot support a decision (Reason
+	// says why).
 	VerdictInconclusive Verdict = "inconclusive"
-	// VerdictTreatmentBetter: the treatment converts at a higher rate.
+	// VerdictTreatmentBetter means the treatment converts at a higher rate.
 	VerdictTreatmentBetter Verdict = "treatment_better"
-	// VerdictTreatmentWorse: the treatment converts at a lower rate.
+	// VerdictTreatmentWorse means the treatment converts at a lower rate.
 	VerdictTreatmentWorse Verdict = "treatment_worse"
 )
 
@@ -30,13 +30,13 @@ const (
 type Reason string
 
 const (
-	// ReasonBelowMinSample: an arm has fewer than MinSamplePerArm assigned
-	// units. Keep the run going.
+	// ReasonBelowMinSample means an arm has fewer than MinSamplePerArm
+	// assigned units. Keep the run going.
 	ReasonBelowMinSample Reason = "below_min_sample"
-	// ReasonWindowNotComplete: the arms have enough assigned units, but too
-	// few of them have had their whole attribution window yet.
+	// ReasonWindowNotComplete means the arms have enough assigned units, but
+	// too few of them have had their whole attribution window yet.
 	ReasonWindowNotComplete Reason = "window_not_complete"
-	// ReasonIntervalSpansZero: enough data, and no detectable difference:
+	// ReasonIntervalSpansZero means enough data, and no detectable difference:
 	// the difference interval includes zero, or the p-value is not below
 	// the comparison's level.
 	ReasonIntervalSpansZero Reason = "interval_spans_zero"

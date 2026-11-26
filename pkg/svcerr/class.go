@@ -24,16 +24,16 @@ const (
 	// ClassNone is the class of a nil error.
 	ClassNone Class = iota
 
-	// ClassServer: our system failed, or cannot tell that it did not. Every
-	// error nobody classified lands here, deliberately — an unrecognised
+	// ClassServer means our system failed, or cannot tell that it did not.
+	// Every error nobody classified lands here, deliberately — an unrecognised
 	// driver or SDK error must stay loud.
 	ClassServer
 
-	// ClassUser: the caller or the user must act, and the system behaved
+	// ClassUser means the caller or the user must act, and the system behaved
 	// correctly by refusing. Not a page.
 	ClassUser
 
-	// ClassCanceled: the call was cut short by one end going away — the
+	// ClassCanceled means the call was cut short by one end going away — the
 	// caller (context.Canceled, ErrCanceled, CodeCanceled), or this replica
 	// draining for a rollout (ErrServerDraining). Nobody has to act.
 	ClassCanceled

@@ -9,6 +9,7 @@ import (
 // FieldType represents a database field type
 type FieldType string
 
+// The field types, each spelled as the PostgreSQL type it creates.
 const (
 	TypeText        FieldType = "TEXT"
 	TypeVarchar     FieldType = "VARCHAR"

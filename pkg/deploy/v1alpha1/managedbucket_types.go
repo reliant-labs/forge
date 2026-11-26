@@ -112,13 +112,22 @@ func ValidateBucketName(name string) error {
 type BucketCredentialKey string
 
 const (
-	BucketKeyEndpoint        BucketCredentialKey = "endpoint"
-	BucketKeyPublicEndpoint  BucketCredentialKey = "public_endpoint"
-	BucketKeyRegion          BucketCredentialKey = "region"
-	BucketKeyBucket          BucketCredentialKey = "bucket"
-	BucketKeyAccessKeyID     BucketCredentialKey = "access_key_id"
+	// BucketKeyEndpoint is the S3 endpoint a workload in the cluster dials.
+	BucketKeyEndpoint BucketCredentialKey = "endpoint"
+	// BucketKeyPublicEndpoint is the endpoint presigned URLs are minted for,
+	// the one a browser reaches.
+	BucketKeyPublicEndpoint BucketCredentialKey = "public_endpoint"
+	// BucketKeyRegion is the bucket's region.
+	BucketKeyRegion BucketCredentialKey = "region"
+	// BucketKeyBucket is the bucket's name.
+	BucketKeyBucket BucketCredentialKey = "bucket"
+	// BucketKeyAccessKeyID is the access key id of the bucket's credential.
+	BucketKeyAccessKeyID BucketCredentialKey = "access_key_id"
+	// BucketKeySecretAccessKey is the secret half of the bucket's credential.
 	BucketKeySecretAccessKey BucketCredentialKey = "secret_access_key"
-	BucketKeyPathStyle       BucketCredentialKey = "path_style"
+	// BucketKeyPathStyle says whether to address the bucket path-style
+	// (endpoint/bucket) rather than as a virtual host.
+	BucketKeyPathStyle BucketCredentialKey = "path_style"
 )
 
 // BucketCredentialKeys is every BucketCredentialKey, in the order

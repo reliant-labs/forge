@@ -285,6 +285,12 @@ func TestChangedSinceReportsDeletionsAndIgnoresNestedFiles(t *testing.T) {
 func TestRepoRelativeIsSlashFormAndRefusesPathsOutsideTheRepository(t *testing.T) {
 	root := t.TempDir()
 	inside := filepath.Join(root, "db", "migrations")
+	// The path must exist: both sides are symlink-resolved before they are
+	// compared (macOS /private, Windows 8.3 names), and a missing path stays
+	// unresolved and so would not compare as inside the resolved root.
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if got, ok := RepoRelative(root, inside); !ok || got != "db/migrations" {
 		t.Errorf("RepoRelative(inside) = %q, %v; want db/migrations", got, ok)
 	}

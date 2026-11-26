@@ -54,13 +54,19 @@ func helperMain(mode string) int {
 			fmt.Println(l)
 		}
 		// The lane's own command writes its coverage into the lane dir,
-		// when it is told of one (an unrecorded capture tells it none).
+		// when it is told of one.
 		if dir := os.Getenv(EnvLaneDir); dir != "" {
 			_ = os.WriteFile(filepath.Join(dir, testreport.LaneCoverProfile), []byte("mode: atomic\n"), 0o644)
 		}
 		return 1
 	case "env":
 		fmt.Printf("%s|%s|%s\n", os.Getenv(EnvRun), os.Getenv(EnvLane), os.Getenv(EnvLaneDir))
+		return 0
+	case "coverage-env":
+		fmt.Printf("%s|%s|%s\n", os.Getenv(EnvRun), os.Getenv(EnvLane), os.Getenv(EnvLaneDir))
+		if err := os.WriteFile(filepath.Join(os.Getenv(EnvLaneDir), "cover.out"), []byte("mode: atomic\n"), 0o644); err != nil {
+			return 1
+		}
 		return 0
 	case "stdin":
 		_, _ = io.Copy(os.Stdout, os.Stdin)
@@ -215,6 +221,57 @@ func TestCaptureExportsTheRunToItsCommand(t *testing.T) {
 	m, err := testreport.ReadLaneManifest(h.run, "env-lane")
 	if err != nil || m.Results != testreport.LaneResultsUnparsed {
 		t.Fatalf("capture.json = %+v, %v", m, err)
+	}
+}
+
+func TestCaptureNoRecordExportsWritableLane(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"scratch", "option", "environment"} {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			h := &harness{t: t, root: t.TempDir()}
+			h.run = filepath.Join(h.root, "run")
+			o := h.opts("unit", "coverage-env", nil)
+			o.NoRecord = true
+			switch source {
+			case "scratch":
+				o.RunDir, o.Lane = "", ""
+			case "environment":
+				o.RunDir = ""
+				o.Getenv = envOf(map[string]string{EnvRun: h.run})
+			}
+			// Exports must override stale inherited values, not mutate Environ.
+			o.Environ = append(o.Environ, EnvRun+"=stale", EnvLane+"=stale", EnvLaneDir+"=stale")
+			res := Capture(context.Background(), o)
+			if res.ExitCode != 0 || res.StartErr != nil || res.LaneDir != "" {
+				t.Fatalf("Capture = %+v, stderr %s", res, h.stderr.String())
+			}
+			parts := strings.Split(strings.TrimSpace(h.stdout.String()), "|")
+			lane := "unit"
+			if source == "scratch" {
+				lane = "short"
+			}
+			if len(parts) != 3 || !filepath.IsAbs(parts[0]) || parts[1] != lane || parts[2] != filepath.Join(parts[0], lane) {
+				t.Fatalf("child environment = %q", h.stdout.String())
+			}
+			if source == "scratch" {
+				if _, err := os.Stat(parts[0]); !os.IsNotExist(err) {
+					t.Fatalf("scratch run not removed: %v", err)
+				}
+			} else {
+				if parts[0] != h.run {
+					t.Fatalf("run = %q, want %q", parts[0], h.run)
+				}
+				if _, err := os.Stat(filepath.Join(parts[2], "cover.out")); err != nil {
+					t.Fatal(err)
+				}
+				for _, path := range []string{filepath.Join(h.run, testreport.RunManifestFile), filepath.Join(parts[2], testreport.LaneManifestFile), filepath.Join(parts[2], testreport.LaneResultsFile)} {
+					if _, err := os.Stat(path); !os.IsNotExist(err) {
+						t.Fatalf("record written at %s: %v", path, err)
+					}
+				}
+			}
+		})
 	}
 }
 

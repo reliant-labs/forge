@@ -55,9 +55,10 @@ type CaptureOptions struct {
 	Format string
 	Render string
 	// NoRecord runs and prints the command as a recorded capture would and
-	// records nothing: no run is begun and no lane written. It is the inner
-	// loop's (`task test:short`), which re-runs on every edit and whose
-	// results no report should count.
+	// records no report metadata. It still exports the run and writable lane
+	// directory (lane defaults to "short"); without RunDir or EnvRun, these
+	// use temporary space removed after the command exits. It is the inner
+	// loop's (`task test:short`), whose results no report should count.
 	NoRecord bool
 	// Command is run as given, never through a shell.
 	Command []string
@@ -242,8 +243,31 @@ func (c *capture) ensureLaneDir(run string) {
 // rendered, so what a lane prints does not depend on whether it was recorded.
 func (c *capture) passThrough(ctx context.Context) CaptureResult {
 	run := c.opts.RunDir
-	if run == "" && !c.opts.NoRecord {
+	if run == "" {
 		run = strings.TrimSpace(c.opts.Getenv(EnvRun))
+	}
+	env := c.opts.Environ
+	if c.opts.NoRecord {
+		// Keep the runner's environment contract without beginning a report
+		// run. Standalone inner-loop commands get disposable coverage space.
+		if c.opts.Lane == "" {
+			c.opts.Lane = "short"
+		}
+		if run == "" {
+			var cleanup func()
+			run, cleanup = c.scratchRun()
+			defer cleanup()
+		}
+		if run != "" && testreport.ValidateLaneName(c.opts.Lane) == nil {
+			if abs, err := filepath.Abs(run); err == nil {
+				run = abs
+			}
+			env = append(slices.Clone(env),
+				EnvRun+"="+run,
+				EnvLane+"="+c.opts.Lane,
+				EnvLaneDir+"="+testreport.LaneDir(run, c.opts.Lane),
+			)
+		}
 	}
 	c.ensureLaneDir(run)
 	stdout := c.opts.Stdout
@@ -252,11 +276,21 @@ func (c *capture) passThrough(ctx context.Context) CaptureResult {
 		st = c.newStream()
 		stdout = st
 	}
-	code, err := execute(ctx, c.opts.Command, c.opts.Environ, c.opts.Stdin, stdout, c.opts.Stderr)
+	code, err := execute(ctx, c.opts.Command, env, c.opts.Stdin, stdout, c.opts.Stderr)
 	if st != nil {
 		st.flush()
 	}
 	return CaptureResult{ExitCode: code, StartErr: err}
+}
+
+// scratchRun provides writable runner artifacts without creating report metadata.
+func (c *capture) scratchRun() (string, func()) {
+	run, err := os.MkdirTemp("", "forge-test-short-*")
+	if err != nil {
+		c.warn("cannot create scratch run directory: %v", err)
+		return "", func() {}
+	}
+	return run, func() { _ = os.RemoveAll(run) }
 }
 
 func (c *capture) run(ctx context.Context) CaptureResult {

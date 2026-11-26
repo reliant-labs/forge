@@ -195,6 +195,11 @@ host = forge.HostOverrides {
 `forge env config <env>` prints what each workload is actually configured
 with — the same values `forge env up` hands the processes it launches, with
 launch-resolved ports reported as launched rather than as rendered.
+Each workload's heading names where it runs and, for a long-running host
+process, the port it listens on (`api (service) — on host, listens on
+localhost:8087`; `listen_ports` in `--json`). Read the port there, not from a
+`PORT` variable: a job or a worker is handed the project's `PORT` default
+(8080) whether or not it binds anything.
 
 ```bash
 forge env config dev                      # every workload, grouped

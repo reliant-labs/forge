@@ -271,30 +271,9 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 
 	// Pass 2: anything the pipeline did not write comes from the upgrade
 	// renderer or the staging render of `forge project new`.
-	var remaining []string
-	for _, p := range paths {
-		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(p))); statErr != nil {
-			remaining = append(remaining, p)
-		}
-	}
-	var unrenderable []string
-	if len(remaining) > 0 {
-		staging, stageErr := stagedProjectScaffold(root, cfg)
-		if staging != "" {
-			defer func() { _ = os.RemoveAll(staging) }()
-		}
-		for _, p := range remaining {
-			written, werr := rescaffoldFromRenderers(root, cfg, staging, p)
-			if werr != nil {
-				return werr
-			}
-			if !written {
-				unrenderable = append(unrenderable, p)
-			}
-		}
-		if len(unrenderable) > 0 && stageErr != nil {
-			return fmt.Errorf("render the project scaffold for %s: %w", strings.Join(unrenderable, ", "), stageErr)
-		}
+	unrenderable, err := rescaffoldRemainingPaths(root, cfg, paths)
+	if err != nil {
+		return err
 	}
 
 	var done []string
@@ -408,6 +387,38 @@ func refuseCIPathsTheProjectLacks(root string, cfg *config.ProjectConfig, paths 
 			"change forge.yaml or the project so it has one, then re-run rescaffold")
 	}
 	return nil
+}
+
+// rescaffoldRemainingPaths tries the fallback renderers for paths the pipeline
+// left absent, returning those no renderer owns. The staging tree lives only
+// for this pass; ledger restoration remains the caller's responsibility.
+func rescaffoldRemainingPaths(root string, cfg *config.ProjectConfig, paths []string) ([]string, error) {
+	var remaining []string
+	for _, p := range paths {
+		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(p))); statErr != nil {
+			remaining = append(remaining, p)
+		}
+	}
+	var unrenderable []string
+	if len(remaining) > 0 {
+		staging, stageErr := stagedProjectScaffold(root, cfg)
+		if staging != "" {
+			defer func() { _ = os.RemoveAll(staging) }()
+		}
+		for _, p := range remaining {
+			written, werr := rescaffoldFromRenderers(root, cfg, staging, p)
+			if werr != nil {
+				return nil, werr
+			}
+			if !written {
+				unrenderable = append(unrenderable, p)
+			}
+		}
+		if len(unrenderable) > 0 && stageErr != nil {
+			return nil, fmt.Errorf("render the project scaffold for %s: %w", strings.Join(unrenderable, ", "), stageErr)
+		}
+	}
+	return unrenderable, nil
 }
 
 // rescaffoldFromRenderers writes p from the upgrade renderer, the advisory

@@ -7,6 +7,9 @@ merged); everything else is **proposed**, and the
 open owner decisions are in [section 11](#11-open-owner-decisions), each saying
 what it blocks.
 **Date:** 2026-11-25
+**North star:** [reliant-for-ml.md](reliant-for-ml.md) (the practices Reliant
+gives apps, for ML: resilience at scale, feedback-loop hooks, testing and
+previews, model security), which this proposal feeds.
 **Related:** `deploy/cluster-connect` skill (the connect this builds on),
 [third-party-telemetry.md](third-party-telemetry.md) (`forge.Telemetry`, the
 scrape primitive this reuses), [changes.md](changes.md) (online comparison),

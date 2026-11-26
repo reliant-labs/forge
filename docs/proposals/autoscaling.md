@@ -1,9 +1,10 @@
 # Autoscaling: backend replicas on CPU, and managed Postgres storage that grows
 
-**Status:** scope approved by the owner on 2026-11-25 (the "Settled" list
-below; north star control-plane#3176, decision N7, rows HO-01 and HO-02).
-Everything else here is **proposed**; the open owner decisions are collected in
-[section 8](#8-open-owner-decisions) and each says what it blocks.
+**Status:** approved by the owner on 2026-11-25: the scope (north star
+control-plane#3176, decision N7, rows HO-01 and HO-02) and every design
+decision this proposal raised (the "Settled" list below; the record of options
+is [section 8](#8-owner-decisions-decided-2026-11-25)). Slices land as their
+own pull requests ([section 9](#9-rollout-plan)).
 **Date:** 2026-11-25
 **Related:** [changes.md](changes.md) (the format this follows; cohort rollouts
 are Changes, not traffic splits), `internal/benefits/benefits.yaml` limit
@@ -39,6 +40,24 @@ activity stream and the deploy status.
 5. Out: **canary / traffic-split rollouts** (N26, HO-10). Changes covers cohort
    rollouts; the limit is published.
 6. No auto-rollback: forge rolls forward (N1).
+
+Design decisions (owner, 2026-11-25, accepting each recommendation of
+[section 8](#8-owner-decisions-decided-2026-11-25)):
+
+7. Field names: `forge.Autoscale {minReplicas, maxReplicas,
+cpuTargetPercent}`.
+8. Admission and the namespace quota charge an autoscaled workload at
+   `maxReplicas` × request.
+9. `maxReplicas` is capped at **10** by forge's validation, and the plan
+   ceiling still binds.
+10. Services and workers can both autoscale in v1.
+11. The volume-fill signal for storage autogrow is kubelet volume stats
+    (`kubelet_volume_stats_used_bytes` / `capacity_bytes`) scraped by the
+    platform's per-node otel agent; a missing sample means "do nothing".
+12. Storage autogrow is opt-in with a declared `maxGiB`, and every managed
+    database gets a disk-filling alert whether or not it autogrows.
+13. No console writes of the range in v1: it changes by declaration and
+    deploy only.
 
 These are not reopened below.
 
@@ -137,7 +156,7 @@ type Autoscale struct {
     // +kubebuilder:validation:Minimum=1
     MinReplicas int32 `json:"minReplicas"`
     // +kubebuilder:validation:Minimum=1
-    // +kubebuilder:validation:Maximum=<platform cap, decision 3>
+    // +kubebuilder:validation:Maximum=10 (settled item 9)
     MaxReplicas int32 `json:"maxReplicas"`
     // Average CPU use as a percent of the CPU request. Default 70.
     // +kubebuilder:default=70
@@ -176,7 +195,7 @@ each with a `kcl/tests/negative_*.k` file and `# expect:` lines:
 so every project renders byte-identically: an additive minor (`feat(deploy):`).
 The new checks fire only on the new field, so no pinned consumer's gate turns
 red; KCL `check:` blocks are not lint rules and need no rollout-table row. The
-field names become a permanent public surface on release (decision 1).
+field names become a permanent public surface on release (settled item 7).
 
 ### 3.2 Render (`pkg/deploy/workload_render.go`)
 
@@ -250,7 +269,7 @@ type StorageAutogrow struct {
 
 `maxGiB >= storageGiB`; refused on a claimable database (fixed 256 MiB) and on
 any runtime but hosted, because on a user's cluster forge runs no controller
-that could act on it (decision 6). Threshold and step are platform constants in
+that could act on it (settled item 12). Threshold and step are platform constants in
 v1, not fields: a field is forever, and we have no data yet on what to tune.
 
 ### 3.6 Docs, benefits, skills
@@ -273,7 +292,7 @@ v1, not fields: a field is forever, and we have no data yet on what to tune.
    other kinds. The orphan sweep already deletes HPAs (`orphansweep.go:127`).
 3. **Handover** under the tier field manager, as in 3.3.
 4. **Admission at the max**: `deployspec.Demand` counts `maxReplicas` ×
-   request for an autoscaled workload (decision 2). The namespace quota then
+   request for an autoscaled workload (settled item 8). The namespace quota then
    needs no change: it is derived from the same ceiling × surge 2.
 5. **Claimable**: the computegate replica check reads `maxReplicas`; the
    refusal says to claim the app to autoscale.
@@ -300,7 +319,7 @@ v1, not fields: a field is forever, and we have no data yet on what to tune.
 
 ### 4.1 Storage autogrow in the managed-database operator
 
-- **Signal**: volume fill per instance PVC (decision 5).
+- **Signal**: volume fill per instance PVC from kubelet volume stats (settled item 11).
 - **Rule** (constants in v1): when an instance volume is ≥ 80% used, raise the
   Cluster's `spec.storage.size` by max(25%, 2 GiB), rounded up to whole GiB,
   capped at `maxGiB`; at most one grow per database per 30 minutes while a
@@ -403,7 +422,7 @@ during the lapse.
 - **Abuse**: claimable deploys cannot autoscale or autogrow. A paid org's
   exposure is bounded by admission at the max, inside the PAYG ceiling (2000m /
   8 GiB / 50 GiB unless raised), and by a platform cap on `maxReplicas`
-  (decision 3).
+  (settled item 9).
 
 ## 6. Console and agent tools
 
@@ -426,26 +445,28 @@ during the lapse.
 | KEDA                                                                                               | A second operator on every cluster, CRDs we would have to vendor and admit on hosting, and its value (event sources, scale-to-zero) is the part the owner ruled out.                                                                               |
 | Memory or custom metrics in v1                                                                     | Memory rarely falls when load falls (caches, Go heap), so memory HPAs flap or never scale in; custom metrics need an adapter on the tenant cluster. The `metrics` list shape leaves room for both later.                                           |
 | Vertical Pod Autoscaler                                                                            | Changes the billed shape under the user and conflicts with the hosted shape band. Out of the approved scope.                                                                                                                                       |
-| Admission at `minReplicas`, letting the quota cap the HPA                                          | Admits deploys whose max could never run; the HPA would hit the ResourceQuota and pods would fail to create with no clear owner of the error. Kept as an option in section 8.                                                                      |
+| Admission at `minReplicas`, letting the quota cap the HPA                                          | Admits deploys whose max could never run; the HPA would hit the ResourceQuota and pods would fail to create with no clear owner of the error. Not chosen (section 8, decision 2).                                                                  |
 | Keep the HPA through a lapse and rely on it ignoring a target at zero replicas                     | That is HPA controller behaviour, not a contract: entitlement loss must stop compute whatever the controller does, and resume would still need to write the count. Deleting the HPA (section 4.2) leaves one writer during a lapse.                |
 | Database autogrow as an alert only                                                                 | Cheapest, and still leaves a person on the critical path at 3am. Kept as the fallback if the signal work slips.                                                                                                                                    |
 | Cloud SQL for tenant databases (built-in storage increase)                                         | Managed databases are in-cluster CloudNativePG by design (backups, restore and isolation are built on it). A different engine for one feature is not proportionate.                                                                                |
 
-## 8. Open owner decisions
+## 8. Owner decisions (decided 2026-11-25)
 
-None of these is decided. Per project rules, the owner decides architectural
-choices; each row gives the realistic options, a recommendation, and what it
-blocks.
+The owner accepted every recommendation this section proposed ("agreed",
+2026-11-25). They are recorded as items 7 to 13 of the
+[Settled](#settled-owner-2026-11-25) list, and the sections above already
+describe the chosen option. The options that were weighed and not chosen, for
+the record:
 
-| #   | Decision                                | Options                                                                                                                                                                                                                                                                                                                                                                                          | Recommendation                                                                                                                                                                                                                                                                             | Blocks                                          |
-| --- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
-| 1   | Field names (permanent public surface)  | (a) `forge.Autoscale {minReplicas, maxReplicas, cpuTargetPercent}`; (b) `{min, max, target}` as the north star sketched; (c) HPA's exact names (`targetCPUUtilizationPercentage`).                                                                                                                                                                                                               | (a): `minReplicas`/`maxReplicas` are what agents already know from HPA and match the CRD's camelCase; `cpuTargetPercent` names the metric so memory can join later without renaming.                                                                                                       | Slice 1 (the Go type and KCL schema).           |
-| 2   | What admission and quota charge         | (a) `maxReplicas` × request; (b) `minReplicas` × request, the quota caps the HPA; (c) min, plus a separate per-org "burst" allowance.                                                                                                                                                                                                                                                            | (a). Every replica the HPA may ask for is guaranteed to fit, the existing quota derivation covers it unchanged, and the cost range shown is the real exposure. Cost: a smaller max fits under the PAYG ceiling.                                                                            | Slice 2 (admission, quota, cost estimate).      |
-| 3   | Platform cap on `maxReplicas`           | (a) a fixed cap in forge's validation (e.g. 10, like `MaxDatabaseStorageGiB = 500`) plus the plan ceiling; (b) the plan ceiling only; (c) a per-plan cap in `planlimits`.                                                                                                                                                                                                                        | (a) at 10 for v1: forge refuses at render with a clear message, the ceiling still binds, and it bounds blast radius on a 0–8-node gVisor pool. Raise it in a minor when capacity allows.                                                                                                   | Slice 1 validation, slice 2 admission.          |
-| 4   | Worker kind                             | (a) service and worker; (b) service only in v1.                                                                                                                                                                                                                                                                                                                                                  | (a). A CPU-bound queue consumer scales on CPU as well as a service does, and the render is identical. Workers with a per-replica budget (reliant's worker egress budget, `stack.k:302`) simply do not opt in.                                                                              | Slice 1 kind check.                             |
-| 5   | Volume-fill signal for storage autogrow | (a) kubelet `kubelet_volume_stats_used_bytes`/`capacity_bytes` scraped by the platform's per-node otel agent, read by the operator from the metrics store; (b) the operator reads kubelet `/stats/summary` through the API server node proxy (needs `nodes/proxy`, a known escalation path); (c) a CloudNativePG exporter query (`pg_database_size` + `pg_ls_waldir()`), logical not filesystem. | (a). Fill as the filesystem sees it, no new privileged Kubernetes permissions for the operator, and the metric also feeds a "disk filling" alert for databases without autogrow. Cost: the operator depends on the metrics path, so a missing sample must mean "do nothing", never "grow". | Slice 4 (the evaluator).                        |
-| 6   | Autogrow default and scope              | (a) opt-in, `storageAutogrow = {maxGiB}` declared; (b) on by default for hosted paid databases with `maxGiB = min(4 × storageGiB, 500)`, opt-out; (c) opt-in, and also a forge-run controller for self-hosted clusters.                                                                                                                                                                          | (a) for v1: every grow raises a bill, so the cap should be a number the user wrote. Pair it with the fill alert for every database, so a database without autogrow still warns before it fills. (b) is a reasonable later default once grows are proven.                                   | Slice 4 schema and defaults; the hosting skill. |
-| 7   | Console writes                          | (a) the range is changed only by declaration and deploy; (b) the console can override min/max live, recorded as drift.                                                                                                                                                                                                                                                                           | (a). Git stays the source of truth, which is forge's model; an agent changes the range with a one-line edit and a deploy.                                                                                                                                                                  | Slice 3 UI scope.                               |
+| #   | Decision                                | Chosen                                                                        | Not chosen                                                                                                                      |
+| --- | --------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Field names                             | `minReplicas`, `maxReplicas`, `cpuTargetPercent`                              | `{min, max, target}`; HPA's own `targetCPUUtilizationPercentage`                                                                |
+| 2   | What admission and quota charge         | `maxReplicas` × request                                                       | `minReplicas` × request with the quota capping the HPA; min plus a per-org burst allowance                                      |
+| 3   | Platform cap on `maxReplicas`           | 10 in forge's validation, plus the plan ceiling                               | the plan ceiling only; a per-plan cap in `planlimits`                                                                           |
+| 4   | Worker kind                             | services and workers in v1                                                    | services only                                                                                                                   |
+| 5   | Volume-fill signal for storage autogrow | kubelet volume stats scraped by the per-node otel agent                       | kubelet `/stats/summary` through the node proxy (needs `nodes/proxy`); a CloudNativePG exporter query (logical, not filesystem) |
+| 6   | Autogrow default and scope              | opt-in with a declared `maxGiB`, plus a disk-filling alert for every database | on by default for paid hosted databases; a forge-run controller for self-hosted clusters                                        |
+| 7   | Console writes                          | none in v1: the range changes only by declaration and deploy                  | live min/max overrides from the console, recorded as drift                                                                      |
 
 ## 9. Rollout plan
 
@@ -474,7 +495,7 @@ HorizontalPodAutoscaler`): the Go type and validation, tiers regeneration,
    states, `forge env status` / `obs workloads` / MCP output, the reliant web
    display and the cost range in `env shape`.
 4. **Database storage autogrow**: the forge field and capability, the fill
-   signal (decision 5) and its alert, the operator evaluator, explicit
+   signal (settled item 11) and the disk-filling alert for every database, the operator evaluator, explicit
    StorageClass, admission at `maxGiB`, activity events and the panel.
 5. **Docs**: benefits limit narrowed, new benefit, compare row, skills, and the
    north star rows HO-01 and HO-02 marked shipped.

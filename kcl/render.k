@@ -2350,7 +2350,20 @@ _check_agent_telemetry = lambda b: Bundle -> bool {
 # `delivery_policy`; lists are sorted so the shape does not depend on the order
 # the author typed them in.
 _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
-    _ex = {e.id: {"id": e.id, "reason": e.reason, "expires": e.expires} for e in p.vuln_gate.exemptions}
+    _ex = {e.id: {"id": e.id, "reason": e.reason, "expires": e.expires} for e in p.vuln_gate.exemptions if not (e.packages or e.artifacts or e.locations)}
+    # A scoped exemption is recorded in a list of its own, which a reader
+    # predating scopes never reads as covering the advisory everywhere.
+    _scoped = {_vuln_exemption_identity(e): {
+        "id": e.id
+        "reason": e.reason
+        "expires": e.expires
+        if e.packages:
+            "packages": sorted(e.packages)
+        if e.artifacts:
+            "artifacts": sorted(e.artifacts)
+        if e.locations:
+            "locations": sorted(e.locations)
+    } for e in p.vuln_gate.exemptions if e.packages or e.artifacts or e.locations}
     {
         "trusted_builder": {"mode": p.trusted_builder.mode, "builders": sorted(p.trusted_builder.builders)}
         # Unset signing / flux_verify resolve for where the env delivers:
@@ -2373,6 +2386,8 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
             "block_kev": p.vuln_gate.block_kev
             "fixable_only": p.vuln_gate.fixable_only
             "exemptions": [_ex[i] for i in sorted(_ex)]
+            if _scoped:
+                "scoped_exemptions": [_scoped[i] for i in sorted(_scoped)]
         }
         "bundle_kinds": {"mode": p.bundle_kinds.mode, "allow": sorted(p.bundle_kinds.allow), "deny": sorted(p.bundle_kinds.deny)}
         "approvals": {"mode": p.approvals.mode, "required": p.approvals.required, "approvers": sorted(p.approvals.approvers)}

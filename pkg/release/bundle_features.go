@@ -238,6 +238,17 @@ const (
 	// stripped. A shape with one identity carries Shape.Identity alone, as it
 	// always did, and needs nothing of the reader.
 	BundleFeatureIdentities = "shape-identities"
+	// BundleFeatureVulnScopedExemptions is ShapeVulnGate.ScopedExemptions:
+	// the env's vulnerability exemptions that cover their advisory only in
+	// the packages, artifacts or paths they name (forge.VulnExemption's
+	// packages, artifacts and locations). A control plane that predates it
+	// is sent the policy without them, so it judges each finding they would
+	// have covered as unexempted: the fail-closed reading. Decoding them is
+	// not honouring them either: a control plane whose rule reads only
+	// ShapeVulnGate.Exemptions leaves them out of its judgement, which fails
+	// closed the same way, because a scoped exemption is never an entry of
+	// Exemptions.
+	BundleFeatureVulnScopedExemptions = "shape-vuln-scoped-exemptions"
 )
 
 // CapabilityConvergesSeveralIdentities is advertised beside the bundle
@@ -317,7 +328,7 @@ const CapabilityServesNamedSiteAPIs = "serves-named-site-apis"
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities, BundleFeatureVulnScopedExemptions}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -503,6 +514,14 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		pol := *s.DeliveryPolicy
 		pol.HealthGate = nil
 		s.DeliveryPolicy = &pol
+	}
+	if !r.Supports(BundleFeatureVulnScopedExemptions) && s.DeliveryPolicy != nil && len(s.DeliveryPolicy.VulnGate.ScopedExemptions) > 0 {
+		pol := *s.DeliveryPolicy
+		pol.VulnGate.ScopedExemptions = nil
+		s.DeliveryPolicy = &pol
+		if pol.IsDefault() {
+			s.DeliveryPolicy = nil // all that differed from the default was what the reader cannot decode
+		}
 	}
 	if !r.Supports(BundleFeaturePreview) {
 		s.Preview = nil

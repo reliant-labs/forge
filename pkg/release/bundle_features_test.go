@@ -45,6 +45,7 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeaturePreview:              {"shape.preview"},
 	BundleFeatureChanges:              {"shape.changes"},
 	BundleFeatureTelemetry:            {"shape.telemetry"},
+	BundleFeatureVulnScopedExemptions: {"shape.delivery_policy.vuln_gate.scoped_exemptions"},
 	// A layer feature: it adds BundleServiceCatalogPath to the manifests
 	// layer and no document key.
 	BundleFeatureServiceCatalog: {},

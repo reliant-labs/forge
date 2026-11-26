@@ -182,7 +182,51 @@ func TestValidateScope_FileTheRunCreatedIsAbsentBeforeIt(t *testing.T) {
 	}
 }
 
-// Fail closed: a forge-owned build input that changed outside the journal
+// Changed inputs without journaled pre-run bytes must prevent attribution,
+// even when they are hand-written, missing, or no longer regular files.
+func TestWriteScopeOf_UnjournaledHandwrittenChangesFailClosed(t *testing.T) {
+	for _, change := range []string{"edit", "create", "delete", "non-regular"} {
+		t.Run(change, func(t *testing.T) {
+			dir := t.TempDir()
+			rel := "hand.go"
+			file := filepath.Join(dir, rel)
+			if change != "create" {
+				if err := os.WriteFile(file, []byte("package hand\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := snapshotWorkTree(dir)
+			if before == nil {
+				t.Fatal("could not snapshot fixture")
+			}
+			switch change {
+			case "edit", "create":
+				if err := os.WriteFile(file, []byte("package hand\nvar X int = \"broken\"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "delete", "non-regular":
+				if err := os.Remove(file); err != nil {
+					t.Fatal(err)
+				}
+				if change == "non-regular" {
+					if err := os.Mkdir(file, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			scope := writeScopeOf(&pipelineContext{AbsPath: dir, preRun: before})
+			if scope == nil || !slices.Equal(scope.unrestorable, []string{rel}) {
+				t.Fatalf("scope = %+v; want %s unrestorable", scope, rel)
+			}
+			pkgs := []*listedPackage{{ImportPath: "hand", Dir: dir, Error: &listedPackageError{Err: "hand.go:2:1: compile error"}}}
+			if _, ok := scope.attribute(dir, pkgs); ok {
+				t.Fatal("classified a failure as pre-existing without reconstructing the pre-run input")
+			}
+		})
+	}
+}
+
+// Fail closed: a build input that changed outside the journal
 // cannot be rewound for the comparison, so nothing is attributed.
 func TestValidateScope_UnrestorableChangeAttributesNothing(t *testing.T) {
 	s := &generateWriteScope{unrestorable: []string{"internal/x/x_gen.go"}}

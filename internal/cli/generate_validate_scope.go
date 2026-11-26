@@ -44,7 +44,7 @@ package cli
 //
 // Fail closed everywhere: a package outside the project, an error with no
 // package to attribute it to, a file the journal could not capture, a
-// forge-owned build input that changed outside the journal (its pre-run
+// Go build input that changed outside the journal (its pre-run
 // bytes are unknown), or the second compile failing to run — each leaves
 // the whole failure the run's, exactly the behavior before this file.
 // --strict never attributes: a run under it fails on any compile error.
@@ -68,7 +68,7 @@ type generateWriteScope struct {
 	// written are the project-relative paths (slash form) this run's
 	// writers changed: the journal's changed set.
 	written []string
-	// unrestorable are forge-owned Go build inputs that changed during the
+	// unrestorable are Go build inputs that changed during the
 	// run without passing through the journal, so their pre-run bytes are
 	// unknown.
 	unrestorable []string
@@ -97,12 +97,10 @@ func writeScopeOf(ctx *pipelineContext) *generateWriteScope {
 		if journaled[rel] || strings.HasPrefix(rel, ".forge/") || !isGoBuildInput(rel) {
 			continue
 		}
-		// A hand-written file another writer (an editor, another agent)
-		// saved mid-run is not the run's: the second compile reads it as
-		// the first did. A forge-owned one is, and cannot be rewound.
-		if goSourceOriginOf(filepath.Join(ctx.AbsPath, filepath.FromSlash(rel))) == originGenerated {
-			unrestorable = append(unrestorable, rel)
-		}
+		// Ownership cannot establish the pre-run bytes. Even a hand-written
+		// input saved by another agent mid-run makes the comparison unsound:
+		// the overlay would read its current state, not its pre-run state.
+		unrestorable = append(unrestorable, rel)
 	}
 	return &generateWriteScope{written: written, unrestorable: unrestorable, preRun: checksums.JournaledPreRun}
 }

@@ -395,6 +395,65 @@ func TestX(t *testing.T) {
 	exp := time.Now().Add(time.Second)
 	for _, c := range cases { mint(c, exp) }
 }`, nil},
+		// ranger internal/app/remediation_integration_test.go, before it
+		// was rewritten as `for range 60` to satisfy the rule: the loop
+		// runs to its deadline whatever happens, so nothing gives up.
+		{"a fixed-duration workload loop is not a poll", `func TestX(t *testing.T) {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := heartbeat("zombie")
+		if err != nil {
+			t.Fatalf("zombie heartbeat: %v", err)
+		}
+		if resp.Superseded { superseded++ }
+		time.Sleep(50 * time.Millisecond)
+	}
+	check(t)
+}`, nil},
+		{"a fixed-duration workload bounded by elapsed time", `func TestX(t *testing.T) {
+	start := time.Now()
+	for time.Since(start) < 2*time.Second {
+		send()
+		time.Sleep(10 * time.Millisecond)
+	}
+}`, nil},
+		{"a workload whose only exit is its own deadline", `func TestX(t *testing.T) {
+	deadline := time.Now().Add(time.Second)
+	for {
+		if time.Now().After(deadline) {
+			break
+		}
+		send()
+	}
+}`, nil},
+		{"a poll whose deadline fails the test and whose success returns", `func TestX(t *testing.T) {
+	deadline := time.Now().Add(time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("never")
+		}
+		if done() { return }
+		time.Sleep(10 * time.Millisecond)
+	}
+}`, []string{"tight-deadline@2"}},
+		{"a poll whose condition also waits on the event", `func TestX(t *testing.T) {
+	deadline := time.Now().Add(time.Second)
+	for !time.Now().After(deadline) && !done() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	check(t)
+}`, []string{"tight-deadline@2"}},
+		{"a poll that breaks out of the deadline check's else", `func TestX(t *testing.T) {
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if time.Now().After(deadline) {
+			t.Fatal("never")
+		} else if done() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}`, []string{"tight-deadline@2"}},
 
 		// ── wall-clock bounds ────────────────────────────────────────
 		{"elapsed upper bound", `func TestX(t *testing.T) {

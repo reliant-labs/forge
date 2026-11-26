@@ -559,7 +559,7 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 		// A frontend whose lint lane is off is not forge's to format either.
 		runSkip, skipFrontends := frontendSkips(flags.skipFrontends, off)
 		if fix && !off[formatLaneName] {
-			fixed = structuredFixPrePass(ctx, cwd, cfg, scope, skipFrontends)
+			fixed = structuredFixPrePass(ctx, cwd, cfg, scope, paths, skipFrontends)
 		}
 		outcomes = collectLintOutcomes(&lintRunCtx{
 			ctx:           ctx,
@@ -601,22 +601,20 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 
 // structuredFixPrePass applies the deterministic-safe formatters the default
 // run applies, without their progress output, and returns how many files it
-// changed. Under --scope only files inside the scope are touched and the
-// frontend formatter does not run (frontend lint cannot be scoped).
+// changed. Under --scope, or with positional package paths (`forge lint --fix
+// ./internal/x/...`), only files inside them are touched and the frontend
+// formatter does not run (frontend lint cannot be scoped) — the same
+// confinement report-only mode's format lane uses (formatKeep).
 // eslint --fix is applied inside its own lane (rc.fix), as in text mode;
 // golangci-lint never fixes (lint_check.go).
-func structuredFixPrePass(ctx context.Context, cwd string, cfg *config.ProjectConfig, scope *lintScope, skipFrontends bool) int {
-	var keep func(rel string) bool
-	if scope != nil {
-		keep = scope.contains
-	}
-	changed, reverted, err := formatGoTreeVerified(cwd, keep, fixTypecheck)
+func structuredFixPrePass(ctx context.Context, cwd string, cfg *config.ProjectConfig, scope *lintScope, paths []string, skipFrontends bool) int {
+	changed, reverted, err := formatGoTreeVerified(cwd, formatKeep(scope, paths), fixTypecheck)
 	printRevertedGoFixes(os.Stderr, "auto-format pre-pass", reverted)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  auto-format pre-pass: %v\n", err)
 	}
 	n := len(changed)
-	if scope == nil && !skipFrontends {
+	if formatWithFrontends(scope, paths, skipFrontends) {
 		feChanged, feErr := formatFrontendTrees(ctx, cwd, cfg)
 		if feErr != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  frontend auto-format pre-pass: %v\n", feErr)

@@ -50,6 +50,9 @@ type dbGrantsFinding struct {
 	// Comment is the column's existing catalog comment. COMMENT ON replaces it
 	// whole, so the fix must carry it forward.
 	Comment string
+	// Binary: the column is bytea, withheld for its type rather than its
+	// name, so the message must not say the name looks like a credential.
+	Binary bool
 }
 
 func (f dbGrantsFinding) qualified() string {
@@ -60,6 +63,9 @@ func (f dbGrantsFinding) qualified() string {
 }
 
 func (f dbGrantsFinding) message() string {
+	if f.Binary {
+		return fmt.Sprintf("%s is bytea — opaque bytes that could be a key, a hash or ciphertext — and nobody decided it: forge_ro cannot read it", f.qualified())
+	}
 	return fmt.Sprintf("%s looks like a credential and nobody decided it: forge_ro cannot read it", f.qualified())
 }
 
@@ -72,9 +78,13 @@ func (f dbGrantsFinding) fixHint() string {
 	if strings.TrimSpace(f.Comment) != "" {
 		prior = fmt.Sprintf(" COMMENT ON replaces the whole comment, so keep its text: it is %q.", f.Comment)
 	}
+	why := "<why it is not a credential>"
+	if f.Binary {
+		why = "<what the bytes are, e.g. a serialized pkg.v1.Message>"
+	}
 	return fmt.Sprintf("in a new migration, declare one: COMMENT ON COLUMN %s IS 'forge:secret'; (a credential: stays hidden) "+
-		"or COMMENT ON COLUMN %s IS 'forge:readable <why it is not a credential>'; (granted to forge_ro).%s "+
-		"A proto field marked `// forge:secret` also counts. See `forge skill load db/query`.", target, target, prior)
+		"or COMMENT ON COLUMN %s IS 'forge:readable %s'; (granted to forge_ro).%s "+
+		"A proto field marked `// forge:secret` also counts. See `forge skill load db/query`.", target, target, why, prior)
 }
 
 // dbGrantsReport is everything one run found. Unverified is non-empty when the
@@ -115,9 +125,11 @@ func collectDBGrantsFindings(root, migrationsDir string) (dbGrantsReport, error)
 		return rep, err
 	}
 	comments := map[string]string{}
+	binary := map[string]bool{}
 	for _, t := range tables {
 		for _, c := range t.Columns {
 			comments[t.Name+"."+c.Name] = c.Comment
+			binary[t.Name+"."+c.Name] = c.TypeKnown && !c.IsArray && c.Type == schemadef.TypeBytes
 		}
 	}
 	files, err := readMigrationSources(migDir)
@@ -125,7 +137,8 @@ func collectDBGrantsFindings(root, migrationsDir string) (dbGrantsReport, error)
 		return rep, err
 	}
 	for _, u := range codegen.UndecidedReadOnlyColumns(tables, services) {
-		f := dbGrantsFinding{Schema: u.Schema, Table: u.Table, Column: u.Column, Comment: comments[u.Table+"."+u.Column]}
+		key := u.Table + "." + u.Column
+		f := dbGrantsFinding{Schema: u.Schema, Table: u.Table, Column: u.Column, Comment: comments[key], Binary: binary[key]}
 		f.File, f.Line = files.locate(root, u.Table, u.Column)
 		rep.Findings = append(rep.Findings, f)
 	}

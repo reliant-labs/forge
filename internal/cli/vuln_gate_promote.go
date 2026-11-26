@@ -468,6 +468,7 @@ func hostedPromoteVulnSource(ctx context.Context, hs *hostedStore, env string, r
 	case !f.Findings:
 		return rel, unreadVulnFindings{reason: "the control plane at " + hs.endpoint + " does not serve findings yet"}, false
 	}
+	declareVulnReadScope(hs.client)
 	src := hostedVulnSource{reader: hostedVulnReader{client: hs.client, project: hs.project}, env: env}
 	read, err := src.releaseFindings(ctx, rel.Version)
 	if errors.Is(err, errHostedVulnEnvNotFound) {

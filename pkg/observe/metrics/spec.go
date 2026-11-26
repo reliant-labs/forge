@@ -22,10 +22,17 @@
 //     `forge obs metrics declared` print and what the custom-metrics dashboard is
 //     generated from.
 //
-// What it does not do: observable (callback) instruments, and instruments that
-// third-party libraries create on their own (the Go runtime metrics, the SQL
-// pool metrics). Those are listed in the schema through Describe — a
-// declaration without an instrument — so the schema is complete.
+// Gauges come in three shapes: a synchronous gauge (Int64Gauge) records a
+// value when it changes and exports the last one forever; an observable gauge
+// (Int64ObservableGauge) is read by a callback at collection time; and a
+// KeyedGauge (Int64KeyedGauge) holds one series per attribute set that you Set
+// and Delete — the gauge for a value that belongs to an entity which can go
+// away, whose series must stop being exported when it does.
+//
+// What it does not do: observable counters, and instruments that third-party
+// libraries create on their own (the Go runtime metrics, the SQL pool
+// metrics). Those are listed in the schema through Describe — a declaration
+// without an instrument — so the schema is complete.
 package metrics
 
 import (

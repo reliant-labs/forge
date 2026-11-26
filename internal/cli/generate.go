@@ -1574,7 +1574,12 @@ func checkGoBuild(projectDir string) (validateCaveats, error) {
 			return caveats, err
 		}
 		fmt.Fprint(os.Stderr, rep.Build)
-		return validateCaveats{}, goBuildValidateFailure(projectDir, rep.Build, errors.New("the tree does not compile"))
+		failure := goBuildValidateFailure(projectDir, rep.Build, errors.New("the tree does not compile"))
+		if extra := blockedBuildDiagnostics(projectDir, rep.Blocked); extra != "" {
+			fmt.Fprint(os.Stderr, extra)
+			failure.Output += extra // Keep the compiler's root cause and fix hint.
+		}
+		return validateCaveats{}, failure
 	}
 	return validateTestFiles(projectDir, rep.TestFiles)
 }

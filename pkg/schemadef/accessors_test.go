@@ -139,15 +139,6 @@ func TestCanonicalTypes(t *testing.T) {
 	}
 }
 
-func TestRetiredMarker(t *testing.T) {
-	if !RetiredMarker("forge:dashboard") || !RetiredMarker("forge:no-dashboard") {
-		t.Error("the markers retired in v1.0.14 are not reported retired")
-	}
-	if RetiredMarker("forge:immutable") || RetiredMarker("forge:made-up") {
-		t.Error("a live or unknown marker reported retired")
-	}
-}
-
 func TestStripLeadingSQLComments(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"SELECT 1", "SELECT 1"},

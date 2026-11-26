@@ -113,6 +113,50 @@ func TestMembershipImpliedScopesAreNarrow(t *testing.T) {
 	}
 }
 
+// heldByClass is the rule the classes mean to a consumer that clips a
+// person-acting credential (a daemon's wildcard, an exchanged helper, a
+// personal token) to its person, as control-plane's heldNow does: a personal
+// scope always, a member scope while the person is a LIVE member, a standard
+// or sensitive scope only while a grant names it AND they are a live member
+// (grant rows survive a removal), an unclassified scope never.
+func heldByClass(scope Scope, grants Set, liveMember bool) bool {
+	switch ClassOf(scope) {
+	case ClassPersonal:
+		return true
+	case ClassMember:
+		return liveMember
+	case ClassStandard, ClassSensitive:
+		return liveMember && grants.Has(scope)
+	}
+	return false
+}
+
+// TestTestsWrite_ReachesEveryLiveMemberAndNoFormerOne is the owner's decision
+// (2026-11-25, "daemons should have them by default") as a holder sees it: a
+// live member with no grant holds tests:write, so their daemon carries it; a
+// person removed from the org does not, even with their old grant rows left
+// behind. The first half fails while tests:write is grant-governed.
+func TestTestsWrite_ReachesEveryLiveMemberAndNoFormerOne(t *testing.T) {
+	if !heldByClass(ScopeTestsWrite, Set{}, true) {
+		t.Error("a live member with no grant does not hold tests:write: their daemon cannot upload a test run")
+	}
+	leftover := SetOf(ScopeTestsWrite, ScopeDeployWrite)
+	if heldByClass(ScopeTestsWrite, leftover, false) || heldByClass(ScopeTestsWrite, Set{}, false) {
+		t.Error("a former member holds tests:write")
+	}
+	// Nothing else widens: a grantless live member holds no standard or
+	// sensitive scope, and a former member no org scope at all.
+	for _, s := range AllScopes {
+		c := ClassOf(s)
+		if (c == ClassStandard || c == ClassSensitive) && heldByClass(s, Set{}, true) {
+			t.Errorf("a grantless live member holds %s %s", c, s)
+		}
+		if c != ClassPersonal && heldByClass(s, SetOf(AllScopes...), false) {
+			t.Errorf("a former member holds %s %s", c, s)
+		}
+	}
+}
+
 // TestExpandBundle_SkipsASensitiveRowEvenIfListed proves the expansion's own
 // guard, not just the table: a mistaken row cannot widen a bundle.
 func TestExpandBundle_SkipsASensitiveRowEvenIfListed(t *testing.T) {

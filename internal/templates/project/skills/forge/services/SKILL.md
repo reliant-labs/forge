@@ -163,8 +163,9 @@ through `runRoot`, the owned process policy in `serve.go`. With no root
 declared the one command is `server`, running every service, worker and
 operator. To run a service alone, declare a root that holds only it; the
 `architecture` skill ("Roots and commands") has the worked example. Custom
-NON-root subcommands go in the user-owned `cmd/<bin>/cmd/commands.go`
-(`userCommands(deps)`) — see the `binaries` skill.
+CLI subcommands go in `cmd/<bin>/usercmd` so they can be tested without the
+server graph. For the registration hook and how to move existing commands,
+see `binaries/commands`.
 
 A project still on the legacy `Infra` / `NewComponents` composition keeps its
 generated `cmd/<bin>/cmd/services/<name>.go` per-service commands

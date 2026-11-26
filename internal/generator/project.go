@@ -477,14 +477,20 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 		// (codegen.GenerateCmdGroups), exactly like the per-component group
 		// files — not from the project-level scaffold data, which has no
 		// service list yet.
-		// cmd/<bin>/cmd/commands.go — the user-owned cobra extension point
-		// newRootCmd consumes (userCommands(deps)). Scaffolded once here;
-		// the generate pipeline re-ensures it for older projects but never
-		// overwrites an existing copy.
+		// Keep the in-package registration hook root.go calls. On a fresh
+		// scaffold it delegates to a sibling package that can be built and
+		// tested without the graph. Existing/adopted trees keep their hook.
+		commandsTemplate := "cmd-tree-commands.go.tmpl"
+		if !g.Adopting {
+			commandsTemplate = "cmd-tree-commands-bridge.go.tmpl"
+			files = append(files, struct{ template, dest string }{
+				"cmd-tree-user-commands.go.tmpl", filepath.Join(cmdDir, "usercmd", "commands.go"),
+			})
+		}
 		files = append(files,
 			struct{ template, dest string }{"cmd-tree-root.go.tmpl", filepath.Join(treeDir, "root.go")},
 			struct{ template, dest string }{"cmd-tree-version.go.tmpl", filepath.Join(treeDir, "version.go")},
-			struct{ template, dest string }{"cmd-tree-commands.go.tmpl", filepath.Join(treeDir, "commands.go")},
+			struct{ template, dest string }{commandsTemplate, filepath.Join(treeDir, "commands.go")},
 		)
 	case g.isCLI():
 		// CLI binaries get their own root.go + version.go under

@@ -1,16 +1,22 @@
 ---
 name: commands
-description: Admin, report and backfill subcommands of the project binary — where they go (commands.go's userCommands), how they load the typed config, and config.RegisterFieldFlags so their --help lists their own flags instead of the server's ~60.
+description: Admin, report and backfill subcommands in a package independent of the server graph, including moving existing commands and registering only their own config flags.
 ---
 
 # Commands of the project binary
 
-A command that is not a process of its own — an admin task, a report, a backfill an operator runs by hand (`<bin> apikey create`) — is a subcommand of the project binary, not a second binary. It goes in the owned `cmd/<bin>/cmd/commands.go`, whose `userCommands(deps)` root.go adds to the tree.
+A short-lived admin task, report or backfill (`<bin> apikey create`) can be a subcommand of the project binary rather than a second binary. Put it in `cmd/<bin>/usercmd/` and return it from `usercmd.Commands()`. The assembled `cmd/<bin>/cmd` package imports `usercmd` and adds the returned commands to the tree. Test these commands with `go test ./cmd/<bin>/usercmd` even if the composition graph does not compile; building the full binary still requires the graph. Keep `usercmd` independent of `cmd` and `internal/app`: import just the clients or stores you use, inject their narrow interfaces as needed, and take context and output from Cobra.
+
+## Move an existing command
+
+Forge keeps your existing `cmd/<bin>/cmd/commands.go` and its `userCommands(deps)` hook intact. To separate CLI-only commands, create the sibling `usercmd` package, move the constructors and their tests there, and export `Commands() []*cobra.Command`. Remove any dependency on `cmd.Deps`: use `cmd.OutOrStdout()` and `cmd.ErrOrStderr()` on the running Cobra command, or define your own narrow dependencies in `usercmd`. In `cmd/commands.go`, import `usercmd` and return `usercmd.Commands()` from `userCommands`; if other commands still live in `cmd`, append them there. Do not edit `roots_gen.go`.
+
+## Config flags
 
 **Register only the flags the command takes.** `config.RegisterFlags(cmd)` is the server's whole surface — every CORS, OIDC, JWT, TLS and pprof flag — and on an admin command it buries the command's own flags in `--help` while doing nothing. Loading needs no registration: `config.Load(cmd)` reads the env and the config file whether or not a field has a flag. So register the command's own flags with cobra, and the config fields it wants settable on its command line with `config.RegisterFieldFlags`:
 
 ```go
-func newReportCmd(_ Deps) *cobra.Command {
+func newReportCmd() *cobra.Command {
 	var since time.Duration
 	c := &cobra.Command{
 		Use:   "report",

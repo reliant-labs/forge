@@ -213,7 +213,10 @@ func NewMigratedPostgresURL(t testing.TB, migrations fs.FS) string {
 		t.Fatalf("open test postgres: %v", err)
 	}
 	// The caller connects by DSN; this handle would only hold a session open.
-	_ = db.Close()
+	if err := db.Close(); err != nil {
+		cleanup()
+		t.Fatalf("close test postgres pool before returning DSN: %v", err)
+	}
 	t.Cleanup(cleanup)
 	return dsn
 }

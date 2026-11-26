@@ -85,26 +85,30 @@ func rewriteGolangciAppendAssign(_ string, src []byte) (out []byte, note, next s
 	indent := s[loc[2]:loc[3]]
 	indent = indent[strings.LastIndexByte(indent, '\n')+1:]
 	// The rule's item runs to the next line indented no deeper than its
-	// "- " (a sibling rule, or the end of the list).
+	// "- " (a sibling rule, or the end of the list); the new rule goes
+	// after its last non-blank line.
 	at := loc[1]
 	if at < len(s) && s[at] == '\n' {
 		at++
 	}
-	for at < len(s) {
-		end := strings.IndexByte(s[at:], '\n')
-		line := s[at:]
+	for cur := at; cur < len(s); {
+		end := strings.IndexByte(s[cur:], '\n')
+		line := s[cur:]
 		if end >= 0 {
-			line = s[at : at+end]
+			line = s[cur : cur+end]
 		}
 		trimmed := strings.TrimLeft(line, " ")
 		if trimmed != "" && len(line)-len(trimmed) <= len(indent) {
 			break
 		}
 		if end < 0 {
-			at = len(s)
-			break
+			cur = len(s)
+		} else {
+			cur += end + 1
 		}
-		at += end + 1
+		if trimmed != "" {
+			at = cur
+		}
 	}
 	rule := golangciAppendAssignRule
 	if indent != "      " {
@@ -149,9 +153,6 @@ var taskfileForgeVar = regexp.MustCompile(`(?m)^  FORGE:`)
 
 func rewriteTaskfileShortSkipSummary(_ string, src []byte) (out []byte, note, next string) {
 	s := string(src)
-	if strings.Contains(s, "test capture --no-record") {
-		return nil, "", ""
-	}
 	i := strings.Index(s, "\n  test:short:\n")
 	if i < 0 {
 		return nil, "", ""

@@ -1,6 +1,7 @@
 package codemod
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -81,7 +82,7 @@ func assertConverges(t *testing.T, name, rel, old, want string) {
 		t.Fatalf("want one rewrite of %s, got %+v", rel, rep)
 	}
 	if got := tfRead(t, dir, rel); got != want {
-		t.Fatalf("the rewrite is not the template's render:\n--- got\n%s\n--- want\n%s", got, want)
+		t.Fatalf("the rewrite is not the template's render: %s", firstDiff(got, want))
 	}
 	if again := runFix(t, dir, name, true); again.Changed() || len(again.Next) > 0 {
 		t.Fatalf("a second run must change nothing, got %+v", again)
@@ -133,17 +134,20 @@ func TestTemplateFix_CmdServerConfig(t *testing.T) {
 			// The codemod writes the block followed by one blank line; the
 			// template may abut the next comment. Blank lines aside, the
 			// result is the render.
-			old := strings.Replace(render, m, "", 1)
 			dir := t.TempDir()
 			tfWrite(t, dir, "go.mod", "module example.com/fx\n\ngo 1.24\n")
 			rel := "cmd/fx/cmd/serve.go"
+			// On disk the file is formatted the way the codemod formats
+			// what it rewrites.
+			render = string(formatForProject(dir, filepath.Join(dir, rel), []byte(render)))
+			old := strings.Replace(render, m, "", 1)
 			tfWrite(t, dir, rel, old)
 			rep := runFix(t, dir, "cmd-server-config", true)
 			if !rep.Changed() {
 				t.Fatalf("want a rewrite, got %+v", rep)
 			}
 			if got, want := dropBlankLines(tfRead(t, dir, rel)), dropBlankLines(render); got != want {
-				t.Fatalf("the rewrite is not the template's render:\n--- got\n%s\n--- want\n%s", got, want)
+				t.Fatalf("the rewrite is not the template's render: %s", firstDiff(got, want))
 			}
 			if again := runFix(t, dir, "cmd-server-config", true); again.Changed() {
 				t.Fatalf("a second run must change nothing, got %+v", again)
@@ -243,4 +247,24 @@ func TestTemplateFix_SkipsPristineAndDisownedFiles(t *testing.T) {
 			t.Fatalf("a disowned file must be left alone, got %+v", rep)
 		}
 	})
+}
+
+// firstDiff names the first line where got and want differ, with context.
+func firstDiff(got, want string) string {
+	g, w := strings.Split(got, "\n"), strings.Split(want, "\n")
+	for i := 0; i < len(g) || i < len(w); i++ {
+		var gl, wl string
+		if i < len(g) {
+			gl = g[i]
+		}
+		if i < len(w) {
+			wl = w[i]
+		}
+		if gl != wl {
+			lo := max(0, i-3)
+			return fmt.Sprintf("line %d:\n--- got\n%s\n--- want\n%s", i+1,
+				strings.Join(g[lo:min(len(g), i+4)], "\n"), strings.Join(w[lo:min(len(w), i+4)], "\n"))
+		}
+	}
+	return "equal"
 }

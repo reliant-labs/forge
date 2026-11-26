@@ -1,8 +1,13 @@
 # Reporting a forge bug
 
-**forge sends nothing unless someone runs `forge report-bug`.** There is no automatic crash
-reporting, no usage telemetry and no background sending. Nothing on this page happens
-on its own.
+**forge sends no bug report unless someone runs `forge report-bug`.** There is no automatic
+crash or error reporting. Nothing on this page happens on its own.
+
+forge's only other sending is its anonymous usage events (`forge telemetry --help`): the
+first run of an install, and a claimable deploy forge itself refused (its reason, from a
+fixed list). They carry a random install id and never code, paths, names or error
+messages, and `DO_NOT_TRACK=1`, `FORGE_TELEMETRY=off` or `forge telemetry off` stops them;
+a CI runner never sends them.
 
 ## Filing a report
 

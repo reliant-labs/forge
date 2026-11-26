@@ -155,7 +155,7 @@ The token says who the caller is; your database says what they are. `enrichClaim
 
 ## API keys
 
-Wired in every scaffold, disabled until you supply a key validator. A key arrives as `X-API-Key: fk_…` (`middleware.APIKeyHeader`) or `Authorization: Bearer fk_…`. The authenticator routes it by its `fk_` shape to the `auth.KeyValidator` that `internal/app/auth.go`'s `APIKeyValidator(infra)` returns, which `serve.go` installs right after `OpenInfra` so the lookup runs on the handlers' own pool. You own the table (hash + indexed prefix, never the key) and the lookup, over `forge/pkg/apikey`'s primitives. Recipe: `auth/api-keys`.
+API keys are disabled until you supply a validator. The authenticator routes keys by prefix (`fk_` by default), not by header: `X-API-Key` and `Authorization: Bearer` both work. See `auth/api-keys` to wire your key table and choose your product's prefix without invalidating existing `fk_` keys.
 
 ## Dev mode
 

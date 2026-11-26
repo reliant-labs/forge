@@ -7,9 +7,8 @@ description: SBOMs and vulnerabilities in forge — what every release cut recor
 
 forge answers "what is in this release, and what is it known to be vulnerable
 to?" without any setup. Every release it cuts describes each artifact with an
-SBOM, keeps that SBOM with the release, and scans it. Whether a finding can stop
-a deploy is the env's `vuln_gate`, which is `enforce` unless the env says
-otherwise (below).
+SBOM, keeps that SBOM with the release, and scans it. Whether a finding stops a
+deploy is the env's `vuln_gate` (below).
 
 ## What you get by default
 
@@ -41,8 +40,7 @@ A finding can stop a promotion by default: `vuln_gate` and `provenance_sbom` are
 `enforce` (`deploy/delivery-policy`), so a self-hosted promotion of a release with
 a KEV-listed or fixable critical advisory, or one nobody scanned, is refused. A
 project pinned below forge v1.13.0 is warned `would block` instead, and nothing is
-refused until it moves its pin ("Warn first", below). `vuln_gate = forge.VulnPolicy
-{mode = "audit"}` records findings and refuses nothing.
+refused until it moves its pin ("Warn first", below).
 
 ```bash
 forge env build prod --release v1.2.0   # fetches the database on the first cut of a machine
@@ -217,7 +215,6 @@ older pin: it warns again until v1.13.0. `lint.rules: {vuln-gate: error}` (or
 `{sbom-required: error}`) gates now; `{vuln-gate: warn}` extends the warning. To opt
 out for good, set the mode to `audit` (above). A release an older forge cut (before
 v1.10.0, which first recorded SBOMs) is never refused for lacking one.
-Upgrading an existing project: `migrations/v1.12.0/vuln-gate-default`.
 
 **Accepting an advisory.** `forge vuln exempt` writes a time-boxed
 `forge.VulnExemption` into the env's `deploy/kcl/<env>/main.k` (or its env document),
@@ -228,9 +225,8 @@ forge vuln exempt prod CVE-2026-1234 --reason "unreachable: we never call the pa
 ```
 
 The reason is one line a reviewer can check; `--expires` is the last day it applies
-(not in the past); a CVE id covers the GHSA of the same advisory. Running it again
-with the same values changes nothing, with new ones replaces the entry. Review and
-commit it.
+(not in the past); a CVE id covers the GHSA of the same advisory. Rerunning it with
+the same values changes nothing. Review and commit it.
 
 **Scoping an exemption.** Unscoped, an exemption covers the advisory in every package
 of every artifact of the env. `--package`, `--artifact` and `--location` (each
@@ -261,23 +257,20 @@ answer (a finding with no path, against a `--location` exemption) covers nothing
 OS packages list their database and doc files as locations, so scope those by
 `--package` and `--artifact` instead.
 
-An exemption's identity is its id **and** its scope: the same id with another scope is
-a second entry, added beside the first; the same id and scope with a new reason or
-expiry replaces the one entry. The render records scoped exemptions in the shape's
+An exemption's identity is its id **and** its scope: another scope adds a second
+entry; the same scope with a new reason or expiry replaces it. The render records scoped exemptions in the shape's
 `vuln_gate.scoped_exemptions`, apart from `exemptions`, so a reader that predates
 scopes never reads one as an exemption of the advisory everywhere. Hosted declaration
 and bundle recording refuse a scoped policy unless the control plane advertises both
 `shape-vuln-scoped-exemptions` (decoding) and `evaluates-scoped-vuln-exemptions`
-(occurrence-aware evaluation in promotion and vulnerability reads). Upgrade the
-control plane before using scoped policies there; decoding alone is not support.
-Local evaluation supports scopes. `ci.vuln_scan.exemptions` (forge.yaml) stays unscoped.
+(occurrence-aware promotion and reads); decoding alone is not support. Local
+evaluation supports scopes. `ci.vuln_scan.exemptions` (forge.yaml) stays unscoped.
 
-The edit is made through KCL's own parser, not text matching: it finds the literal
-`VulnExemption`, `VulnPolicy`, `DeliveryPolicy` or `Bundle` the env declares and
-splices one line in, leaving the rest of the file byte for byte. It **fails closed**:
-when it cannot be sure which declaration is effective (two policies, a computed
-`vuln_gate` or exemptions list, the id appearing somewhere it cannot read, a file
-that does not parse), it writes nothing and prints the exact lines to add by hand.
+The edit goes through KCL's own parser: it splices one line into the `VulnExemption`,
+`VulnPolicy`, `DeliveryPolicy` or `Bundle` the env declares, leaving the rest byte for
+byte. It **fails closed**: unsure which declaration is effective (two policies, a
+computed `vuln_gate` or exemptions list, the id somewhere it cannot read, a file that
+does not parse), it writes nothing and prints the lines to add by hand.
 
 **Past a refusal, once.** `forge env deploy prod v1.2.0 --override-vuln-gate "<why>"`
 promotes past a `vuln_gate` or `provenance_sbom` refusal and records who, why and

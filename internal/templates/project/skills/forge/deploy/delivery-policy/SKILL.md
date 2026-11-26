@@ -76,8 +76,7 @@ them), so they are `audit`.
 **The exception: the release's own evidence.** `provenance_sbom` and `vuln_gate`
 can refuse a self-hosted promotion and are `enforce` anyway: forge writes the SBOM
 and scans it itself, as lint and tests gate a change. Both warn first (below);
-`audit` is the per-env opt-out. An undeclared `vuln_gate` mode is `enforce`, or
-`audit` when `provenance_sbom` is `off` (no SBOM to scan).
+`audit` is the per-env opt-out.
 
 **Where the env delivers decides `signing` and `flux_verify`.** Unset, they are
 `audit` for an env with `control_plane = forge.ControlPlane {}`, and **`off`** for
@@ -206,11 +205,10 @@ vuln_gate = forge.VulnPolicy {
 ```
 
 The defaults are the prod-tier policy: block KEV-listed and fixable-critical
-findings, warn on the rest. An exemption carries a reason and an expiry date and
-stops applying then; it is the same vocabulary as forge's own
-`ci.vuln_scan.exemptions`, and `packages`/`artifacts`/`locations` scope it
-(`vuln`). `warn_severity` must not be stricter than `block_severity`, and a gate
-that blocks nothing is refused.
+findings, warn on the rest. An exemption (the vocabulary of
+`ci.vuln_scan.exemptions`) carries a reason and an expiry date and stops applying
+then; `packages`/`artifacts`/`locations` scope it (`vuln`). `warn_severity` must
+not be stricter than `block_severity`, and a gate that blocks nothing is refused.
 
 **Who judges it.** The findings come from the SBOMs the release recorded (`vuln`).
 

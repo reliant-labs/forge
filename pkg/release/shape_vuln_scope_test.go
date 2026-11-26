@@ -101,10 +101,10 @@ func TestScopedExemptionsAreAFeature(t *testing.T) {
 	t.Parallel()
 	grype := ShapeVulnScopedExempt{ID: "GO-2026-6859", Reason: "r", Expires: "2026-12-31", Artifacts: []string{"api"}}
 	p := scopedPolicy(grype)
-	p.VulnGate.Mode = DeliveryEnforce
+	p.VulnGate.Mode = DeliveryAudit // not the default (enforce), so the policy is sent
 	old := &BundleReader{Features: []string{}}
 	got := old.LimitShape(Shape{Kind: EnvLocal, DeliveryPolicy: p})
-	if got.DeliveryPolicy == nil || got.DeliveryPolicy.VulnGate.ScopedExemptions != nil || got.DeliveryPolicy.VulnGate.Mode != DeliveryEnforce {
+	if got.DeliveryPolicy == nil || got.DeliveryPolicy.VulnGate.ScopedExemptions != nil || got.DeliveryPolicy.VulnGate.Mode != DeliveryAudit {
 		t.Fatalf("limited policy = %+v", got.DeliveryPolicy)
 	}
 	if len(p.VulnGate.ScopedExemptions) != 1 {

@@ -248,6 +248,27 @@ Signed in to Reliant means signed in to the control plane: there is no second
 `$FORGE_CREDENTIAL_HELPER`, which mints forge a short-lived token from your
 Reliant session. Your own hostname: load `deploy/domains`.
 
+## SEO and accessibility
+
+`forge site audit` judges the built site the way search engines, link previews
+and assistive technology see it, with the rules Reliant's site insights run
+after every promotion of a hosted site:
+
+```bash
+npm run build && forge site audit          # the project's build (the env's public_dir)
+forge site audit dist/                     # a build directory
+forge site audit https://example.com       # a live site (public addresses only)
+forge site audit --browser                 # also render with your Chrome; axe-core when installed
+```
+
+Every finding names its fix: a missing title or description, a canonical to
+another host, noindex where the site should be indexed, missing Open Graph
+tags, robots.txt and sitemap problems, broken internal links, images without
+alt text. Scores are Lighthouse-compatible, not Lighthouse. `--json` prints the
+report document; the exit code is 1 when an error finding exists, 2 when the
+audit could not run. forge never rewrites a site's own files, so an existing
+site fixes what the audit names.
+
 ## Runtime config
 
 A static bundle cannot read env vars at runtime, so per-env values (an API URL,

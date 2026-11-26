@@ -382,6 +382,9 @@ path from an empty directory to authored protos, in one call.`,
 	// `frontend` operates on built frontends; today its one noun is the source
 	// maps of a build forge did not run (`forge frontend sourcemaps push`).
 	rootCmd.AddCommand(newFrontendGroupCmd())
+	// `site` judges a static site as search engines, link previews and
+	// assistive technology see it: `forge site audit` (site_audit.go).
+	rootCmd.AddCommand(newSiteCmd())
 	// `project` is the project-structure noun: the commands that create,
 	// retire, or INSPECT a project as a whole (new/delete/disown/migrate/
 	// upgrade/map/graph/introspect/features/annotations). The flat members

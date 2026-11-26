@@ -20,6 +20,8 @@ require (
 	github.com/MicahParks/keyfunc/v3 v3.9.2
 	github.com/XSAM/otelsql v0.44.0
 	github.com/brianvoe/gofakeit/v7 v7.18.9
+	github.com/chromedp/cdproto v0.160.1
+	github.com/chromedp/chromedp v0.24.0
 	github.com/ebitengine/purego v0.11.3
 	github.com/evanw/esbuild v0.28.2
 	github.com/fergusstrange/embedded-postgres v1.34.0
@@ -192,6 +194,7 @@ require (
 	github.com/go-git/go-billy/v5 v5.9.2 // indirect
 	github.com/go-git/go-git/v5 v5.19.3 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.9 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260213210345-44df1a37e875 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/analysis v1.0.1 // indirect

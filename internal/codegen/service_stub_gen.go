@@ -364,7 +364,8 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 //     it, or renamed the method away and kept the file): render a method-only
 //     fragment and APPEND it, then re-parse and ensure the imports the stub
 //     needs (context, connectrpc.com/connect, forge/pkg/svcerr, and the
-//     aliased proto pkg `pb`; for connect-go v2, the generated <pkg>connect
+//     packages of the messages its signature names — the aliased proto pkg
+//     `pb`, or an imported proto file's package (StubImports); for connect-go v2, the generated <pkg>connect
 //     package of a streaming stub instead of the runtime) are present before
 //     gofmt-ing the whole file.
 //     Every stub body references all of them, so none is left unused — which
@@ -450,8 +451,8 @@ func scaffoldHandlerStubs(handlersPath string, data ServiceTemplateData) error {
 		astutil.AddImport(fset, file, "connectrpc.com/connect")
 	}
 	astutil.AddImport(fset, file, "github.com/reliant-labs/forge/pkg/svcerr")
-	if !data.ConnectV2 || data.NamesPbMessages() {
-		astutil.AddNamedImport(fset, file, "pb", data.Module+"/gen/"+data.ProtoPackage+"/v1")
+	for _, imp := range data.StubImports() {
+		astutil.AddNamedImport(fset, file, imp.Alias, imp.Path)
 	}
 
 	var buf bytes.Buffer
@@ -499,6 +500,14 @@ const rpcHandlerPrefix = "rpc_"
 // The prefix is stable and is what every consumer matches on
 // (IsScaffoldTestFile) — including the pre-split
 // `handlers_scaffold_test.go` that older projects still carry on disk.
+//
+// It is the BIRTH name only. The file is the user's, and renaming it once it
+// holds real tests (the header offers rpc_<name>_test.go) is supported: the
+// scaffold-once ledger keeps the old name from being born again, and
+// writeScaffoldTests declines a birth whose Test<Rpc>_Generated func another
+// file already declares. A renamed file leaves the IsScaffoldTestFile sweeps
+// (the stale-pb warning, the test-helper-name reconcile), exactly as every
+// hand-written test file in the package already does.
 func ScaffoldTestFileName(rpc string) string {
 	return scaffoldTestPrefix + buildSafeStem(naming.ToSnakeCase(rpc)) + "_test.go"
 }
@@ -525,9 +534,23 @@ func IsScaffoldTestFile(name string) bool {
 // eligible (the ones it just stubbed). That replaces a mechanism where a
 // comment string in a user-owned file silently controlled whether forge
 // would overwrite it.
+//
+// Absence is judged per RPC, not only per filename. A user who renames the
+// file (to rpc_<name>_test.go, as its header offers) keeps the
+// Test<Rpc>_Generated func it declares, so if forge birthed the file again
+// beside it the package's tests would stop compiling on a duplicate
+// declaration. The scaffold-once ledger (writeUserScaffoldIfAbsent) already
+// keeps a renamed file from coming back; this covers the paths that ledger
+// does not reach — a file outside any forge.yaml, a ledger entry dropped by
+// `forge project rescaffold` — by declining the birth when another test
+// file in the package already declares the func.
 func writeScaffoldTests(targetDir string, data ServiceTemplateData) error {
 	unfilled := UnfilledDepsFor(targetDir)
+	declared := declaredTestFuncs(targetDir)
 	for _, m := range data.Methods {
+		if file, ok := declared[scaffoldTestFuncName(m)]; ok && file != ScaffoldTestFileName(m.Name) {
+			continue
+		}
 		one := data
 		one.Methods = []MethodTemplateData{m}
 		one.UnfilledDeps = unfilled
@@ -541,6 +564,40 @@ func writeScaffoldTests(targetDir string, data ServiceTemplateData) error {
 		}
 	}
 	return nil
+}
+
+// scaffoldTestFuncName is the one package-scope identifier a born scaffold
+// test declares (unit_test.go.tmpl).
+func scaffoldTestFuncName(m MethodTemplateData) string {
+	return "Test" + m.GoName() + "_Generated"
+}
+
+// declaredTestFuncs returns the package-scope funcs declared by the
+// _test.go files in dir, mapped to the file that declares each. A file
+// that does not parse is skipped: losing it only risks offering a
+// scaffold test whose collision the next `go vet` names.
+func declaredTestFuncs(dir string) map[string]string {
+	out := map[string]string{}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		f, perr := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, parser.SkipObjectResolution)
+		if perr != nil {
+			continue
+		}
+		for _, decl := range f.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil {
+				out[fn.Name.Name] = e.Name()
+			}
+		}
+	}
+	return out
 }
 
 // ScanExistingMethods reads all .go files in dir and returns a set of

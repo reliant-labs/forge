@@ -122,6 +122,8 @@ func gradableRules() []string {
 		RuleVulnGate, RuleSBOMRequired,
 		// the license-check gate step, made real (rollout_grade.go)
 		RuleLicenseCheck,
+		// a Forge Changes key declared differently by the root and a pinned source (rollout_grade.go)
+		RuleChangesSourceConflict,
 		// auth scaffold
 		ruleOpenSignup, ruleIdentityMethods, ruleUnprovenSignup, ruleUnprovenSignupDefault, ruleAuthRequiredNoSignIn,
 		// secrets

@@ -59,10 +59,19 @@ import (
 type Kind string
 
 const (
-	KindRandom           Kind = "random"
-	KindPassword         Kind = "password"
-	KindECP256PKCS8      Kind = "ec_p256_pkcs8"
-	KindRSA2048          Kind = "rsa_2048"
+	// KindRandom is bytes of randomness, hex or base64, with an optional
+	// prefix. One name.
+	KindRandom Kind = "random"
+	// KindPassword is letters, digits and symbols, with at least one of each
+	// class. One name.
+	KindPassword Kind = "password"
+	// KindECP256PKCS8 is an EC P-256 private key, PKCS#8 PEM. One name.
+	KindECP256PKCS8 Kind = "ec_p256_pkcs8"
+	// KindRSA2048 is an RSA 2048 private key (PKCS#8 PEM), then its public
+	// key. Two names.
+	KindRSA2048 Kind = "rsa_2048"
+	// KindECP256SelfSigned is an EC P-256 private key (PKCS#8 PEM), then a
+	// self-signed certificate for it. Two names.
 	KindECP256SelfSigned Kind = "ec_p256_selfsigned"
 )
 

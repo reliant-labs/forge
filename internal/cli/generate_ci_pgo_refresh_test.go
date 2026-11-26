@@ -49,11 +49,12 @@ func TestGenerateCIWorkflows_ExistingHostedProjectGetsPGORefresh(t *testing.T) {
 		ciHostedMu.Lock()
 		ciHostedCache[root] = ciHostedTopology{Hosted: []string{"prod"}, PGO: []string{"prod"}}
 		ciHostedMu.Unlock()
-		t.Cleanup(func() {
-			ciHostedMu.Lock()
-			delete(ciHostedCache, root)
-			ciHostedMu.Unlock()
-		})
+		// CI also discovers frontends. This fixture has none: answer that
+		// discovery too, rather than invoking KCL on the placeholder main.k.
+		ciFrontendsMu.Lock()
+		ciFrontendsCache[root] = nil
+		ciFrontendsMu.Unlock()
+		t.Cleanup(func() { forgetCIDiscovery(root) })
 		return root, cfg
 	}
 	generate := func(t *testing.T, root string, cfg *config.ProjectConfig) {

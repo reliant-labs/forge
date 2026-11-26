@@ -64,6 +64,9 @@ type Registry struct {
 
 	mu    sync.Mutex
 	decls map[string]*decl
+	// observables maps each observable instrument the registry created to its
+	// declaration's guard, for RegisterCallback.
+	observables map[metric.Observable]*guard
 
 	rejected metric.Int64Counter
 }
@@ -134,7 +137,7 @@ func (r *Registry) SetMode(m Mode) { r.mode.Store(int32(m)) }
 func (r *Registry) Mode() Mode { return Mode(r.mode.Load()) }
 
 // Describe adds a declaration for a metric whose instrument something else
-// creates — a library's own meter, an observable callback. It is how the
+// creates — a library's own meter. It is how the
 // schema stays complete for metrics the registry cannot wrap. It returns an
 // error for an invalid spec or a name already declared differently.
 func (r *Registry) Describe(s Spec) error { return r.describe(s, false) }

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codemod"
 	"github.com/reliant-labs/forge/internal/exitcode"
@@ -382,7 +383,6 @@ func TestUpgradeConverge_LintThatCannotBeReadIsUndetermined(t *testing.T) {
 	}
 }
 
-// --check changes nothing and runs neither generate nor lint, but still says what it would do.
 // An upgrade that changes a frontend's lockfile leaves the INSTALLED
 // node_modules stale, and linting against it reported every generated hook
 // importing a new runtime export as its own item for a person: 128 for one
@@ -410,6 +410,26 @@ func TestUpgradeConverge_StaleInstalledTreeIsRefreshedBeforeLint(t *testing.T) {
 	}
 }
 
+// A forge older than the pin, run with no --to, refuses to move the pin
+// backwards — dry run or not — before it touches anything: forge report
+// 17382bac, "v1.11.0 → v1.10.1 (dev build)" offered as an upgrade.
+func TestUpgradeConverge_RefusesAnImplicitDowngrade(t *testing.T) {
+	dir := newTestProjectWithVersion(t, "v0.1.45")
+	prevVersion, prevCommit := buildinfo.Version(), buildinfo.GitCommit()
+	buildinfo.Set("v0.1.44", "", "")
+	t.Cleanup(func() { buildinfo.Set(prevVersion, "", prevCommit) })
+	for _, check := range []bool{true, false} {
+		_, err := runConverge(t, dir, upgradeOptions{check: check, goRun: noGo, steps: (&recordedSteps{}).steps()})
+		if err == nil || !strings.Contains(err.Error(), "move the pin backwards") {
+			t.Errorf("check=%v: want the downgrade refused, got %v", check, err)
+		}
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "forge.yaml")); !strings.Contains(string(got), "v0.1.45") {
+		t.Errorf("the refused upgrade moved the pin:\n%s", got)
+	}
+}
+
+// --check changes nothing and runs neither generate nor lint, but still says what it would do.
 func TestUpgradeConverge_CheckWritesNothing(t *testing.T) {
 	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)

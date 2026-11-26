@@ -1,7 +1,8 @@
 package cli
 
 // The discussion half of `forge obs issue`: the assignee, the incident and the
-// timeline in the issue document, and the `comment` and `assign` verbs.
+// timeline in the issue document, and the `comment`, `edit-comment`,
+// `delete-comment` and `assign` verbs.
 
 import (
 	"context"
@@ -308,6 +309,125 @@ func runObsIssueComment(ctx context.Context, d obsDeps, id, text, env string, o 
 		return err
 	}
 	fmt.Fprintf(d.Stdout, "commented on %s (%s)\n", id, res.Comment.ID)
+	return nil
+}
+
+// ── edit-comment / delete-comment ──────────────────────────────────────
+
+// obsIssueCommentDeletedDoc is the document a delete prints: the issue and the
+// comment id it removed. The control plane answers a delete with nothing, so
+// there is no stored comment to carry.
+type obsIssueCommentDeletedDoc struct {
+	obsout.Head
+	Scope     obsout.Scope  `json:"scope"`
+	QueryMode string        `json:"query_mode"`
+	Issue     obsIssueIDDoc `json:"issue"`
+	Deleted   obsIssueIDDoc `json:"deleted_comment"`
+	Suggested []string      `json:"suggested,omitempty"`
+}
+
+func newObsIssueEditCommentCmd() *cobra.Command {
+	var o obsIssueWriteOpts
+	cmd := &cobra.Command{
+		Use:   "edit-comment <id> <comment-id> <text> [env]",
+		Short: "Replace the text of a comment on an issue",
+		Long: `Replace the body of one of your comments on an issue. The control plane admits
+the comment's author only. The comment id is comment.id in the issue's timeline
+(` + Name() + ` obs issue <id> <env> --timeline-limit N, or its --json form) and
+in the document ` + "`obs issue comment`" + ` printed. A hosted env only: a local
+issue has no discussion, so this exits 2.
+
+  ` + Name() + ` obs issue edit-comment ISS-7f3a 3f6c… "reproduced on v1.4.1 too" prod
+
+The document carries the stored comment (comment.updated_at is set).
+
+` + obsIssueSchema.Help(),
+		Args: cobra.RangeArgs(3, 4),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runObsIssueEditComment(cmd.Context(), defaultObsDeps(cmd), args[0], args[1], args[2], obsEnvArg(args, 3), o)
+		},
+	}
+	o.register(cmd)
+	return cmd
+}
+
+func runObsIssueEditComment(ctx context.Context, d obsDeps, id, commentID, text, env string, o obsIssueWriteOpts) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	fields, err := o.out.Parsed(obsIssueSchema)
+	if err != nil {
+		return obsFail(d, o.out.JSON, schemaObsIssue, err)
+	}
+	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsIssue, err) }
+	r, b, err := openIssueWriter(ctx, d, env, "edit-comment", o)
+	if err != nil {
+		return fail(err)
+	}
+	res, err := r.UpdateIssueComment(ctx, obsbackend.UpdateIssueCommentRequest{ID: id, CommentID: commentID, Body: text})
+	if err != nil {
+		return fail(err)
+	}
+	doc := obsIssueCommentDoc{
+		Scope: writeScope(d, b), QueryMode: QueryModeStructured, Issue: obsIssueIDDoc{ID: id}, Comment: commentDoc(res.Comment),
+		Suggested: obsout.Suggest(obsout.Command("forge", "obs", "issue", id, env)),
+	}
+	doc.Stamp(schemaObsIssue, nil)
+	if done, err := o.out.Emit(d.Stdout, obsIssueSchema, doc, fields); done || err != nil {
+		return err
+	}
+	fmt.Fprintf(d.Stdout, "edited comment %s on %s\n", res.Comment.ID, id)
+	return nil
+}
+
+func newObsIssueDeleteCommentCmd() *cobra.Command {
+	var o obsIssueWriteOpts
+	cmd := &cobra.Command{
+		Use:   "delete-comment <id> <comment-id> [env]",
+		Short: "Remove a comment from an issue's timeline",
+		Long: `Remove one comment from an issue's timeline. The control plane admits the
+comment's author, or an owner or admin of the issue's organization. The comment
+id is comment.id in the issue's timeline (` + Name() + ` obs issue <id> <env>
+--timeline-limit N, or its --json form). A hosted env only: a local issue has no
+discussion, so this exits 2.
+
+  ` + Name() + ` obs issue delete-comment ISS-7f3a 3f6c… prod
+
+` + obsIssueSchema.Help(),
+		Args: cobra.RangeArgs(2, 3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runObsIssueDeleteComment(cmd.Context(), defaultObsDeps(cmd), args[0], args[1], obsEnvArg(args, 2), o)
+		},
+	}
+	o.register(cmd)
+	return cmd
+}
+
+func runObsIssueDeleteComment(ctx context.Context, d obsDeps, id, commentID, env string, o obsIssueWriteOpts) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	fields, err := o.out.Parsed(obsIssueSchema)
+	if err != nil {
+		return obsFail(d, o.out.JSON, schemaObsIssue, err)
+	}
+	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsIssue, err) }
+	r, b, err := openIssueWriter(ctx, d, env, "delete-comment", o)
+	if err != nil {
+		return fail(err)
+	}
+	if err := r.DeleteIssueComment(ctx, obsbackend.DeleteIssueCommentRequest{ID: id, CommentID: commentID}); err != nil {
+		return fail(err)
+	}
+	doc := obsIssueCommentDeletedDoc{
+		Scope: writeScope(d, b), QueryMode: QueryModeStructured, Issue: obsIssueIDDoc{ID: id}, Deleted: obsIssueIDDoc{ID: commentID},
+		Suggested: obsout.Suggest(obsout.Command("forge", "obs", "issue", id, env)),
+	}
+	doc.Stamp(schemaObsIssue, nil)
+	if done, err := o.out.Emit(d.Stdout, obsIssueSchema, doc, fields); done || err != nil {
+		return err
+	}
+	fmt.Fprintf(d.Stdout, "deleted comment %s from %s\n", commentID, id)
 	return nil
 }
 

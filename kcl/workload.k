@@ -703,6 +703,17 @@ schema Workload:
     # subcommand. The same args select it on every runtime.
     args?: [str]
     replicas: int = 1
+    # A replica RANGE instead of `replicas`: a HorizontalPodAutoscaler moves
+    # the Deployment between minReplicas and maxReplicas (at most 10) to hold
+    # the pods' average CPU at cpuTargetPercent of their request (default 70).
+    #
+    #   autoscale = forge.Autoscale {minReplicas = 2, maxReplicas = 6}
+    #
+    # Service and worker kinds only. The autoscaler owns the count, so leave
+    # `replicas` unset; refused beside storageGiB and strategy = "Recreate".
+    # forge.OnCluster renders it; forge.OnHosted needs a control plane that
+    # applies it; host, compose and build-only refuse it.
+    autoscale?: tiers.Autoscale
     resources?: tiers.Resources
     # name -> a literal, or a reference: forge.SecretRef | ConfigMapRef |
     # FieldRef | ManagedSecret | DatabaseRef | WorkloadURL. Insertion order
@@ -855,3 +866,20 @@ schema Workload:
             "Workload.crds is only supported for kind='operator' — got '${kind}'. `crds` names the custom resources a controller-runtime manager owns."
         not storageGiB or storageGiB == 0 or replicas == 1, \
             "Workload '${name}': storageGiB needs replicas = 1 — one disk is attached to one pod (a Recreate rollout)"
+
+        # --- autoscale (v1alpha1.WorkloadSpec.Validate states the same) ---
+        not autoscale or kind in ["service", "worker"], \
+            "Workload '${name}': autoscale is not supported for kind='${kind}' — only a service or a worker scales on load: an operator elects one leader, so more pods buy it nothing, and a batch kind (job/cron) or a tool has no Deployment to scale. Use replicas."
+        not autoscale or autoscale.minReplicas <= autoscale.maxReplicas, \
+            "Workload '${name}': autoscale.minReplicas (${autoscale.minReplicas if autoscale else 0}) must not exceed autoscale.maxReplicas (${autoscale.maxReplicas if autoscale else 0})"
+        not autoscale or replicas == 1, \
+            "Workload '${name}': replicas = ${replicas} is set beside autoscale — autoscale owns the replica count; set autoscale.minReplicas"
+        not autoscale or not storageGiB, \
+            "Workload '${name}': autoscale is not allowed with storageGiB — the volume is ReadWriteOnce, so a second replica can never mount it. Drop autoscale, or keep the data somewhere every replica can reach (a managed database or bucket)."
+        not autoscale or strategy != "Recreate", \
+            "Workload '${name}': autoscale is not allowed with strategy = \"Recreate\" — Recreate declares the replica count a correctness bound (one version, one pod set), which a count the autoscaler moves contradicts. Drop one."
+
+# forge.Autoscale: the generated tiers.Autoscale, re-exported so an author
+# writes `autoscale = forge.Autoscale {minReplicas = 2, maxReplicas = 6}`
+# without a second import (fw.Autoscale is the same schema).
+Autoscale = tiers.Autoscale

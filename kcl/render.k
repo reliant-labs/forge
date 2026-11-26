@@ -1818,6 +1818,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         command = w.command
         args = w.args
         replicas = w.replicas
+        autoscale = w.autoscale
         if w.resources:
             resources = w.resources
         env = [_env_var(k, v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in _env] if _env else Undefined
@@ -2045,6 +2046,7 @@ _COMPOSE_REFUSED: {str:str} = _LOCAL_REFUSED | {
     "ports": "the compose file owns the published ports; declare them there"
     "probes": "the compose file owns the healthcheck; declare it there"
     "replicas": "the compose file owns the scale"
+    "autoscale": "the compose file owns the scale; compose runs no autoscaler"
     "command": "the compose file owns the container's command"
     "args": "the compose file owns the container's command"
     "resources": "the compose file owns the container's resources"
@@ -2056,6 +2058,7 @@ _BUILD_ONLY_REFUSED: {str:str} = {
     "ports": "a build-only workload is never run, so nothing listens"
     "probes": "a build-only workload is never run, so there is nothing to probe"
     "replicas": "a build-only workload is never run"
+    "autoscale": "a build-only workload is never run, so there is nothing to scale"
     "storageGiB": "a build-only workload is never run"
 }
 
@@ -2110,6 +2113,7 @@ _mask_violations = lambda w: any, rt: any -> [str] {
         if rt.type == "hosted" else []
     _host = ["${f}: ${_LOCAL_REFUSED[f]}" for f in _LOCAL_REFUSED if _set(w, f)] \
         + (["replicas: a host workload is one local process; forge env up launches it once"] if w.replicas != 1 else []) \
+        + (["autoscale: a host workload is one local process; forge env up launches it once, and nothing scales it"] if w.autoscale else []) \
         + (["build: the ${rt.runner} runner derives its command from a forge.GoBuild; add `build = forge.GoBuild {cmd = ...}`, or set `command` to run a binary verbatim"] \
             if rt.runner in ["go-run", "binary", "delve"] and not (w.build and w.build.type == "go") and not w.command else []) \
         + (["kind '${w.kind}': a local process cannot ${'run on a schedule' if w.kind == 'cron' else 'be a controller-runtime manager'}; bind it to forge.OnCluster"] if w.kind in ["cron", "operator"] else []) \
@@ -2455,13 +2459,27 @@ _uptime_exposes = lambda w: any -> bool {
     bool(w.runtime and w.runtime.type == "hosted" and [p for p in (w.ports or []) if p.expose])
 }
 
+# A URL whose host is a wildcard (`https://*.example.com`): it names a set of
+# hosts, none of which resolves, so a prober can never reach it.
+_uptime_wildcard = lambda u: str -> bool {
+    "*" in (u.split("://")[-1].split("/")[0] if u else "")
+}
+
+# The routes whose public URL is a wildcard host: never derived (a check of
+# one could only ever report down), but still names `Uptime.skip` may hold,
+# since earlier forges derived them.
+_uptime_wildcard_routes = lambda b: Bundle -> [str] {
+    [_uptime_route_name(r) for r in b.http_routes if _uptime_wildcard(wurl_lib.route_public_url(r, b))]
+}
+
 # Every check forge derives, as {name: check}. A hosted frontend or a hosted
 # workload with an exposed port is checked at its platform hostname; a route
-# is checked at its public URL when some hostname names it.
+# is checked at its public URL when some hostname names it, unless that
+# hostname is a wildcard.
 _uptime_derived = lambda b: Bundle -> {str: any} {
     _targets = [f.name for f in b.frontends if f.runtime and f.runtime.type == "hosted"] \
         + [w.name for w in b.workloads if _uptime_exposes(w)]
-    _routes = [r for r in b.http_routes if wurl_lib.route_public_url(r, b)]
+    _routes = [r for r in b.http_routes if wurl_lib.route_public_url(r, b) and not _uptime_wildcard(wurl_lib.route_public_url(r, b))]
     ({n: _uptime_default(n) | {"target": n} for n in _targets} \
         | {_uptime_route_name(r): _uptime_default(_uptime_route_name(r)) | {
             "url": wurl_lib.route_public_url(r, b)
@@ -2478,6 +2496,8 @@ _uptime_declared = lambda c: any, b: Bundle -> any {
     _url = wurl_lib.route_public_url(_routes[0], b) if c.route else c.url
     assert not c.route or _url, \
         "UptimeCheck '${c.name}': route '${c.route}' has no public hostname (no route, listener or gateway host): set one, or use `url`"
+    assert not _uptime_wildcard(_url), \
+        "UptimeCheck '${c.name}': ${_url} has a wildcard host, which no prober can reach: check one concrete hostname with `url`"
     assert not c.target or c.target in _env_names(b.workloads, b.infra, b.frontends), \
         "UptimeCheck '${c.name}': target '${c.target}' is not a workload or frontend of this Bundle"
     assert not c.target or c.target in _hosted_names(b.workloads, [], b.frontends), \
@@ -2502,11 +2522,37 @@ _render_uptime_checks = lambda b: Bundle -> [any] {
     _derived = _uptime_derived(b)
     _u = b.uptime
     _skip = _u.skip if _u else []
-    assert all n in _skip {n in _derived}, \
+    assert all n in _skip {n in _derived or n in _uptime_wildcard_routes(b)}, \
         "Uptime.skip names ${[n for n in _skip if n not in _derived]}, which forge does not derive a check for here (derived: ${sorted([n for n in _derived])})"
     _declared = {c.name = _uptime_declared(c, b) for c in (_u.checks if _u else [])}
     _all = {k = v for k, v in _derived if k not in _skip and k not in _declared} | _declared
     [{k = v for k, v in _all[n] if v != None} for n in sorted([n for n in _all])]
+}
+
+# ---------------------------------------------------------------------------
+# Status page (schema.k StatusPage), resolved to the release shape's
+# `status_page`. Every check a component names must be in the env's final
+# check list, the way Uptime.skip refuses a name forge derives no check for.
+# ---------------------------------------------------------------------------
+
+_render_status_page = lambda b: Bundle -> any {
+    _p = b.status_page
+    _checks = [c.name for c in _render_uptime_checks(b)]
+    _unknown = ["${c.name}: ${n}" for c in _p.components for n in c.checks if n not in _checks]
+    assert not _unknown, \
+        "StatusPage.components name uptime checks this env does not have: ${_unknown} (its checks: ${_checks}). A component shows the env's uptime checks: name one of them, declare it in forge.Uptime.checks, or stop skipping it"
+    _page = {
+        "title": _p.title
+        "logo_url": _p.logo_url if _p.logo_url else None
+        "accent_color": _p.accent_color if _p.accent_color else None
+        "links": [{"label": l.label, "url": l.url} for l in _p.links] if _p.links else None
+        "components": [{k = v for k, v in {
+            "name": c.name
+            "description": c.description if c.description else None
+            "checks": sorted(c.checks)
+        } if v != None} for c in _p.components]
+    }
+    {k = v for k, v in _page if v != None}
 }
 
 # The declaration, as the Go side (forge env up, the local forwarder) reads it.
@@ -3268,6 +3314,10 @@ render = lambda bundle: Bundle -> any {
         # derives for a hosted env. Go records them in the release shape.
         if _render_uptime_checks(bundle):
             "uptime_checks": _render_uptime_checks(bundle)
+        # The env's status page, resolved against those checks. Go records it
+        # in the release shape. Whether it is public is control-plane state.
+        if bundle.status_page:
+            "status_page": _render_status_page(bundle)
         # The release-health policy, resolved, only when the env declares one.
         # Go records it in the release shape unless it is all defaults.
         if bundle.release_health:
@@ -3809,6 +3859,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         "runtime_config_spec": _rc_spec
     } | ({"apis": _apis, "api_urls": _api_urls} if f.apis else {}) \
       | ({"routes": f.routes} if f.routes else {}) \
+      | ({"changes_from_source": False} if f.changes_from_source == False else {}) \
       | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {}) \
       | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {})
 }

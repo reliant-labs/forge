@@ -90,14 +90,14 @@ type Request struct {
 type ErrorCode string
 
 const (
-	// CodeNoSession: the host holds no session that applies to this endpoint
-	// (not signed in, or signed in somewhere else).
+	// CodeNoSession means the host holds no session that applies to this
+	// endpoint (not signed in, or signed in somewhere else).
 	CodeNoSession ErrorCode = "no_session"
-	// CodeDenied: a session applies, but it cannot authorize this — for
+	// CodeDenied means a session applies, but it cannot authorize this — for
 	// example it was issued without deploy permission. Signing in again or
 	// granting the permission is the fix, not retrying.
 	CodeDenied ErrorCode = "denied"
-	// CodeUnavailable: the helper could not reach whatever mints tokens.
+	// CodeUnavailable means the helper could not reach whatever mints tokens.
 	// Transient; retrying later may succeed.
 	CodeUnavailable ErrorCode = "unavailable"
 )

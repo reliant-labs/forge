@@ -5,7 +5,7 @@
 // What a process RUNS is one root of the composition graph
 // (internal/app/graph_gen.go): `{{.Name}} server` runs the server root — the
 // API listener serving every user-audience service, plus every worker and
-// operator — and every //forge:root you declare in internal/app gets a
+// operator — and every forge:root struct you declare in internal/app gets a
 // command of its own (roots_gen.go, generated). Each node is constructed
 // once, from its own Deps, in internal/app/compose.go; what it is CONFIGURED
 // with is the providers in internal/app/providers.go.
@@ -105,7 +105,7 @@ func runRoot(ctx context.Context, deps Deps, root rootSpec) error {
 	// against a schema its migrations have not reached answers requests
 	// with errors that look like bugs. Only a root that reaches the database
 	// migrates — a worker root that never opens it never runs a migration —
-	// unless its //forge:root says otherwise: migrate=wait leaves the
+	// unless its forge:root marker says otherwise: migrate=wait leaves the
 	// migrations to another process and blocks (/readyz naming "schema")
 	// until the schema is current; migrate=none leaves it alone.
 	if root.Migrate {

@@ -205,12 +205,24 @@ type DocumentAffected struct {
 	Selections []string `json:"selections"`
 	// Line is the mode line the gate prints.
 	Line string `json:"line"`
+	// Reach is ci.gate.affected_reach's mode ("all" or "direct"), with the
+	// direct mode's TransitiveCap. Deferred are the test packages a direct
+	// reach left out (transitive importers past the cap); always a list.
+	// FullGateRequired is true when Deferred is non-empty: this run did not
+	// test them, and the full gate (main tier, CI_FULL=1) must.
+	Reach            string   `json:"reach,omitempty"`
+	TransitiveCap    int      `json:"transitive_cap,omitempty"`
+	Deferred         []string `json:"deferred"`
+	FullGateRequired bool     `json:"full_gate_required"`
 	// LockfileChecks are the lockfile-<frontend> rows the diff adds;
 	// ClosureHits, per check with paths_go_closure, the changed files in
 	// its Go build closure, and ClosureErrors why one was not computed.
 	LockfileChecks []string            `json:"lockfile_checks"`
 	ClosureHits    map[string][]string `json:"closure_hits,omitempty"`
 	ClosureErrors  map[string]string   `json:"closure_errors,omitempty"`
+	// Modules are the nested replaced modules' tests
+	// (ci.gate.affected_modules); always a list.
+	Modules []ModuleTests `json:"modules"`
 }
 
 // Document renders a for the --json document; nil for a nil a.
@@ -227,7 +239,11 @@ func (a *Affected) Document() *DocumentAffected {
 	d := &DocumentAffected{Full: a.Full, Reason: a.Reason, BaseRef: a.BaseRef, Base: a.Base, Total: a.Total,
 		Changed: nonNil(a.Changed), Packages: nonNil(a.Packages), Build: nonNil(a.Build), Frontends: nonNil(a.Frontends),
 		Why: a.Why, Files: a.Files, Selections: nonNil(a.Selections), Line: a.Line(),
-		LockfileChecks: nonNil(a.LockfileChecks), ClosureHits: a.ClosureHits, ClosureErrors: a.ClosureErrs}
+		Reach: a.Reach, TransitiveCap: a.TransitiveCap, Deferred: nonNil(a.Deferred), FullGateRequired: len(a.Deferred) > 0,
+		LockfileChecks: nonNil(a.LockfileChecks), ClosureHits: a.ClosureHits, ClosureErrors: a.ClosureErrs, Modules: a.Modules}
+	if d.Modules == nil {
+		d.Modules = []ModuleTests{}
+	}
 	if d.Why == nil {
 		d.Why = []PackageWhy{}
 	}

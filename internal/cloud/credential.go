@@ -34,6 +34,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/reliant-labs/forge/pkg/accesstoken"
 	"github.com/reliant-labs/forge/pkg/cloudcred"
 	"github.com/reliant-labs/forge/pkg/credentials"
 )
@@ -63,6 +64,11 @@ const (
 	// (pkg/cloudcred). forge does not know which application; Credential.From
 	// carries the helper's own description of it.
 	SourceHelper CredentialSource = "credential helper"
+	// SourceCIIdentity is a short-lived token the control plane minted for
+	// this CI job's own identity (a GitHub Actions OIDC token, exchanged in
+	// ghoidc.go). Only ResolveCredentialFor produces one, and only for a
+	// federatable scope.
+	SourceCIIdentity CredentialSource = "CI identity"
 )
 
 // Credential is a resolved bearer token plus where it came from.
@@ -178,7 +184,70 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 	if t := strings.TrimSpace(os.Getenv(tokenEnv)); t != "" {
 		return Credential{Token: t, Source: SourceEnv, From: tokenEnv}, nil
 	}
+	return resolveStoredCredential(ep, tokenEnv, "", "")
+}
 
+// ResolveCredentialFor is ResolveCredential for a command that needs exactly
+// scope. When scope is federatable (accesstoken.FederationOf) and nothing more
+// explicit is set, a CI identity — a GitHub Actions job's OIDC token — is
+// exchanged for a short-lived token carrying it. The order is
+// ResolveCredential's with that one step inserted:
+//
+//  1. flagToken
+//  2. os.Getenv(ep.TokenEnv) — a token CI set still wins
+//  3. the CI identity, for a federatable scope only (ghoidc.go)
+//  4. the credentials file
+//  5. the credential helper
+//
+// WHY BEFORE THE FILE AND THE HELPER. The env var beats them for the reason
+// ResolveCredential gives: in CI, CI's credential must beat whatever a cached
+// runner image holds. On a self-hosted runner that file may be a PERSON's
+// login, and the repository's own identity is the right one for its job.
+//
+// WHY SCOPE-AWARE. Every other command keeps ResolveCredential: `forge env
+// deploy` in a job granted `id-token: write` must still ask for
+// FORGE_CONTROL_PLANE_TOKEN, not succeed at an exchange that yields
+// tests:write and then fail for want of deploy:write.
+//
+// A control plane that refuses the exchange (or predates it) makes this
+// ErrNoCredential carrying its remedy, not a fall-through to a person's login.
+func ResolveCredentialFor(flagToken string, ep Endpoint, scope accesstoken.Scope) (Credential, error) {
+	return processCIIdentity.resolveCredentialFor(flagToken, ep, scope)
+}
+
+func (ci *ciIdentity) resolveCredentialFor(flagToken string, ep Endpoint, scope accesstoken.Scope) (Credential, error) {
+	if c, ok := claimableCredentialFor(ep); ok {
+		return c, nil
+	}
+	if t := strings.TrimSpace(flagToken); t != "" {
+		return Credential{Token: t, Source: SourceFlag, From: "--token"}, nil
+	}
+	tokenEnv := ep.TokenEnv
+	if tokenEnv == "" {
+		tokenEnv = DefaultTokenEnv
+	}
+	if t := strings.TrimSpace(ci.getenv(tokenEnv)); t != "" {
+		return Credential{Token: t, Source: SourceEnv, From: tokenEnv}, nil
+	}
+	if accesstoken.FederationOf(scope) == accesstoken.FederationNone {
+		return resolveStoredCredential(ep, tokenEnv, "", "")
+	}
+	cred, ok, hint, err := ci.credential(ep, scope)
+	if err != nil {
+		return Credential{}, err
+	}
+	if ok {
+		return cred, nil
+	}
+	ciHelp := fmt.Sprintf("    permissions: id-token: write   in GitHub Actions — forge exchanges the job's OIDC token for %s, no secret\n", scope)
+	return resolveStoredCredential(ep, tokenEnv, ciHelp, hint)
+}
+
+// resolveStoredCredential is resolution past the flag and the env var: the
+// credentials file, then the helper. ciHelp is a help line naming the CI
+// identity, and hint why this CI job has none; both are empty for a scope no
+// CI identity can carry.
+func resolveStoredCredential(ep Endpoint, tokenEnv, ciHelp, hint string) (Credential, error) {
 	helperValue := os.Getenv(cloudcred.HelperEnv)
 	hasHelper := strings.TrimSpace(helperValue) != ""
 
@@ -217,14 +286,19 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 		return cred, nil
 	}
 
+	hintSuffix := ""
+	if hint != "" {
+		hintSuffix = ": " + hint
+	}
 	return Credential{}, fmt.Errorf(
-		"%w for %s\nforge needs a bearer credential to reach the hosted control plane.\n"+
+		"%w for %s%s\nforge needs a bearer credential to reach the hosted control plane.\n"+
 			"fix, in the order forge checks them:\n"+
 			"    --token <token>        explicit, wins over everything (one-off / debugging)\n"+
 			"    export %s=<token>      for CI — a pipeline has no browser\n"+
+			"%s"+
 			"    %s        for a human — opens a browser and stores the credential\n"+
 			"%s",
-		ErrNoCredential, ep.URL, tokenEnv, loginHint(ep), NoAccountHint)
+		ErrNoCredential, ep.URL, hintSuffix, tokenEnv, ciHelp, loginHint(ep), NoAccountHint)
 }
 
 // helperFailure words a helper that produced no token. A helper's REFUSAL is

@@ -4925,6 +4925,14 @@ schema Frontend:
     # where only this repository is checked out, and builds the same
     # bytes on every machine. See GitSource.
     source?: GitSource
+    # Whether the release carries the Forge Changes this frontend's source
+    # declares: the changes.yaml at the root of `source`'s repository, read
+    # at the commit the release builds (docs/proposals/changes-from-sources.md).
+    # Unset means yes: the code that evaluates those changes ships here, so
+    # the env must declare them or no one can launch them. False keeps them
+    # out (the env then declares only the project root's changes.yaml).
+    # Meaningful only with `source`.
+    changes_from_source?: bool
     dev_runner: str = "npm"
     port: int = 3000
     env_file?: str
@@ -7355,6 +7363,86 @@ schema Uptime:
             "Uptime.skip ${skip} must be check names (lowercase letters, digits, '-' and '_')"
 
 # ---------------------------------------------------------------------------
+# Status page: the public components an env's uptime checks make up.
+# ---------------------------------------------------------------------------
+
+_STATUS_URL_RE = r"^https?://[^/@\s]+(/\S*)?$"
+
+schema StatusLink:
+    """One header link of a status page (support, the app, a blog)."""
+    label: str
+    url: str
+
+    check:
+        1 <= len(label) <= 40, "StatusLink.label '${label}' must be 1 to 40 characters"
+        regex.match(url, _STATUS_URL_RE) and len(url) <= 2048, \
+            "StatusLink '${label}': url '${url}' must be an absolute http(s) address with a host and no credential"
+
+schema StatusComponent:
+    """One row of a status page: a public name for one or more of the env's
+    uptime checks. Its state is the worst of theirs.
+
+    `checks` names checks of THIS env's final list: the ones forge derives
+    (`<frontend>`, `<workload>`, `route-<route>`), minus `Uptime.skip`, plus
+    `Uptime.checks`. A name that is not there is refused at render.
+    """
+    name: str
+    description?: str
+    checks: [str]
+
+    check:
+        1 <= len(name) <= 64, "StatusComponent.name '${name}' must be 1 to 64 characters"
+        not description or len(description) <= 200, \
+            "StatusComponent '${name}': description is longer than 200 characters"
+        len(checks) >= 1, "StatusComponent '${name}' names no uptime check: a component is made of at least one"
+        isunique(checks), "StatusComponent '${name}' names a check twice"
+        all c in checks {regex.match(c, _UPTIME_NAME_RE)}, \
+            "StatusComponent '${name}': checks ${checks} must be uptime check names (lowercase letters, digits, '-' and '_')"
+
+schema StatusPage:
+    """The env's status page, on `Bundle.status_page`: what a page telling
+    the app's own users whether it works shows. OPT-IN ONLY: an env that does
+    not declare one gets no page; nothing is rendered or published. Each component is a public
+    name for some of the env's uptime checks (see Uptime), so the page is
+    opt-in per component: a check no component names never appears on it.
+
+        status_page = forge.StatusPage {
+            title = "Acme status"
+            links = [forge.StatusLink {label = "Support", url = "https://acme.com/help"}]
+            components = [
+                forge.StatusComponent {name = "Website", checks = ["web"]}
+                forge.StatusComponent {name = "API", checks = ["api-ready", "route-billing"], description = "REST and webhooks"}
+            ]
+        }
+
+    Declaring a page does not publish it. Going public is a separate,
+    audited act by a person in the control plane, and a rollback must
+    neither publish nor unpublish a page. Check names never reach the public page; it shows
+    component names, states, daily availability and published notices
+    (the forge.status/v1 document, forge/pkg/statuspage).
+
+      * `logo_url`     — an https image shown beside the title.
+      * `accent_color` — a #rrggbb colour for the page's decoration (never
+        a text or state colour).
+    """
+    title: str
+    logo_url?: str
+    accent_color?: str
+    links: [StatusLink] = []
+    components: [StatusComponent]
+
+    check:
+        1 <= len(title) <= 100, "StatusPage.title '${title}' must be 1 to 100 characters"
+        not logo_url or (regex.match(logo_url, r"^https://[^/@\s]+(/\S*)?$") and len(logo_url) <= 2048), \
+            "StatusPage.logo_url '${logo_url}' must be an absolute https address with a host and no credential"
+        not accent_color or regex.match(accent_color, r"^#[0-9a-fA-F]{6}$"), \
+            "StatusPage.accent_color '${accent_color}' must be a #rrggbb colour"
+        len(links) <= 10, "StatusPage.links has ${len(links)} links, more than 10"
+        1 <= len(components) <= 50, "StatusPage.components must name 1 to 50 components"
+        len({c.name: 1 for c in components}) == len(components), \
+            "StatusPage.components names a component twice: a component name is unique within a page"
+
+# ---------------------------------------------------------------------------
 # Bundle — the project-level container forge.render() consumes.
 # ---------------------------------------------------------------------------
 
@@ -8156,6 +8244,24 @@ schema NetworkPolicy:
 # than required because most envs render one namespace, where demanding it
 # would be noise on every key; it is what disambiguates when they do not.
 _OVERRIDE_KEY_RE = r"^[A-Z][A-Za-z0-9]*/[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[a-z0-9]([-a-z0-9.]*[a-z0-9])?)?(@[A-Za-z0-9][-A-Za-z0-9_.:]*)?$"
+
+# The Bundle.overrides keys that would fight a workload's forge.Autoscale: a
+# patch to its Deployment's spec.replicas (the HorizontalPodAutoscaler owns
+# that field, so every apply would reset what it scaled to), or any patch to
+# the HorizontalPodAutoscaler itself, which forge renders from the declared
+# range. The range is changed in `autoscale`, where the checks see it. The HPA
+# is named after its workload, so the key's name is the workload's; the
+# namespace and cluster qualifiers do not change which workload it is.
+_autoscale_override_conflicts = lambda overrides: {str:}, workloads: [Workload] -> [str] {
+    _scaled = [w.name for w in workloads if w.autoscale]
+    [k for k, p in overrides if _override_fights_autoscale(k, p, _scaled)] if _scaled else []
+}
+
+_override_fights_autoscale = lambda k: str, p: any, scaled: [str] -> bool {
+    _parts = k.split("@")[0].split("/")
+    _parts[-1] in scaled and (_parts[0] == "HorizontalPodAutoscaler" \
+        or (_parts[0] == "Deployment" and typeof(p) == "dict" and "spec" in p and typeof(p["spec"]) == "dict" and "replicas" in p["spec"]))
+}
 
 # ---------------------------------------------------------------------------
 # ManagedIdentity — the env's users, declared. One identity-provider instance
@@ -9132,6 +9238,11 @@ schema Bundle:
     # hosted env gets one per public frontend and route with no declaration;
     # declare `uptime` to add checks or opt out. See Uptime.
     uptime?: Uptime
+    # The env's status page: the public components its uptime checks make
+    # up. Opt-in only: UNSET = no page, nothing rendered or published, and
+    # no default. Going public is a separate, audited act by a person in the
+    # control plane, never declared. See StatusPage.
+    status_page?: StatusPage
     # The env's users (forge.ManagedIdentity): roles, the applications that
     # sign users in, the workloads that read tokens, and where the instance
     # runs. UNSET = no managed identity (bring your own issuer in config.k).
@@ -9183,6 +9294,10 @@ schema Bundle:
         # here rather than failing as a type error inside the Go apply.
         all _k, p in overrides { typeof(p) == "dict" }, \
             "Bundle.overrides values ${[k for k, p in overrides if typeof(p) != 'dict']} are not patches: an override's value is a map of the fields to change, e.g. {spec.replicas = 10}"
+        # An autoscaled workload's replica count belongs to its
+        # HorizontalPodAutoscaler, and the HPA to its `autoscale`.
+        len(_autoscale_override_conflicts(overrides, workloads)) == 0, \
+            "Bundle.overrides ${_autoscale_override_conflicts(overrides, workloads)} patch the replica count of an autoscaled workload: forge.Autoscale owns it (the HorizontalPodAutoscaler named after the workload moves the Deployment's spec.replicas within [minReplicas, maxReplicas]), so a patch to `Deployment/<name>` spec.replicas or to `HorizontalPodAutoscaler/<name>` would fight it on every apply. Change the workload's `autoscale` instead, or drop autoscale and set replicas"
         # THE PROJECT IS DECLARED: it is every object's part-of, the handle a
         # CD pipeline selects one release's workloads by.
         project, "Bundle.project is required: set `project = \"<name>\"` (the project name every rendered object is labelled app.kubernetes.io/part-of with)"

@@ -86,13 +86,13 @@ func kindNames() []string {
 type Mode string
 
 const (
-	// ModeShared: built once, one identity, promoted byte-identical to
-	// every environment. OCI digests live under [SharedVariant].
+	// ModeShared is built once, with one identity, and promoted byte-identical
+	// to every environment. OCI digests live under [SharedVariant].
 	ModeShared Mode = "shared"
-	// ModeVariant: genuinely different per-environment builds (a
+	// ModeVariant means genuinely different per-environment builds (a
 	// NEXT_PUBLIC_* baked at build time). Digests is keyed by variant name.
 	ModeVariant Mode = "variant"
-	// ModeSource: built from a pinned commit at deploy time; the identity
+	// ModeSource is built from a pinned commit at deploy time; the identity
 	// is [Artifact.Source]. Only [KindGit] uses it.
 	ModeSource Mode = "source"
 )

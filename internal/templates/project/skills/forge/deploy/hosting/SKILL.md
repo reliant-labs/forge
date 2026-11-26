@@ -122,7 +122,7 @@ the token you deploy with. Fix the failure and deploy again.
 |---|---|
 | Adopts a bare app | In a directory with no `forge.yaml` that holds a Vite or Next.js static export at its root (or an app with its own Dockerfile), `--claimable` first runs `forge project new --in-place` for it (`--kind site`, or `--kind app --claimable`), prints one line saying it added `forge.yaml` and `deploy/kcl/` and left the app's own files untouched, then deploys. A Go module with no Dockerfile, or a directory with no app, is refused with the command to run instead. Only `--claimable` adopts: a plain `forge env deploy` needs an existing project. `npx -y @reliantlabs/forge env deploy prod --claimable` is the whole procedure for a fresh `npm create vite` app |
 | Only with the flag | There is no auto-detection. With no credential, a plain `forge env deploy` fails and its error names `--claimable` |
-| Signed in? Refused (exit 1) | A user with a login or `$FORGE_CREDENTIAL_HELPER` deploys to their own org: drop the flag |
+| Signed in? Refused (exit 1) | A user with a login or `$FORGE_CREDENTIAL_HELPER` deploys to their own org: drop the flag. To test the anonymous path on a signed-in machine, the refusal prints the command that drops every credential (e.g. `env -u FORGE_CREDENTIAL_HELPER forge env deploy prod --claimable`) |
 | Fits | one static site, or one service (1 replica, at most 125m / 128 MiB, request and limit, no burst) with one managed database (256 MiB of data on a 1 GiB volume) and that service's migration job (a gating `before = [fw.BEFORE_ALL]` job, or a standalone pre-rollout one). No workers, cron, second service or database, custom domains or remote builds: exit 4, naming each with its KCL fix |
 | **No outbound internet until claimed** | An unclaimed **service** (not a static site) serves requests and uses its own database, but every call out of it fails: a payment, an LLM, a webhook, a package download, and any DNS lookup of a name outside the cluster (the connection errors, or the name does not resolve: the backend's resolver answers only the cluster's own names, such as its database's). That is the platform, not a bug in the app, so do not debug it or work around it; it ends when the deploy is claimed, when the platform restarts the backend on the normal hosted network (TCP 80/443 to the public internet). Plan for it: an app that needs an external API at startup will not come up unclaimed. Do not assume Reliant's gateway is available unclaimed: `deploy/llm` documents that credentials may stay blank until its in-cluster route is enabled. Disable the LLM feature when credentials are absent, or claim first; never weaken networking to work around this. The claim block, `--json` (`claim.no_outbound_internet`, and `claim.agent_instructions`) and `--plan-only` all say so |
 | Not the shape band | The billed plan's 4 GiB-per-vCPU band does not apply to an anonymous deploy (it is never billed); the caps above do. `forge env shape <env> --claimable` judges an env that way |
@@ -172,6 +172,11 @@ older forge refuses it as an unknown field when you deploy (it decodes the
 spec strictly; nothing is dropped silently). Leave it unset there; it is
 honoured once the platform runs a forge that has it.
 
+`autoscale` (`deploy/model`) passes the hosted profile, but `forge env deploy`
+refuses an autoscaled hosted workload until the control plane advertises the
+`autoscales-workloads` capability: an older one would run it at one replica.
+Until then, set `replicas`.
+
 ## The API is one workload
 
 A browser reaches the API at ONE origin: the frontend's Connect transport has
@@ -217,34 +222,8 @@ _workloads = [
 
 ## Secrets a Reliant workflow uses: access lists
 
-A hosted secret is opaque and write-only, and it carries an **access list**: the
-principals allowed to use it. A Reliant workflow uses a secret by declaring it
-(top-level `secrets: {NAME: {environment: <project>/<env>}}`) and writing
-`{{ secrets.NAME }}` in an `http/request@1` header; the control plane
-substitutes the value when the request is sent, so the value never reaches the
-workflow, its logs or the model. It does so only if the workflow is on the
-list. The list names no destination, path or step: it answers "may this workflow
-use this secret", and what the credential can do is the receiving app's call.
-
-```bash
-forge secret set    --env staging TRADER_KEY                     # the value, on stdin
-forge secret allow  --env staging --workflow trader-bot --project <reliant project id> TRADER_KEY
-forge secret access --env staging [TRADER_KEY] [--json]          # who may use it
-forge secret deny   --env staging --workflow trader-bot --project <reliant project id> TRADER_KEY
-forge secret list   --env staging                                # each secret's access beside its version
-```
-
-- `--workflow` is the workflow's name (its `.reliant/workflows/<name>.yaml`);
-  any run or trigger of it is covered. `--project` is the Reliant project id
-  that owns it: find it with `reliant project list` (the row whose PATH is the
-  checkout holding the workflow). forge never guesses it.
-- `allow` and `deny` are idempotent. Only an org owner or admin edits a list
-  (a machine token with no acting user is refused; a protected env asks for
-  step-up). The control plane's refusal is printed as sent.
-- A run denied for lack of access names this command in its error.
-- Hosted envs only: a `forge.FileSecrets` store has no access list, and these
-  commands say so. Workloads keep receiving secrets through `managedSecret` /
-  `config_secrets`; access lists govern workflows.
+Hosted secrets are write-only. To grant a workflow access with `forge secret
+allow`, inspect it or revoke it, load `deploy/hosting/workflow-secrets`.
 
 ## Hosting elsewhere
 

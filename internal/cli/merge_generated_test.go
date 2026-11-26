@@ -880,3 +880,47 @@ func TestMergeGenerated_ServiceCatalogRealMerge(t *testing.T) {
 		keepsConflict(t, dir, "cherry-pick", "theirs")
 	})
 }
+
+// deploy/kcl/config_gen.k is routed to the driver, and two pristine renders
+// whose changes collide in one config block merge as this side's render for
+// `forge generate` to finish, like any other forge render. It was the one
+// generated kind left on git's plain merge, so every pair of PRs adding
+// fields to one config block conflicted locally (forge report 99809c06).
+func TestMergeGenerated_KCLRenderIsRoutedAndMerged(t *testing.T) {
+	testkit.Slow(t, "execs git")
+	const rel = "deploy/kcl/config_gen.k"
+
+	repo := t.TempDir()
+	attrs, err := os.ReadFile(filepath.Join("..", "templates", "project", ".gitattributes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".gitattributes"), attrs, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	out, err := exec.Command("git", "-C", repo, "check-attr", "merge", "--", rel).Output()
+	if err != nil {
+		t.Fatalf("git check-attr: %v", err)
+	}
+	if !strings.Contains(string(out), "merge: "+generatedMergeDriver) {
+		t.Errorf("%s is not routed to the driver: %s", rel, out)
+	}
+
+	render := func(env string) []byte {
+		stamped, ok := checksums.Stamp(rel, []byte("import forge\n\nROOTS = {\n    \"api\" = {\n        env = [\n            \"PORT\",\n"+env+"        ]\n    }\n}\n"))
+		if !ok {
+			t.Fatalf("%s is not stampable", rel)
+		}
+		return stamped
+	}
+	base := render("")
+	ours := render("            \"OIDC_ISSUER\",\n")
+	theirs := render("            \"IDLE_RECLAIM_AFTER\",\n")
+	merged, clean, note, err := mergeGeneratedPath(context.Background(), rel, base, ours, theirs, 7)
+	if err != nil || !clean || string(merged) != string(ours) || note == "" {
+		t.Fatalf("want this side's render, clean, with a note; clean=%v note=%q err=%v\n%s", clean, note, err, merged)
+	}
+}

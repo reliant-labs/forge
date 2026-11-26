@@ -61,9 +61,11 @@ func (a Apply) Validate() error {
 type ApplyStatus string
 
 const (
+	// ApplySucceeded means the applier saw the rollout succeed.
 	ApplySucceeded ApplyStatus = "succeeded"
-	ApplyFailed    ApplyStatus = "failed"
-	// ApplyTimedOut: the applier stopped waiting before the rollout
+	// ApplyFailed means the applier saw the rollout fail.
+	ApplyFailed ApplyStatus = "failed"
+	// ApplyTimedOut means the applier stopped waiting before the rollout
 	// answered. Not a success and not a failure.
 	ApplyTimedOut ApplyStatus = "timed_out"
 )
@@ -153,11 +155,16 @@ func (o ApplyOutcome) SameReport(other ApplyOutcome) bool {
 type ApplyState string
 
 const (
-	ApplyRunning   ApplyState = "running"
-	ApplyStateOK   ApplyState = "succeeded"
+	// ApplyRunning means no outcome has arrived and the deadline has not
+	// passed. Only a running apply blocks the next one on the env.
+	ApplyRunning ApplyState = "running"
+	// ApplyStateOK means the applier reported ApplySucceeded.
+	ApplyStateOK ApplyState = "succeeded"
+	// ApplyStateFail means the applier reported ApplyFailed.
 	ApplyStateFail ApplyState = "failed"
-	ApplyStateTO   ApplyState = "timed_out"
-	// ApplyAbandoned: no outcome arrived by the deadline. "We could not
+	// ApplyStateTO means the applier reported ApplyTimedOut.
+	ApplyStateTO ApplyState = "timed_out"
+	// ApplyAbandoned means no outcome arrived by the deadline. "We could not
 	// look" is its own answer — never read as success.
 	ApplyAbandoned ApplyState = "abandoned"
 )

@@ -340,6 +340,53 @@ func TestMerge_PathsAndExclusions(t *testing.T) {
 	}
 }
 
+// A file an input marks generated stays generated through a later merge with
+// no source to read: `forge test report` marks a file by its "Code
+// generated … DO NOT EDIT." header (a forge *-hooks_gen.ts, a mock), and the
+// control plane re-merges the uploaded per-lane documents with zero options.
+// Before, the re-merge recomputed exclusion from path conventions alone and
+// counted those files, so the console's totals disagreed with the report's.
+func TestMerge_KeepsAnInputsGeneratedMark(t *testing.T) {
+	lane := func(name testreport.Lane, digest string, hit int64, generated string) *testreport.Coverage {
+		return &testreport.Coverage{
+			Head:   testreport.Head{Schema: testreport.SchemaCoverage, OK: true},
+			Lanes:  []testreport.LaneInfo{{Name: name, Mode: testreport.ModeCount}},
+			Inputs: []testreport.InputRef{{Digest: digest, Lane: name}},
+			Files: []testreport.CoverageFile{
+				{Lang: testreport.LangTS, Path: "web/src/hooks/billing-hooks_gen.ts", Package: "web/src/hooks", Granularity: testreport.GranularityStatement, Excluded: generated,
+					Blocks: []testreport.Block{{StartLine: 1, EndLine: 2, Statements: 7, Hits: []int64{hit}}}},
+				{Lang: testreport.LangTS, Path: "web/src/app.ts", Package: "web/src", Granularity: testreport.GranularityStatement,
+					Blocks: []testreport.Block{{StartLine: 1, EndLine: 2, Statements: 3, Hits: []int64{hit}}}},
+			},
+		}
+	}
+	// The newer lane's document carries no mark (another producer): one
+	// input's mark is enough, in either order.
+	for _, order := range [][]*testreport.Coverage{
+		{lane("frontend", "sha256:a", 1, testreport.ExcludedGenerated), lane("e2e", "sha256:b", 0, "")},
+		{lane("e2e", "sha256:b", 0, ""), lane("frontend", "sha256:a", 1, testreport.ExcludedGenerated)},
+	} {
+		m := merge(t, testreport.MergeOptions{}, order...)
+		ex := map[string]string{}
+		for _, f := range m.Files {
+			ex[f.Path] = f.Excluded
+		}
+		if ex["web/src/hooks/billing-hooks_gen.ts"] != testreport.ExcludedGenerated || ex["web/src/app.ts"] != "" {
+			t.Errorf("exclusions %v", ex)
+		}
+		if s := m.Summary(); s.Combined.Statements != 3 || s.Generated.Statements != 7 {
+			t.Errorf("summary %+v: want 3 counted statements, 7 generated", s)
+		}
+		// A merge of the merge (the next run of the commit) keeps it.
+		if again := merge(t, testreport.MergeOptions{}, m); again.Summary().Combined.Statements != 3 {
+			t.Errorf("re-merge counts %d statements, want 3", again.Summary().Combined.Statements)
+		}
+		if inc := merge(t, testreport.MergeOptions{IncludeGenerated: true}, order...); inc.Summary().Combined.Statements != 10 {
+			t.Errorf("IncludeGenerated counts %d statements, want 10", inc.Summary().Combined.Statements)
+		}
+	}
+}
+
 // The ordinary Go text profile names each file by its import-path-qualified
 // name. Parsing keeps that name whole as ImportPath (its directory is the
 // package) and leaves Path empty; Merge with the module path derives the

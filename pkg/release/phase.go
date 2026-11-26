@@ -19,7 +19,8 @@ package release
 //   - a pre-rollout Job is [PhasePre], a post-rollout Job is [PhasePost];
 //   - every kind that runs the release's code (Deployment, StatefulSet,
 //     DaemonSet, ReplicaSet, ReplicationController, Pod, CronJob) is
-//     [PhaseRollout];
+//     [PhaseRollout]; HorizontalPodAutoscalers share that phase so replica
+//     ownership can be handed over alongside their targets;
 //   - everything else (Namespaces, CRDs, Roles, ConfigMaps, Services,
 //     NetworkPolicies, the ServiceAccount a Job's pod needs) is the SUPPORT a
 //     pre-rollout Job rests on, so it is also [PhasePre]. Direct apply sends
@@ -97,7 +98,11 @@ func ClassifyPhase(kind, name string, annotations map[string]string) (Phase, err
 				name, AnnotationDeployPhase, declared, DeployPhasePreRollout, DeployPhasePostRollout)
 		}
 	}
-	if rolloutWorkloadKinds[kind] {
+	// An autoscaler belongs with its target, not with migration support:
+	// direct apply must see both documents to hand over replica ownership
+	// before dropping spec.replicas. It must not scale the old release while
+	// a pre-rollout migration is still running either.
+	if rolloutWorkloadKinds[kind] || kind == "HorizontalPodAutoscaler" {
 		return PhaseRollout, nil
 	}
 	return PhasePre, nil

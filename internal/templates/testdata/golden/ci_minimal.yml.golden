@@ -235,6 +235,12 @@ jobs:
     name: Test
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' }}
+    # A job-level block replaces the workflow's, so it repeats the workflow's
+    # permissions. `id-token: write` lets `forge test report` upload with
+    # GitHub OIDC; only a job that uploads gets it.
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -258,6 +264,23 @@ jobs:
         # Without the pass-through the key would go silently dead the moment
         # the test command moved out of this workflow.
         run: task test
+      # The lanes above ran through `forge test capture`, which recorded their
+      # results and coverage under .forge/tests/runs/. This summarises the run
+      # and uploads it to the project's control plane (results, coverage counts
+      # and changed line ranges; never source), whose Tests pages show it with
+      # merged coverage and flaky tests. It needs no secret: the job's
+      # `id-token: write` lets forge exchange this run's GitHub OIDC token for
+      # a short-lived tests:write token, once an org admin has linked the
+      # Reliant GitHub App (installed on this repository) to the org in the
+      # web app's organization settings. To upload with a token instead, add
+      # `env: FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}`
+      # to this step: the secret, if set, overrides OIDC; fork PRs get no OIDC
+      # token and skip the upload green. Without a credential the upload is
+      # one line on stderr. This step never fails the job: the test step above
+      # is the verdict.
+      - name: Report test results
+        if: ${{ !cancelled() }}
+        run: task test:report -- --upload || echo "forge test report exited $? (the test step above is the verdict)"
 
   # The integration lane, for repos that have one (`//go:build integration`
   # test files). PRs only: a push to main already merged something that passed
@@ -266,6 +289,12 @@ jobs:
     name: Integration Tests
     needs: changes
     if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.code == 'true' && needs.changes.outputs.integration == 'true' }}
+    # A job-level block replaces the workflow's, so it repeats the workflow's
+    # permissions. `id-token: write` lets `forge test report` upload with
+    # GitHub OIDC; only a job that uploads gets it.
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -285,6 +314,23 @@ jobs:
         run: docker info > /dev/null
       - name: Integration tests
         run: task test:integration
+      # The lanes above ran through `forge test capture`, which recorded their
+      # results and coverage under .forge/tests/runs/. This summarises the run
+      # and uploads it to the project's control plane (results, coverage counts
+      # and changed line ranges; never source), whose Tests pages show it with
+      # merged coverage and flaky tests. It needs no secret: the job's
+      # `id-token: write` lets forge exchange this run's GitHub OIDC token for
+      # a short-lived tests:write token, once an org admin has linked the
+      # Reliant GitHub App (installed on this repository) to the org in the
+      # web app's organization settings. To upload with a token instead, add
+      # `env: FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}`
+      # to this step: the secret, if set, overrides OIDC; fork PRs get no OIDC
+      # token and skip the upload green. Without a credential the upload is
+      # one line on stderr. This step never fails the job: the test step above
+      # is the verdict.
+      - name: Report test results
+        if: ${{ !cancelled() }}
+        run: task test:report -- --upload || echo "forge test report exited $? (the test step above is the verdict)"
 
   # Built only after `checks` passes: an image build on a PR that already
   # failed lint is minutes spent learning nothing.

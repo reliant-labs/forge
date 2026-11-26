@@ -292,6 +292,16 @@ func (l Local) AddIssueComment(context.Context, AddIssueCommentRequest) (AddIssu
 	return AddIssueCommentResult{}, errNoLocalTriage()
 }
 
+// UpdateIssueComment implements IssueReader: local issues carry no state.
+func (l Local) UpdateIssueComment(context.Context, UpdateIssueCommentRequest) (UpdateIssueCommentResult, error) {
+	return UpdateIssueCommentResult{}, errNoLocalTriage()
+}
+
+// DeleteIssueComment implements IssueReader: local issues carry no state.
+func (l Local) DeleteIssueComment(context.Context, DeleteIssueCommentRequest) error {
+	return errNoLocalTriage()
+}
+
 // AssignIssue implements IssueReader: local issues carry no state.
 func (l Local) AssignIssue(context.Context, AssignIssueRequest) (AssignIssueResult, error) {
 	return AssignIssueResult{}, errNoLocalTriage()

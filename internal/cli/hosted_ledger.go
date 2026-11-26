@@ -798,6 +798,10 @@ type hostedStore struct {
 	// immutable server-side.
 	project string
 	kind    deploytarget.HostedEnvKind
+	// env is the environment this ledger was opened for, "" when it was
+	// opened for none (a project-wide read). A cut that finds the project not
+	// yet on the control plane ensures it (see Cut).
+	env string
 
 	mu     sync.Mutex
 	envIDs map[string]string // env name → control-plane id, per process
@@ -833,6 +837,14 @@ type hostedStore struct {
 // and kind are the ledger env's control-plane address (see hostedEnvRefFor).
 func hostedLedger(client cloudCaller, endpoint, project string, kind deploytarget.HostedEnvKind) envLedger {
 	s := &hostedStore{client: client, resolver: cloudEnvResolver{client: client, project: project}, endpoint: endpoint, project: project, kind: kind}
+	return envLedger{Bindings: s, Releases: s, Hosted: true}
+}
+
+// hostedLedgerForEnv is hostedLedger opened for one env (ref), so a write that
+// needs the env to exist can ensure it.
+func hostedLedgerForEnv(client cloudCaller, endpoint string, ref deploytarget.HostedEnvRef) envLedger {
+	s := &hostedStore{client: client, resolver: cloudEnvResolver{client: client, project: ref.Project}, endpoint: endpoint,
+		project: ref.Project, kind: ref.Kind, env: ref.Name}
 	return envLedger{Bindings: s, Releases: s, Hosted: true}
 }
 
@@ -1225,7 +1237,21 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 		// is one (code_source_warning.go). Absent from an older server.
 		CodeSources *wireAppCodeSources `json:"codeSources"`
 	}
-	if err := s.client.Call(ctx, procCutRelease, req, &resp); err != nil {
+	err := s.client.Call(ctx, procCutRelease, req, &resp)
+	if err != nil && hostedErrorHasCode(err, cloud.CodeNotFound) && s.env != "" && s.kind != "" && s.kind != deploytarget.HostedEnvLocal {
+		// A FIRST CUT, before anything ever deployed the env: the control
+		// plane has no record of this project yet (it is created with the
+		// project's first environment), so it answers NotFound. The scaffold's
+		// own first-ship path is `env build <env> --release`, then `env deploy
+		// <env> <version>` (obs db0e1f64). A cut is a write, so it ensures the
+		// env it was opened for, as every hosted write does (ensureHostedEnv),
+		// and retries once.
+		if _, eerr := ensureHostedEnv(ctx, s.client, deploytarget.HostedEnvRef{Project: s.project, Name: s.env, Kind: s.kind}); eerr != nil {
+			return false, fmt.Errorf("%w (creating env %q on the control plane first also failed: %v)", err, s.env, eerr)
+		}
+		err = s.client.Call(ctx, procCutRelease, req, &resp)
+	}
+	if err != nil {
 		// THE CONNECT CODE, not the message text. A re-cut of a version
 		// whose artifacts differ is the one failure this turns into a
 		// domain error, and recognising it by searching the message

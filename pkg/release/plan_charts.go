@@ -20,7 +20,10 @@ import (
 type ChartOp string
 
 const (
-	ChartAdded   ChartOp = "added"
+	// ChartAdded is an object the chart's render gains: the deploy creates it.
+	ChartAdded ChartOp = "added"
+	// ChartChanged is an object the chart renders differently from the live
+	// one: the deploy updates it.
 	ChartChanged ChartOp = "changed"
 	// ChartRemoved is a chart prune: the object left the chart's render and
 	// the deploy deletes it after the chart applies.

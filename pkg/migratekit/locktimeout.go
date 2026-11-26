@@ -69,8 +69,8 @@ const (
 	DefaultRetryBackoff = time.Second
 )
 
-// Off, as Limits.LockTimeout or StatementTimeout, disables that timeout. (Zero
-// means "the default", so it cannot also mean "none".)
+// Off disables a timeout when set as Limits.LockTimeout or StatementTimeout.
+// (Zero means "the default", so it cannot also mean "none".)
 const Off time.Duration = -1
 
 const retryBackoffMax = 15 * time.Second

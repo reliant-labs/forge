@@ -81,6 +81,13 @@ type Affected struct {
 	// Selections say, one line per affected rule that matched, what it
 	// claimed and selected.
 	Selections []string
+	// Reach is the ci.gate.affected_reach the run applied: "all" (also
+	// when unset) or "direct", with its TransitiveCap.
+	Reach         string
+	TransitiveCap int
+	// Deferred are the test packages a direct reach left to the full gate:
+	// transitive importers past the cap. Sorted; never dropped silently.
+	Deferred []string
 	// ClosureHits are, per check with GoClosure, the changed files in its
 	// Go build closure; ClosureErrs why one could not be computed
 	// (ResolveGoClosures).
@@ -101,6 +108,9 @@ type Affected struct {
 	// Files reports each changed file's package and claiming rules; set
 	// whenever the package graph was read.
 	Files []FileReport
+	// Modules are the nested replaced modules' own tests
+	// (ci.gate.affected_modules: auto; WithModuleTests).
+	Modules []ModuleTests
 }
 
 // Line is the one line the gate prints about the unit lane's mode.
@@ -114,10 +124,10 @@ func (a Affected) Line() string {
 	}
 	if len(a.Packages) == 0 {
 		return fmt.Sprintf("unit tests: affected mode — no package with tests reaches the %d changed file(s) since %s (%s)%s; %s=1 runs the full suite",
-			len(a.Changed), a.BaseRef, a.Base, fe, FullEnv)
+			len(a.Changed), a.BaseRef, a.Base, fe, FullEnv) + a.deferredLine()
 	}
 	return fmt.Sprintf("unit tests: affected mode — %d of %d test packages reach the %d changed file(s) since %s (%s)%s; %s=1 runs the full suite",
-		len(a.Packages), a.Total, len(a.Changed), a.BaseRef, a.Base, fe, FullEnv)
+		len(a.Packages), a.Total, len(a.Changed), a.BaseRef, a.Base, fe, FullEnv) + a.deferredLine()
 }
 
 // AffectedInput configures ComputeAffected.
@@ -136,6 +146,11 @@ type AffectedInput struct {
 	// Rules are ci.gate.affected_rules: what a changed file the package
 	// graph cannot place selects.
 	Rules []config.CIGateAffectedRule
+	// Modules is ci.gate.affected_modules: "auto" maps changes in nested
+	// modules the root go.mod replaces onto ./dir (affected_modules.go).
+	Modules string
+	// Reach is ci.gate.affected_reach; nil is full transitive reach.
+	Reach *config.CIGateAffectedReach
 	// ChangesOnly stops once the changed files are known, without go list:
 	// for a caller that gates checks by path (GateByPaths) but does not
 	// narrow the unit lane.
@@ -209,13 +224,21 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 	baseRef, short, changed := a.BaseRef, a.Base, a.Changed
 	// After the diff, the unit lane may still run whole; the changed files
 	// stay recorded, so path-gated checks are still judged by them.
+	var modules []ModuleTests
 	fullAfterDiff := func(reason string) Affected {
-		return Affected{Full: true, Reason: reason, BaseRef: baseRef, Base: short, Changed: changed, FullChecks: a.FullChecks}
+		return Affected{Full: true, Reason: reason, BaseRef: baseRef, Base: short, Changed: changed, FullChecks: a.FullChecks, Modules: modules}
 	}
 
 	list := in.GoList
 	if list == nil {
 		list = runGoList
+	}
+	rootChanged := changed
+	nested := nestedChanges{}
+	if in.Modules == AffectedModulesAuto {
+		nested = splitNestedModules(ctx, in, list, changed)
+		rootChanged, modules = nested.rest, nested.tests
+		a.Modules = modules
 	}
 	r, err := list(ctx, in.Root, in.Env)
 	if err != nil {
@@ -225,12 +248,30 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 	if err != nil {
 		return fullAfterDiff("cannot read go list output: " + err.Error())
 	}
-	sel, reason := selectChanges(changed, g, in.Ignore, in.Rules)
+	sel, reason := selectChanges(rootChanged, g, in.Ignore, in.Rules)
 	files := explainFiles(changed, g, in.Ignore, ruleMatchers(in.Rules))
+	files = annotateModuleFiles(files, nested, modules)
 	if reason != "" {
 		full := fullAfterDiff(reason)
 		full.Files = files
 		return full
+	}
+	if nested.unresolved != "" {
+		return fullAfterDiff(nested.unresolved)
+	}
+	for _, d := range nested.embedDirs {
+		// A nested package embedding a changed file: the root's own graph
+		// names it when any root test binary links it; unlisted, none does.
+		if pkg, ok := g.dirPkg[d]; ok {
+			sel.changedPkgs[pkg] = true
+		}
+	}
+	for _, f := range nested.rootFiles {
+		pkg, ok := g.owner(f)
+		if !ok {
+			return fullAfterDiff(f + " cannot be mapped to a package in the root graph")
+		}
+		sel.changedPkgs[pkg] = true
 	}
 	a.Files = files
 	a.Total = len(g.testDeps)
@@ -246,6 +287,7 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 			}
 		}
 	}
+	applyReach(&a, g, sel, in.Reach)
 	sort.Strings(a.Packages)
 	for fe := range sel.frontends {
 		a.Frontends = append(a.Frontends, fe)
@@ -421,8 +463,10 @@ func ApplyAffected(checks []Check, a Affected) []Check {
 		switch {
 		case a.Full:
 			c.Note = "full suite: " + a.Reason
-		case len(a.Packages) == 0:
+		case len(a.Packages) == 0 && len(a.Deferred) == 0:
 			c.NotApplicable = fmt.Sprintf("affected mode: no package with tests reaches the changes since %s (%s=1 runs the full suite)", a.BaseRef, FullEnv)
+		case len(a.Packages) == 0:
+			c.NotApplicable = fmt.Sprintf("affected mode: only transitive importers reach the changes since %s; %d deferred to the full gate", a.BaseRef, len(a.Deferred))
 		default:
 			// `task test -- <packages>` replaces the default ./... with the
 			// list. It also skips the frontend lane, which is right: affected
@@ -431,6 +475,9 @@ func ApplyAffected(checks []Check, a Affected) []Check {
 			// (WithFrontendTests).
 			c.Argv = append(append(append([]string(nil), c.Argv...), "--"), a.Packages...)
 			c.Note = fmt.Sprintf("affected mode: %d of %d packages (since %s)", len(a.Packages), a.Total, a.BaseRef)
+			if len(a.Deferred) > 0 {
+				c.Note += fmt.Sprintf("; %d deferred to the full gate", len(a.Deferred))
+			}
 		}
 	}
 	return out
@@ -443,6 +490,12 @@ type packageGraph struct {
 	dirPkg map[string]string
 	// embedPkg maps an embedded file (absolute) to the package embedding it.
 	embedPkg map[string]string
+	// prodEmbedPkg is embedPkg for non-test embeds only: the files a
+	// package's importers link (affected_modules.go).
+	prodEmbedPkg map[string]string
+	// directImports maps each module package to what it and its tests
+	// (internal and external test files) import directly.
+	directImports map[string][]string
 	// testDeps maps each module package that has tests to every package its
 	// test binary links.
 	testDeps map[string][]string
@@ -465,6 +518,7 @@ type listedPackage struct {
 	EmbedFiles      []string `json:"EmbedFiles"`
 	TestEmbedFiles  []string `json:"TestEmbedFiles"`
 	XTestEmbedFiles []string `json:"XTestEmbedFiles"`
+	Imports         []string `json:"Imports"`
 	TestImports     []string `json:"TestImports"`
 	XTestImports    []string `json:"XTestImports"`
 }
@@ -486,7 +540,7 @@ func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
 	if r, rerr := filepath.EvalSymlinks(absRoot); rerr == nil {
 		realRoot = r
 	}
-	g := &packageGraph{root: absRoot, dirPkg: map[string]string{}, embedPkg: map[string]string{}, testDeps: map[string][]string{}, testImports: map[string]map[string]bool{}, buildDeps: map[string][]string{}}
+	g := &packageGraph{root: absRoot, dirPkg: map[string]string{}, embedPkg: map[string]string{}, prodEmbedPkg: map[string]string{}, testDeps: map[string][]string{}, testImports: map[string]map[string]bool{}, buildDeps: map[string][]string{}, directImports: map[string][]string{}}
 	dec := json.NewDecoder(r)
 	for {
 		var p listedPackage
@@ -529,10 +583,14 @@ func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
 			}
 			g.buildDeps[path] = p.Deps
 		}
+		g.addDirectImports(path, p)
 		for _, files := range [][]string{p.EmbedFiles, p.TestEmbedFiles, p.XTestEmbedFiles} {
 			for _, f := range files {
 				g.embedPkg[filepath.Join(dir, filepath.FromSlash(f))] = path
 			}
+		}
+		for _, f := range p.EmbedFiles {
+			g.prodEmbedPkg[filepath.Join(dir, filepath.FromSlash(f))] = path
 		}
 	}
 	// Only the module's own packages are candidates to test.
@@ -692,7 +750,7 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 
 func runGoList(ctx context.Context, dir string, env []string) (io.Reader, error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-test",
-		"-json=ImportPath,Name,Dir,ForTest,Standard,Deps,EmbedFiles,TestEmbedFiles,XTestEmbedFiles,TestImports,XTestImports",
+		"-json=ImportPath,Name,Dir,ForTest,Standard,Deps,EmbedFiles,TestEmbedFiles,XTestEmbedFiles,Imports,TestImports,XTestImports",
 		"./...")
 	cmd.Dir = dir
 	if env == nil {

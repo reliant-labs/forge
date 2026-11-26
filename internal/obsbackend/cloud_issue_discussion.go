@@ -1,7 +1,8 @@
 package obsbackend
 
 // The discussion half of the cloud issues reader: IssuesService.ListIssueTimeline,
-// AddIssueComment and AssignIssue (control plane cp#1351), by procedure name with
+// AddIssueComment, UpdateIssueComment, DeleteIssueComment and AssignIssue
+// (control plane cp#1351), by procedure name with
 // locally declared protojson shapes, like cloud_issues.go.
 
 import (
@@ -14,9 +15,11 @@ import (
 )
 
 const (
-	procListIssueTimeline = "controlplane.v1.IssuesService/ListIssueTimeline"
-	procAddIssueComment   = "controlplane.v1.IssuesService/AddIssueComment"
-	procAssignIssue       = "controlplane.v1.IssuesService/AssignIssue"
+	procListIssueTimeline  = "controlplane.v1.IssuesService/ListIssueTimeline"
+	procAddIssueComment    = "controlplane.v1.IssuesService/AddIssueComment"
+	procUpdateIssueComment = "controlplane.v1.IssuesService/UpdateIssueComment"
+	procDeleteIssueComment = "controlplane.v1.IssuesService/DeleteIssueComment"
+	procAssignIssue        = "controlplane.v1.IssuesService/AssignIssue"
 
 	timelinePageSize = 100
 	// maxTimelinePages bounds the walk to the newest entries: the control plane
@@ -171,6 +174,44 @@ func (c Cloud) AddIssueComment(ctx context.Context, req AddIssueCommentRequest) 
 		return AddIssueCommentResult{}, err
 	}
 	return AddIssueCommentResult{Comment: out.Comment.comment()}, nil
+}
+
+// UpdateIssueComment implements IssueReader over IssuesService.UpdateIssueComment.
+// The control plane admits the comment's author only.
+func (c Cloud) UpdateIssueComment(ctx context.Context, req UpdateIssueCommentRequest) (UpdateIssueCommentResult, error) {
+	if strings.TrimSpace(req.CommentID) == "" {
+		return UpdateIssueCommentResult{}, Wrong("name the comment to edit by its id (comment.id in forge obs issue <id> --timeline-limit N --json)")
+	}
+	if strings.TrimSpace(req.Body) == "" {
+		return UpdateIssueCommentResult{}, Wrong("a comment needs text; to remove one, use forge obs issue delete-comment")
+	}
+	in := struct {
+		IssueID   string `json:"issueId"`
+		CommentID string `json:"commentId"`
+		Body      string `json:"body"`
+	}{req.ID, req.CommentID, req.Body}
+	var out struct {
+		Comment wireComment `json:"comment"`
+	}
+	if err := c.callIssuesEnvWide(ctx, procUpdateIssueComment, in, &out); err != nil {
+		return UpdateIssueCommentResult{}, err
+	}
+	return UpdateIssueCommentResult{Comment: out.Comment.comment()}, nil
+}
+
+// DeleteIssueComment implements IssueReader over IssuesService.DeleteIssueComment.
+// The control plane admits the comment's author, or an owner or admin of the
+// issue's org.
+func (c Cloud) DeleteIssueComment(ctx context.Context, req DeleteIssueCommentRequest) error {
+	if strings.TrimSpace(req.CommentID) == "" {
+		return Wrong("name the comment to delete by its id (comment.id in forge obs issue <id> --timeline-limit N --json)")
+	}
+	in := struct {
+		IssueID   string `json:"issueId"`
+		CommentID string `json:"commentId"`
+	}{req.ID, req.CommentID}
+	var out struct{}
+	return c.callIssuesEnvWide(ctx, procDeleteIssueComment, in, &out)
 }
 
 // AssignIssue implements IssueReader over IssuesService.AssignIssue. Like

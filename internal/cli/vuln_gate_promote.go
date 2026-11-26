@@ -304,7 +304,7 @@ func judgeVulnGate(ctx context.Context, out io.Writer, in vulnPromoteInput, src 
 		now = in.Now()
 	}
 	doc := vulnscan.BuildDocument(vulnscan.DocumentInput{
-		Env: in.Env, Release: in.Version, Gate: in.Policy.VulnGate, GradedAs: graded, Artifacts: scans, Now: now,
+		Env: in.Env, Release: in.Version, Gate: in.Policy.VulnGate, GradedAs: graded, Artifacts: scans, NotApplicable: vulnscan.NotApplicableOf(rel), Now: now,
 		ReleaseFindings: found.Release, Stale: found.Stale, FreshnessFromSource: found.FreshnessFromSource,
 		Judged: found.Judged, JudgedBy: found.JudgedBy,
 	})
@@ -468,6 +468,7 @@ func hostedPromoteVulnSource(ctx context.Context, hs *hostedStore, env string, r
 	case !f.Findings:
 		return rel, unreadVulnFindings{reason: "the control plane at " + hs.endpoint + " does not serve findings yet"}, false
 	}
+	declareVulnReadScope(hs.client)
 	src := hostedVulnSource{reader: hostedVulnReader{client: hs.client, project: hs.project}, env: env}
 	read, err := src.releaseFindings(ctx, rel.Version)
 	if errors.Is(err, errHostedVulnEnvNotFound) {

@@ -114,6 +114,48 @@ ci:
   the whole `test` script instead of `test:related`. `full: true` still means
   the whole unit lane.
 
+## Nested modules the root replaces: `ci.gate.affected_modules`
+
+A root `go.mod` line `replace example.com/app/sdk/go => ./sdk/go` builds that
+directory's own module into the app, but `go list ./...` stops at its
+`go.mod`, so by default every change under it runs the full suite. Opt in:
+
+```yaml
+ci:
+  gate:
+    affected_modules: auto
+```
+
+Then a non-test `.go` file there maps to `<module path>/<dir>`, so the root
+packages that link it are tested, and the module's own affected tests run in
+a `test-mod-sdk-go` row (`go test` in `sdk/go`). Its `go.mod`/`go.sum` runs
+that module's whole suite; the root goes full only when its own `go.mod`/`go.sum`
+changed too. Any other file there still goes through the root's rules and
+also runs the module's whole suite.
+
+## Capping the reach: `ci.gate.affected_reach`
+
+By default a changed package selects every test package whose binary links
+it, however far up the import graph. A hub package can make that most of the
+module. `affected_reach` caps it:
+
+```yaml
+ci:
+  gate:
+    affected_reach:
+      mode: direct        # all (default) | direct
+      transitive_cap: 20  # transitive importers allowed to join a direct run
+```
+
+Under `direct`, unit-tests runs the changed packages, the packages a rule
+names, and their direct importers (a package or its tests import a changed
+package). The transitive importers join too when there are at most
+`transitive_cap` of them; past the cap none of them run, and each is named as
+deferred to the full gate: one `deferred to the full gate: <pkg>` line each,
+the count on the unit-tests row's note, and `affected.deferred` in the
+`--json` document. Nothing is dropped silently, and the full suite (the main
+tier, `CI_FULL=1`) still runs them.
+
 ## Extra checks that run only when their paths change
 
 An extra check with `paths: [globs]` runs on a branch in affected mode only when

@@ -2435,11 +2435,31 @@ func renderUpSummary(w io.Writer, env string, rows []upServiceRow, notReadyLabel
 	fmt.Fprintf(w, "%s Logs   %s/   — tail -f / grep the per-service *.log here\n", bar, upLogDir(env))
 	fmt.Fprintf(w, "%s Cluster routes:  forge cluster urls\n", bar)
 	fmt.Fprintf(w, "%s Live status:     forge env status %s\n", bar, env)
+	// env exec runs a one-off command (a migration, a CLI subcommand, a
+	// psql) with exactly the config a host or Compose process got —
+	// DATABASE_URL included. It was the answer to "how do I run my CLI
+	// against this stack" and nobody found it (Ranger friction #7), so it is
+	// named where the stack's other next steps are, whenever there is a
+	// workload it can serve.
+	if hasExecRow(rows) {
+		fmt.Fprintf(w, "%s Run a command:   %s env exec %s -- <cmd>   (the api's config — DATABASE_URL, …; --workload <name> for another)\n", bar, Name(), env)
+	}
 	for _, t := range trailers {
 		fmt.Fprintf(w, "%s %s\n", bar, t)
 	}
 	fmt.Fprintln(w, "╰─────────────────────────────────────────────────────────")
 	fmt.Fprintln(w)
+}
+
+// hasExecRow reports whether rows hold a workload `env exec` can borrow the
+// configuration of: OnHost and OnCompose ones (env_exec.go).
+func hasExecRow(rows []upServiceRow) bool {
+	for _, r := range rows {
+		if r.Kind == "host" || r.Kind == "compose" {
+			return true
+		}
+	}
+	return false
 }
 
 // summaryNoPort is the URL cell for a service that declares no listen port

@@ -83,7 +83,7 @@ func TestRunScenario_WritesATemplateAndRegeneratesTheIndex(t *testing.T) {
 	if indexRoot != dir || indexRel != filepath.Join("frontends", "admin", "src", "mocks", "scenarios") {
 		t.Errorf("index regenerated for (%q, %q)", indexRoot, indexRel)
 	}
-	if !strings.Contains(out, "Created frontends/admin/src/mocks/scenarios/github-connected.ts") {
+	if !strings.Contains(out, "Created "+filepath.Join("frontends", "admin", "src", "mocks", "scenarios", "github-connected.ts")) {
 		t.Errorf("output = %s", out)
 	}
 	if strings.Contains(out, "is missing") {
@@ -156,7 +156,7 @@ func TestRunScenario_Refusals(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out, "frontends/admin/src/gen is missing — run `forge generate` first") {
+		if !strings.Contains(out, filepath.Join("frontends", "admin", "src", "gen")+" is missing — run `forge generate` first") {
 			t.Errorf("output = %s", out)
 		}
 	})

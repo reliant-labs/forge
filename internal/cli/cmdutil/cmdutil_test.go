@@ -254,7 +254,7 @@ func TestProjectRoot_And_FindProjectRoot(t *testing.T) {
 		bare := t.TempDir()
 		for d := bare; ; d = filepath.Dir(d) {
 			if _, err := os.Stat(filepath.Join(d, "forge.yaml")); err == nil {
-				t.Skipf("an ancestor of the temp dir (%s) holds a forge.yaml", d)
+				t.Fatalf("test requires a temp dir with no project ancestor; %s holds a forge.yaml", d)
 			}
 			if filepath.Dir(d) == d {
 				break

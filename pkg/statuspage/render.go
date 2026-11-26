@@ -62,7 +62,8 @@ func Render(d Document) (Output, error) {
 // Canonical is d in the one order a page is rendered and encoded in:
 // times in UTC, incidents newest first, maintenance by start, updates
 // oldest first, affected components in page order, and empty lists
-// omitted. A copy: d is not modified.
+// omitted. Unknown component references sort after known ones, by name.
+// A copy: d is not modified.
 func (d Document) Canonical() Document {
 	out := d
 	out.GeneratedAt = d.GeneratedAt.UTC()
@@ -80,7 +81,20 @@ func (d Document) Canonical() Document {
 	}
 	byPage := func(names []string) []string {
 		names = nilIfEmpty(slices.Clone(names))
-		slices.SortStableFunc(names, func(a, b string) int { return order[a] - order[b] })
+		slices.SortStableFunc(names, func(a, b string) int {
+			ai, aKnown := order[a]
+			bi, bKnown := order[b]
+			switch {
+			case aKnown && bKnown:
+				return ai - bi
+			case aKnown:
+				return -1
+			case bKnown:
+				return 1
+			default:
+				return strings.Compare(a, b)
+			}
+		})
 		return names
 	}
 	out.Incidents = nil

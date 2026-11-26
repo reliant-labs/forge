@@ -71,8 +71,11 @@ func TestRepo_NoDatabaseIsAnErrorNotAPanic(t *testing.T) {
 				if !errors.Is(err, ErrNoDatabase) {
 					t.Errorf("%s = %v, want ErrNoDatabase", method, err)
 				}
-				if err != nil && !strings.Contains(err.Error(), "vault") {
-					t.Errorf("%s error %q does not name the entity", method, err)
+				if cause := svcerr.Cause(err); cause == nil || !strings.Contains(cause.Error(), "vault") || !strings.Contains(cause.Error(), "BunFunc unset") {
+					t.Errorf("%s cause = %v, want entity and configuration diagnostic", method, cause)
+				}
+				if msg := svcerr.ToConnect(err).Message(); msg != "internal server error" {
+					t.Errorf("%s client message = %q, want generic internal error", method, msg)
 				}
 			}
 			if cols := repo.Columns(db); cols != nil {
@@ -90,9 +93,8 @@ func TestRepo_NoDatabaseIsAnErrorNotAPanic(t *testing.T) {
 	}
 }
 
-// What a handler test sees: the generated CRUD lifecycle maps the refusal
-// to CodeInternal and keeps its text, so a test driving the handler over
-// HTTP is told which double to configure, not `unavailable: unexpected EOF`.
+// The generated CRUD lifecycle returns CodeInternal without disclosing the
+// server-side configuration diagnostic to the client.
 func TestCreate_NoDatabaseReachesTheClientAsInternal(t *testing.T) {
 	db := &mockDatabase{}
 	repo := NewRepo[vault]()
@@ -106,7 +108,10 @@ func TestCreate_NoDatabaseReachesTheClientAsInternal(t *testing.T) {
 	if got := svcerr.CodeV2(err); got != connectv2.CodeInternal {
 		t.Fatalf("code = %v, want Internal (err: %v)", got, err)
 	}
-	if msg := errMessage(err); !strings.HasPrefix(msg, "create vault: no database") || !strings.Contains(msg, "BunFunc unset") {
-		t.Fatalf("client message %q does not say what to configure", msg)
+	if msg := svcerr.ToConnect(err).Message(); msg != "internal server error" {
+		t.Fatalf("client message = %q, want generic internal error", msg)
+	}
+	if !errors.Is(err, ErrNoDatabase) {
+		t.Fatalf("server-side error = %v, want ErrNoDatabase", err)
 	}
 }

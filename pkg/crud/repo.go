@@ -202,7 +202,7 @@ func NewRepo[M any]() *Repo[M] {
 // ErrNoDatabase is what a Repo method returns, instead of panicking, when the
 // orm.Context it was handed has no database to run on: the Context is nil, or
 // its Bun() returned nil. errors.Is(err, ErrNoDatabase) holds on the returned
-// error; on the wire it is CodeInternal carrying this text.
+// error; on the wire it is CodeInternal with a generic, client-safe message.
 //
 // A real handle never does either — orm.Client and orm.Tx always return a
 // live bun.IDB — so in practice it is a test double: the mock forge generates
@@ -217,10 +217,8 @@ func NewRepo[M any]() *Repo[M] {
 // panic as done, so the package-level repo then ran every later call — a
 // real database's included — on empty metadata.
 //
-// The text crosses the wire deliberately. Nothing reaches this branch but a
-// misconfigured handle, it names no secret, and a test that drives a handler
-// over HTTP sees only the client's error: an opaque "internal server error"
-// would leave it exactly as stuck as the EOF did.
+// The diagnostic is retained as a server-side cause, never as the wire
+// message: production handlers can also encounter a misconfigured handle.
 var ErrNoDatabase = errors.New("no database: the orm.Context is nil or its Bun() returned nil " +
 	"(a generated orm.Context mock, such as MockDatabase, with BunFunc unset?); " +
 	"give the test a real database (the generated harness's NewMigratedTestDB) or set BunFunc")
@@ -231,10 +229,9 @@ var ErrNoDatabase = errors.New("no database: the orm.Context is nil or its Bun()
 // derives the metadata.
 func (r *Repo[M]) prepare(db orm.Context, op string) error {
 	if db == nil || db.Bun() == nil {
-		// The wire carries only the svcerr's own text, so it names the
-		// operation too; ErrNoDatabase rides along as the cause.
-		msg := fmt.Sprintf("%s %s: %v", op, strings.ToLower(r.modelType().Name()), ErrNoDatabase)
-		return svcerr.WithCause(svcerr.Internal(msg), ErrNoDatabase)
+		// Keep operation and configuration details in the server-side cause.
+		cause := fmt.Errorf("%s %s: %w", op, strings.ToLower(r.modelType().Name()), ErrNoDatabase)
+		return svcerr.WithCause(svcerr.Internal("internal server error"), cause)
 	}
 	r.ensureMeta(db)
 	return nil

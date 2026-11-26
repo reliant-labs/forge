@@ -599,10 +599,12 @@ func runDBSeedApply(ctx context.Context, o seedOptions) error {
 // worst outcome a seeder has, because the next step (a UI, a test, an agent)
 // trusts it.
 //
-// Nothing is legitimate in exactly three cases, and each is checked:
+// Nothing is legitimate in exactly four cases, and each is checked:
 //
 //   - forge.yaml says `database.seed.tables: []` — synthesize nothing, on
 //     purpose; db/seeds/custom/ is the dataset.
+//   - every table the plan would have written declares `forge:no-seed` or
+//     requires one that does — opted out in the schema itself.
 //   - the database was already seeded — apply is idempotent, so a re-run
 //     inserts nothing and the tables still hold rows.
 //   - there is nothing to seed: the migrations define no tables AND the
@@ -617,6 +619,9 @@ func seedOutcomeError(ctx context.Context, db *sql.DB, plan *seedplan.Plan, cfg 
 		return nil
 	}
 	if len(plan.Tables()) == 0 {
+		if len(plan.NoSeedTables()) > 0 {
+			return nil // every table opted out with forge:no-seed: nothing is the answer
+		}
 		if len(cfg.Tables) > 0 {
 			return fmt.Errorf("seeded nothing: database.seed.tables in forge.yaml names %s, but none of them is a table the migrations in %s define",
 				strings.Join(cfg.Tables, ", "), migDir)
@@ -668,6 +673,9 @@ func printSeedResult(verb string, plan *seedplan.Plan, cfg seedplan.Config, res 
 	switch {
 	case cfg.Tables != nil && len(cfg.Tables) == 0:
 		fmt.Fprintln(os.Stdout, "database.seed.tables is [] in forge.yaml — no rows synthesized; applying db/seeds/custom/ only.")
+		return
+	case len(plan.Tables()) == 0 && len(plan.NoSeedTables()) > 0:
+		fmt.Fprintf(os.Stdout, "No seedable tables: every table is %s, or requires one (%s).\n", schemadef.TableMarkerNoSeed, strings.Join(plan.NoSeedTables(), ", "))
 		return
 	case len(plan.Tables()) == 0:
 		fmt.Fprintln(os.Stdout, "No seedable tables: the migrations define none.")

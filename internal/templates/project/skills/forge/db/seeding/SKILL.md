@@ -71,6 +71,24 @@ for a fresh dev database, scoped as above. Skip it for one run with
 `forge env up --no-seed`; for different rows, write the dataset under
 `db/seeds/custom/` and `db/seeds/vocab.yaml`.
 
+**Keep a table out of the dataset for good: `forge:no-seed`.** A table whose rows
+only your app writes correctly — a lease, a serialized protobuf payload, a ledger
+— declares it in a migration, and no seed (auto-seed, `seed apply`, `seed reset`,
+`db reset`) synthesizes rows into it again:
+
+```sql
+COMMENT ON TABLE job_leases IS 'forge:no-seed — the control plane writes leases';
+```
+
+Text after the marker is free (say why), and it shares the comment with other
+markers (`'forge:no-entity forge:no-seed'`). A table with a NOT NULL foreign key
+into a `forge:no-seed` table cannot hold a row without one, so it is left out too
+and the seed warns, naming it; a nullable reference into it is written NULL. The
+table keeps its store, test factory and frontend mocks — the marker is about rows
+in a database, and is independent of `forge:no-entity`. `forge db seed reset`
+empties the seeded tables with `TRUNCATE … CASCADE`, which postgres extends to
+every table referencing them, marked or not.
+
 Keep seed data out of migrations: migrations define schema, seeds populate it.
 Mixing them makes both harder to reason about.
 

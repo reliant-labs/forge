@@ -89,7 +89,7 @@ func BuildLivePlan(ctx context.Context, db *sql.DB, migDir, shadowBaseURL string
 // shadow migrated by that tool. migDir still locates the vocabulary overlay
 // (VocabPath).
 func BuildLivePlanFromTables(ctx context.Context, db *sql.DB, tables []schemadef.Table, migDir string, cfg Config) (*Plan, error) {
-	plan, err := planFromTables(ctx, db, tables, cfg)
+	plan, err := planDevDataset(ctx, db, tables, cfg)
 	if err != nil {
 		return nil, err
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/reliant-labs/forge/internal/hostinfra"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
@@ -401,12 +402,13 @@ func autoSeedFirstBoot(ctx context.Context, db *sql.DB, migDir, shadow string, s
 		fmt.Printf("[up] auto-seed: %v — fix the file, then `forge db seed apply` (idempotent) applies it\n", err)
 	}
 	if res.Total() > 0 {
-		// Name the tables and BOTH opt-outs. The per-project one used to go
-		// unmentioned, so the only discoverable way to stop a project from
-		// being seeded was a flag every run had to remember.
+		// Name the tables and BOTH opt-outs. The persistent one used to go
+		// unmentioned, so the only discoverable way to stop a table from
+		// being seeded was a flag every run had to remember — and before
+		// forge:no-seed the line named forge.yaml keys forge.yaml rejects.
 		fmt.Printf("[up] auto-seeded %d rows across %d tables (%s) — first boot only.\n"+
-			"[up]   skip once: --no-seed · never for this project: database.seed.auto: false · choose tables: database.seed.tables in forge.yaml\n",
-			res.Total(), len(res.Tables), strings.Join(seededTableNames(res), ", "))
+			"[up]   skip once: --no-seed · never for a table: COMMENT ON TABLE <t> IS '%s' in a migration\n",
+			res.Total(), len(res.Tables), strings.Join(seededTableNames(res), ", "), schemadef.TableMarkerNoSeed)
 	}
 }
 

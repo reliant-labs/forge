@@ -194,15 +194,15 @@ func (d *DB) OnDisk() bool {
 	return err == nil && fi.Mode().IsRegular() && fi.Size() > 0
 }
 
-func (d *DB) grypeDir() string   { return filepath.Join(d.Dir, "grype") }
+func (d *DB) grypeDir() string { return filepath.Join(d.Dir, "grype") }
 func (d *DB) configPath() string {
 	if d.ConfigDir != "" {
 		return filepath.Join(d.ConfigDir, "grype.yaml")
 	}
 	return filepath.Join(d.Dir, "grype.yaml")
 }
-func (d *DB) statePath() string  { return filepath.Join(d.Dir, "state.json") }
-func (d *DB) lockPath() string   { return filepath.Join(d.Dir, "lock") }
+func (d *DB) statePath() string { return filepath.Join(d.Dir, "state.json") }
+func (d *DB) lockPath() string  { return filepath.Join(d.Dir, "lock") }
 
 // emptyConfig is the grype config every invocation reads instead of the
 // user's or the project's: nothing in it, so grype's defaults and forge's

@@ -163,7 +163,7 @@ func runVulnGate(ctx context.Context, out, errOut io.Writer, deps vulnDeps, path
 		}
 	}
 
-	scans, st, dbErr, cleanup := scanGateInputs(ctx, deps, errOut, inputs, opts, offline)
+	scans, st, cleanup, dbErr := scanGateInputs(ctx, deps, errOut, inputs, opts, offline)
 	defer cleanup()
 	if dbErr != nil {
 		notes = append(notes, "not scanned: "+vulnGateProblem(dbErr, offline))
@@ -400,7 +400,7 @@ type gateScan struct {
 
 // scanGateInputs scans every SBOM. dbErr is why nothing could be scanned (no
 // grype, no database, a stale one); each input's reason says why it was not.
-func scanGateInputs(ctx context.Context, deps vulnDeps, errOut io.Writer, inputs []*vulnGateInput, opts vulnGateOptions, offline bool) (scans []gateScan, st vulnscan.Status, dbErr error, cleanup func()) {
+func scanGateInputs(ctx context.Context, deps vulnDeps, errOut io.Writer, inputs []*vulnGateInput, opts vulnGateOptions, offline bool) (scans []gateScan, st vulnscan.Status, cleanup func(), dbErr error) {
 	scans = make([]gateScan, len(inputs))
 	cleanup = func() {}
 	for i, in := range inputs {
@@ -431,7 +431,7 @@ func scanGateInputs(ctx context.Context, deps vulnDeps, errOut io.Writer, inputs
 				scans[i].reason = reason
 			}
 		}
-		return scans, st, err, cleanup
+		return scans, st, cleanup, err
 	}
 	scanner := &vulnscan.Scanner{DB: db}
 	for i, in := range inputs {
@@ -445,7 +445,7 @@ func scanGateInputs(ctx context.Context, deps vulnDeps, errOut io.Writer, inputs
 		}
 		scans[i].scan = s
 	}
-	return scans, st, nil, cleanup
+	return scans, st, cleanup, nil
 }
 
 // vulnGateProblem is one line for a database or scanner failure.

@@ -36,6 +36,12 @@ func TestFrontendVitestMajor(t *testing.T) {
 			if got := pkg.DevDependencies["vitest"]; got != "^5.0.4" {
 				t.Fatalf("vitest = %q; deliberate tested major/floor is ^5.0.4", got)
 			}
+			// The Taskfile's frontend test lane records coverage when this
+			// provider is installed; Vitest refuses a provider of another
+			// major, so the two move together.
+			if got := pkg.DevDependencies["@vitest/coverage-v8"]; got != pkg.DevDependencies["vitest"] {
+				t.Fatalf("@vitest/coverage-v8 = %q; it must equal vitest's range %q", got, pkg.DevDependencies["vitest"])
+			}
 			settings, err := templateFS.ReadFile("frontend/shared-web/pnpm-workspace.yaml.tmpl")
 			if err != nil {
 				t.Fatal(err)

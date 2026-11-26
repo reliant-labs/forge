@@ -11,7 +11,7 @@ func (s *Service) {{.Name | goName}}(
 {{- if connectV2 $}}
 	stream {{$.ProtoConnectPackage}}.{{$.HandlerName}}{{.Name | goName}}ServerStream,
 {{- else}}
-	stream *connect.BidiStream[pb.{{.InputType | goName}}, pb.{{.OutputType | goName}}],
+	stream *connect.BidiStream[{{.InputRef}}, {{.OutputRef}}],
 {{- end}}
 ) error {
 	return svcerr.Wrap(svcerr.ScaffoldStub("{{.Name | goName}}"))
@@ -27,10 +27,10 @@ func (s *Service) {{.Name | goName}}(
 	ctx context.Context,
 {{- if connectV2 $}}
 	stream {{$.ProtoConnectPackage}}.{{$.HandlerName}}{{.Name | goName}}ServerStream,
-) (*pb.{{.OutputType | goName}}, error) {
+) (*{{.OutputRef}}, error) {
 {{- else}}
-	stream *connect.ClientStream[pb.{{.InputType | goName}}],
-) (*connect.Response[pb.{{.OutputType | goName}}], error) {
+	stream *connect.ClientStream[{{.InputRef}}],
+) (*connect.Response[{{.OutputRef}}], error) {
 {{- end}}
 	return nil, svcerr.Wrap(svcerr.ScaffoldStub("{{.Name | goName}}"))
 }
@@ -44,11 +44,11 @@ func (s *Service) {{.Name | goName}}(
 func (s *Service) {{.Name | goName}}(
 	ctx context.Context,
 {{- if connectV2 $}}
-	req *pb.{{.InputType | goName}},
+	req *{{.InputRef}},
 	stream {{$.ProtoConnectPackage}}.{{$.HandlerName}}{{.Name | goName}}ServerStream,
 {{- else}}
-	req *connect.Request[pb.{{.InputType | goName}}],
-	stream *connect.ServerStream[pb.{{.OutputType | goName}}],
+	req *connect.Request[{{.InputRef}}],
+	stream *connect.ServerStream[{{.OutputRef}}],
 {{- end}}
 ) error {
 	return svcerr.Wrap(svcerr.ScaffoldStub("{{.Name | goName}}"))
@@ -63,11 +63,11 @@ func (s *Service) {{.Name | goName}}(
 func (s *Service) {{.Name | goName}}(
 	ctx context.Context,
 {{- if connectV2 $}}
-	req *pb.{{.InputType | goName}},
-) (*pb.{{.OutputType | goName}}, error) {
+	req *{{.InputRef}},
+) (*{{.OutputRef}}, error) {
 {{- else}}
-	req *connect.Request[pb.{{.InputType | goName}}],
-) (*connect.Response[pb.{{.OutputType | goName}}], error) {
+	req *connect.Request[{{.InputRef}}],
+) (*connect.Response[{{.OutputRef}}], error) {
 {{- end}}
 	return nil, svcerr.Wrap(svcerr.ScaffoldStub("{{.Name | goName}}"))
 }

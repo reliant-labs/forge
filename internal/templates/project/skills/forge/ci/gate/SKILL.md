@@ -314,6 +314,7 @@ ci:
     affected_rules:                          # what other paths select (above)
       - paths: ["frontends/web/**"]
         frontends: [web]
+    affected_reach: { mode: direct, transitive_cap: 20 }  # cap the import-graph reach (affected)
     extra_checks:
       - name: gen-llm-gateway        # the row; what CI_SKIP / CI_ONLY match; unique
         command: [go, run, ./cmd/gen-llm-gateway, -check]  # argv, no shell; exit 0 = PASS

@@ -56,7 +56,7 @@ func (b *syncBuffer) String() string {
 func testStore(t *testing.T, path string, tick chan time.Time) (*Store, *syncBuffer) {
 	t.Helper()
 	logs := &syncBuffer{}
-	s := newStore(path, Options{
+	s := newStore(fileSource{path: path}, Options{
 		OnEvaluate: func(context.Context, string, Result) {},
 		Logger:     slog.New(slog.NewTextHandler(logs, nil)),
 	})
@@ -72,7 +72,7 @@ func testStore(t *testing.T, path string, tick chan time.Time) (*Store, *syncBuf
 // next rename fail with "Access is denied". The loop itself is driven by
 // TestStoreClose and the real-ticker test below.
 func polled(s *Store) {
-	s.reload()
+	s.reload(context.Background())
 }
 
 func banner(s *Store) string {
@@ -195,7 +195,7 @@ func TestStoreCloseStopsPolling(t *testing.T) {
 func TestStoreContextCancelStopsPolling(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.json")
 	ctx, cancel := context.WithCancel(context.Background())
-	s := newStore(path, Options{OnEvaluate: func(context.Context, string, Result) {}})
+	s := newStore(fileSource{path: path}, Options{OnEvaluate: func(context.Context, string, Result) {}})
 	s.start(ctx, make(chan time.Time), func() {})
 	cancel()
 	<-s.done

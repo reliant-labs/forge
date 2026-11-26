@@ -1069,6 +1069,10 @@ type CIGateConfig struct {
 	// no package names still runs the full suite. Go-only. See
 	// internal/cigate/affected_readers.go.
 	AffectedReaders bool `yaml:"affected_readers,omitempty"`
+	// AffectedReach caps how far affected mode follows the import graph.
+	// Unset is every test package whose binary links a changed package
+	// (full transitive reach). See CIGateAffectedReach.
+	AffectedReach *CIGateAffectedReach `yaml:"affected_reach,omitempty"`
 	// ExtraChecks are the project's own rows. By default each runs in the
 	// `checks` lane, so the scaffolded CI job (`task ci:checks`) and a
 	// developer's `task ci` run the same ones.
@@ -1140,6 +1144,12 @@ type CIGateCheck struct {
 	// default branch, CI_FULL=1 / --full, --tier main or full, no base to
 	// diff against) it always runs.
 	Paths []string `yaml:"paths,omitempty"`
+	// PathsGoClosure, when set, are Go package patterns (`./tools/docgen/...`):
+	// on a branch in affected mode the check also runs when a changed file
+	// is in their build closure (`go list -deps`), besides any Paths glob it
+	// matches. For a check that runs a generator or tool built from the
+	// module. In full mode it always runs.
+	PathsGoClosure []string `yaml:"paths_go_closure,omitempty"`
 }
 
 // CIGateAffectedRule is one ci.gate.affected_rules entry: the changed files
@@ -1178,6 +1188,16 @@ type CIGateAffectedRule struct {
 	// path-gated check runs even with no change under its paths, and a
 	// test-<frontend> row runs the frontend's whole `test` script.
 	FullChecks []string `yaml:"full_checks,omitempty"`
+}
+
+// CIGateAffectedReach is ci.gate.affected_reach. Mode "direct" selects the
+// changed packages and their direct importers, plus the transitive importers
+// only when they add at most TransitiveCap packages; otherwise those are
+// deferred to the full gate and named in the gate's output. Mode "all" (or
+// unset) is the full transitive reach.
+type CIGateAffectedReach struct {
+	Mode          string `yaml:"mode,omitempty"`
+	TransitiveCap int    `yaml:"transitive_cap,omitempty"`
 }
 
 // CIGateOnGoSource is the CIGateAffectedRule.On value that matches every

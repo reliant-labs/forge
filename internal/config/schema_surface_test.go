@@ -112,10 +112,10 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 		{
 			// env / path: every check's environment, read by
 			// cigate.GateEnv / GatePath. affected_ignore, affected_rules,
-			// affected_readers: read by cigate.ComputeAffected.
+			// affected_readers, affected_reach: read by cigate.ComputeAffected.
 			name: "CIGateConfig",
 			typ:  reflect.TypeFor[CIGateConfig](),
-			want: []string{"affected_ignore", "affected_readers", "affected_rules", "env", "extra_checks", "path"},
+			want: []string{"affected_ignore", "affected_reach", "affected_readers", "affected_rules", "env", "extra_checks", "path"},
 		},
 		{
 			// Every key is read by cigate.ComputeAffected (paths, except,
@@ -126,13 +126,19 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			want: []string{"except", "frontends", "full", "full_checks", "on", "packages", "packages_importing", "paths", "reason"},
 		},
 		{
+			// Both keys are read by cigate.ComputeAffected (applyReach).
+			name: "CIGateAffectedReach",
+			typ:  reflect.TypeFor[CIGateAffectedReach](),
+			want: []string{"mode", "transitive_cap"},
+		},
+		{
 			// Every key is read by cigate's planner (internal/cigate/
 			// plan.go extras) into a Check the scheduler honors.
 			name: "CIGateCheck",
 			typ:  reflect.TypeFor[CIGateCheck](),
 			want: []string{
 				"after", "cache", "command", "dir", "env", "group", "heavy",
-				"lane", "mutates_tree", "name", "paths", "probe", "replaces", "requires",
+				"lane", "mutates_tree", "name", "paths", "paths_go_closure", "probe", "replaces", "requires",
 				"skip_exit_code",
 			},
 		},

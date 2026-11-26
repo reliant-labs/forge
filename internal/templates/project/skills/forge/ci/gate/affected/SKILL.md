@@ -147,6 +147,29 @@ constant) or read by a child process from a path the test never spells is not
 seen; route those with `affected_rules`. It is Go-only: frontend tests are not
 scanned.
 
+## Capping the reach: `ci.gate.affected_reach`
+
+By default a changed package selects every test package whose binary links
+it, however far up the import graph. A hub package can make that most of the
+module. `affected_reach` caps it:
+
+```yaml
+ci:
+  gate:
+    affected_reach:
+      mode: direct        # all (default) | direct
+      transitive_cap: 20  # transitive importers allowed to join a direct run
+```
+
+Under `direct`, unit-tests runs the changed packages, the packages a rule
+names, and their direct importers (a package or its tests import a changed
+package). The transitive importers join too when there are at most
+`transitive_cap` of them; past the cap none of them run, and each is named as
+deferred to the full gate: one `deferred to the full gate: <pkg>` line each,
+the count on the unit-tests row's note, and `affected.deferred` in the
+`--json` document. Nothing is dropped silently, and the full suite (the main
+tier, `CI_FULL=1`) still runs them.
+
 ## Extra checks that run only when their paths change
 
 An extra check with `paths: [globs]` runs on a branch in affected mode only when
@@ -164,6 +187,41 @@ lists them too (no Go test reads `electron/**`) or a rule claims them.
         lane: test
         paths: ["electron/**"]
 ```
+
+### `paths_go_closure`: run when a tool's Go build changed
+
+A check that runs a generator or tool built from the module (a docs generator,
+a codegen hook) depends on that tool's whole compile closure, which no glob list
+tracks. `paths_go_closure: [<go package patterns>]` makes it run on a branch
+when a changed file is in their build closure (`go list -deps`: the module's
+packages they compile, their Go and embedded files, a new `.go` file in one of
+those directories, `go.mod`/`go.sum`), besides any `paths` glob it matches.
+Test files are not part of a build and do not count. When go list fails the
+check runs (reach unknown is never N/A); in full mode it always runs.
+
+```yaml
+      - name: docs-generate
+        command: [go, run, ./tools/docgen, -check]
+        paths: ["docs/**"]
+        paths_go_closure: ["./tools/docgen/..."]
+```
+
+## Lockfile rows: lockfile-<frontend>
+
+On a branch in affected mode, when a frontend's `package.json`, its lockfile (the
+nearest one, a workspace root's included) or a pnpm `pnpm-workspace.yaml`
+changed, the gate adds a `lockfile-<name>` row just before `deps-<name>`. It asks
+the frontend's own package manager whether a frozen install still accepts the
+lockfile, without touching the checkout's `node_modules`: `pnpm install
+--frozen-lockfile --lockfile-only`, `npm ci --dry-run --offline` (no registry
+requests), or an isolated Yarn install in a disposable workspace copy:
+`yarn install --immutable --mode=skip-build` (berry, scripts disabled) or
+`yarn install --frozen-lockfile --ignore-scripts` (classic). Yarn may fetch
+packages, but its install output is removed with the copy. This validates
+manifest/lock consistency, not offline package availability. The
+tests run against whatever `node_modules` is on disk, so without this row a
+hand-edited lockfile that every fresh install rejects passes the gate. No
+manifest or lockfile changed, full mode, or no lockfile: no row.
 
 ## Why each package runs, the build set, and a what-if
 

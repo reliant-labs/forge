@@ -14,8 +14,8 @@ Beside its constant, each scope has ONE catalog row (`pkg/accesstoken/catalog.go
 | Class | Who holds it | Examples |
 |---|---|---|
 | `personal` | every signed-in person, over their OWN resources; no org grant names it | `reliant:api`, `llm:invoke`, `runs:start`, `inbox:read`, `daemon:manage` |
-| `member` | every member of an org, without a grant | `obs:read`, `obs:triage` |
-| `standard` | org authority held by grant, directly or through a bundle | `deploy:write`, `secret:read`, `domain:write`, `tests:write` |
+| `member` | every member of an org, without a grant, and every credential acting as one (their daemon too) | `obs:read`, `obs:triage`, `tests:write` |
+| `standard` | org authority held by grant, directly or through a bundle | `deploy:write`, `secret:read`, `domain:write`, `tests:read` |
 | `sensitive` | org authority held ONLY by a grant naming the scope | `secret:write`, `db:query`, `storage:read`, `deploy:config:read`, `identity:manage`, `token:read`, `token:write`, `changes:launch` |
 
 A sensitive scope is one whose leak revoking the token does not undo: it reads secrets or users' data, issues credentials or passwords, or shifts production traffic. A future `billing:write` (changing what an org pays, or how) is sensitive from the day it is added; no such scope exists yet.
@@ -29,7 +29,7 @@ A bundle is a reviewed set of scopes for one kind of holder. A grant row or a to
 | Bundle | For | Holds |
 |---|---|---|
 | `ci` | an org's CI, acting as no person | `deploy:read`, `deploy:write`, `vuln:read`, `tests:write` |
-| `developer` | a person building and shipping | `ci`'s scopes, their own API, runs, triggers, inbox and questions, `domain:read`, `obs:*`, `changes:write`, `tests:read`. Not `secret:read`: secrets are the highest-value thing a leaked developer token could reach, so a developer is granted it explicitly |
+| `developer` | a person building and shipping | `ci`'s scopes, their own API, runs, triggers, inbox and questions, `domain:read`, `obs:*`, `changes:read`, `changes:write`, `tests:read`. Not `secret:read`: secrets are the highest-value thing a leaked developer token could reach, so a developer is granted it explicitly |
 | `admin` | a person administering the org | every member and standard scope that is not a whole credential of its own, `secret:read` included; no personal scope (a person holds those already) |
 
 **No sensitive scope is in any bundle, `admin` included.** An admin is granted each sensitive scope one by one. `accesstoken.ExpandBundle` skips a sensitive scope even if a catalog row listed one, and forge's own tests fail such a row.

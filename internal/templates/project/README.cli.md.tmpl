@@ -62,13 +62,32 @@ internal package with a contract interface and tests.
 |---|---|
 | `task build` | Build the CLI binary into `./bin/{{.Name}}` |
 | `task install` | Install the CLI into `$GOBIN` |
-| `task test` | Run `go test ./...` |
+| `task test` | Run `go test ./...`, recording the lane and its coverage under `.forge/tests/runs/` |
+| `task test:report` | Summarise the last run |
 | `task lint` | Run `golangci-lint` |
 | `task fmt` | Run `goimports -w` and `go mod tidy` |
 | `task vet` | Run `go vet ./...` |
 | `task clean` | Remove `./bin` and coverage outputs |
 
 Run `task --list` (or just `task`) for the full set.
+
+## Test results and coverage
+
+`task test` records every lane it runs, with its coverage, under
+`.forge/tests/runs/` (gitignored); `task test:report` summarises the last
+run. `FORGE_TESTS=off` records nothing for one run.
+
+CI's "Report test results" step uploads the run to your project's control
+plane with no secret: its job has `id-token: write`, and forge exchanges the
+job's GitHub OIDC token for a short-lived `tests:write` token. That works once
+the Reliant GitHub App is installed on this repository and an org admin has
+linked the installation to the org in the web app's organization settings
+(Reliant cloud: https://forge.reliantlabs.io). Until then, and on a fork's pull
+request, which gets no OIDC token, the step prints one line and stays green; it
+never decides the job's result. To upload with a token instead, store one with
+`tests:write` (or `deploy:write`) as the secret `FORGE_CONTROL_PLANE_TOKEN` and
+pass it in the step's `env:`: the secret, if set, overrides OIDC.
+`tests.upload: never` in `forge.yaml` turns upload off.
 
 ## Project structure
 

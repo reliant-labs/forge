@@ -39,6 +39,8 @@ type IssueReader interface {
 	UpdateIssueStatus(ctx context.Context, req UpdateIssueStatusRequest) (UpdateIssueStatusResult, error)
 	ListIssueTimeline(ctx context.Context, req ListIssueTimelineRequest) (ListIssueTimelineResult, error)
 	AddIssueComment(ctx context.Context, req AddIssueCommentRequest) (AddIssueCommentResult, error)
+	UpdateIssueComment(ctx context.Context, req UpdateIssueCommentRequest) (UpdateIssueCommentResult, error)
+	DeleteIssueComment(ctx context.Context, req DeleteIssueCommentRequest) error
 	AssignIssue(ctx context.Context, req AssignIssueRequest) (AssignIssueResult, error)
 }
 

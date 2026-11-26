@@ -45,6 +45,8 @@ type fakeClaimableControlPlane struct {
 	authSeen []string
 	// startedWithAuth is true if StartClaimableDeploy ever carried a bearer.
 	startedWithAuth bool
+	// startClient is StartClaimableDeploy's X-Forge-Client header.
+	startClient string
 	// availability is GetClaimableAvailability's answer; nil is "available".
 	availability      *cloud.ClaimableAvailability
 	availabilityCalls int
@@ -118,6 +120,7 @@ func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Req
 		if r.Header.Get("Authorization") != "" {
 			f.startedWithAuth = true
 		}
+		f.startClient = r.Header.Get(cloud.ClientHeader)
 		var req cloud.ClaimableStartRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.Header().Set("Content-Type", "application/json")
@@ -232,10 +235,22 @@ func TestClaimableDeploy_PublishesAndPrintsTheClaim(t *testing.T) {
 		t.Skip("renders KCL and runs the whole CLI; skipped in -short")
 	}
 	fake, _ := claimableFixture(t)
+	tracked := recordTrackedEvents(t)
 
 	out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--no-wait", "--json")
 	if err != nil {
 		t.Fatalf("a live unclaimed deploy must exit 0: %v\n%s", err, out)
+	}
+	// The start names the deploy's shape (a Vite site, no managed
+	// identity); the process's later calls stop naming it once it returns.
+	if !strings.HasSuffix(fake.startClient, "; template=vite; auth=none") {
+		t.Errorf("StartClaimableDeploy %s = %q, want the vite/none shape", cloud.ClientHeader, fake.startClient)
+	}
+	if strings.Contains(cloud.ClientHeaderValue(), "template=") {
+		t.Errorf("the shape outlived the deploy: %q", cloud.ClientHeaderValue())
+	}
+	if len(*tracked) != 0 {
+		t.Errorf("a published deploy tracked %v", *tracked)
 	}
 	doc := decodeClaimDoc(t, out)
 	if doc["ok"] != true || doc["exit_code"] != float64(0) {
@@ -257,7 +272,7 @@ func TestClaimableDeploy_PublishesAndPrintsTheClaim(t *testing.T) {
 		t.Errorf("claim.url = %q, want the deploy's live address", u)
 	}
 	instr, _ := claim["agent_instructions"].(string)
-	for _, want := range []string{"Give claim_url to your user", "whoever claims it first owns the deploy", "env status hosted --claimable"} {
+	for _, want := range []string{"Give claim_url to your user", "whoever claims it first owns the deploy", "show it only to them", "env status hosted --claimable"} {
 		if !strings.Contains(instr, want) {
 			t.Errorf("agent_instructions lacks %q:\n%s", want, instr)
 		}
@@ -385,7 +400,8 @@ func TestPrintClaimBlock_TextMatchesTheDesign(t *testing.T) {
 		"Claim:  https://app.reliant.dev/claim#rcl_9f3KQe",
 		"FOR AN AGENT: give the claim link above to your user and tell them it expires in 72h.",
 		"Opening it signs them up for free and makes this site theirs.",
-		"Treat the link like a password: whoever claims it first owns the site. Do not",
+		"It is a one-time link for your user: whoever claims it first owns the site, so show",
+		"it only to them, never in a commit, a log, an issue or anywhere public.",
 		"env status prod --claimable",
 	} {
 		if !strings.Contains(b.String(), want) {
@@ -612,8 +628,13 @@ func TestClaimableDeploy_SignedInIsRefused(t *testing.T) {
 	}
 	fake, _ := claimableFixture(t)
 	t.Setenv("ACME_CP_TOKEN", "rlat_real_login")
+	tracked := recordTrackedEvents(t)
 
 	out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--json")
+	want := trackedEvent{name: claimableRefusedEvent, props: map[string]string{"reason": "claimable_signed_in", "template": "vite", "auth": "none"}}
+	if len(*tracked) != 1 || !(*tracked)[0].has(want) {
+		t.Errorf("tracked %v, want one %v", *tracked, want)
+	}
 	if err == nil || exitCodeForError(err) != 1 {
 		t.Fatalf("want exit 1; err=%v code=%d\n%s", err, exitCodeForError(err), out)
 	}
@@ -900,10 +921,16 @@ func TestClaimableDeploy_UnavailableIsRefusedBeforeAnythingIsCreated(t *testing.
 		t.Skip("renders KCL and runs the whole CLI; skipped in -short")
 	}
 	fake, _ := claimableFixture(t)
+	tracked := recordTrackedEvents(t)
 	fake.availability = &cloud.ClaimableAvailability{Causes: []cloud.ClaimableCause{
 		{Code: "disabled", Component: "claimable_deploys.enabled", Message: "an operator has switched off anonymous (claimable) deploys on this platform"}}}
 
 	out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--json")
+	for _, event := range *tracked {
+		if event.name == claimableRefusedEvent {
+			t.Errorf("availability already contacted the control plane; unexpected local refusal: %v", event)
+		}
+	}
 	if err == nil || exitCodeForError(err) != exitRefused {
 		t.Fatalf("want exit 4; err=%v\n%s", err, out)
 	}

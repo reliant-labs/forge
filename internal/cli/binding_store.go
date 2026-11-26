@@ -471,7 +471,7 @@ func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (en
 		return envLedger{}, fmt.Errorf("env %q keeps its release ledger on the control plane at %s: %w", env, ep.URL, err)
 	}
 	ref := hostedEnvRefFor(env, entities)
-	l := hostedLedger(cloud.NewClient(ep, cred), ep.URL, ref.Project, ref.Kind)
+	l := hostedLedgerForEnv(cloud.NewClient(ep, cred), ep.URL, ref)
 	// A MIXED env: its ledger is this control plane, and it ALSO declares
 	// workloads the control plane does not run. Both facts come from the
 	// same render, so they are resolved together here rather than being

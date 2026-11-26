@@ -877,7 +877,9 @@ func (g *ProjectGenerator) copyForgeV1Proto() error {
 func (g *ProjectGenerator) createConfigProto() error {
 	layout := configproto.For(g.Name)
 	destPath := filepath.Join(g.Path, filepath.FromSlash(layout.RootPath()))
-	return assets.WriteTemplateWithData("config.proto.tmpl", destPath, layout.TemplateData(g.ModulePath))
+	data := layout.TemplateData(g.ModulePath)
+	data.DatabaseOptional = !g.scaffoldsDatabase()
+	return assets.WriteTemplateWithData("config.proto.tmpl", destPath, data)
 }
 
 func (g *ProjectGenerator) generateServiceFiles() error {

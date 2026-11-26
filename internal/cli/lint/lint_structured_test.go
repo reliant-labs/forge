@@ -99,7 +99,11 @@ func TestLintScopeContainsAndFilter(t *testing.T) {
 	kept := s.filter([]lintJSONFinding{
 		{File: "internal/handlers/jobs/service.go", Rule: "in"},
 		{File: "internal/handlers/jobs2/service.go", Rule: "sibling"},
+		// The scoped handler's own proto is the other half of its service,
+		// so its findings are reported (lint_scope_service.go); another
+		// service's proto is not.
 		{File: "proto/services/jobs/v1/jobs.proto", Rule: "proto"},
+		{File: "proto/services/billing/v1/billing.proto", Rule: "other-proto"},
 		// No file: unattributable, so a scoped run must keep it rather
 		// than hide an error it cannot place.
 		{Rule: "fileless"},
@@ -108,7 +112,7 @@ func TestLintScopeContainsAndFilter(t *testing.T) {
 	for _, f := range kept {
 		rules = append(rules, f.Rule)
 	}
-	if want := []string{"in", "fileless"}; !reflect.DeepEqual(rules, want) {
+	if want := []string{"in", "proto", "fileless"}; !reflect.DeepEqual(rules, want) {
 		t.Errorf("filter kept %v, want %v", rules, want)
 	}
 
@@ -469,13 +473,25 @@ func TestCollectTargetedOutcomeHonoursScope(t *testing.T) {
 		t.Errorf("in-scope targeted lane: name=%q gated=%v findings=%+v; want the read-only error, gated", o.name, o.gated, o.findings)
 	}
 
-	outOfScope, err := parseLintScope(root, []string{"internal/handlers/estimates"})
+	// The finding sits on the proto, but it is about the handler that
+	// never writes the field: a scope over the service's handlers reports
+	// it too (lint_scope_service.go).
+	handlers, err := parseLintScope(root, []string{"internal/handlers/estimates"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o = collectOneTargetedOutcome(t, lintFlags{readOnlyFields: true}, root, handlers)
+	if !o.gated || len(o.findings) != 1 {
+		t.Errorf("handler-scoped targeted lane: gated=%v findings=%+v; want its service's proto error, gated", o.gated, o.findings)
+	}
+
+	outOfScope, err := parseLintScope(root, []string{"db"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	o = collectOneTargetedOutcome(t, lintFlags{readOnlyFields: true}, root, outOfScope)
-	if o.gated || len(o.findings) != 0 {
-		t.Errorf("a finding anchored outside the scope still reported/gated: gated=%v findings=%+v", o.gated, o.findings)
+	if o.gated || len(o.findings) != 0 || o.outside != 1 {
+		t.Errorf("a finding anchored outside the scope: gated=%v findings=%+v outside=%d; want it dropped and counted", o.gated, o.findings, o.outside)
 	}
 
 	o = collectOneTargetedOutcome(t, lintFlags{configReach: true}, root, outOfScope)

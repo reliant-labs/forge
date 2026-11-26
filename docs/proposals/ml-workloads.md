@@ -133,6 +133,15 @@ and tested without GPUs ([section 13](#13-testing-without-gpus)).
    Only the label is open
    ([decision 9](#11-open-owner-decisions)).
 
+   **Amended (owner, 2026-11-26):** the nav is **hybrid**
+   ([reliant-for-ml.md](reliant-for-ml.md#21-what-this-means-for-navigation),
+   decision 23). An ML area holds what has no app equivalent: **Training**
+   (not "Runs", which the nav already uses for workflow runs), Evals, Models,
+   Fleet and the stack setup. Model releases live in Deployments, smoke runs in
+   Previews, GPU telemetry in Observability, alerts in Inbox and eval gates in
+   Tests. Where this document says "the six pages" or "the one ML item", read
+   the hybrid nav.
+
 9. **Access is gated, per org, by Reliant** (owner, 2026-11-25). The owner
    will not offer an experience nobody has tested on real GPUs, and will not
    pay for real GPUs to test it. So ML is off for every org unless Reliant
@@ -1175,12 +1184,14 @@ per product and dtype are versioned adapter data keyed by the GPU Feature
 Discovery product label. Tensor-pipe activity from DCGM is shown beside it as a
 hardware proxy and labelled as one: the two are not the same number.
 
-**The vehicle** is [decision 18](#open-decisions-17-to-22). The recommendation
-is a `ml/instrument` skill that writes the instrumentation with upstream
-OpenTelemetry Python into the team's loop, or as a callback for the Hugging Face
-Trainer or Lightning, exporting OTLP to forge's collector. A published Python
-package follows only if design partners ask for one. forge never ships its own
-tracing library where OpenTelemetry is the tool.
+**The vehicle** is [decision 18](#open-decisions-17-to-22), settled by the owner
+on 2026-11-26 for a **published Python SDK** with PyTorch support, taught by the
+`ml/instrument` skill ([reliant-for-ml.md](reliant-for-ml.md), Settled item 2;
+packaging is its decision 26: `sdk/python/` in forge, Apache-2.0, 0.x until a
+design partner confirms the API). The SDK is a thin layer over upstream
+OpenTelemetry Python, with callbacks for the Hugging Face Trainer, Lightning,
+torchtitan, Megatron-LM and DeepSpeed, exporting OTLP to forge's collector.
+forge never ships its own tracing library where OpenTelemetry is the tool.
 
 **Profiles.**
 
@@ -1361,20 +1372,22 @@ plan on forge#2859 proposes.
 
 ### Open decisions 17 to 22
 
-None is decided. They join [section 11](#11-open-owner-decisions)'s table.
+Decision 18 is settled (owner, 2026-11-26, in [reliant-for-ml.md](reliant-for-ml.md)); the rest are open. They join [section 11](#11-open-owner-decisions)'s table.
 
-| #   | Decision                               | Options                                                                                                                                                                         | Recommendation                                                                                                                                      | Blocks                    |
-| --- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| 17  | Hardware metric resolution and history | (a) 30s raw for the tenant's 30 days. (b) 60s raw. (c) (a) plus a 5-minute per-device rollup kept for 13 months, for capacity planning.                                         | (a) now; (c) when a measured workload hits the read quota or a design partner asks for history. Halving resolution hides short throttling episodes. | Slice 1                   |
-| 18  | Training instrumentation vehicle       | (a) The `ml/instrument` skill writes upstream OpenTelemetry Python into the team's loop or callbacks. (b) A published Python package. (c) Only what MLflow autologging records. | (a), then (b) if design partners ask. (c) has no phase breakdown. (b) is a public library under semver, a cost to take on only with demand.         | Slice 5                   |
-| 19  | Where GPU profiler captures live       | (a) The customer's checkpoint store, linked from the run. (b) Reliant-hosted object storage. (c) Converted into forge's profiles store.                                         | (a). Captures are large and may contain model internals; (c) re-implements Perfetto and Nsight.                                                     | Slice 5                   |
-| 20  | How the pod-start timeline is built    | (a) Derived at query time from events and conditions. (b) Materialised as synthetic spans, one trace per pod start.                                                             | (a). No new storage or writer; (b) would let the trace view draw it, but invents spans no system emitted.                                           | Slice 2                   |
-| 21  | Cost attribution                       | (a) Accelerator-hours only. (b) Plus a price per accelerator product, declared by the customer in `MLStack`. (c) Plus adopting OpenCost's prices where it is installed.         | (b) and (c), adopt first. We sell no GPUs, so the price is always theirs; (a) alone cannot say "money".                                             | Slices 1, 3, 5 cost views |
-| 22  | Gate model promotion on evals          | (a) Display only. (b) A `DeliveryPolicy` threshold on a recorded eval metric, refusing promotion below it.                                                                      | (a) first; (b) after a design partner confirms which metrics they trust. A gate on a noisy eval blocks releases for nothing.                        | Slice 4                   |
+| #   | Decision                               | Options                                                                                                                                                                         | Recommendation                                                                                                                                              | Blocks                    |
+| --- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| 17  | Hardware metric resolution and history | (a) 30s raw for the tenant's 30 days. (b) 60s raw. (c) (a) plus a 5-minute per-device rollup kept for 13 months, for capacity planning.                                         | (a) now; (c) when a measured workload hits the read quota or a design partner asks for history. Halving resolution hides short throttling episodes.         | Slice 1                   |
+| 18  | Training instrumentation vehicle       | (a) The `ml/instrument` skill writes upstream OpenTelemetry Python into the team's loop or callbacks. (b) A published Python package. (c) Only what MLflow autologging records. | **Settled (owner, 2026-11-26): (b)**, a published Python SDK with PyTorch support, taught by the `ml/instrument` skill (reliant-for-ml.md, Settled item 2). | Slice 5                   |
+| 19  | Where GPU profiler captures live       | (a) The customer's checkpoint store, linked from the run. (b) Reliant-hosted object storage. (c) Converted into forge's profiles store.                                         | (a). Captures are large and may contain model internals; (c) re-implements Perfetto and Nsight.                                                             | Slice 5                   |
+| 20  | How the pod-start timeline is built    | (a) Derived at query time from events and conditions. (b) Materialised as synthetic spans, one trace per pod start.                                                             | (a). No new storage or writer; (b) would let the trace view draw it, but invents spans no system emitted.                                                   | Slice 2                   |
+| 21  | Cost attribution                       | (a) Accelerator-hours only. (b) Plus a price per accelerator product, declared by the customer in `MLStack`. (c) Plus adopting OpenCost's prices where it is installed.         | (b) and (c), adopt first. We sell no GPUs, so the price is always theirs; (a) alone cannot say "money".                                                     | Slices 1, 3, 5 cost views |
+| 22  | Gate model promotion on evals          | (a) Display only. (b) A `DeliveryPolicy` threshold on a recorded eval metric, refusing promotion below it.                                                                      | (a) first; (b) after a design partner confirms which metrics they trust. A gate on a noisy eval blocks releases for nothing.                                | Slice 4                   |
 
 ## 8. UI and agent tools
 
-**One top-level nav item** (settled, item 8). Its label is
+**One top-level nav item** (settled, item 8; amended on 2026-11-26 to the hybrid
+nav, so this item is the ML area and the pages with an app equivalent live in
+the existing areas). Its label is
 [decision 9](#11-open-owner-decisions); "ML" is recommended. It is one `NavArea`,
 a drill-in whose rows replace the nav on its routes, the same kind as
 Observability.
@@ -1642,8 +1655,12 @@ before we model a single run.
 - provisioning or reselling GPUs;
 - our own scheduler, serving router, health checker or image streamer;
 - typed wrappers of third-party CRDs;
-- automatic cordon or drain (we recommend it; the customer's NPD, NVSentinel or
-  cloud auto-repair acts);
+- automatic cordon or drain by default (we recommend it; the customer's NPD,
+  NVSentinel or cloud auto-repair acts). **Amended (owner, 2026-11-26):** it
+  becomes possible when a team declares it, `Remediation.mode = "act"`, and the
+  default when the block is declared is `recommend`
+  ([reliant-for-ml.md](reliant-for-ml.md#48-the-declaration), decisions 24 and
+  32);
 - automatic rollback.
 
 ## 13. Testing without GPUs

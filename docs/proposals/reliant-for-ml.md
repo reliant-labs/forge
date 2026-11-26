@@ -2,8 +2,11 @@
 
 **Status:** proposal, the north star for ML. Nothing here is built. It records
 the owner's direction of 2026-11-26 (the [Settled](#3-settled-owner-2026-11-25-and-2026-11-26)
-list) and proposes the rest. The open owner decisions are in
-[section 10](#10-open-owner-decisions), each with what it blocks.
+list) and, the same day, the owner's acceptance of every design decision this
+proposal raised ("agreed with your recs":
+[section 3.1](#31-settled-owner-2026-11-26-decisions-23-to-32); the record of
+options is [section 10](#10-owner-decisions-decided-2026-11-26)). Phases land
+as their own pull requests ([section 11](#11-build-order)).
 **Date:** 2026-11-26
 **Feeds from:** [ml-workloads.md](ml-workloads.md) (merged: the cluster, stack,
 recommendations, models, training templates, gated access, testing without GPUs,
@@ -13,9 +16,10 @@ at scale, the feedback-loop hooks, testing and previews for ML, and the
 security of model artifacts.
 **The spec:** the ML product spec of 2026-11-26 (object model, metrics
 inventory, views, competitive bar, gap against the demo and phases A–G) is the
-working document behind the console redesign; it is not in this repository.
-Where this proposal says "spec 00" or "spec 04", it means that spec's object
-model and its gap-and-phases file. What this proposal relies on from it is
+working document behind the console redesign, in [ml-spec/](ml-spec/README.md)
+(forge#2921). Where this proposal says "spec 00" or "spec 04", it means that
+spec's [object model](ml-spec/00-object-model.md) and its
+[gap-and-phases file](ml-spec/04-gap-vs-demo.md). What this proposal relies on from it is
 summarised where it is used: the run hierarchy (§2), attempt end reasons (§4.4)
 and the phases (§11).
 **Related:** [changes.md](changes.md), [tests-coverage-flakes.md](tests-coverage-flakes.md),
@@ -125,7 +129,8 @@ reuse existing primitives like OCI, Flux?" The answer is **reuse**, need by need
    KCL that declares checkpoints, spares and remediation, and what forge renders
    from it onto JobSet, Kubernetes Job failure policies, TorchElastic and Kueue.
    Whatever acts across nodes in seconds (cordon, swap in a spare, rewind) is
-   decision 24.
+   upstream first, plus a small forge-rendered executor in the customer's
+   cluster for what ties a node action to a run (decision 24).
 
 Kueue, JobSet and Kubeflow Trainer are adopted upstream, not built. So is Ray,
 which stays adopt-only.
@@ -134,8 +139,8 @@ which stays adopt-only.
 
 Because ML reuses the app primitives, most ML surfaces are already pages in the
 console: a model release is a release, a smoke run is a preview, a GPU trace is
-a trace, an alert is an Inbox item. The recommendation that follows is a
-**hybrid** nav (decision 23, open):
+a trace, an alert is an Inbox item. What follows is a **hybrid** nav (decision
+23, settled):
 
 - **An ML area** for what has no app equivalent: **Training** (experiments,
   runs, phases, attempts, goodput), **Evals**, **Models**, **Fleet** (clusters,
@@ -151,9 +156,8 @@ a trace, an alert is an Inbox item. The recommendation that follows is a
   meaning workflow runs (reliant `navConfig/items.tsx:478`). A second "Runs" for
   training would collide in search, in agent tool names and in speech.
 
-This amends ml-workloads Settled item 8 (one nav item with six sub-pages), so it
-needs the owner's word. The spec's working default is hybrid until the owner
-objects.
+This amends ml-workloads Settled item 8 (one nav item with six sub-pages); the
+owner accepted it on 2026-11-26, and ml-workloads.md records the amendment.
 
 ## 3. Settled (owner, 2026-11-25 and 2026-11-26)
 
@@ -209,6 +213,53 @@ The owner added on 2026-11-26:
 7. **The run hierarchy is confirmed:** project → experiment → run → phase →
    attempt ("wave") → pod/rank → step, with checkpoints linking phases and
    producing model versions.
+
+### 3.1 Settled (owner, 2026-11-26): decisions 23 to 32
+
+The owner accepted every recommendation of
+[section 10](#10-owner-decisions-decided-2026-11-26) ("agreed with your recs",
+2026-11-26 06:01Z). Item N is decision N, and the sections that raised each
+one describe the chosen option.
+
+23. **Hybrid navigation, with "Training", not "Runs".** An ML area holds
+    Training, Evals, Models, Fleet and the stack setup; model releases live in
+    Deployments, smoke runs in Previews, GPU telemetry in Observability, alerts
+    in Inbox and eval gates in Tests ([§2.1](#21-what-this-means-for-navigation)).
+    It amends ml-workloads Settled item 8.
+24. **Cross-node remediation is upstream first.** JobSet, TorchElastic,
+    NVSentinel and cloud auto-repair do what they can (in-job restarts, failure
+    policies, node repair), and forge recommends. A small forge-rendered
+    executor in the customer's cluster, configured from the declaration and
+    holding declared Kubernetes RBAC, does only what ties a node action to a run:
+    cordon, swap in a spare, resume and record. The control plane does not
+    execute remediation.
+25. **The training-run ledger lives in control-plane Postgres, per org**, with
+    step-indexed scalars in a new step-keyed ClickHouse table. Not inside the
+    release ledger, and not ClickHouse only.
+26. **The Python SDK is `sdk/python/` in the forge repository**, Apache-2.0 and
+    published to PyPI, at 0.x until a design partner confirms the API, then 1.0
+    under semver. The PyPI name still needs checking.
+27. **ML triggers reach Reliant workflows through a typed `forge` integration
+    manifest**, with trigger types and payload schemas
+    ([§5.3](#53-triggers-for-reliant-workflows)), not a generic event trigger
+    with a CEL filter.
+28. **Launches by agents and workflows are recorded and bounded**: within the
+    template's declared parameter bounds and budgets, audited in the activity
+    stream, and launches into production queues need an approval, as production
+    Changes do ([§5.4](#54-launch-and-fork)).
+29. **Hot spares are low-priority Kueue placeholder workloads** the job
+    preempts, where Kueue is adopted, and tainted standby nodes without it
+    ([§4.6](#46-replace-without-a-full-restart)). Cloud reservations alone are
+    not a spare.
+30. **Smoke training runs on CPU by default** (gloo, fake GPUs) in the preview
+    cluster; a cheap GPU pool is the team's declared choice
+    ([§6.1](#61-smoke-training-per-pull-request)).
+31. **Pickle-format weights warn first**, then gate through a lint rule on the
+    lint rollout table, plus an opt-in `DeliveryPolicy` control that refuses
+    promotion ([§8](#8-security)). They are never refused outright on the day a
+    team pins the release.
+32. **The default remediation mode is `recommend`** when the block is declared;
+    `act` is stated in words (`mode = "act"`) ([§4.8](#48-the-declaration)).
 
 ## 4. Resilience at scale
 
@@ -304,17 +355,17 @@ The target is to detect a hard failure within **30 seconds** and a hang within
 signal below is upstream; what is ours is collecting it, joining it to the
 attempt and the rank, and acting on it within a declared policy.
 
-| Signal                            | Detects                                         | Upstream source                                                                                      | Latency                | Ours                                                                                                    |
-| --------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------- |
-| Xid, ECC DBE, row-remap failure   | A GPU fault                                     | Kernel log `NVRM: Xid` (node agent `filelog`), DCGM fields, node-problem-detector conditions         | seconds                | Join device UUID → pod → rank → attempt; classify with the versioned Xid table                          |
-| NPD node conditions and events    | Kernel, runtime, filesystem, GPU log rules      | node-problem-detector                                                                                | seconds to a minute    | Adopt or install NPD (ml-workloads slice 1)                                                             |
-| NCCL watchdog and flight recorder | A collective timed out or hung                  | PyTorch `TORCH_NCCL_*` (heartbeat, timeout, dump on timeout; verify names on the pinned version)     | the configured timeout | Render short timeouts; collect the dump from a collected volume                                         |
-| NCCL RAS                          | Peer and network faults inside NCCL             | NCCL's RAS subsystem (NCCL 2.24+, verify)                                                            | seconds                | Collect and join to the node                                                                            |
-| Rank heartbeats                   | A rank stopped making progress                  | TorchElastic agent, NVIDIA Resiliency Extension fault tolerance (verify), or the SDK's own heartbeat | the heartbeat interval | The SDK emits one per rank; the detector lives beside the job ([decision 24](#10-open-owner-decisions)) |
-| Step stall                        | No step in k × the trailing median              | The SDK's step series, or an imported tracker's                                                      | k × step time          | Rule `run-stalled`                                                                                      |
-| Straggler                         | One rank slows all                              | SDK per-rank step time (`ml.train.rank.step.duration`)                                               | N steps                | Rule `straggler-rank`, with the rank's GPU throttle and error evidence                                  |
-| Network                           | IB port down, link flaps, error counters rising | node-exporter InfiniBand collector, DCGM NVLink fields                                               | a scrape interval      | Join to the ranks on the node                                                                           |
-| Pod and node lifecycle            | Preemption, spot reclaim, node NotReady, OOM    | Kubernetes events and conditions, Kueue `Evicted`, termination notices                               | seconds                | Attempt end reason (closed set, spec 00 §2.4)                                                           |
+| Signal                            | Detects                                         | Upstream source                                                                                      | Latency                | Ours                                                                                                                  |
+| --------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Xid, ECC DBE, row-remap failure   | A GPU fault                                     | Kernel log `NVRM: Xid` (node agent `filelog`), DCGM fields, node-problem-detector conditions         | seconds                | Join device UUID → pod → rank → attempt; classify with the versioned Xid table                                        |
+| NPD node conditions and events    | Kernel, runtime, filesystem, GPU log rules      | node-problem-detector                                                                                | seconds to a minute    | Adopt or install NPD (ml-workloads slice 1)                                                                           |
+| NCCL watchdog and flight recorder | A collective timed out or hung                  | PyTorch `TORCH_NCCL_*` (heartbeat, timeout, dump on timeout; verify names on the pinned version)     | the configured timeout | Render short timeouts; collect the dump from a collected volume                                                       |
+| NCCL RAS                          | Peer and network faults inside NCCL             | NCCL's RAS subsystem (NCCL 2.24+, verify)                                                            | seconds                | Collect and join to the node                                                                                          |
+| Rank heartbeats                   | A rank stopped making progress                  | TorchElastic agent, NVIDIA Resiliency Extension fault tolerance (verify), or the SDK's own heartbeat | the heartbeat interval | The SDK emits one per rank; the detector lives beside the job ([decision 24](#10-owner-decisions-decided-2026-11-26)) |
+| Step stall                        | No step in k × the trailing median              | The SDK's step series, or an imported tracker's                                                      | k × step time          | Rule `run-stalled`                                                                                                    |
+| Straggler                         | One rank slows all                              | SDK per-rank step time (`ml.train.rank.step.duration`)                                               | N steps                | Rule `straggler-rank`, with the rank's GPU throttle and error evidence                                                |
+| Network                           | IB port down, link flaps, error counters rising | node-exporter InfiniBand collector, DCGM NVLink fields                                               | a scrape interval      | Join to the ranks on the node                                                                                         |
+| Pod and node lifecycle            | Preemption, spot reclaim, node NotReady, OOM    | Kubernetes events and conditions, Kueue `Evicted`, termination notices                               | seconds                | Attempt end reason (closed set, spec 00 §2.4)                                                                         |
 
 A failure is attributed once, to the attempt's end reason, with the evidence
 attached. That is what turns "the job died" into "rank 412's GPU 3 raised Xid 79
@@ -377,7 +428,8 @@ allows; the stack decides which it can do.
 | **C. Full restart**                   | The whole job is torn down, rescheduled and resumed from the last durable checkpoint                                                                               | Nothing beyond a durable checkpoint                                                                                                                                                | 10–60 minutes                 |
 
 **Hot spares.** A spare is capacity that is admitted, scheduled, pulled and
-idle, so stages 4–6 take seconds. Options (decision 29):
+idle, so stages 4–6 take seconds. Options (decision 29 chose the first, with the
+second as the fallback):
 
 - low-priority placeholder workloads in the job's Kueue ClusterQueue or cohort,
   which the job's replacement pods preempt (Kueue preemption and priority
@@ -590,8 +642,8 @@ event's detail:
 - `ml.attempt.ended` (filter on end reason);
 - `ml.remediation.failed`.
 
-How they are delivered (an integration manifest named `forge`, or a generic
-event trigger) is decision 27.
+They are delivered as typed trigger types of an integration manifest named
+`forge`, with payload schemas (decision 27), not a generic event trigger.
 
 ### 5.4 Launch and fork
 
@@ -775,34 +827,38 @@ What this proposal adds on top:
 
 ## 9. How this relates to ml-workloads.md
 
-| ml-workloads                              | This proposal                                                                               |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Settled 8: one nav item, six sub-pages    | Proposes hybrid nav (decision 23), pending the owner                                        |
-| Decision 18: instrumentation vehicle      | Settled by the owner: the published Python SDK, taught by the `ml/instrument` skill         |
-| Explicitly out: automatic cordon or drain | Out by default; possible when declared (`Remediation.mode = "act"`)                         |
-| §2 Run: one launch of a template          | Refined into the ledger of runs, phases, attempts and checkpoints (the spec's object model) |
-| §8 Agent tools                            | Generalised into the hooks of §5                                                            |
-| Slices 0–8, decisions 1–22                | Unchanged, except as above; this proposal's decisions continue the numbering from 23        |
+| ml-workloads                              | This proposal                                                                                          |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Settled 8: one nav item, six sub-pages    | Amended by the owner, 2026-11-26: hybrid nav (decision 23)                                             |
+| Decision 18: instrumentation vehicle      | Settled by the owner: the published Python SDK, taught by the `ml/instrument` skill                    |
+| Explicitly out: automatic cordon or drain | Amended by the owner: out by default; possible when declared (`Remediation.mode = "act"`, decision 32) |
+| §2 Run: one launch of a template          | Refined into the ledger of runs, phases, attempts and checkpoints (the spec's object model)            |
+| §8 Agent tools                            | Generalised into the hooks of §5                                                                       |
+| Slices 0–8, decisions 1–22                | Unchanged, except as above; this proposal's decisions continue the numbering from 23                   |
 
-## 10. Open owner decisions
+## 10. Owner decisions (decided 2026-11-26)
 
-None of these is decided. Numbering continues ml-workloads' (1–22).
+Numbering continues ml-workloads' (1–22). The owner accepted every
+recommendation this section proposed ("agreed with your recs", 2026-11-26
+06:01Z). They are recorded as [section 3.1](#31-settled-owner-2026-11-26-decisions-23-to-32),
+and the sections above describe the chosen option. The options that were
+weighed and not chosen, for the record:
 
-| #   | Decision                                            | Options                                                                                                                                                                                                                                                                                     | Recommendation                                                                                                                                                                                                                                      | Blocks                         |
-| --- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| 23  | Navigation                                          | (a) One ML item with every ML page (ml-workloads Settled 8). (b) Hybrid: an ML area for Training, Evals, Models, Fleet and setup; releases in Deployments, smoke runs in Previews, GPU telemetry in Observability, alerts in Inbox, eval gates in Tests. (c) Fully distributed, no ML area. | (b), with **Training**, not Runs. It follows from reusing the primitives, and it avoids the Runs collision. (a) duplicates pages that already exist; (c) leaves training with no home.                                                              | Phase A pages                  |
-| 24  | Who executes cross-node remediation                 | (a) A small forge-rendered executor in the customer's cluster, configured from the declaration, with declared Kubernetes RBAC. (b) The control plane, acting through the hub's connection. (c) Upstream only (JobSet, TorchElastic, NVSentinel, cloud auto-repair), forge recommends.                  | (c) for everything upstream can do (in-job restarts, failure policies, node repair), plus (a) only for what ties a node action to a run (cordon + swap a spare + resume + record). (b) is too slow and fails when the hub cannot reach the cluster. | Resilience actions (phase E5)  |
-| 25  | Where the training-run ledger lives                 | (a) Control-plane Postgres per org, step scalars in a new step-keyed ClickHouse table. (b) Inside the release ledger. (c) ClickHouse only.                                                                                                                                                  | (a). Relational, small and audited like releases; the release ledger is per env and promotion-shaped, and a sweep would flood it.                                                                                                                   | Phase E                        |
-| 26  | Python SDK packaging                                | (a) In the forge repository (`sdk/python/`), Apache-2.0, published to PyPI. (b) A separate repository. Version: 0.x until the first design partner, then 1.0 under semver.                                                                                                                  | (a), with 0.x until a design partner confirms the API. One repository keeps the `ml.*` conventions and the SDK in lockstep with forge's queries. The PyPI name needs checking.                                                                      | The SDK track                  |
-| 27  | How ML triggers reach Reliant workflows             | (a) A `forge` integration manifest with typed trigger types and payload schemas. (b) A generic event trigger with a CEL filter on `event.name`.                                                                                                                                             | (a). Typed payloads are what the workflow validator and the integration schema tool already check; (b) works, but gives agents no schema to write against.                                                                                          | Hooks H2                       |
-| 28  | Launch authority for agents and workflows           | (a) Template changes only, through reviewed pull requests; no direct launches. (b) Recorded launches within declared budgets and parameter bounds; production queues need an approval. (c) Free launches within a budget.                                                                   | (b). It is the Changes pattern: the template is reviewed, the launch is audited and bounded. (a) makes every sweep a pull request; (c) leaves production capacity unguarded.                                                                        | Hooks H3                       |
-| 29  | Hot spare mechanism                                 | (a) Low-priority Kueue placeholder workloads the job preempts. (b) Tainted standby nodes. (c) Cloud reservations only.                                                                                                                                                                      | (a) where Kueue is adopted, (b) as the fallback. (c) reserves capacity but not warm, pulled nodes, so stages 4–6 stay slow.                                                                                                                         | Resilience actions             |
-| 30  | Smoke-run substrate                                 | (a) CPU only (gloo, fake GPUs) in the preview cluster. (b) A cheap GPU pool the customer declares. (c) Both, CPU by default.                                                                                                                                                                | (c). CPU proves starts, learning, finiteness and resume at no GPU cost; a declared pool is the team's choice and money.                                                                                                                             | §6.1                           |
-| 31  | Pickle-format weights                               | (a) Warn only. (b) Warn first, then a lint gate per the rollout table, plus an opt-in `DeliveryPolicy` control that refuses promotion. (c) Refuse pickles outright.                                                                                                                         | (b). (c) breaks every team on older formats on the day they pin the release; (a) never moves anyone.                                                                                                                                                | `forge ml model push`, slice 4 |
-| 32  | Default remediation mode when the block is declared | (a) `recommend`. (b) `act`.                                                                                                                                                                                                                                                                 | (a). Acting on a customer's cluster is a choice they state in words (`mode = "act"`), not one they inherit by adding checkpoint settings.                                                                                                           | Resilience actions             |
+| #   | Decision                                            | Chosen                                                                                                                                                                       | Not chosen                                                                                                                     | Unblocks                       |
+| --- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------ |
+| 23  | Navigation                                          | Hybrid, with **Training**, not Runs: an ML area for Training, Evals, Models, Fleet and setup; the rest in Deployments, Previews, Observability, Inbox and Tests              | One ML item with every ML page (duplicates pages that exist); fully distributed with no ML area (leaves training with no home) | Phase A pages                  |
+| 24  | Who executes cross-node remediation                 | Upstream (JobSet, TorchElastic, NVSentinel, cloud auto-repair) for what it can do, plus a small forge-rendered in-cluster executor only for what ties a node action to a run | The control plane acting through the hub's connection (too slow, and fails when the hub cannot reach the cluster)              | Resilience actions (phase E5)  |
+| 25  | Where the training-run ledger lives                 | Control-plane Postgres per org; step scalars in a new step-keyed ClickHouse table                                                                                            | Inside the release ledger (per env, promotion-shaped; a sweep would flood it); ClickHouse only                                 | Phase E                        |
+| 26  | Python SDK packaging                                | `sdk/python/` in the forge repository, Apache-2.0, published to PyPI; 0.x until a design partner confirms the API, then 1.0                                                  | A separate repository                                                                                                          | The SDK track                  |
+| 27  | How ML triggers reach Reliant workflows             | A `forge` integration manifest with typed trigger types and payload schemas                                                                                                  | A generic event trigger with a CEL filter on `event.name` (works, but gives agents no schema)                                  | Hooks H2                       |
+| 28  | Launch authority for agents and workflows           | Recorded launches within declared budgets and parameter bounds; production queues need an approval                                                                           | Template changes only, through reviewed pull requests (every sweep a PR); free launches within a budget (production unguarded) | Hooks H3                       |
+| 29  | Hot spare mechanism                                 | Low-priority Kueue placeholder workloads where Kueue is adopted; tainted standby nodes as the fallback                                                                       | Cloud reservations only (capacity, but not warm, pulled nodes)                                                                 | Resilience actions             |
+| 30  | Smoke-run substrate                                 | Both, CPU by default (gloo, fake GPUs); a cheap GPU pool when the team declares one                                                                                          | CPU only; a GPU pool only                                                                                                      | §6.1                           |
+| 31  | Pickle-format weights                               | Warn first, then a lint gate per the rollout table, plus an opt-in `DeliveryPolicy` control that refuses promotion                                                           | Warn only (never moves anyone); refuse pickles outright (breaks teams on older formats the day they pin)                       | `forge ml model push`, slice 4 |
+| 32  | Default remediation mode when the block is declared | `recommend`; `act` is stated explicitly                                                                                                                                      | `act` by default                                                                                                               | Resilience actions             |
 
-Decision 22 (eval gates) and 18 (instrumentation, now settled) are
-ml-workloads'; they are not repeated.
+Decision 22 (eval gates) and 18 (instrumentation, settled on 2026-11-26 for the
+published SDK) are ml-workloads'; they are not repeated.
 
 ## 11. Build order
 
@@ -813,7 +869,7 @@ parallel: **D**, demo fixtures and views; **R**, real ingestion.
 | Phase (spec)                              | ml-workloads slice | What lands                                                                                                                                              | Resilience                                                                                                             | Hooks                                                                                              |
 | ----------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | 0. Access                                 | 0                  | Entitlement gate, request page with the alert-rule Slack notice, demo shell (control-plane#3747, reliant#3693)                                          | —                                                                                                                      | —                                                                                                  |
-| A. The demo is the target (D)             | —                  | Reshaped early-access contract around the object model; fixture story; pages in the nav decision 23 settles                                             | Fixture attempts with end reasons, a restart waterfall, goodput and badput by cause, a remediation in the Inbox        | Fixture event stream; the CLI verbs' `--json` shapes drafted against fixtures                      |
+| A. The demo is the target (D)             | —                  | Reshaped early-access contract around the object model; fixture story; pages in the hybrid nav (decision 23)                                            | Fixture attempts with end reasons, a restart waterfall, goodput and badput by cause, a remediation in the Inbox        | Fixture event stream; the CLI verbs' `--json` shapes drafted against fixtures                      |
 | B. Fleet and health (R)                   | 1                  | Cluster collector, NVIDIA adapter, NPD, `obsquery.Machines`, `pkg/mlrecs`                                                                               | **R1 detection, hardware half:** Xid, ECC, NPD, IB signals joined to pods                                              | **H1:** `ml.finding.*` events in the activity stream; `forge ml` read verbs for fleet and findings |
 | B′. SDK track (R, parallel from B)        | —                  | The Python SDK on CPU: conventions, callbacks for HF Trainer and Lightning first, then torchtitan, Megatron-LM and DeepSpeed; the `ml/instrument` skill | SDK heartbeats, checkpoint durability, init and load spans                                                             | —                                                                                                  |
 | C. Scheduling and pod start (R)           | 2                  | Kueue adoption, events, pod-start stages                                                                                                                | Restart stages 3–6 measured                                                                                            | —                                                                                                  |

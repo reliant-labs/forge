@@ -316,6 +316,25 @@ type AddIssueCommentResult struct {
 	Comment IssueComment
 }
 
+// UpdateIssueCommentRequest replaces the body of comment CommentID on issue ID.
+type UpdateIssueCommentRequest struct {
+	ID        string
+	CommentID string
+	Body      string
+}
+
+// UpdateIssueCommentResult is the comment as stored after the edit.
+type UpdateIssueCommentResult struct {
+	Comment IssueComment
+}
+
+// DeleteIssueCommentRequest removes comment CommentID from issue ID's
+// timeline.
+type DeleteIssueCommentRequest struct {
+	ID        string
+	CommentID string
+}
+
 // AssignIssueRequest assigns an issue. Assignee is a user id or "me" (resolved
 // by the server from the credential's acting user); "" clears it.
 type AssignIssueRequest struct {

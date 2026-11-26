@@ -215,3 +215,66 @@ func TestDBGrantsFinding_MessageNamesWhyItWasWithheld(t *testing.T) {
 		t.Errorf("bytea column message: %s", bin.message())
 	}
 }
+
+// Two tables in one migration share a column name: each finding points at the
+// line inside its own table's statement, not the first `payload` in the file.
+// Runs without postgres: locate reads only the migration text.
+func TestDBGrants_LocateFindsTheColumnInItsOwnTable(t *testing.T) {
+	root := writeGrantsProject(t, map[string]string{
+		"0001_core.up.sql": `-- task_load_reports: payload is a serialized LoadReport.
+CREATE TABLE task_load_reports (
+    job_id  TEXT  NOT NULL,
+    payload BYTEA NOT NULL,
+    PRIMARY KEY (job_id)
+);
+
+-- assignments: payload is a serialized Assignment.
+CREATE TABLE assignments (
+    job_id     TEXT   NOT NULL REFERENCES jobs (id),
+    payload    BYTEA  NOT NULL,
+    PRIMARY KEY (job_id)
+);
+`,
+		"0002_more.up.sql": `CREATE TABLE notes (
+    body TEXT NOT NULL
+);
+ALTER TABLE assignments
+    ADD COLUMN body TEXT NOT NULL DEFAULT '';
+ALTER TABLE notes ADD COLUMN token TEXT;
+ALTER TABLE task_load_reports ADD COLUMN token TEXT;
+`,
+		"0003_inline.up.sql": `CREATE TABLE staging("case" TEXT);
+CREATE TABLE private.jobs("case" TEXT);
+CREATE TABLE public.jobs("case" TEXT, note TEXT DEFAULT 'one; two, three'); ALTER TABLE jobs ADD a TEXT, ADD COLUMN
+    "With Space" TEXT;
+`,
+	})
+	files, err := readMigrationSources(filepath.Join(root, "db", "migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		table, column, file string
+		line                int
+	}{
+		{"task_load_reports", "payload", "0001_core.up.sql", 4},
+		{"assignments", "payload", "0001_core.up.sql", 11},
+		{"notes", "body", "0002_more.up.sql", 2},
+		{"assignments", "body", "0002_more.up.sql", 5},
+		{"notes", "token", "0002_more.up.sql", 6},
+		{"task_load_reports", "token", "0002_more.up.sql", 7},
+		{"assignments", "token", "", 0},
+		{"jobs", "case", "0003_inline.up.sql", 3},
+		{"jobs", "a", "0003_inline.up.sql", 3},
+		{"jobs", "With Space", "0003_inline.up.sql", 4},
+	} {
+		file, line := files.locate(root, "public", tc.table, tc.column)
+		want := ""
+		if tc.file != "" {
+			want = "db/migrations/" + tc.file
+		}
+		if file != want || line != tc.line {
+			t.Errorf("locate(%s.%s) = %s:%d, want %s:%d", tc.table, tc.column, file, line, want, tc.line)
+		}
+	}
+}

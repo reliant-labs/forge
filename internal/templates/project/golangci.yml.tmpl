@@ -274,6 +274,15 @@ linters:
           - gocritic
           - funlen
           - gocognit
+      # appendAssign finds `a = append(b, x)` typos, so it stays on. Its one
+      # false positive is buffer reuse — `x.buf = append(other[:0], v...)`,
+      # appending into another slice's backing array on purpose — and an
+      # append whose base is a `[:0]` reslice is never that typo. Scoped to
+      # the check and the line's shape, never to a path.
+      - linters:
+          - gocritic
+        text: "appendAssign"
+        source: 'append\(\s*[^,()]+\[:0\]\s*,'
 {{- if .TypedAccessGuard}}
       # The generated config loader is the ONE package allowed to read the
       # environment directly (os.Getenv / os.LookupEnv); the typed-access

@@ -253,12 +253,13 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		RecordBundle: func(ctx context.Context, _ string) (string, error) {
 			return recordHostedBundle(ctx, envName, release, digests, opts)
 		},
-		Client:        client,
-		Rollout:       opts.rollout,
-		PollInterval:  hostedPollInterval,
-		ApplyBudget:   deploytarget.HostedApplyBudget,
-		OnRollout:     report.rolloutObserver(),
-		OnEnvironment: func(id string) { report.setHostedTarget(ep.URL, id) },
+		Client:                  client,
+		Rollout:                 opts.rollout,
+		PollInterval:            hostedPollInterval,
+		ApplyBudget:             deploytarget.HostedApplyBudget,
+		FirstDeployFailureGrace: deploytarget.HostedFirstDeployFailureGrace,
+		OnRollout:               report.rolloutObserver(),
+		OnEnvironment:           func(id string) { report.setHostedTarget(ep.URL, id) },
 	})
 	start := time.Now()
 	// A failed hosted publish is NOT reverted. The ledger still names the

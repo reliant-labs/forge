@@ -735,6 +735,9 @@ func docDeadlineSeconds(doc parsedDoc) int {
 //   - a backend that does not route named same-origin APIs would publish a
 //     site whose /_api/@<name> calls 404.
 func checkReaderHonours(r *release.BundleReader, shape release.Shape, docs []parsedDoc) error {
+	if err := r.CheckScopedVulnExemptions(shape); err != nil {
+		return err
+	}
 	if err := r.CheckIdentities(shape); err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package codegen
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -292,5 +293,28 @@ func TestORMEntities_OptedInViewsAreReadOnly(t *testing.T) {
 	}
 	if keys["ChatsWithActivity"] != "id" || keys["LedgerRow"] != "entry_id" || keys["Total"] != "" {
 		t.Errorf("view keys = %v, want id / entry_id (declared) / none", keys)
+	}
+}
+
+// CRUDEntityTables is the CRUD join's table set, not a match on rpc names:
+// the first-boot seed is scoped by it, and a CRUD-NAMED rpc over a
+// forge:no-entity table (Ranger's GetAssignment), over a composite key, or
+// with no table at all names nothing.
+func TestCRUDEntityTables_IsTheJoinNotTheRPCNames(t *testing.T) {
+	jobs := pkTable("jobs", "id")
+	assignments := pkTable("assignments", "job_id", "generation")
+	assignments.Comment = "forge:no-entity"
+	runs := pkTable("runs", "job_id", "seq") // composite key, not marked
+	svc := ServiceDef{Name: "JobsService", Package: "app.v1",
+		Methods: []Method{{Name: "ListJobs"}, {Name: "GetJob"}, {Name: "GetJobStatus"}, {Name: "GetAssignment"}, {Name: "ListGenerations"}, {Name: "GetRun"}},
+		Messages: map[string][]MessageFieldDef{
+			"Job": {{Name: "id", ProtoType: "string"}}, "Assignment": {{Name: "job_id", ProtoType: "string"}}, "Run": {{Name: "job_id", ProtoType: "string"}},
+		}}
+	got := CRUDEntityTables([]schemadef.Table{jobs, assignments, runs}, []ServiceDef{svc})
+	if want := []string{"jobs"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("CRUDEntityTables = %v, want %v", got, want)
+	}
+	if got := CRUDEntityTables([]schemadef.Table{assignments}, nil); got == nil || len(got) != 0 {
+		t.Errorf("no CRUD entity must be an EMPTY scope, not nil: %#v", got)
 	}
 }

@@ -298,7 +298,8 @@ func NewSQLMigration(version, description, upSQL string) *Migration {
 	}
 }
 
-// Helper to create a migration that generates schema from protobuf
+// NewSchemaCreateMigration returns a forward-only migration whose Up creates
+// a table for each of schemas, in order (GenerateCreateTableSQL).
 func NewSchemaCreateMigration(version string, schemas ...TableSchema) *Migration {
 	return &Migration{
 		Version:     version,

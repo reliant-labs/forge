@@ -55,7 +55,11 @@ const (
 type Severity string
 
 const (
-	SeverityWarn  Severity = "warn"
+	// SeverityWarn says the runtime emitter reports the diagnostic at warn
+	// level.
+	SeverityWarn Severity = "warn"
+	// SeverityError says the runtime emitter reports the diagnostic at error
+	// level.
 	SeverityError Severity = "error"
 )
 

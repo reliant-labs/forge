@@ -52,7 +52,7 @@ named packages; never for `./...`, `task test`, `task ci` or `forge generate`.
 | --- | --- |
 | `task test`, `task test:integration` (the `SLOT` prefix in Taskfile.yml) | whole-module test lanes |
 | `forge generate` (not `--plan`; `--watch` only for its first run) | buf, the schema projection's postgres, a validating compile of every package |
-| `forge lint` | golangci-lint plus every frontend's eslint and tsc |
+| `forge lint` | golangci-lint plus every frontend's eslint and tsc. A run narrowed to named paths (`--scope`, or `forge lint ./internal/x/...`) waits in the express lane on its own; a whole-project run in bulk. `FORGE_SLOT_LANE` overrides either |
 | `forge ci gate`'s `unit-tests`, `integration-tests` and `verify-generated` | through the rows above: they run `task test`, `task test:integration` and `forge generate` |
 
 `task test:short` takes none: the scoped inner loop is not heavy and must not

@@ -26,6 +26,9 @@ var declaredSrc = strings.Join([]string{
 	"// forge:lint-enable block-rule", // 12
 	"// forge:lint-disable open-rule", // 13
 	"e()",                             // 14
+	"f() // forge:lint-disable-line line-rule: negative assertion (3 intervals)", // 15
+	"// forge:lint-disable-line own-line-rule: on its own line",                  // 16
+	"g()", // 17
 }, "\n")
 
 func TestDeclarationsListsEveryDirectiveWithWhatItCovers(t *testing.T) {
@@ -41,6 +44,8 @@ func TestDeclarationsListsEveryDirectiveWithWhatItCovers(t *testing.T) {
 		{Rule: "block-rule", Line: 9, Directive: TokenDisable, Covers: "lines 9-11", Reason: "legacy section"},
 		{Rule: "other-rule", Line: 9, Directive: TokenDisable, Covers: "line 9 to the end of the file", Reason: "legacy section"},
 		{Rule: "open-rule", Line: 13, Directive: TokenDisable, Covers: "line 13 to the end of the file"},
+		{Rule: "line-rule", Line: 15, Directive: TokenDisableLine, Covers: "line 15", Reason: "negative assertion (3 intervals)"},
+		{Rule: "own-line-rule", Line: 16, Directive: TokenDisableLine, Covers: "line 17", Reason: "on its own line"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Declarations:\n got %+v\nwant %+v", got, want)

@@ -20,7 +20,7 @@
 // WHAT IS HERE VS IN forge/pkg/testkit. Everything below names a type that is
 // YOURS — this component's Deps and what it takes, your generated Connect
 // client — which is precisely what a library cannot name. The machinery that
-// does not (a discard logger, an ephemeral-postgres database, migration
+// does not (a test-bound logger, an ephemeral-postgres database, migration
 // application, the test server + client pair, the option-application loop,
 // default claims) is testkit's, and this file calls it.
 //
@@ -155,7 +155,8 @@ func WithPlaceholderDeps() TestOption {
 }
 
 // NewTestOrders creates a test instance of the Orders service with
-// test defaults. By default, deps are minimal (discard logger).
+// test defaults. By default, deps are minimal (a testkit.Logger(t) logger,
+// whose records print only if the test fails).
 // A fresh isolated database on the shared ephemeral postgres is created
 // automatically, with the project's migrations applied
 // (NewMigratedTestDB); WithDB supplies another.
@@ -249,7 +250,10 @@ func NewTestOrdersServer(t *testing.T, opts ...TestOption) (*httptest.Server, or
 func defaultTestConfig(t *testing.T) *testConfig {
 	t.Helper()
 	return &testConfig{
-		logger: testkit.DiscardLogger(),
+		// Kept, and printed with the test's output only if it fails — with the
+		// server's "rpc failed" records and the cause svcerr withheld from the
+		// client. WithLogger replaces it for the component's own records.
+		logger: testkit.Logger(t),
 		cfg:    config.Defaults(),
 		// The project's migrations applied (NewMigratedTestDB): a fresh
 		// isolated database cloned from the migrated template on the shared

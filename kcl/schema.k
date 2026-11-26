@@ -1731,6 +1731,196 @@ llm_env = lambda -> {str:} {
     {k: LLMRef {key = x} for k, x in LLM_ENV_KEYS}
 }
 
+# ---------------------------------------------------------------------------
+# Email: forge.Email, the sender an app's transactional mail goes out as,
+# where it is delivered, and how a workload reaches it.
+# ---------------------------------------------------------------------------
+
+schema Email:
+    """A mail sender: the From domain and defaults an env's workloads send
+    transactional mail (receipts, notifications, sign-in links) as, as a
+    Bundle entry (`Bundle.emails`). A workload is handed it through
+    `forge.email_env`, standard SMTP settings every mail library reads, under
+    names that are the same in every env, so app code never changes when the
+    binding does:
+
+        MAIL = forge.Email {name = "mail", domain = "mail.acme.com", from_name = "Acme", from_local = "hello"}
+        ...
+        emails = [MAIL | {runtime = forge.EmailOnMailpit {}}]
+        env = forge.email_env("MAIL", "mail")
+
+    `name` is how a forge.EmailRef names it: an RFC-1123 label of at most 40
+    characters, unique in the Bundle. `domain` is the From domain, one you
+    own and have set up with whoever delivers the mail (SPF and DKIM at your
+    SMTP provider). `from_name` and `from_local` make the default From,
+    `"<from_name> <from_local>@<domain>"` (MAIL_FROM), and `reply_to` is
+    where replies go; a message may still set its own From on the domain.
+    App mail needs a domain: a forge.EmailRef to an Email with no `domain` is
+    refused at render.
+
+    WHERE IT IS DELIVERED is its `runtime`:
+
+      * `forge.EmailOnSMTP {host, ...}` — any SMTP submission server you
+        operate or buy (Postmark, SES, Resend, Mailgun, a Postfix of your
+        own). forge renders the connection; the credentials are references
+        (forge.ManagedSecret / forge.SecretRef), never a committed password.
+      * `forge.EmailOnMailpit {}` — the env's Mailpit (a forge.HostInfra with
+        engine "mailpit"), the dev mail catcher `forge env up` runs: every
+        message lands in its web UI and nothing leaves the machine. It binds
+        loopback, so only a host process (forge.OnHost) reaches it.
+      * `forge.OnHosted {}` (also what an Email that binds no runtime means)
+        — Reliant hosting delivers it. Not yet available: a hosted Email is
+        refused at render until it is, so bind EmailOnSMTP or EmailOnMailpit.
+
+    Transactional mail only: what the recipient's own action or account
+    caused, never newsletters or bulk lists.
+    """
+    name: str
+    domain: str = ""
+    from_name: str = ""
+    from_local: str = "no-reply"
+    reply_to: str = ""
+    runtime?: OnHosted | EmailOnSMTP | EmailOnMailpit
+
+    check:
+        len(name) <= 40 and regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), \
+            "Email.name '${name}' must be an RFC-1123 label of at most 40 characters: it is how a forge.EmailRef names the sender"
+        not domain or regex.match(domain, _IDN_DNS_RE), \
+            "Email '${name}'.domain '${domain}' must be a DNS name in lower case, like mail.acme.com (no scheme, wildcard or trailing dot)"
+        regex.match(from_local, r"^[a-z0-9][a-z0-9._-]{0,63}$"), \
+            "Email '${name}'.from_local '${from_local}' must match ^[a-z0-9][a-z0-9._-]{0,63}$ (the local part of the From address)"
+        len(from_name) <= 64 and len(regex.findall(from_name, "[\\r\\n<>\"\\\\]")) == 0, \
+            "Email '${name}'.from_name must be at most 64 characters with no CR, LF, '<', '>', '\"' or '\\' (it is the display name of a mail header)"
+        not reply_to or regex.match(reply_to, _IDN_EMAIL_RE), \
+            "Email '${name}'.reply_to '${reply_to}' must be an email address"
+
+schema EmailOnSMTP:
+    """An Email delivered through an SMTP submission server forge does not
+    run.
+
+        forge.EmailOnSMTP {
+            host = "smtp.postmarkapp.com"
+            username = forge.ManagedSecret {name = "SMTP_USERNAME"}
+            password = forge.ManagedSecret {name = "SMTP_PASSWORD"}
+        }
+
+    `port` is the submission port (587, STARTTLS, by default; 465 with
+    `tls = "implicit"`). `tls = "none"` sends in plaintext, so it is accepted
+    only for a server on this machine: a host that is exactly localhost,
+    127.0.0.1, [::1], host.docker.internal or host.k3d.internal.
+
+    `password` is a reference, never a literal: a forge.ManagedSecret (the
+    env's secret store: `forge secret set --env <env> SMTP_PASSWORD`) or a
+    forge.SecretRef (a Kubernetes Secret on a cluster you operate). `username`
+    may be a literal too (many providers' usernames are not secret). Both, or
+    neither for a server that takes no authentication.
+
+    A compose container takes literals only, so with a referenced credential
+    run the referrer on forge.OnHost or forge.OnCluster.
+    """
+    type: "smtp" = "smtp"
+    host: str
+    port: int = 587
+    tls: "starttls" | "implicit" | "none" = "starttls"
+    username: str | ManagedSecret | SecretRef = ""
+    password?: str | ManagedSecret | SecretRef
+
+    check:
+        regex.match(host, _EMAIL_SMTP_HOST_PATTERN), \
+            "EmailOnSMTP.host '${host}' must be a host name or an IP address, with no scheme, port or path (the port is `port`)"
+        port > 0 and port < 65536, "EmailOnSMTP.port must be 1..65535"
+        tls != "none" or host.lower() in _LLM_LOCAL_LITERAL_HOSTS, \
+            "EmailOnSMTP.tls = \"none\" sends credentials and mail in plaintext, so it is accepted only for a server on this machine, a host that is exactly one of ${_LLM_LOCAL_LITERAL_HOSTS}. Use tls = \"starttls\" (port 587) or \"implicit\" (port 465) for '${host}'"
+        not password or typeof(password) != "str", \
+            "EmailOnSMTP.password is a literal: a password in a committed file is a leaked password. Use forge.ManagedSecret {name = ...} (`forge secret set --env <env> <NAME>`) or a forge.SecretRef"
+        bool(password) == bool(username), \
+            "EmailOnSMTP: username and password go together: declare both (the server authenticates) or neither (it does not)"
+
+schema EmailOnMailpit:
+    """An Email delivered to the env's Mailpit, the dev mail catcher: a
+    `forge.HostInfra` with `engine = "mailpit"`, named by `infra` or, when
+    `infra` is empty, the env's only one. Every message lands in Mailpit's web
+    UI (SMTP port + 7000) and nothing leaves the machine. Plain SMTP with no
+    TLS and no authentication on 127.0.0.1, so only a host process
+    (forge.OnHost) reaches it, and a reference from any other runtime is
+    refused. The same Mailpit catches a forge.IdentityOnHost identity's mail.
+    """
+    type: "mailpit" = "mailpit"
+    infra: str = ""
+
+# An EmailOnSMTP host: a DNS name, an IPv4 address or a bracketed IPv6
+# literal, with no scheme, user info, port or path.
+_EMAIL_SMTP_HOST_PATTERN = r"^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*|\[[0-9A-Fa-f:.]+\])$"
+
+# Where an Email is delivered: its runtime's type, "hosted" when it binds none.
+_email_rt = lambda e: Email -> str {
+    e.runtime.type if e.runtime else "hosted"
+}
+
+# The mailpit HostInfras an EmailOnMailpit can mean: the one `infra` names,
+# else every mailpit of the env (exactly one is required).
+_email_mailpits = lambda e: Email, infra: [any] -> [any] {
+    [i for i in infra if i.engine == "mailpit" and (not e.runtime.infra or i.name == e.runtime.infra)]
+}
+
+# The default From of an Email: `<from_local>@<domain>`, behind the display
+# name when there is one. A name of RFC 5322 atext and spaces goes bare
+# ("Acme <hello@mail.acme.com>"); any other is quoted, which the from_name
+# check (no '"' or '\') keeps well-formed.
+_email_from = lambda e: Email -> str {
+    _addr = "${e.from_local}@${e.domain}"
+    _addr if not e.from_name else ("${e.from_name} <${_addr}>" if regex.match(e.from_name, r"^[A-Za-z0-9!#$%&'*+/=?^_`{|}~ -]+$") else "\"${e.from_name}\" <${_addr}>")
+}
+
+# Every EmailRef key of an Email on the env's Mailpit, on `port`.
+_email_mailpit_values = lambda e: Email, port: int -> {str:} {
+    {
+        "smtp_host" = "127.0.0.1"
+        "smtp_port" = str(port)
+        "smtp_tls" = "none"
+        "smtp_username" = ""
+        "smtp_password" = ""
+        "from" = _email_from(e)
+        "from_domain" = e.domain
+        "api_url" = ""
+    }
+}
+
+# Every EmailRef key of an Email on an SMTP server, as declared: the two
+# credentials as the literal or reference they are.
+_email_smtp_values = lambda e: Email -> {str:} {
+    {
+        "smtp_host" = e.runtime.host
+        "smtp_port" = str(e.runtime.port)
+        "smtp_tls" = e.runtime.tls
+        "smtp_username" = e.runtime.username
+        "smtp_password" = e.runtime.password if e.runtime.password else ""
+        "from" = _email_from(e)
+        "from_domain" = e.domain
+        "api_url" = ""
+    }
+}
+
+email_env = lambda prefix: str, name: str -> {str:} {
+    """The env a workload reads Email `name` from: one forge.EmailRef per
+    fact of EMAIL_REF_KEYS, named `<prefix>_<KEY>`:
+
+        <prefix>_SMTP_HOST, <prefix>_SMTP_PORT, <prefix>_SMTP_TLS
+            (starttls | implicit | none), <prefix>_SMTP_USERNAME,
+            <prefix>_SMTP_PASSWORD (empty when the server takes no auth),
+        <prefix>_FROM (the default From, `Name <local@domain>`),
+        <prefix>_FROM_DOMAIN, and
+        <prefix>_API_URL (empty unless the Email's runtime offers an HTTP
+            API).
+
+    The names are fixed in every env, so a binding change (Mailpit in dev,
+    an SMTP provider in prod) never changes the app's config.
+
+        env = forge.email_env("MAIL", "mail")
+    """
+    {"${prefix}_${k.upper()}": EmailRef {name = name, key = k} for k in EMAIL_REF_KEYS}
+}
+
 minio_workload = lambda minio: BucketOnMinIO, buckets: [Bucket] -> Workload {
     """The docker-compose workload that runs the env's MinIO for `buckets`
     (those of them on `minio`): it publishes the S3 API on `minio.port`,
@@ -6765,16 +6955,50 @@ schema Signing:
         not oidc_issuer or oidc_issuer.startswith("https://"), \
             "Signing.oidc_issuer must be an https:// URL"
 
+# _vuln_exemption_identity is what makes two exemptions the same declaration:
+# the advisory and the scope, each list sorted (release.ShapeVulnScopedExempt.Identity).
+_vuln_exemption_identity = lambda e -> str {
+    "|".join([e.id, ",".join(sorted(e.packages)), ",".join(sorted(e.artifacts)), ",".join(sorted(e.locations))])
+}
+
+# _vuln_scope_entry_ok is one packages / artifacts / locations entry: not
+# empty, not padded with spaces, one line.
+_vuln_scope_entry_ok = lambda v: str -> bool {
+    v != "" and v == v.strip() and "\n" not in v and "\r" not in v and "\t" not in v
+}
+
 schema VulnExemption:
     """One accepted advisory. Every exemption carries its reason and an
     expiry, the same vocabulary as forge's own govulncheck exemptions
     (`ci.vuln.exemptions`): an exemption past `expires` stops applying.
 
         forge.VulnExemption {id = "CVE-2026-0001", reason = "unreachable: we never call the parser", expires = "2026-12-31"}
+
+    `packages`, `artifacts` and `locations` scope it. Unset, it covers the
+    advisory in every package of every artifact of the env. Each one set
+    narrows it, and a finding is exempt only where every set field names it:
+
+        forge.VulnExemption {id = "GO-2026-6859", reason = "grype never parses untrusted archives",
+            expires = "2026-12-31", artifacts = ["api"], locations = ["/usr/local/bin/grype"]}
+
+    - `packages`: a package name ("stdlib") or a purl prefix
+      ("pkg:golang/stdlib", "pkg:npm/lodash@4.17.20").
+    - `artifacts`: release artifact names.
+    - `locations`: absolute paths inside the artifact, exact, or every path
+      under one that ends in "/". This is what tells two Go binaries' stdlib
+      findings apart: their package is "stdlib" either way.
+
+    A finding found in several places (artifacts, or binaries of one image)
+    is exempt only when every place is covered; anywhere else it still
+    counts. A control plane that predates scopes ignores a scoped exemption
+    (the finding stays in its gate) rather than widening it.
     """
     id: str
     reason: str
     expires: str
+    packages: [str] = []
+    artifacts: [str] = []
+    locations: [str] = []
 
     check:
         regex.match(id, _DELIVERY_ID_RE), \
@@ -6782,6 +7006,12 @@ schema VulnExemption:
         reason.strip() != "", "VulnExemption '${id}' needs a reason: the claim a reviewer can check"
         regex.match(expires, _DELIVERY_DATE_RE), \
             "VulnExemption '${id}'.expires '${expires}' must be a YYYY-MM-DD date: an exemption is time-boxed, it cannot be open-ended"
+        all v in [*packages, *artifacts, *locations] { _vuln_scope_entry_ok(v) }, \
+            "VulnExemption '${id}' has an empty, space-padded or multi-line packages / artifacts / locations entry"
+        all l in locations { l.startswith("/") }, \
+            "VulnExemption '${id}'.locations ${[l for l in locations if not l.startswith('/')]} must be absolute paths inside the artifact (/usr/local/bin/grype)"
+        len(packages) == len({v: 1 for v in packages}) and len(artifacts) == len({v: 1 for v in artifacts}) and len(locations) == len({v: 1 for v in locations}), \
+            "VulnExemption '${id}' names the same package, artifact or location twice"
 
 schema VulnPolicy:
     """The vulnerability gate, checked against the release's SBOM at record
@@ -6815,8 +7045,8 @@ schema VulnPolicy:
             "VulnPolicy.warn_severity \"${warn_severity}\" is stricter than block_severity \"${block_severity}\": a finding is warned about only below the blocking line, so lower warn_severity or raise block_severity"
         mode == "off" or block_kev or block_severity != "none", \
             "VulnPolicy mode = \"${mode}\" with block_kev = False and block_severity = \"none\" blocks nothing: re-enable one, or set mode = \"off\""
-        len(exemptions) == len({e.id: 1 for e in exemptions}), \
-            "VulnPolicy.exemptions names an advisory twice: ${[e.id for e in exemptions if len([x for x in exemptions if x.id == e.id]) > 1]}"
+        len(exemptions) == len({_vuln_exemption_identity(e): 1 for e in exemptions}), \
+            "VulnPolicy.exemptions names an advisory twice with the same scope (packages, artifacts, locations): ${[e.id for e in exemptions if len([x for x in exemptions if _vuln_exemption_identity(x) == _vuln_exemption_identity(e)]) > 1]}"
 
 schema BundleKinds:
     """Narrow what a bundle may contain, beyond the baseline.
@@ -7377,6 +7607,86 @@ schema Uptime:
         isunique(skip), "Uptime.skip names a check twice"
         all n in skip {regex.match(n, _UPTIME_NAME_RE)}, \
             "Uptime.skip ${skip} must be check names (lowercase letters, digits, '-' and '_')"
+
+# ---------------------------------------------------------------------------
+# Status page: the public components an env's uptime checks make up.
+# ---------------------------------------------------------------------------
+
+_STATUS_URL_RE = r"^https?://[^/@\s]+(/\S*)?$"
+
+schema StatusLink:
+    """One header link of a status page (support, the app, a blog)."""
+    label: str
+    url: str
+
+    check:
+        1 <= len(label) <= 40, "StatusLink.label '${label}' must be 1 to 40 characters"
+        regex.match(url, _STATUS_URL_RE) and len(url) <= 2048, \
+            "StatusLink '${label}': url '${url}' must be an absolute http(s) address with a host and no credential"
+
+schema StatusComponent:
+    """One row of a status page: a public name for one or more of the env's
+    uptime checks. Its state is the worst of theirs.
+
+    `checks` names checks of THIS env's final list: the ones forge derives
+    (`<frontend>`, `<workload>`, `route-<route>`), minus `Uptime.skip`, plus
+    `Uptime.checks`. A name that is not there is refused at render.
+    """
+    name: str
+    description?: str
+    checks: [str]
+
+    check:
+        1 <= len(name) <= 64, "StatusComponent.name '${name}' must be 1 to 64 characters"
+        not description or len(description) <= 200, \
+            "StatusComponent '${name}': description is longer than 200 characters"
+        len(checks) >= 1, "StatusComponent '${name}' names no uptime check: a component is made of at least one"
+        isunique(checks), "StatusComponent '${name}' names a check twice"
+        all c in checks {regex.match(c, _UPTIME_NAME_RE)}, \
+            "StatusComponent '${name}': checks ${checks} must be uptime check names (lowercase letters, digits, '-' and '_')"
+
+schema StatusPage:
+    """The env's status page, on `Bundle.status_page`: what a page telling
+    the app's own users whether it works shows. OPT-IN ONLY: an env that does
+    not declare one gets no page; nothing is rendered or published. Each component is a public
+    name for some of the env's uptime checks (see Uptime), so the page is
+    opt-in per component: a check no component names never appears on it.
+
+        status_page = forge.StatusPage {
+            title = "Acme status"
+            links = [forge.StatusLink {label = "Support", url = "https://acme.com/help"}]
+            components = [
+                forge.StatusComponent {name = "Website", checks = ["web"]}
+                forge.StatusComponent {name = "API", checks = ["api-ready", "route-billing"], description = "REST and webhooks"}
+            ]
+        }
+
+    Declaring a page does not publish it. Going public is a separate,
+    audited act by a person in the control plane, and a rollback must
+    neither publish nor unpublish a page. Check names never reach the public page; it shows
+    component names, states, daily availability and published notices
+    (the forge.status/v1 document, forge/pkg/statuspage).
+
+      * `logo_url`     — an https image shown beside the title.
+      * `accent_color` — a #rrggbb colour for the page's decoration (never
+        a text or state colour).
+    """
+    title: str
+    logo_url?: str
+    accent_color?: str
+    links: [StatusLink] = []
+    components: [StatusComponent]
+
+    check:
+        1 <= len(title) <= 100, "StatusPage.title '${title}' must be 1 to 100 characters"
+        not logo_url or (regex.match(logo_url, r"^https://[^/@\s]+(/\S*)?$") and len(logo_url) <= 2048), \
+            "StatusPage.logo_url '${logo_url}' must be an absolute https address with a host and no credential"
+        not accent_color or regex.match(accent_color, r"^#[0-9a-fA-F]{6}$"), \
+            "StatusPage.accent_color '${accent_color}' must be a #rrggbb colour"
+        len(links) <= 10, "StatusPage.links has ${len(links)} links, more than 10"
+        1 <= len(components) <= 50, "StatusPage.components must name 1 to 50 components"
+        len({c.name: 1 for c in components}) == len(components), \
+            "StatusPage.components names a component twice: a component name is unique within a page"
 
 # ---------------------------------------------------------------------------
 # Bundle — the project-level container forge.render() consumes.
@@ -8181,6 +8491,24 @@ schema NetworkPolicy:
 # would be noise on every key; it is what disambiguates when they do not.
 _OVERRIDE_KEY_RE = r"^[A-Z][A-Za-z0-9]*/[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[a-z0-9]([-a-z0-9.]*[a-z0-9])?)?(@[A-Za-z0-9][-A-Za-z0-9_.:]*)?$"
 
+# The Bundle.overrides keys that would fight a workload's forge.Autoscale: a
+# patch to its Deployment's spec.replicas (the HorizontalPodAutoscaler owns
+# that field, so every apply would reset what it scaled to), or any patch to
+# the HorizontalPodAutoscaler itself, which forge renders from the declared
+# range. The range is changed in `autoscale`, where the checks see it. The HPA
+# is named after its workload, so the key's name is the workload's; the
+# namespace and cluster qualifiers do not change which workload it is.
+_autoscale_override_conflicts = lambda overrides: {str:}, workloads: [Workload] -> [str] {
+    _scaled = [w.name for w in workloads if w.autoscale]
+    [k for k, p in overrides if _override_fights_autoscale(k, p, _scaled)] if _scaled else []
+}
+
+_override_fights_autoscale = lambda k: str, p: any, scaled: [str] -> bool {
+    _parts = k.split("@")[0].split("/")
+    _parts[-1] in scaled and (_parts[0] == "HorizontalPodAutoscaler" \
+        or (_parts[0] == "Deployment" and typeof(p) == "dict" and "spec" in p and typeof(p["spec"]) == "dict" and "replicas" in p["spec"]))
+}
+
 # ---------------------------------------------------------------------------
 # ManagedIdentity — the env's users, declared. One identity-provider instance
 # per declaration (or one shared with a sibling env), converged by the control
@@ -8951,6 +9279,10 @@ schema Bundle:
     # The env's LLM gateway (forge.LLM), reached by a workload through
     # forge.LLMRef / forge.llm_env. See LLM.
     llm?: LLM
+    # Mail senders (forge.Email): where each env's transactional mail is
+    # delivered, reached by a workload through forge.EmailRef /
+    # forge.email_env. See Email.
+    emails: [Email] = []
     # Platform dependencies rendered from helm charts (helm-as-a-RENDERER:
     # `helm template --skip-crds` → manifests folded into the normal apply
     # pipeline; NO `helm install`). Each is a renderable with a NAME the
@@ -9156,6 +9488,11 @@ schema Bundle:
     # hosted env gets one per public frontend and route with no declaration;
     # declare `uptime` to add checks or opt out. See Uptime.
     uptime?: Uptime
+    # The env's status page: the public components its uptime checks make
+    # up. Opt-in only: UNSET = no page, nothing rendered or published, and
+    # no default. Going public is a separate, audited act by a person in the
+    # control plane, never declared. See StatusPage.
+    status_page?: StatusPage
     # The env's users (forge.ManagedIdentity): roles, the applications that
     # sign users in, the workloads that read tokens, and where the instance
     # runs. UNSET = no managed identity (bring your own issuer in config.k).
@@ -9207,6 +9544,10 @@ schema Bundle:
         # here rather than failing as a type error inside the Go apply.
         all _k, p in overrides { typeof(p) == "dict" }, \
             "Bundle.overrides values ${[k for k, p in overrides if typeof(p) != 'dict']} are not patches: an override's value is a map of the fields to change, e.g. {spec.replicas = 10}"
+        # An autoscaled workload's replica count belongs to its
+        # HorizontalPodAutoscaler, and the HPA to its `autoscale`.
+        len(_autoscale_override_conflicts(overrides, workloads)) == 0, \
+            "Bundle.overrides ${_autoscale_override_conflicts(overrides, workloads)} patch the replica count of an autoscaled workload: forge.Autoscale owns it (the HorizontalPodAutoscaler named after the workload moves the Deployment's spec.replicas within [minReplicas, maxReplicas]), so a patch to `Deployment/<name>` spec.replicas or to `HorizontalPodAutoscaler/<name>` would fight it on every apply. Change the workload's `autoscale` instead, or drop autoscale and set replicas"
         # THE PROJECT IS DECLARED: it is every object's part-of, the handle a
         # CD pipeline selects one release's workloads by.
         project, "Bundle.project is required: set `project = \"<name>\"` (the project name every rendered object is labelled app.kubernetes.io/part-of with)"
@@ -9260,6 +9601,17 @@ schema Bundle:
         # A bucket on a MinIO needs the MinIO: a workload of that name.
         all b in buckets { b.runtime.type != "minio" or b.runtime.service in [w.name for w in workloads] }, \
             "Bundle.buckets ${[b.name for b in buckets if b.runtime.type == 'minio' and b.runtime.service not in [w.name for w in workloads]]} are on a forge.BucketOnMinIO that no workload runs: add `forge.minio_workload(<the BucketOnMinIO>, <buckets>)` to Bundle.workloads (it binds docker-compose.yml's `minio` service)"
+        # A forge.EmailRef names an Email, so the name is unique.
+        len(_duplicates([e.name for e in emails])) == 0, \
+            "Bundle.emails: an email name is declared twice: ${_duplicates([e.name for e in emails])}. forge.EmailRef names one"
+        # Reliant-hosted email is not yet available: refuse it rather than
+        # render a sender nothing would ever deliver for.
+        all e in emails { _email_rt(e) != "hosted" }, \
+            "Bundle.emails ${[e.name for e in emails if _email_rt(e) == 'hosted']} are on forge.OnHosted (what an Email that binds no runtime means), and Reliant-hosted email is not yet available on hosted. Bind each in this env to forge.EmailOnSMTP {host = ..., username = ..., password = forge.ManagedSecret {name = ...}} (any SMTP provider), or to forge.EmailOnMailpit {} in a dev env"
+        # An Email on a Mailpit needs the Mailpit: exactly one mailpit
+        # HostInfra it can mean.
+        all e in emails { _email_rt(e) != "mailpit" or len(_email_mailpits(e, infra)) == 1 }, \
+            "Bundle.emails ${[e.name for e in emails if _email_rt(e) == 'mailpit' and len(_email_mailpits(e, infra)) != 1]} are on forge.EmailOnMailpit, which needs a forge.HostInfra with engine 'mailpit' in Bundle.infra: the one `infra` names, or, when infra is empty, the env's only one. Declared mailpit infra: ${[i.name for i in infra if i.engine == 'mailpit']}"
         # HostedSecrets names no endpoint of its own — the values live in THIS
         # env's control plane — so without one there is nowhere to put them.
         # PLAINTEXT SECRETS ONLY WHERE THEY CANNOT ESCAPE THIS MACHINE.

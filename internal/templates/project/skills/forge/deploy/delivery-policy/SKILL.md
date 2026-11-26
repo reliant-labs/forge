@@ -207,8 +207,10 @@ vuln_gate = forge.VulnPolicy {
 
 The defaults are the prod-tier policy: block KEV-listed and fixable-critical
 findings, warn on the rest. An exemption carries a reason and an expiry date and
-stops applying then. `warn_severity` must not be stricter than `block_severity`,
-and a gate that blocks nothing is refused.
+stops applying then; it is the same vocabulary as forge's own
+`ci.vuln_scan.exemptions`, and `packages`/`artifacts`/`locations` scope it
+(`vuln`). `warn_severity` must not be stricter than `block_severity`, and a gate
+that blocks nothing is refused.
 
 **Who judges it.** The findings come from the SBOMs the release recorded (`vuln`).
 

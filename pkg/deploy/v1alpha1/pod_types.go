@@ -268,8 +268,11 @@ type PVCVolumeSource struct {
 type TolerationOperator string
 
 const (
+	// TolerationOpExists matches a taint with the key, whatever its value.
 	TolerationOpExists TolerationOperator = "Exists"
-	TolerationOpEqual  TolerationOperator = "Equal"
+	// TolerationOpEqual matches a taint with the key and the toleration's
+	// value.
+	TolerationOpEqual TolerationOperator = "Equal"
 )
 
 // TaintEffect is the taint effect a toleration matches. Empty matches every
@@ -279,9 +282,12 @@ const (
 type TaintEffect string
 
 const (
-	TaintNoSchedule       TaintEffect = "NoSchedule"
+	// TaintNoSchedule matches a taint that keeps new pods off the node.
+	TaintNoSchedule TaintEffect = "NoSchedule"
+	// TaintPreferNoSchedule matches a taint the scheduler avoids when it can.
 	TaintPreferNoSchedule TaintEffect = "PreferNoSchedule"
-	TaintNoExecute        TaintEffect = "NoExecute"
+	// TaintNoExecute matches a taint that also evicts running pods.
+	TaintNoExecute TaintEffect = "NoExecute"
 )
 
 // Toleration lets the workload's pods schedule onto nodes with a matching

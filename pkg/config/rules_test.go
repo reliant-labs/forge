@@ -70,6 +70,9 @@ func TestLoadInto_RuleViolationValues(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "config field stripe_secret_key (env: RULES_STRIPE_SECRET_KEY)") {
 			t.Errorf("error must name the field and its variable; got: %v", err)
 		}
+		if err != nil && strings.Contains(err.Error(), "--rules-stripe-secret-key") {
+			t.Errorf("error names a flag a sensitive field never has; got: %v", err)
+		}
 		if err != nil && strings.Contains(err.Error(), "short") {
 			t.Errorf("error printed a sensitive value; got: %v", err)
 		}
@@ -158,7 +161,9 @@ func buildRulesMessage(t *testing.T) *dynamicpb.Message {
 				field("billing_provider", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING,
 					cfg(&forgepb.ConfigFieldOptions{EnvVar: "RULES_BILLING_PROVIDER"}, nil)),
 				field("stripe_secret_key", 3, descriptorpb.FieldDescriptorProto_TYPE_STRING,
-					cfg(&forgepb.ConfigFieldOptions{EnvVar: "RULES_STRIPE_SECRET_KEY", Sensitive: true},
+					// The flag is never registered (sensitive), so an error
+					// must not name it as a source (friction #26).
+					cfg(&forgepb.ConfigFieldOptions{EnvVar: "RULES_STRIPE_SECRET_KEY", Flag: "rules-stripe-secret-key", Sensitive: true},
 						&validate.FieldRules{
 							Ignore: validate.Ignore_IGNORE_IF_ZERO_VALUE.Enum(),
 							Type:   &validate.FieldRules_String_{String_: &validate.StringRules{MinLen: proto.Uint64(8)}},

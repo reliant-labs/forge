@@ -125,6 +125,51 @@ func TestNolintOnOwnLineAppliesToNextLine(t *testing.T) {
 	}
 }
 
+// ranger's SDK agent wrote the ESLint spelling trailing a select case:
+// `forge:lint-disable-line` parsed as forge:lint-disable plus "-line …",
+// failed the separator check, and silenced nothing — with no word of why.
+// It is a token in its own right now, with //nolint's positions. The
+// reason carries the parentheses and digits the report first blamed.
+func TestDisableLineTrailingAppliesToSameLine(t *testing.T) {
+	src := strings.Join([]string{
+		"package api", // 1
+		"\tcase <-time.After(150 * time.Millisecond): // forge:lint-disable-line forge-test-fixed-sleep: negative assertion (3 heartbeat intervals of silence)", // 2
+		"other()", // 3
+	}, "\n")
+
+	res := Apply(src, []finding.Finding{errFinding("forge-test-fixed-sleep", 2), errFinding("forge-test-fixed-sleep", 3)})
+
+	if len(res.Suppressed) != 1 || res.Suppressed[0].Line != 2 {
+		t.Fatalf("trailing forge:lint-disable-line should cover its own line only, got suppressed %+v", res.Suppressed)
+	}
+	if got := res.Suppressed[0]; got.Directive != TokenDisableLine || got.Reason != "negative assertion (3 heartbeat intervals of silence)" {
+		t.Fatalf("suppression = %+v, want directive %q with the full reason", got, TokenDisableLine)
+	}
+	if len(res.Violations) != 0 {
+		t.Fatalf("a reasoned directive is not a violation, got %+v", res.Violations)
+	}
+}
+
+func TestDisableLineOnOwnLineAppliesToNextLine(t *testing.T) {
+	src := "package api\n// forge:lint-disable-line my-rule: deliberate\noffending()\nother()\n"
+
+	res := Apply(src, []finding.Finding{errFinding("my-rule", 3), errFinding("my-rule", 4)})
+
+	if len(res.Suppressed) != 1 || res.Suppressed[0].Line != 3 {
+		t.Fatalf("standalone forge:lint-disable-line should cover the next line only, got suppressed %+v", res.Suppressed)
+	}
+}
+
+func TestDisableLineWithoutReasonOnErrorRuleIsReported(t *testing.T) {
+	src := "package api\noffending() // forge:lint-disable-line my-rule\n"
+
+	res := Apply(src, []finding.Finding{errFinding("my-rule", 2)})
+
+	if len(res.Suppressed) != 1 || len(res.Violations) != 1 || res.Violations[0].Rule != RuleMissingReason {
+		t.Fatalf("want the finding suppressed and a missing-reason violation, got %+v", res)
+	}
+}
+
 func TestNolintReasonIsExtracted(t *testing.T) {
 	src := "package api\noffending() //nolint:my-rule // set by the reconciler\n"
 
@@ -298,7 +343,7 @@ func TestApplyFilesResolvesEachFindingAgainstItsOwnFile(t *testing.T) {
 }
 
 func TestIsDirectiveToken(t *testing.T) {
-	for _, tok := range []string{TokenDisableNextLine, TokenDisableFile, TokenDisable, TokenEnable} {
+	for _, tok := range []string{TokenDisableNextLine, TokenDisableLine, TokenDisableFile, TokenDisable, TokenEnable} {
 		if !IsDirectiveToken(tok) {
 			t.Errorf("IsDirectiveToken(%q) = false", tok)
 		}

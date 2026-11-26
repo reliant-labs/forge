@@ -521,6 +521,49 @@ func TestKCLModule_RenderContract(t *testing.T) {
 	}
 }
 
+// TestRenderContractEnvsDeclareNoStatusPage: a status page is opt-in only
+// (owner, 2026-11-25). None of the contract fixtures declares one, so none of
+// their goldens, which TestKCLModule_RenderContract holds the render to byte
+// for byte, may carry a `status_page` key. Together the two prove an env
+// without forge.StatusPage renders exactly as it did before the field.
+func TestRenderContractEnvsDeclareNoStatusPage(t *testing.T) {
+	dir := renderContractDir(t)
+	goldens, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(goldens) == 0 {
+		t.Fatalf("no render-contract goldens in %s", dir)
+	}
+	var withUptime int
+	for _, g := range goldens {
+		src, err := os.ReadFile(strings.TrimSuffix(g, ".json") + ".k")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(src), "status_page") {
+			t.Errorf("%s declares a status page; this test needs every contract fixture to have none", filepath.Base(g))
+			continue
+		}
+		raw, err := os.ReadFile(g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Output map[string]json.RawMessage `json:"output"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("%s: %v", filepath.Base(g), err)
+		}
+		if _, ok := doc.Output["status_page"]; ok {
+			t.Errorf("%s renders a status_page with none declared: a status page is opt-in only", filepath.Base(g))
+		}
+		if _, ok := doc.Output["uptime_checks"]; ok {
+			withUptime++
+		}
+	}
+	if withUptime == 0 {
+		t.Error("no contract golden renders uptime checks, so none proves a hosted env with checks gets no page by default")
+	}
+}
+
 // firstDiff reports the first differing line of two renders with context,
 // so a drift names the key instead of dumping two whole documents.
 func firstDiff(got, want string) string {

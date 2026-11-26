@@ -19,10 +19,11 @@ import (
 type WriterKind int
 
 const (
-	// WriterInterceptor: the interceptor writes the event after the handler
-	// succeeds. The default.
+	// WriterInterceptor means the interceptor writes the event after the
+	// handler succeeds. The default.
 	WriterInterceptor WriterKind = iota
-	// WriterHandler: the handler calls [Record], normally inside its RunTx.
+	// WriterHandler means the handler calls [Record], normally inside its
+	// RunTx.
 	WriterHandler
 )
 

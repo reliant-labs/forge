@@ -688,6 +688,44 @@ func ForgetScaffold(root, relPath string) {
 	saveScaffoldLedgerLocked(root)
 }
 
+// ForgetScaffoldUndoably is ForgetScaffold for a caller that may not get to
+// write the file back: it drops relPath's record and returns a func that puts
+// the dropped entry back exactly as it was (a decline, a birth hash and all).
+//
+// `forge project rescaffold` drops a record before it knows whether any
+// renderer will re-create the path. When none does, the path is still absent,
+// and leaving the record dropped turned "deleted on purpose" into "never
+// scaffolded" — so the next `forge generate` would scaffold the file the user
+// had deleted. The undo restores the deletion's record.
+//
+// The undo is a no-op when relPath had no record, and when a record exists
+// again by the time it runs (something re-created the path and recorded its
+// birth since).
+func ForgetScaffoldUndoably(root, relPath string) (undo func()) {
+	scaffoldMu.Lock()
+	rel := filepath.ToSlash(relPath)
+	led := loadScaffoldLedgerLocked(root)
+	prior, had := led[rel]
+	if had {
+		delete(led, rel)
+		saveScaffoldLedgerLocked(root)
+	}
+	scaffoldMu.Unlock()
+	if !had {
+		return func() {}
+	}
+	return func() {
+		scaffoldMu.Lock()
+		defer scaffoldMu.Unlock()
+		led := loadScaffoldLedgerLocked(root)
+		if _, ok := led[rel]; ok {
+			return
+		}
+		led[rel] = prior
+		saveScaffoldLedgerLocked(root)
+	}
+}
+
 // ScaffoldLedgerPaths returns root's recorded paths, sorted. Exposed for
 // tests and for `forge project audit`-style reporting; callers must not
 // mutate the ledger through it.

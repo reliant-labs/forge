@@ -54,17 +54,38 @@ forge vuln list prod                # what the release prod runs is known to be 
 | Artifact | syft reads | Recorded `source` |
 |---|---|---|
 | Image forge built (go, docker, shell, adopted Dockerfile apps) | the local docker daemon by digest, else the registry | `image` |
-| Prebuilt image (hosted backend, a pinned third-party image) | the registry, by digest | `registry` |
+| Prebuilt image (hosted backend, a pinned third-party image), or one carried unchanged from an earlier release (`carried_from`) | the registry, by digest | `registry` |
 | Host binary (`forge.OnHost`) | the file (Go buildinfo lists every linked module) | `binary` |
 | Static site (hosted, bucket, Firebase), npm package | the frontend's or package's lockfile, dev dependencies excluded | `lockfile` |
+| Static site built from a `forge.GitSource` | the lockfile in the **source** checkout at the pinned commit (the frontend's `subdir`, else up to that checkout's root), never this repository's | `lockfile` |
 | Go module | its `go.mod` | `lockfile` |
 | An SBOM your CI produced (`release record --sbom`) | nothing: recorded verbatim | `ci-provided` |
+| A frontend's source maps (`<frontend>.sourcemaps`) | nothing: debugging data, not code that runs | status `not_applicable` |
+| A git source pin (`kind: git`) | nothing: it names a commit; the site built from it has its own SBOM | status `not_applicable` |
 
 A static site's SBOM is **"from lockfile"** and **overstates the bundle**: a
 built `dist/` carries no package metadata, so the production dependencies in the
 lockfile (build tools in `dependencies` included) are the best evidence available.
-A git source pin and a frontend's source maps get no SBOM. A variant image (one
-digest per platform variant) records `unavailable`: one SBOM per artifact.
+A variant image (one digest per platform variant) records `unavailable`: one SBOM
+per artifact.
+
+**Every artifact is accounted for.** One an SBOM applies to records it (`ok`) or
+says why not (`unavailable`, which reads "not scanned"). One it does not apply to
+(source maps, a git pin) records `not_applicable` with the reason: it names no
+SBOM, and never counts as missing — not in coverage, not in `vuln_gate`, not in
+`provenance_sbom`'s `sbom_missing`. Applicability is decided from the artifact
+itself (`release.SBOMApplicable` in `pkg/release`), never from the recorded
+status. The cut's summary counts the applicable ones and names the rest:
+
+```
+[build] SBOMs: 10 of 10 applicable artifacts recorded (6 from cache); 6 not applicable (3 source maps, 3 git source pins)
+```
+
+`forge vuln list` says the same (`10 of 10 applicable artifacts scanned; 6 not
+applicable (...)`), and its JSON lists them under `coverage.not_applicable`;
+`coverage.artifacts` counts only the applicable ones. A forge that predates
+`not_applicable` reads it as an unknown status it tolerates, and already leaves
+the same artifacts out of coverage.
 
 Syft's output is cached by what it read (image digest, file hash) and the syft
 version in `$FORGE_SBOM_CACHE` (default `<UserCacheDir>/forge/sbom`), so a re-cut of
@@ -157,45 +178,8 @@ freshness rule, the cache's trust check, `forge tools pins --archives` and
 
 ## Where the SBOM lives, and registries
 
-The release record is the index. `forge vuln sbom` reads the machine ledger copy by
-digest and verifies the bytes against it; a missing copy is read back from the
-referrer the release names, or discovered among the image's CycloneDX referrers.
-A referrer is followed only once it proves to be the subject's SBOM: in the
-subject's own repository, an OCI manifest of type `application/vnd.cyclonedx+json`
-whose `subject` is that image's digest, with a layer of the recorded SBOM digest. A
-recorded referrer that fails the check is never read, and bytes from any source are
-verified against the release's digest.
-
-The referrer is a plain OCI 1.1 manifest: `artifactType application/vnd.cyclonedx+json`,
-one layer holding the SBOM, `subject` = the artifact's manifest. It is attached only
-to artifacts **this project pushed** in this cut (a pinned third-party image, or a
-prebuilt image another pipeline pushed, gets none, and no warning). A failed attach
-warns and leaves the ledger copy; it never fails the cut. `vuln.attach_sbom: false` in
-forge.yaml turns attaching off (default on).
-Referrers travel with the image through `oras cp -r` (tested between GAR, a tag-fallback registry and zot, in every direction).
-
-forge never names a registry: it probes the referrers API and falls back to the OCI
-tag schema, so **every registry that accepts an OCI image manifest with a `subject`
-works** for writing; they differ on read:
-
-| Registry | Referrers API | What forge does |
-|---|---|---|
-| GAR / gcr.io, Docker Hub, quay.io, Amazon ECR, MCR, zot | yes | listed through the API |
-| GHCR, `distribution` v2/v3, Reliant's hosted registry | no | forge maintains the `sha256-<hex>` fallback tag index itself |
-| `bundle.v1` repositories on the hosted registry | refused (a tenant token may not push a manifest with `subject` there) | no referrer; the bundle carries no SBOM, the ledger copy covers the release |
-
-(Probed in the design's phase 0 for GAR, the hosted registry, distribution and zot;
-the others are the API's published support and untested for writes.) Tag-fallback
-registries lose concurrent writes to the index; forge serializes attaches per subject
-and re-checks after each, and its orphaned old indexes are left for the registry's GC
-(a tenant token cannot delete).
-
-**Warning, not tested: a "delete untagged" cleanup policy.** An OCI referrer is an
-untagged manifest. On Google Artifact Registry a cleanup policy that deletes
-untagged versions may delete SBOM referrers (and the image signatures that ride the
-same mechanism) after the policy's age. Exempt referrers from such a policy, or set
-`vuln.attach_sbom: false` so nothing depends on them: the release and the machine
-ledger keep the SBOM either way.
+SBOM retrieval, digest verification, OCI referrers, registry support and cleanup
+policy caveats: `vuln/registries`.
 
 ## The gate: `vuln_gate` and `provenance_sbom`
 
@@ -247,6 +231,46 @@ The reason is one line a reviewer can check; `--expires` is the last day it appl
 (not in the past); a CVE id covers the GHSA of the same advisory. Running it again
 with the same values changes nothing, with new ones replaces the entry. Review and
 commit it.
+
+**Scoping an exemption.** Unscoped, an exemption covers the advisory in every package
+of every artifact of the env. `--package`, `--artifact` and `--location` (each
+repeatable; the `packages`, `artifacts` and `locations` fields of
+`forge.VulnExemption`) narrow it: a finding is exempt only where every one given names
+it (AND across fields, OR within one).
+
+| Flag | Matches | Example |
+|------|---------|---------|
+| `--package` | the package name, or its purl exactly or by a prefix ending at `@`, `/`, `?` or `#` | `stdlib`, `pkg:golang/stdlib` |
+| `--artifact` | the release artifact's name, exactly | `api` |
+| `--location` | an absolute path inside the artifact, exactly, or everything under one ending in `/` | `/usr/local/bin/grype` |
+
+A Go standard-library advisory is the case `--location` exists for: every Go binary's
+package is `stdlib` (`pkg:golang/stdlib@go1.x`), so only the path tells an unreachable
+copy in a vendored tool from a reachable one in your own binary:
+
+```bash
+forge vuln exempt prod GO-2026-6859 --reason "grype never parses untrusted archives" \
+  --expires 2026-12-31 --artifact api --location /usr/local/bin/grype
+```
+
+`forge vuln list <env> --json` lists each finding's `occurrences` (artifact and path),
+which is where the values come from. One finding found in several places (two
+artifacts, two binaries of one image) is exempt only when **every** place is covered,
+by one exemption or several; anywhere else it still counts. A scope the scan cannot
+answer (a finding with no path, against a `--location` exemption) covers nothing.
+OS packages list their database and doc files as locations, so scope those by
+`--package` and `--artifact` instead.
+
+An exemption's identity is its id **and** its scope: the same id with another scope is
+a second entry, added beside the first; the same id and scope with a new reason or
+expiry replaces the one entry. The render records scoped exemptions in the shape's
+`vuln_gate.scoped_exemptions`, apart from `exemptions`, so a reader that predates
+scopes never reads one as an exemption of the advisory everywhere. Hosted declaration
+and bundle recording refuse a scoped policy unless the control plane advertises both
+`shape-vuln-scoped-exemptions` (decoding) and `evaluates-scoped-vuln-exemptions`
+(occurrence-aware evaluation in promotion and vulnerability reads). Upgrade the
+control plane before using scoped policies there; decoding alone is not support.
+Local evaluation supports scopes. `ci.vuln_scan.exemptions` (forge.yaml) stays unscoped.
 
 The edit is made through KCL's own parser, not text matching: it finds the literal
 `VulnExemption`, `VulnPolicy`, `DeliveryPolicy` or `Bundle` the env declares and

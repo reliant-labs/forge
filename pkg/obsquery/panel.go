@@ -410,7 +410,7 @@ type PanelQuery struct {
 	StepSeconds int64
 }
 
-// Shape describes the columns of the compiled statement.
+// PanelShape describes the columns of the compiled statement.
 type PanelShape struct {
 	Bucketed bool // first column is the bucket (line panels, sparklines)
 	// Total: after the bucket, a UInt8 that is 1 on the row aggregating the
@@ -426,8 +426,9 @@ type PanelShape struct {
 	Heatmap bool
 }
 
-// Heatmap value buckets are quarter powers of two: bucket i holds values in
-// [2^(i/4), 2^((i+1)/4)). HeatmapZeroBucket holds zero and negative values.
+// HeatmapZeroBucket is the heatmap value bucket that holds zero and negative
+// values. The other value buckets are quarter powers of two: bucket i holds
+// values in [2^(i/4), 2^((i+1)/4)).
 const HeatmapZeroBucket = math.MinInt32
 
 // HeatmapBounds is the value range of heatmap bucket i.

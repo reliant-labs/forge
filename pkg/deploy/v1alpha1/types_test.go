@@ -347,6 +347,7 @@ func TestDefaultMarkersMatchGoDefaults(t *testing.T) {
 		"MemoryRequestBytes":   strconv.FormatInt(DefaultMemoryBytes, 10),
 		"Kind":                 string(DefaultWorkloadKind),
 		"Replicas":             strconv.Itoa(int(DefaultReplicas)),
+		"CPUTargetPercent":     strconv.Itoa(int(DefaultAutoscaleCPUTargetPercent)),
 		"Protocol":             string(DefaultPortProtocol),
 		"InitialDelaySeconds":  strconv.Itoa(int(DefaultProbeInitialDelaySeconds)),
 		"PeriodSeconds":        strconv.Itoa(int(DefaultProbePeriodSeconds)),

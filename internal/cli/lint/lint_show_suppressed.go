@@ -21,7 +21,8 @@ package lint
 //     paths;
 //   - //forge:exclude-contract package markers (codegen.FindExcludeContractMarker);
 //   - forge:lint-disable-file, forge:lint-disable-next-line,
-//     forge:lint-disable … forge:lint-enable and //nolint: directives
+//     forge:lint-disable-line, forge:lint-disable … forge:lint-enable and
+//     //nolint: directives
 //     (suppress.Declarations), in Go, proto, SQL, TypeScript/JavaScript and
 //     YAML;
 //   - the rule-specific pragmas: -- forge:allow-destructive,
@@ -328,7 +329,7 @@ func relSlash(root, path string) string {
 func renderSuppressionsText(w io.Writer, entries []declaredSuppression, scope *lintScope) {
 	where := "this project"
 	if scope != nil {
-		where = scope.String()
+		where = scope.summary()
 	}
 	if len(entries) == 0 {
 		_, _ = fmt.Fprintf(w, "No suppressions declared in %s.\n", where)

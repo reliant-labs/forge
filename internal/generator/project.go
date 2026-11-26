@@ -350,7 +350,7 @@ func (g *ProjectGenerator) Generate() error { //nolint:gocognit,funlen // the sc
 			"## CLI\n\n" +
 			"The generated binary exposes `db migrate` subcommands:\n\n" +
 			"```\ngo run ./cmd db migrate up      # apply all pending migrations\ngo run ./cmd db migrate status  # print current version / dirty flag\n```\n\n" +
-			"All subcommands read `DATABASE_URL` (or `--database-url`) from the standard project config.\n"
+			"All subcommands read `DATABASE_URL` from the standard project config.\n"
 		if err := atomicfile.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(dbReadme), 0644); err != nil {
 			return fmt.Errorf("failed to create db/README.md: %w", err)
 		}
@@ -887,7 +887,7 @@ func (g *ProjectGenerator) generateServiceFiles() error {
 }
 
 // generatePkgAppConventions writes pkg/app/CONVENTIONS.md, the canonical
-// explainer for the wire_gen / Setup wiring shape + the no-per-RPC-nil-check rule. Per-
+// explainer for the composition-graph wiring (internal/app) + the no-per-RPC-nil-check rule. Per-
 // service service.go files trim their inline comment to a one-line pointer
 // at this file. The template carries no data so we read it raw.
 func (g *ProjectGenerator) generatePkgAppConventions() error {

@@ -41,7 +41,9 @@ const (
 	// ImageRepository and ImageTag are the controller image's reference; the
 	// digest it is pinned to lives in kcl/schema.k (ESO_IMAGE).
 	ImageRepository = "ghcr.io/external-secrets/external-secrets"
-	ImageTag        = "v2.13.0"
+	// ImageTag is the controller image's tag: the release the pinned digest
+	// belongs to.
+	ImageTag = "v2.13.0"
 
 	// CosignIssuer and CosignIdentity are the keyless-signing identity a
 	// controller image must carry (P2). The certificate's subject
@@ -52,7 +54,9 @@ const (
 	//	  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
 	//	  --certificate-identity https://github.com/external-secrets/external-secrets/.github/workflows/release.yml@refs/heads/main \
 	//	  ghcr.io/external-secrets/external-secrets@sha256:<digest>
-	CosignIssuer   = "https://token.actions.githubusercontent.com"
+	CosignIssuer = "https://token.actions.githubusercontent.com"
+	// CosignIdentity is the certificate identity the controller image's
+	// signature must name: the release workflow at main (see CosignIssuer).
 	CosignIdentity = "https://github.com/external-secrets/external-secrets/.github/workflows/release.yml@refs/heads/main"
 )
 

@@ -33,7 +33,8 @@
 // forgeOtelProxy, below, is the second plugin: the dev server's `/_otel`
 // browser-telemetry proxy, mounted over ./otel-proxy. forgeDevLog, the third,
 // is the receiving half of installDevLogging(): it prints the browser's
-// console lines on the dev server's stdout.
+// console lines on the dev server's stdout. forgeSiteFiles (vite-site-files.ts)
+// is the one build plugin: it writes robots.txt and sitemap.xml.
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
@@ -45,6 +46,17 @@ import {
 } from "./otel-proxy.js";
 
 export type { OtelProxyOptions } from "./otel-proxy.js";
+
+// forgeSiteFiles is the build-time plugin: robots.txt and sitemap.xml for the
+// site's absolute SITE_URL. Its own module, re-exported here, because it shares
+// nothing with the dev-server plugins below.
+export {
+  forgeSiteFiles,
+  type ForgeSiteFilesOptions,
+  type ForgeSiteFilesPlugin,
+  type SiteFilesConfig,
+  type SiteFilesContext,
+} from "./vite-site-files.js";
 
 /**
  * The environment variable `forge env up` sets on a frontend's dev server

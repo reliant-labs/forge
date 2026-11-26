@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -981,6 +982,20 @@ func crudShimHeader(data CRUDTemplateData) string {
 	}
 
 	paragraphs = append(paragraphs, crudShimAuthLegend(data.CRUDMethods)...)
+	// A hand-written validation hook on Update has to know which columns
+	// a request writes. Matching mask paths itself, it got nested paths
+	// wrong (ranger's touchesSpec treated "spec.task_ttl" as not touching
+	// spec), so the header names the whole-column rule and the helper that
+	// applies it.
+	if slices.ContainsFunc(data.CRUDMethods, func(m CRUDMethodTemplateData) bool {
+		return m.Operation == "update" && m.UpdateMaskField != ""
+	}) {
+		paragraphs = append(paragraphs,
+			"An update_mask path names a WHOLE column: a path into a JSONB column (\"spec.limits\") "+
+				"is refused as unknown, so a column is written whole or not at all. A hook that "+
+				"validates a column only when the update writes it asks crud.MaskTouches(paths, "+
+				"\"<column>\"), which applies the same rules (an empty mask or \"*\" writes every column).")
+	}
 	paragraphs = append(paragraphs,
 		"Customize an RPC by replacing its delegation here; CRUD RPCs added later are appended "+
 			"by `forge generate`, and your content is never modified.",

@@ -123,6 +123,12 @@ func TestRenderAppAuthTemplate(t *testing.T) {
 		{"SetupAuth fills Claims.Email from userinfo", "authenticator.UseUserInfo(auth.NewUserInfo(", true},
 		{"userinfo endpoint from discovery", "meta.UserinfoEndpoint", true},
 		{"APIKeyValidator seam", "func APIKeyValidator(_ *Infra) auth.KeyValidator {", true},
+		// The key prefix is the project's, declared once and installed on
+		// the authenticator so its keys route as keys (forge's "fk_" until
+		// the project names its own).
+		{"APIKeyFormat seam", "func APIKeyFormat() apikey.Format {\n\treturn apikey.Format{}\n}", true},
+		{"SetupAuth installs the key format", "authenticator.UseKeyFormat(APIKeyFormat())", true},
+		{"key lookup recipe reads the format", "APIKeyFormat().LookupPrefix(key)", true},
 		{"module config import", "example.com/myproject/pkg/config", true},
 		{"forge auth import", "github.com/reliant-labs/forge/pkg/auth", true},
 		{"default JWT validator", `Provider: "jwt"`, true},

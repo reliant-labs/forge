@@ -102,6 +102,8 @@ type compileReport struct {
 	// list met it (dependencies first, so the root cause leads). Empty means
 	// every non-test package compiles.
 	Build string
+	// Blocked are project packages cmd/go skipped after a dependency error.
+	Blocked []string
 	// TestFiles are the diagnostics from the test builds that cite a
 	// _test.go file, each with its continuation lines. Diagnostics that cite
 	// non-test files are the Build's, reported there.
@@ -216,6 +218,9 @@ func classifyCompile(projectDir string, pkgs []*listedPackage) compileReport {
 	rep := compileReport{TestFiles: testFiles}
 	if len(build) > 0 {
 		rep.Build = strings.Join(build, "\n") + "\n"
+		if absDir, err := filepath.Abs(projectDir); err == nil {
+			rep.Blocked = blockedBuildPackages(absDir, pkgs)
+		}
 	}
 	return rep
 }

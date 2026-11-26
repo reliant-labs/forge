@@ -31,6 +31,10 @@
 //   - A sleep inside a loop. A loop with a sleep in it is a poll — it
 //     re-checks a condition — and polling is the remedy, not the defect. A
 //     poll is judged only on its deadline (RuleTightDeadline).
+//   - A clock-bounded loop that cannot end before its deadline (no break or
+//     return outside the deadline's own check, no other term in its
+//     condition): `for time.Now().Before(dl) { heartbeat(); sleep }` is a
+//     fixed-duration workload, not a wait, and gives up on nothing.
 //   - A sleep in any function that is not a test body: a fake's method, an
 //     http handler simulating latency, a `go func() { time.Sleep(d);
 //     close(ch) }()` trigger. A test body is a function taking *testing.T
@@ -113,19 +117,23 @@ func RuleIDs() []string { return []string{RuleFixedSleep, RuleTightDeadline, Rul
 // loaded gate.
 const LoadTolerantDeadline = 5 * time.Second
 
+// skillHint closes every fix hint: the skill that shows the escapes for a
+// negative assertion, a fixed-duration workload and a latency-bound test.
+const skillHint = ". The deliberate shapes and their escapes: `forge skill load testing/test-waits`"
+
 // Fix hints, one per rule.
 const (
 	fixSleep = "wait for the event itself: a channel or sync.WaitGroup, or " +
 		"testkit.Eventually(t, \"<what>\", func() bool { … }) / testkit.Receive(t, \"<what>\", ch) " +
 		"(forge/pkg/testkit), which return the moment it happens and fail only after a load-tolerant " +
 		"deadline. A sleep that advances the clock wants an injected clock (a `now func() time.Time` field). " +
-		"A deliberate wait: `// forge:lint-disable-next-line " + RuleFixedSleep + ": <why>` above it"
+		"A deliberate wait: `// forge:lint-disable-next-line " + RuleFixedSleep + ": <why>` above it" + skillHint
 	fixDeadline = "give the wait a load-tolerant deadline: testkit.Eventually / testkit.Receive " +
 		"(forge/pkg/testkit) wait up to testkit.DefaultWaitTimeout and return as soon as the event happens, " +
-		"so a generous deadline costs a passing test nothing; or raise the constant to at least 5s"
+		"so a generous deadline costs a passing test nothing; or raise the constant to at least 5s" + skillHint
 	fixBound = "assert what the code did, not how fast this machine ran it: count the calls, check the " +
 		"retries a fake clock advanced through, or bound it at a timeout the code must beat (≥ 5s). " +
-		"A test OF timing: `// forge:lint-disable-next-line " + RuleWallClockBound + ": <why>` above it"
+		"A test OF timing: `// forge:lint-disable-next-line " + RuleWallClockBound + ": <why>` above it" + skillHint
 )
 
 // CheckFile analyzes one Go source file. A file that is not a _test.go file,
@@ -735,7 +743,16 @@ func (c *checker) timerOf(ch ast.Expr, sc *scope) (time.Duration, string, bool) 
 // time.Now().Add(d) deadline compared against the clock anywhere in the
 // loop, a `time.Since(start) < d` condition, or a counted loop of sleeps
 // that can exit early.
+//
+// A clock-bounded loop is a poll only when it can end BEFORE its deadline
+// (endsEarly). One that cannot — `for time.Now().Before(deadline) {
+// heartbeat(); time.Sleep(50ms) }` — always runs to the deadline: it is a
+// fixed-duration workload, it gives up on nothing, and load only makes it
+// do fewer rounds. The same line countedPoll draws with exits.
 func (c *checker) forDeadline(loop *ast.ForStmt, sc *scope) {
+	if !c.endsEarly(loop, sc) {
+		return
+	}
 	reported := false
 	inspectOwn(loop, func(n ast.Node) bool {
 		if reported {
@@ -850,9 +867,98 @@ func (c *checker) countedLoop(loop *ast.ForStmt) (int64, bool) {
 	return 0, false
 }
 
+// endsEarly reports whether a for loop can end before the clock it is
+// bounded by runs out: its condition holds a term that is not a clock check
+// (`time.Now().Before(dl) && !done()`), or its body can leave it (a break
+// or return) other than from the body of an if whose condition holds only
+// once the deadline has PASSED — `if time.Now().After(dl) { break }` is the
+// deadline itself, not an early end. An exit under any other clock check
+// (`if time.Now().Before(dl) { break }` leaves at once) counts as early.
+func (c *checker) endsEarly(loop *ast.ForStmt, sc *scope) bool {
+	if loop.Cond != nil && !c.clockOnly(loop.Cond, sc) {
+		return true
+	}
+	return exitsSkipping(loop.Body, func(s *ast.IfStmt) bool { return c.deadlinePassed(s.Cond, sc) })
+}
+
+// deadlinePassed reports a condition that is true only once a clock bound has
+// run out: time.Now().After(D) / D.Before(time.Now()) for a time.Now().Add(d)
+// deadline D, their negated opposites (!time.Now().Before(D),
+// !D.After(time.Now())), `elapsed > d` / `elapsed >= d` (either way round),
+// and an || of such terms. Anything else — including a term whose polarity it
+// cannot read — is not.
+func (c *checker) deadlinePassed(cond ast.Expr, sc *scope) bool {
+	switch x := ast.Unparen(cond).(type) {
+	case *ast.BinaryExpr:
+		switch x.Op {
+		case token.LOR:
+			return c.deadlinePassed(x.X, sc) && c.deadlinePassed(x.Y, sc)
+		case token.GTR, token.GEQ:
+			return c.isElapsed(x.X, sc)
+		case token.LSS, token.LEQ:
+			return c.isElapsed(x.Y, sc)
+		}
+	case *ast.UnaryExpr:
+		if x.Op == token.NOT {
+			if call, ok := ast.Unparen(x.X).(*ast.CallExpr); ok {
+				return c.nowVersusDeadline(call, sc) == "before"
+			}
+		}
+	case *ast.CallExpr:
+		return c.nowVersusDeadline(x, sc) == "after"
+	}
+	return false
+}
+
+// nowVersusDeadline reads a comparison of the clock with a deadline as what it
+// asserts about now: "after" for time.Now().After(D) / D.Before(time.Now()),
+// "before" for time.Now().Before(D) / D.After(time.Now()), "" otherwise.
+func (c *checker) nowVersusDeadline(call *ast.CallExpr, sc *scope) string {
+	if _, ok := c.deadlineCheck(call, sc); !ok {
+		return ""
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return "" // time.Until(D): its polarity is in the comparison around it
+	}
+	nowFirst := c.isNow(sel.X)
+	switch {
+	case sel.Sel.Name == "After" && nowFirst, sel.Sel.Name == "Before" && !nowFirst:
+		return "after"
+	case sel.Sel.Name == "Before" && nowFirst, sel.Sel.Name == "After" && !nowFirst:
+		return "before"
+	}
+	return ""
+}
+
+// clockOnly reports a condition made only of clock checks: comparisons of
+// time.Now() with a time.Now().Add(d) deadline (deadlineCheck), comparisons
+// of an elapsed time with anything, and their negations and && / || trees.
+func (c *checker) clockOnly(cond ast.Expr, sc *scope) bool {
+	switch x := ast.Unparen(cond).(type) {
+	case *ast.UnaryExpr:
+		return x.Op == token.NOT && c.clockOnly(x.X, sc)
+	case *ast.CallExpr:
+		_, ok := c.deadlineCheck(x, sc)
+		return ok
+	case *ast.BinaryExpr:
+		switch x.Op {
+		case token.LAND, token.LOR:
+			return c.clockOnly(x.X, sc) && c.clockOnly(x.Y, sc)
+		case token.LSS, token.LEQ, token.GTR, token.GEQ:
+			return c.isElapsed(x.X, sc) || c.isElapsed(x.Y, sc)
+		}
+	}
+	return false
+}
+
 // exits reports whether body can leave its loop early: a break that
 // belongs to the loop, or a return.
-func exits(body *ast.BlockStmt) bool {
+func exits(body *ast.BlockStmt) bool { return exitsSkipping(body, nil) }
+
+// exitsSkipping is exits, not counting a break or return inside the body
+// (not the else) of an if that skip accepts.
+func exitsSkipping(body *ast.BlockStmt, skip func(*ast.IfStmt) bool) bool {
 	found := false
 	var walk func(n ast.Node, nested bool) bool
 	walk = func(n ast.Node, nested bool) bool {
@@ -863,6 +969,13 @@ func exits(body *ast.BlockStmt) bool {
 			switch s := x.(type) {
 			case *ast.FuncLit:
 				return false
+			case *ast.IfStmt:
+				if skip != nil && skip(s) {
+					if s.Else != nil {
+						walk(s.Else, nested)
+					}
+					return false
+				}
 			case *ast.ReturnStmt:
 				found = true
 			case *ast.BranchStmt:

@@ -24,12 +24,18 @@ import (
 type WorkloadKind string
 
 const (
-	KindService  WorkloadKind = "service"
-	KindWorker   WorkloadKind = "worker"
-	KindJob      WorkloadKind = "job"
-	KindCron     WorkloadKind = "cron"
+	// KindService is a long-running Deployment with a ClusterIP Service.
+	KindService WorkloadKind = "service"
+	// KindWorker is a long-running Deployment that nothing dials by name.
+	KindWorker WorkloadKind = "worker"
+	// KindJob is a one-shot that runs to completion.
+	KindJob WorkloadKind = "job"
+	// KindCron is a CronJob on Schedule.
+	KindCron WorkloadKind = "cron"
+	// KindOperator is a controller-runtime manager.
 	KindOperator WorkloadKind = "operator"
-	KindTool     WorkloadKind = "tool"
+	// KindTool is built into the image and never scheduled.
+	KindTool WorkloadKind = "tool"
 )
 
 // DeployPhase places a standalone job (kind job, no Before) in a deploy.
@@ -44,7 +50,11 @@ const (
 type DeployPhase string
 
 const (
-	DeployPhasePreRollout  DeployPhase = "pre-rollout"
+	// DeployPhasePreRollout runs the job to completion before any other
+	// workload is applied; its failure aborts the deploy.
+	DeployPhasePreRollout DeployPhase = "pre-rollout"
+	// DeployPhasePostRollout applies the job with the workloads and awaits it
+	// after they roll out.
 	DeployPhasePostRollout DeployPhase = "post-rollout"
 )
 
@@ -59,8 +69,34 @@ const (
 type DeploymentStrategy string
 
 const (
+	// StrategyRollingUpdate starts the new pods before the old ones stop.
 	StrategyRollingUpdate DeploymentStrategy = "RollingUpdate"
-	StrategyRecreate      DeploymentStrategy = "Recreate"
+	// StrategyRecreate stops every old pod before starting the new ones.
+	StrategyRecreate DeploymentStrategy = "Recreate"
+)
+
+// CronConcurrencyPolicy is what a cron does when a run is still going at its
+// next tick (CronJob.spec.concurrencyPolicy).
+//
+// +kubebuilder:validation:Enum=Allow;Forbid;Replace
+type CronConcurrencyPolicy string
+
+const (
+	// CronConcurrencyAllow starts the next run beside the one still going.
+	CronConcurrencyAllow CronConcurrencyPolicy = "Allow"
+	// CronConcurrencyForbid skips the tick while a run is still going.
+	CronConcurrencyForbid CronConcurrencyPolicy = "Forbid"
+	// CronConcurrencyReplace stops the run still going and starts the next.
+	CronConcurrencyReplace CronConcurrencyPolicy = "Replace"
+)
+
+// MinCronStartingDeadlineSeconds and MaxCronStartingDeadlineSeconds bound
+// StartingDeadlineSeconds. The CronJob controller checks its schedules about
+// every 10 seconds, so a shorter deadline can skip a tick that was on time; a
+// day is the longest catch-up a schedule should ever need.
+const (
+	MinCronStartingDeadlineSeconds = 10
+	MaxCronStartingDeadlineSeconds = 86400
 )
 
 // BeforeAll is the BROADCAST entry for Before: gate every workload in the
@@ -78,7 +114,9 @@ const BeforeAll = "*"
 type PortProtocol string
 
 const (
+	// ProtocolTCP is a TCP port.
 	ProtocolTCP PortProtocol = "tcp"
+	// ProtocolUDP is a UDP port.
 	ProtocolUDP PortProtocol = "udp"
 )
 
@@ -145,6 +183,19 @@ type WorkloadSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	Replicas int32 `json:"replicas,omitempty"`
 
+	// Autoscale replaces Replicas with a range a HorizontalPodAutoscaler
+	// moves the Deployment within, on the pods' average CPU use. Service and
+	// worker kinds only: an operator elects one leader, so more pods buy it
+	// nothing, and a batch kind or a tool has no Deployment to scale.
+	//
+	// The autoscaler owns the count from then on, so the rendered Deployment
+	// states no spec.replicas and Replicas must stay at its default. It is
+	// refused beside StorageGiB (a ReadWriteOnce volume is mounted by one pod
+	// at a time) and beside strategy Recreate (which declares the count a
+	// correctness bound, not a capacity choice).
+	// +optional
+	Autoscale *Autoscale `json:"autoscale,omitempty"`
+
 	// Resources is the compute request and limit. Omitted means the entry
 	// shape (250m / 1 GiB).
 	// +optional
@@ -193,6 +244,34 @@ type WorkloadSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=128
 	Schedule string `json:"schedule,omitempty"`
+
+	// ConcurrencyPolicy is what a cron does when a run is still going at its
+	// next tick: Forbid skips the tick, Replace stops the running one, Allow
+	// runs both (CronJob.spec.concurrencyPolicy). Unset renders nothing, so
+	// Kubernetes' default, Allow, applies. Cron only. Allowed under every
+	// profile: it only schedules the author's own runs.
+	// +optional
+	ConcurrencyPolicy CronConcurrencyPolicy `json:"concurrencyPolicy,omitempty"`
+
+	// StartingDeadlineSeconds is how late a cron's tick may still start
+	// (CronJob.spec.startingDeadlineSeconds); a tick that cannot start within
+	// it is skipped and counted as missed. It bounds the catch-up after the
+	// controller or the cluster was down. Unset renders nothing: no deadline.
+	// 10-86400. Cron only. Allowed under every profile.
+	// +optional
+	// +kubebuilder:validation:Minimum=10
+	// +kubebuilder:validation:Maximum=86400
+	StartingDeadlineSeconds *int64 `json:"startingDeadlineSeconds,omitempty"`
+
+	// TimeZone is the IANA time zone a cron's schedule is read in, such as
+	// "Europe/Berlin" or "Etc/UTC" (CronJob.spec.timeZone, Kubernetes 1.27+).
+	// Unset renders nothing, so the schedule is read in the kube-controller-
+	// manager's zone. "Local" is refused: it means whatever zone the
+	// controller happens to run in. Cron only. Allowed under every profile.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$`
+	TimeZone string `json:"timeZone,omitempty"`
 
 	// Before names the workloads that must not start until this job exits
 	// 0, or [BeforeAll] for every workload in the environment.
@@ -434,6 +513,67 @@ type WorkloadSpec struct {
 	// every pod is still Pod Security `restricted`.
 	// +optional
 	SecurityContext *PodSecurity `json:"securityContext,omitempty"`
+}
+
+// Autoscale is the replica range of an autoscaled workload, and the CPU use
+// it holds the pods to.
+//
+// The metric is CPU utilization: the pods' average CPU use as a percent of
+// their CPU REQUEST, summed over every container in the pod, so a sidecar
+// counts against the request that covers it. The renderer turns it into an
+// autoscaling/v2 HorizontalPodAutoscaler named after the workload, whose
+// scale-up and scale-down behaviour forge states rather than leaves to the
+// cluster's defaults.
+type Autoscale struct {
+	// MinReplicas is the fewest pods the autoscaler scales down to, and the
+	// count the workload starts at. At least 1: scale to zero is not
+	// offered.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10
+	MinReplicas int32 `json:"minReplicas"`
+
+	// MaxReplicas is the most pods the autoscaler scales up to, at most
+	// MaxAutoscaleReplicas. The hostname spread and the
+	// PodDisruptionBudget are rendered from it, so they stay put while the
+	// count moves.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10
+	MaxReplicas int32 `json:"maxReplicas"`
+
+	// CPUTargetPercent is the average CPU use, as a percent of the CPU
+	// request, the autoscaler holds the pods to: above it, it adds pods;
+	// below it, it removes them. Default 70. At most 95, because a CPU
+	// limit at the request (the default) caps utilization near 100%, so a
+	// higher target is one the pods can never exceed and the workload would
+	// never scale up.
+	// +optional
+	// +kubebuilder:default=70
+	// +kubebuilder:validation:Minimum=10
+	// +kubebuilder:validation:Maximum=95
+	CPUTargetPercent int32 `json:"cpuTargetPercent,omitempty"`
+}
+
+// Autoscale bounds and default, mirrored by the markers above.
+const (
+	// MaxAutoscaleReplicas is the most replicas an autoscaled workload may
+	// scale to: a platform cap, so one workload's load cannot claim an
+	// unbounded share of the nodes it shares.
+	MaxAutoscaleReplicas int32 = 10
+	// DefaultAutoscaleCPUTargetPercent is the CPU utilization an autoscaled
+	// workload is held to when it states none.
+	DefaultAutoscaleCPUTargetPercent int32 = 70
+	// MinAutoscaleCPUTargetPercent and MaxAutoscaleCPUTargetPercent bound
+	// CPUTargetPercent.
+	MinAutoscaleCPUTargetPercent int32 = 10
+	MaxAutoscaleCPUTargetPercent int32 = 95
+)
+
+// WithDefaults fills an unset CPUTargetPercent.
+func (a Autoscale) WithDefaults() Autoscale {
+	if a.CPUTargetPercent == 0 {
+		a.CPUTargetPercent = DefaultAutoscaleCPUTargetPercent
+	}
+	return a
 }
 
 // PodSecurity is the closed set of pod-identity knobs forge lets a workload
@@ -795,6 +935,18 @@ type WorkloadStatus struct {
 	// never ran".
 	// +optional
 	LastReadyAt *metav1.Time `json:"lastReadyAt,omitempty"`
+
+	// LastScheduleTime is when a cron's schedule last started a run
+	// (CronJob.status.lastScheduleTime). Nil for every other kind, and for a
+	// cron that has not fired yet.
+	// +optional
+	LastScheduleTime *metav1.Time `json:"lastScheduleTime,omitempty"`
+
+	// LastSuccessfulTime is when a cron's last successful run finished
+	// (CronJob.status.lastSuccessfulTime). Nil for every other kind, and for
+	// a cron no run of which has succeeded yet.
+	// +optional
+	LastSuccessfulTime *metav1.Time `json:"lastSuccessfulTime,omitempty"`
 }
 
 // Workload is one runnable thing: a service, worker, job, cron, operator or
@@ -837,8 +989,8 @@ const (
 )
 
 // WithDefaults fills every unset value that has a static default: the kind,
-// replicas, resources, port protocols and (when present) probe timings,
-// including each sidecar's.
+// replicas, the autoscale CPU target, resources, port protocols and (when
+// present) probe timings, including each sidecar's.
 // DeployPhase and LeaderElection are resolved by their Effective* helpers
 // instead, because their defaults depend on the kind.
 func (s WorkloadSpec) WithDefaults() WorkloadSpec {
@@ -847,6 +999,10 @@ func (s WorkloadSpec) WithDefaults() WorkloadSpec {
 	}
 	if s.Replicas == 0 {
 		s.Replicas = DefaultReplicas
+	}
+	if s.Autoscale != nil {
+		a := s.Autoscale.WithDefaults()
+		s.Autoscale = &a
 	}
 	s.Resources = s.Resources.WithDefaults()
 	s.Ports = defaultPorts(s.Ports)
@@ -891,6 +1047,21 @@ func (s WorkloadSpec) EffectiveKind() WorkloadKind {
 		return DefaultWorkloadKind
 	}
 	return s.Kind
+}
+
+// EffectiveMaxReplicas is the most pods the workload may run at once:
+// Autoscale.MaxReplicas when it autoscales, else Replicas (unset is one).
+// What is rendered per pod set rather than per pod (the hostname spread, the
+// PodDisruptionBudget) keys on it, so an autoscaled workload's objects stay
+// put while the count moves.
+func (s WorkloadSpec) EffectiveMaxReplicas() int32 {
+	if s.Autoscale != nil {
+		return s.Autoscale.MaxReplicas
+	}
+	if s.Replicas == 0 {
+		return DefaultReplicas
+	}
+	return s.Replicas
 }
 
 // EffectiveDeployPhase is a standalone job's phase: DeployPhase, or

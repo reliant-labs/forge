@@ -23,9 +23,11 @@ schema Workload:
     """WorkloadSpec is everything that runs, as ONE declaration (ADR 0002)."""
     activeDeadlineSeconds?: int
     args?: [str]
+    autoscale?: Autoscale
     before?: [str]
     clusterRBAC?: [PolicyRule]
     command?: [str]
+    concurrencyPolicy?: str
     crds?: [str]
     deployPhase?: str
     enableServiceLinks?: bool
@@ -49,10 +51,12 @@ schema Workload:
     serviceAccount?: str
     serviceAccountAnnotations?: {str:str}
     sidecars?: [Container]
+    startingDeadlineSeconds?: int
     storageGiB?: int
     strategy?: str
     successfulJobsHistoryLimit?: int
     terminationGracePeriodSeconds?: int
+    timeZone?: str
     tolerations?: [Toleration]
     ttlSecondsAfterFinished?: int
     version?: str
@@ -66,6 +70,7 @@ schema Workload:
         clusterRBAC == Undefined or len(clusterRBAC) <= 64, "Workload.clusterRBAC allows at most 64 entries"
         command == Undefined or len(command) <= 64, "Workload.command allows at most 64 entries"
         command == Undefined or all _x in command { len(_x) <= 4096 }, "Workload.command[] must be at most 4096 characters"
+        concurrencyPolicy == Undefined or concurrencyPolicy in ["Allow", "Forbid", "Replace"], "Workload.concurrencyPolicy must be one of \"Allow\", \"Forbid\", \"Replace\""
         crds == Undefined or len(crds) <= 64, "Workload.crds allows at most 64 entries"
         crds == Undefined or all _x in crds { regex.match(_x, "^[A-Z][A-Za-z0-9]*$") }, "Workload.crds[] must match ^[A-Z][A-Za-z0-9]*$"
         deployPhase == Undefined or deployPhase in ["pre-rollout", "post-rollout"], "Workload.deployPhase must be one of \"pre-rollout\", \"post-rollout\""
@@ -90,12 +95,16 @@ schema Workload:
         serviceAccount == Undefined or len(serviceAccount) <= 253, "Workload.serviceAccount must be at most 253 characters"
         serviceAccountAnnotations == Undefined or len(serviceAccountAnnotations) <= 32, "Workload.serviceAccountAnnotations allows at most 32 entries"
         sidecars == Undefined or len(sidecars) <= 8, "Workload.sidecars allows at most 8 entries"
+        startingDeadlineSeconds == Undefined or startingDeadlineSeconds >= 10, "Workload.startingDeadlineSeconds must be at least 10"
+        startingDeadlineSeconds == Undefined or startingDeadlineSeconds <= 86400, "Workload.startingDeadlineSeconds must be at most 86400"
         storageGiB == Undefined or storageGiB >= 0, "Workload.storageGiB must be at least 0"
         strategy == Undefined or strategy in ["RollingUpdate", "Recreate"], "Workload.strategy must be one of \"RollingUpdate\", \"Recreate\""
         successfulJobsHistoryLimit == Undefined or successfulJobsHistoryLimit >= 0, "Workload.successfulJobsHistoryLimit must be at least 0"
         successfulJobsHistoryLimit == Undefined or successfulJobsHistoryLimit <= 100, "Workload.successfulJobsHistoryLimit must be at most 100"
         terminationGracePeriodSeconds == Undefined or terminationGracePeriodSeconds >= 0, "Workload.terminationGracePeriodSeconds must be at least 0"
         terminationGracePeriodSeconds == Undefined or terminationGracePeriodSeconds <= 3600, "Workload.terminationGracePeriodSeconds must be at most 3600"
+        timeZone == Undefined or regex.match(timeZone, "^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$"), "Workload.timeZone must match ^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$"
+        timeZone == Undefined or len(timeZone) <= 64, "Workload.timeZone must be at most 64 characters"
         tolerations == Undefined or len(tolerations) <= 32, "Workload.tolerations allows at most 32 entries"
         ttlSecondsAfterFinished == Undefined or ttlSecondsAfterFinished >= 0, "Workload.ttlSecondsAfterFinished must be at least 0"
         version == Undefined or regex.match(version, "^v[0-9]+((alpha|beta)[0-9]+)?$"), "Workload.version must match ^v[0-9]+((alpha|beta)[0-9]+)?$"
@@ -106,9 +115,11 @@ workload_json = lambda v: Workload -> {str:} {
     _d = {
         "activeDeadlineSeconds": v.activeDeadlineSeconds
         "args": v.args
+        "autoscale": autoscale_json(v.autoscale) if v.autoscale else Undefined
         "before": v.before
         "clusterRBAC": [policy_rule_json(_i) for _i in v.clusterRBAC] if v.clusterRBAC else Undefined
         "command": v.command
+        "concurrencyPolicy": v.concurrencyPolicy
         "crds": v.crds
         "deployPhase": v.deployPhase
         "enableServiceLinks": v.enableServiceLinks
@@ -132,10 +143,12 @@ workload_json = lambda v: Workload -> {str:} {
         "serviceAccount": v.serviceAccount
         "serviceAccountAnnotations": v.serviceAccountAnnotations
         "sidecars": [container_json(_i) for _i in v.sidecars] if v.sidecars else Undefined
+        "startingDeadlineSeconds": v.startingDeadlineSeconds
         "storageGiB": v.storageGiB
         "strategy": v.strategy
         "successfulJobsHistoryLimit": v.successfulJobsHistoryLimit
         "terminationGracePeriodSeconds": v.terminationGracePeriodSeconds
+        "timeZone": v.timeZone
         "tolerations": [toleration_json(_i) for _i in v.tolerations] if v.tolerations else Undefined
         "ttlSecondsAfterFinished": v.ttlSecondsAfterFinished
         "version": v.version
@@ -216,6 +229,29 @@ managed_database_json = lambda v: ManagedDatabase -> {str:} {
         "instances": v.instances
         "restore": database_restore_json(v.restore) if v.restore else Undefined
         "storageGiB": v.storageGiB
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
+schema Autoscale:
+    """Autoscale is the replica range of an autoscaled workload, and the CPU use it holds the pods to."""
+    cpuTargetPercent: int = 70
+    maxReplicas: int
+    minReplicas: int
+
+    check:
+        cpuTargetPercent >= 10, "Autoscale.cpuTargetPercent must be at least 10"
+        cpuTargetPercent <= 95, "Autoscale.cpuTargetPercent must be at most 95"
+        maxReplicas >= 1, "Autoscale.maxReplicas must be at least 1"
+        maxReplicas <= 10, "Autoscale.maxReplicas must be at most 10"
+        minReplicas >= 1, "Autoscale.minReplicas must be at least 1"
+        minReplicas <= 10, "Autoscale.minReplicas must be at most 10"
+
+autoscale_json = lambda v: Autoscale -> {str:} {
+    _d = {
+        "cpuTargetPercent": v.cpuTargetPercent
+        "maxReplicas": v.maxReplicas
+        "minReplicas": v.minReplicas
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }

@@ -143,7 +143,10 @@ type MergeOptions struct {
 // ([*BuildMismatchError]).
 //
 // The result's files are marked excluded per opts; the inputs are not
-// modified.
+// modified. A file an input already marks generated stays generated (unless
+// opts.IncludeGenerated): that mark can come from what only the producer
+// could read, the file's "Code generated … DO NOT EDIT." header, and a
+// merger without the source (a control plane) must not count the file again.
 func Merge(docs []*Coverage, opts MergeOptions) (*Coverage, error) {
 	lim := opts.Limits.resolved()
 	out := &Coverage{Head: Head{Schema: SchemaCoverage, OK: true}, Lanes: []LaneInfo{}, Inputs: []InputRef{}, Files: []CoverageFile{}}
@@ -242,6 +245,9 @@ func Merge(docs []*Coverage, opts MergeOptions) (*Coverage, error) {
 		}
 		sortBlocks(f.Blocks)
 		f.Excluded = exclusion(f, opts)
+		if mf.generated && !opts.IncludeGenerated {
+			f.Excluded = ExcludedGenerated
+		}
 		out.Files = append(out.Files, f)
 	}
 	sortFiles(out.Files)
@@ -258,6 +264,8 @@ type mergedFile struct {
 	// absorbed is set when a later input showed this aggregate and another
 	// to be one file: its blocks moved into that one.
 	absorbed bool
+	// generated is set when any input marked the file generated.
+	generated bool
 }
 
 // fileAggregator collects files across inputs under one canonical identity
@@ -325,6 +333,9 @@ func (a *fileAggregator) add(f CoverageFile, remap []int) error {
 		return err
 	}
 	a.adopt(target, f)
+	if f.Excluded == ExcludedGenerated {
+		target.generated = true
+	}
 	for _, n := range names {
 		a.aliases[n] = target
 	}
@@ -377,6 +388,7 @@ func (a *fileAggregator) absorb(dst, src *mergedFile) error {
 		return err
 	}
 	a.adopt(dst, src.file)
+	dst.generated = dst.generated || src.generated
 	for _, b := range src.file.Blocks {
 		a.blocks-- // addBlock counts it again if it is new to dst
 		if err := a.addBlock(dst, b, b.Hits, src.file.DisplayPath()); err != nil {

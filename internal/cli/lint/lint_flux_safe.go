@@ -35,7 +35,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -75,7 +74,7 @@ func fluxSafeFindings(ctx context.Context, projectDir string, cfg *config.Projec
 				docs = append(docs, body)
 			}
 		}
-		reconciled := envReconciled(projectDir, envDir, e.Name())
+		reconciled := envReconciled(ctx, projectDir, envDir, e.Name())
 		for _, f := range release.CheckFluxSafety(docs) {
 			out = append(out, fluxSafeFinding{env: e.Name(), reconciled: reconciled.applies(f.Unit), FluxFinding: f})
 		}
@@ -100,8 +99,8 @@ func (r reconciledUnits) applies(unit string) bool { return r.all || r.units[uni
 // declares none of these has every unit. An env whose render cannot be read is
 // judged wholly reconciled, the stricter reading: the finding then fails rather
 // than being waved through on a render problem.
-func envReconciled(projectDir, envDir, env string) reconciledUnits {
-	raw, err := kclrender.Run(projectDir, envDir, []string{"env=" + strconv.Quote(env)})
+func envReconciled(ctx context.Context, projectDir, envDir, env string) reconciledUnits {
+	raw, err := lintKCLRun(ctx, projectDir, envDir, []string{"env=" + strconv.Quote(env)})
 	if err != nil {
 		return reconciledUnits{all: true}
 	}

@@ -6,6 +6,7 @@ package lint
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -98,7 +99,11 @@ func TestLintScopeContainsAndFilter(t *testing.T) {
 	kept := s.filter([]lintJSONFinding{
 		{File: "internal/handlers/jobs/service.go", Rule: "in"},
 		{File: "internal/handlers/jobs2/service.go", Rule: "sibling"},
+		// The scoped handler's own proto is the other half of its service,
+		// so its findings are reported (lint_scope_service.go); another
+		// service's proto is not.
 		{File: "proto/services/jobs/v1/jobs.proto", Rule: "proto"},
+		{File: "proto/services/billing/v1/billing.proto", Rule: "other-proto"},
 		// No file: unattributable, so a scoped run must keep it rather
 		// than hide an error it cannot place.
 		{Rule: "fileless"},
@@ -107,7 +112,7 @@ func TestLintScopeContainsAndFilter(t *testing.T) {
 	for _, f := range kept {
 		rules = append(rules, f.Rule)
 	}
-	if want := []string{"in", "fileless"}; !reflect.DeepEqual(rules, want) {
+	if want := []string{"in", "proto", "fileless"}; !reflect.DeepEqual(rules, want) {
 		t.Errorf("filter kept %v, want %v", rules, want)
 	}
 
@@ -380,6 +385,42 @@ func TestRenderLintOutcomesScopedVerdictNamesUnscopedLanes(t *testing.T) {
 	}
 }
 
+// A scope of many paths — the pre-push hook passes one --scope per changed
+// file — is summarized in the verdict, not listed: a project's first push
+// printed a ~10 KB verdict line naming all 349 files (friction #48). A short
+// scope is still named in full.
+func TestScopedVerdictSummarizesALongScope(t *testing.T) {
+	paths := make([]string, 0, 349)
+	for i := range 349 {
+		paths = append(paths, fmt.Sprintf("dir/f%03d.go", i))
+	}
+	long := &lintScope{root: t.TempDir(), paths: paths}
+	outcomes := []lintStepOutcome{
+		{name: "golangci-lint", gates: true, ran: true},
+		{name: "graph lint", gates: true, unscoped: true},
+	}
+	var buf bytes.Buffer
+	if err := renderLintOutcomes(&buf, outcomes, true, long); err != nil {
+		t.Fatalf("clean scoped run failed: %v", err)
+	}
+	got := strings.TrimRight(buf.String(), "\n")
+	want := "scope 349 paths (dir/f000.go, dir/f001.go, dir/f002.go and 346 more) only"
+	if !strings.Contains(got, want) {
+		t.Errorf("verdict %q does not summarize the scope as %q", got, want)
+	}
+	if strings.Contains(got, "dir/f003.go") || len(got) > 400 {
+		t.Errorf("verdict lists the scope instead of summarizing it (%d bytes): %q", len(got), got)
+	}
+	if !strings.Contains(got, "not run: graph lint") {
+		t.Errorf("summarized verdict dropped the unscoped lanes: %q", got)
+	}
+
+	short := &lintScope{root: long.root, paths: paths[:scopeListedMax]}
+	if got, want := short.summary(), strings.Join(paths[:scopeListedMax], ", "); got != want {
+		t.Errorf("short scope summary = %q, want every path: %q", got, want)
+	}
+}
+
 // TestLintVerdictIsTheLastLine pins the "last line" contract for the one
 // verdict that prints a hint alongside it.
 func TestLintVerdictIsTheLastLine(t *testing.T) {
@@ -432,13 +473,25 @@ func TestCollectTargetedOutcomeHonoursScope(t *testing.T) {
 		t.Errorf("in-scope targeted lane: name=%q gated=%v findings=%+v; want the read-only error, gated", o.name, o.gated, o.findings)
 	}
 
-	outOfScope, err := parseLintScope(root, []string{"internal/handlers/estimates"})
+	// The finding sits on the proto, but it is about the handler that
+	// never writes the field: a scope over the service's handlers reports
+	// it too (lint_scope_service.go).
+	handlers, err := parseLintScope(root, []string{"internal/handlers/estimates"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o = collectOneTargetedOutcome(t, lintFlags{readOnlyFields: true}, root, handlers)
+	if !o.gated || len(o.findings) != 1 {
+		t.Errorf("handler-scoped targeted lane: gated=%v findings=%+v; want its service's proto error, gated", o.gated, o.findings)
+	}
+
+	outOfScope, err := parseLintScope(root, []string{"db"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	o = collectOneTargetedOutcome(t, lintFlags{readOnlyFields: true}, root, outOfScope)
-	if o.gated || len(o.findings) != 0 {
-		t.Errorf("a finding anchored outside the scope still reported/gated: gated=%v findings=%+v", o.gated, o.findings)
+	if o.gated || len(o.findings) != 0 || o.outside != 1 {
+		t.Errorf("a finding anchored outside the scope: gated=%v findings=%+v outside=%d; want it dropped and counted", o.gated, o.findings, o.outside)
 	}
 
 	o = collectOneTargetedOutcome(t, lintFlags{configReach: true}, root, outOfScope)

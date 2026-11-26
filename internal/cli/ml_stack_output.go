@@ -20,22 +20,6 @@ type MLStackOutput struct {
 	Components []MLComponentOutput `json:"components"`
 	// Decisions are the recommendations the stack dismisses.
 	Decisions []MLDecisionOutput `json:"decisions"`
-	// Collector is the stack's ML cluster collector (kcl/ml.k MLCollector).
-	Collector MLCollectorOutput `json:"collector"`
-}
-
-// MLCollectorOutput is a stack's ML cluster collector, defaults resolved.
-type MLCollectorOutput struct {
-	// Rendered is whether the collector renders: declared enabled (the
-	// default), with the env's observability shipping to a destination and
-	// no telemetry_collector of its own.
-	Rendered bool `json:"rendered"`
-	// NodeInterval is how often Nodes are listed; InventoryInterval how
-	// often DaemonSets and Deployments are.
-	NodeInterval      string `json:"node_interval"`
-	InventoryInterval string `json:"inventory_interval"`
-	// Events is whether events.k8s.io Events are watched.
-	Events bool `json:"events"`
 }
 
 // MLAcceleratorsOutput is one forge.Accelerators of a stack.

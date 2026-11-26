@@ -168,12 +168,6 @@
           "headersSecret": null,
           "image": "ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6",
           "memoryLimitMiB": 256,
-          "mlCollector": {
-            "cluster": "gke_acme_us-central1_gpu",
-            "events": true,
-            "inventoryInterval": "300s",
-            "nodeInterval": "60s"
-          },
           "protocol": "http/protobuf",
           "signals": {
             "logs": true,
@@ -245,12 +239,6 @@
           }
         ],
         "cluster": "gke_acme_us-central1_gpu",
-        "collector": {
-          "events": true,
-          "inventory_interval": "300s",
-          "node_interval": "60s",
-          "rendered": true
-        },
         "components": [
           {
             "allow": [

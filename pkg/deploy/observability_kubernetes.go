@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
-	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -15,69 +14,68 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// The ML cluster collector (kcl/ml.k MLCollector): one collector per cluster
-// an MLStack declares, beside the node agent and exporting to the same
+// The cluster collector (kcl/schema.k KubernetesInventory): one collector
+// per cluster that opts in, beside the node agent and exporting to the same
 // destination with the same credential. Where the node agent collects what
 // each node sees (pods' telemetry, kubelet stats, logs), this one reads the
-// cluster's own objects through the API server: Node inventory, the
-// DaemonSets and Deployments that make up the ML stack, and Events. It is a
-// single replica, because k8sobjects read by two would ship every row twice.
+// cluster's own objects through the API server: Nodes, DaemonSets and
+// Deployments, and Events. It is a single replica, because k8sobjects read
+// by two would ship every row twice.
 //
-// Every row it ships carries the resource attributes
-// MLClusterNameAttribute (the MLStack's cluster) and MLCollectorAttribute =
-// "cluster"; each log record carries k8sobjects' own
-// `k8s.resource.name` attribute ("nodes", "daemonsets", "deployments",
-// "events") and the object as its JSON body.
+// Every row it ships is a log record carrying the resource attribute
+// ClusterNameAttribute (the agent's cluster, its kube context), k8sobjects'
+// own `k8s.resource.name` attribute ("nodes", "daemonsets", "deployments",
+// "events") and the object as its JSON body (an Event: the watch envelope,
+// `{type, object}`). It sets no service.name.
 const (
-	// MLCollectorName names the ML cluster collector's Deployment,
+	// ClusterCollectorName names the cluster collector's Deployment,
 	// ConfigMap and ServiceAccount; its ClusterRole and binding are
-	// "<namespace>-ml-cluster-collector".
-	MLCollectorName = "ml-cluster-collector"
-	// MLClusterNameAttribute is the resource attribute naming the MLStack's
-	// cluster (its kube context) on the collector's rows and on the node
-	// agent's ML scrapes.
-	MLClusterNameAttribute = "k8s.cluster.name"
-	// MLCollectorAttribute marks the collector's rows; its value is "cluster".
-	MLCollectorAttribute = "forge.ml.collector"
-	// mlTelemetrySourcePrefix is the Source of a Telemetry target an
-	// MLStack Adopt or Install lowers to: "ml-stack:<cluster>".
-	mlTelemetrySourcePrefix = "ml-stack:"
-	// mlClusterProcessor is the node agent's processor stamping the cluster
-	// on an ML scrape's pipeline.
-	mlClusterProcessor   = "resource/ml_cluster"
-	mlCollectorMemoryMiB = 256
+	// "<namespace>-cluster-collector".
+	ClusterCollectorName = "cluster-collector"
+	// ClusterNameAttribute is the resource attribute naming the cluster
+	// (its kube context) on the cluster collector's rows and, with
+	// KubernetesInventory, on the node agent's scrapes.
+	ClusterNameAttribute = "k8s.cluster.name"
+	// NodeNameAttribute is the resource attribute naming the node on the
+	// node agent's scrapes, with KubernetesInventory.
+	NodeNameAttribute = "k8s.node.name"
+	// scrapeClusterProcessor is the node agent's processor stamping the
+	// cluster and node on its scrape pipelines.
+	scrapeClusterProcessor    = "resource/k8s_cluster"
+	clusterCollectorMemoryMiB = 256
 )
 
-// MLClusterCollector is the ML cluster collector a cluster's
-// ObservabilityAgent record asks for (kcl/ml.k MLCollector). Nil renders none.
-type MLClusterCollector struct {
-	// Cluster is the MLStack's cluster (its kube context), stamped as
-	// MLClusterNameAttribute.
+// KubernetesInventory is what a cluster's ObservabilityAgent record asks
+// for when the env opts in (kcl/schema.k KubernetesInventory). Nil renders
+// none.
+type KubernetesInventory struct {
+	// Cluster is the agent's cluster (its kube context), stamped as
+	// ClusterNameAttribute.
 	Cluster string `json:"cluster"`
-	// NodeInterval is how often Nodes are listed; InventoryInterval how
+	// NodeInterval is how often Nodes are listed; WorkloadInterval how
 	// often DaemonSets and Deployments are. Collector durations ("60s").
-	NodeInterval      string `json:"nodeInterval"`
-	InventoryInterval string `json:"inventoryInterval"`
+	NodeInterval     string `json:"nodeInterval"`
+	WorkloadInterval string `json:"workloadInterval"`
 	// Events watches events.k8s.io Events.
 	Events bool `json:"events"`
 }
 
 var durationRE = regexp.MustCompile(`^[0-9]+(ms|s|m|h)$`)
 
-func (c MLClusterCollector) validate() error {
+func (c KubernetesInventory) validate() error {
 	if c.Cluster == "" {
-		return fmt.Errorf("ml collector: cluster is required")
+		return fmt.Errorf("kubernetes inventory: cluster is required")
 	}
-	for field, v := range map[string]string{"nodeInterval": c.NodeInterval, "inventoryInterval": c.InventoryInterval} {
+	for field, v := range map[string]string{"nodeInterval": c.NodeInterval, "workloadInterval": c.WorkloadInterval} {
 		if !durationRE.MatchString(v) {
-			return fmt.Errorf("ml collector: %s %q is not a duration like 60s", field, v)
+			return fmt.Errorf("kubernetes inventory: %s %q is not a duration like 60s", field, v)
 		}
 	}
 	return nil
 }
 
-// MLCollectorConfig is the ML cluster collector's configuration, as YAML.
-func (s ObservabilityAgentSpec) MLCollectorConfig(c MLClusterCollector) (string, error) {
+// ClusterCollectorConfig is the cluster collector's configuration, as YAML.
+func (s ObservabilityAgentSpec) ClusterCollectorConfig(c KubernetesInventory) (string, error) {
 	if err := s.validate(); err != nil {
 		return "", err
 	}
@@ -86,8 +84,8 @@ func (s ObservabilityAgentSpec) MLCollectorConfig(c MLClusterCollector) (string,
 	}
 	objects := []any{
 		map[string]any{"name": "nodes", "mode": "pull", "interval": c.NodeInterval},
-		map[string]any{"name": "daemonsets", "group": "apps", "mode": "pull", "interval": c.InventoryInterval},
-		map[string]any{"name": "deployments", "group": "apps", "mode": "pull", "interval": c.InventoryInterval},
+		map[string]any{"name": "daemonsets", "group": "apps", "mode": "pull", "interval": c.WorkloadInterval},
+		map[string]any{"name": "deployments", "group": "apps", "mode": "pull", "interval": c.WorkloadInterval},
 	}
 	if c.Events {
 		objects = append(objects, map[string]any{"name": "events", "group": "events.k8s.io", "mode": "watch"})
@@ -102,7 +100,7 @@ func (s ObservabilityAgentSpec) MLCollectorConfig(c MLClusterCollector) (string,
 		extensions[bearerAuthName] = bearerExtension()
 		extNames = append(extNames, bearerAuthName)
 	}
-	limit := mlCollectorMemoryMiB
+	limit := clusterCollectorMemoryMiB
 	cfg := map[string]any{
 		"extensions": extensions,
 		"receivers": map[string]any{
@@ -110,8 +108,10 @@ func (s ObservabilityAgentSpec) MLCollectorConfig(c MLClusterCollector) (string,
 		},
 		"processors": map[string]any{
 			"memory_limiter": map[string]any{"check_interval": "1s", "limit_mib": limit * 80 / 100, "spike_limit_mib": limit * 20 / 100},
-			"resource":       mlClusterResource(c.Cluster, true),
-			"batch":          map[string]any{},
+			"resource": map[string]any{"attributes": []any{
+				map[string]any{"key": ClusterNameAttribute, "value": c.Cluster, "action": "upsert"},
+			}},
+			"batch": map[string]any{},
 		},
 		"exporters": map[string]any{s.exporterName(): exp},
 		"service": map[string]any{
@@ -128,64 +128,59 @@ func (s ObservabilityAgentSpec) MLCollectorConfig(c MLClusterCollector) (string,
 	return marshalConfig(cfg)
 }
 
-// mlClusterResource is the resource processor stamping the cluster, and on
-// the cluster collector also MLCollectorAttribute.
-func mlClusterResource(cluster string, collector bool) map[string]any {
-	attrs := []any{map[string]any{"key": MLClusterNameAttribute, "value": cluster, "action": "upsert"}}
-	if collector {
-		attrs = append(attrs, map[string]any{"key": MLCollectorAttribute, "value": "cluster", "action": "upsert"})
+// stampScrapeCluster adds ClusterNameAttribute and NodeNameAttribute to
+// each of the node agent's declared-telemetry scrape pipelines
+// (`metrics/telemetry_<service>`), before its batch processor, when the
+// agent's cluster opts in to its Kubernetes inventory, so a scraped row
+// joins the inventory's Nodes. Other pipelines are untouched.
+func (s ObservabilityAgentSpec) stampScrapeCluster(cfg map[string]any) {
+	if s.KubernetesInventory == nil {
+		return
 	}
-	return map[string]any{"attributes": attrs}
-}
-
-// stampMLScrapeCluster adds MLClusterNameAttribute to the node agent's
-// pipeline of each ML scrape (a target whose Source is "ml-stack:<cluster>"),
-// before its batch processor. Other pipelines are untouched.
-func (s ObservabilityAgentSpec) stampMLScrapeCluster(cfg map[string]any) {
 	pipelines, _ := cfg["service"].(map[string]any)["pipelines"].(map[string]any)
 	processors, _ := cfg["processors"].(map[string]any)
+	stamped := false
 	for _, t := range s.declaredTelemetry() {
-		cluster, ok := strings.CutPrefix(t.Source, mlTelemetrySourcePrefix)
-		if !ok || cluster == "" {
-			continue
-		}
 		p, ok := pipelines["metrics/telemetry_"+t.ServiceName].(map[string]any)
 		if !ok {
 			continue
 		}
-		name := mlClusterProcessor + "/" + t.ServiceName
-		// The agent discovers only its own node's pods (DiscoverNodePods),
-		// so every scraped row's exporter pod runs on K8S_NODE_NAME: stamp
-		// it, since a scrape row otherwise carries no k8s.node.name and
-		// DCGM's Hostname label is often not a node name.
-		res := mlClusterResource(cluster, false)
-		res["attributes"] = append(res["attributes"].([]any),
-			map[string]any{"key": "k8s.node.name", "value": "${env:K8S_NODE_NAME}", "action": "upsert"})
-		processors[name] = res
+		stamped = true
 		var out []any
 		inserted := false
 		for _, v := range p["processors"].([]any) {
 			if v == "batch" && !inserted {
-				out = append(out, name)
+				out = append(out, scrapeClusterProcessor)
 				inserted = true
 			}
 			out = append(out, v)
 		}
 		if !inserted {
-			out = append(out, name)
+			out = append(out, scrapeClusterProcessor)
 		}
 		p["processors"] = out
 	}
+	if stamped {
+		// The agent pulls only its own node's pods (DiscoverNodePods; an
+		// address it would pull from every node is refused), so every
+		// scraped row's pod runs on K8S_NODE_NAME. A scrape row otherwise
+		// carries no k8s.node.name, and an exporter's own host label is
+		// often not a node name.
+		processors[scrapeClusterProcessor] = map[string]any{"attributes": []any{
+			map[string]any{"key": ClusterNameAttribute, "value": s.KubernetesInventory.Cluster, "action": "upsert"},
+			map[string]any{"key": NodeNameAttribute, "value": "${env:K8S_NODE_NAME}", "action": "upsert"},
+		}}
+	}
 }
 
-// renderMLCollector renders the ML cluster collector's ServiceAccount,
+// renderClusterCollector renders the cluster collector's ServiceAccount,
 // read-only ClusterRole + binding, ConfigMap and one-replica Deployment.
-func renderMLCollector(s ObservabilityAgentSpec, c MLClusterCollector, ctx ObservabilityContext) ([]runtime.Object, error) {
-	cfg, err := s.MLCollectorConfig(c)
+func renderClusterCollector(s ObservabilityAgentSpec, c KubernetesInventory, ctx ObservabilityContext) ([]runtime.Object, error) {
+	cfg, err := s.ClusterCollectorConfig(c)
 	if err != nil {
-		return nil, fmt.Errorf("ml cluster collector: %w", err)
+		return nil, fmt.Errorf("cluster collector: %w", err)
 	}
-	name, ns := MLCollectorName, ctx.Namespace
+	name, ns := ClusterCollectorName, ctx.Namespace
 	labels := managedLabels(name, ctx.PartOf)
 	selector := map[string]string{LabelName: name}
 	read := []string{"get", "list", "watch"}
@@ -212,7 +207,7 @@ func renderMLCollector(s ObservabilityAgentSpec, c MLClusterCollector, ctx Obser
 		ObjectMeta: objectMeta(name, ns, labels),
 		Data:       map[string]string{"config.yaml": cfg},
 	}
-	limit := mlCollectorMemoryMiB
+	limit := clusterCollectorMemoryMiB
 	env := []corev1.EnvVar{{Name: "GOMEMLIMIT", Value: strconv.Itoa(limit*80/100) + "MiB"}}
 	if s.HeadersSecret != nil {
 		env = append(env, corev1.EnvVar{Name: agentHeadersEnv, ValueFrom: &corev1.EnvVarSource{

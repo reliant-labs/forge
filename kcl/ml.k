@@ -288,33 +288,6 @@ schema RecommendationDecision:
         regex.match(expires, _DELIVERY_DATE_RE), \
             "RecommendationDecision '${id}'.expires '${expires}' must be a YYYY-MM-DD date: a dismissal is time-boxed, it cannot be open-ended"
 
-schema MLCollector:
-    """The ML cluster collector of an MLStack's cluster: one collector (a
-    single-replica Deployment in the observability agent's namespace,
-    beside the node agent and exporting to the same destination with the
-    same credential) that reads the cluster's own objects through the API
-    server: Node inventory, the DaemonSets and Deployments of the stack, and
-    Events. Its rows are logs, each with `k8s.resource.name` naming the
-    object kind and the object as JSON body, under the resource attributes
-    `k8s.cluster.name` (the stack's cluster) and `forge.ml.collector =
-    "cluster"`. It is rendered when the env's observability is on, has a
-    destination and names no collector of its own
-    (`observability.telemetry_collector`), unless `enabled = False`. Its
-    ClusterRole is read-only: get/list/watch nodes, events and apps
-    daemonsets/deployments, never Secrets.
-    """
-    enabled: bool = True
-    # How often Nodes are listed, and DaemonSets and Deployments are.
-    node_interval: str = "60s"
-    inventory_interval: str = "300s"
-    # Watch events.k8s.io Events (node-problem-detector conditions, Xid
-    # lines surfaced as Events).
-    events: bool = True
-
-    check:
-        regex.match(node_interval, r"^[0-9]+(ms|s|m|h)$"), "MLCollector.node_interval '${node_interval}' must be a duration like 60s"
-        regex.match(inventory_interval, r"^[0-9]+(ms|s|m|h)$"), "MLCollector.inventory_interval '${inventory_interval}' must be a duration like 300s"
-
 schema MLStack:
     """What one cluster runs for ML, each component adopted or installed.
     Set on `Bundle.ml_stacks`, one per cluster.
@@ -361,13 +334,7 @@ schema MLStack:
         the env already renders or declares it;
       * each scraped component (an Adopt or an Install with selector and
         port): a `telemetry` target (attachment "observability", source
-        `ml-stack:<cluster>`), when observability is on, carrying
-        `k8s.cluster.name` = the stack's cluster;
-      * the ML cluster collector (see MLCollector) on the stack's cluster,
-        on the cluster's ObservabilityAgent record (`spec.mlCollector`),
-        when observability ships to a destination and no
-        `telemetry_collector` is declared, unless `collector.enabled =
-        False`;
+        `ml-stack:<cluster>`), when observability is on;
       * `output.ml_stacks`, the declared stack for tools to read without
         parsing KCL (forge ml discover, the control plane), one entry per
         stack:
@@ -387,8 +354,7 @@ schema MLStack:
                 "service_name": "<the scrape's service.name when it renders, else empty>",
                 "chart": "<the Install chart's name, else empty>", "reason"
               }],
-              "decisions": [{"id", "decision", "reason", "expires"}],
-              "collector": {"rendered", "node_interval", "inventory_interval", "events"}
+              "decisions": [{"id", "decision", "reason", "expires"}]
             }
 
         Every key is always present (empty when unset); keys are only ever
@@ -410,9 +376,6 @@ schema MLStack:
     # When that discovery ran, YYYY-MM-DD.
     observed_at?: str
     decisions: [RecommendationDecision] = []
-    # The ML cluster collector (see MLCollector). Unset: on, with its
-    # defaults, whenever the env's observability ships to a destination.
-    collector?: MLCollector
 
     check:
         all k in observed { regex.match(k, _ML_KIND_RE) }, \
@@ -565,21 +528,10 @@ _ml_render_component = lambda e: any, svc: str -> any {
     }
 }
 
-# The collector of a stack, defaults resolved.
-_ml_collector = lambda s: any -> MLCollector {
-    s.collector or MLCollector {}
-}
-
-# The stacks whose cluster collector renders, when `collect` (the env's
-# observability ships to a destination and no external collector).
-_ml_collected = lambda stacks: [any], collect: bool -> [any] {
-    [s for s in stacks if _ml_collector(s).enabled] if collect else []
-}
-
 # output.ml_stacks (see MLStack). A scrape renders when the env's
 # observability is on: as the derived Telemetry, or as the env's own
 # Telemetry of that service name, which replaces it.
-_ml_render = lambda stacks: [any], obs_on: bool, collect: bool = False -> [any] {
+_ml_render = lambda stacks: [any], obs_on: bool -> [any] {
     [{
         "cluster": s.cluster.cluster
         "namespace": s.cluster.namespace
@@ -588,11 +540,5 @@ _ml_render = lambda stacks: [any], obs_on: bool, collect: bool = False -> [any] 
         "accelerators": [{"vendor": a.vendor, "resource": a.resource, "node_selector": a.node_selector or {}} for a in s.accelerators]
         "components": [_ml_render_component(e, _ml_scrape_svc(e.c, s.cluster.cluster, len(stacks)) if obs_on else "") for e in _ml_entries(s)]
         "decisions": [{"id": d.id, "decision": d.decision, "reason": d.reason, "expires": d.expires} for d in s.decisions]
-        "collector": {
-            "rendered": collect and _ml_collector(s).enabled
-            "node_interval": _ml_collector(s).node_interval
-            "inventory_interval": _ml_collector(s).inventory_interval
-            "events": _ml_collector(s).events
-        }
     } for s in stacks]
 }

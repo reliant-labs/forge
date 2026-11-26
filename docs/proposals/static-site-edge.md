@@ -183,8 +183,8 @@ the fields billing ignores, and a writer into the tenant.
 Cloud CDN / ALB  ──log──▶  Cloud Logging
                              │ sink static-sites-edge-requests
                              │   filter: url_map_name="static-sites-cdn"
-                             │           AND NOT requestUrl:"_fprobe="
-                             │           AND NOT requestUrl:"/_otel/"
+                             │           AND NOT httpRequest.requestUrl:"_fprobe="
+                             │           AND NOT httpRequest.requestUrl:"/_otel/"
                              ▼
                   Pub/Sub topic static-sites-edge-requests
                              │ pull subscription …-telemetry

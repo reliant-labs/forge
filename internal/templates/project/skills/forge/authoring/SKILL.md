@@ -5,12 +5,9 @@ description: Authoring a service proto — mark entities with `// forge:entity` 
 
 # Authoring a service proto
 
-## Authoring a service proto
+Wire package defaults and overrides: `forge skill load proto/package`.
 
-The `services.<service>.v1` wire package is a default, not a requirement.
-For a product-specific namespace like `acme.orders.v1`, set
-`api.proto_package: "acme.{service}.v1"` before scaffolding and configure Buf
-lint as shown in `forge skill load proto/package`.
+## Authoring a service proto
 
 Three rules cover what agents get wrong.
 

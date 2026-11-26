@@ -128,6 +128,111 @@ func TestCoverageUploadTrustBoundary(t *testing.T) {
 	}
 }
 
+var scorecardWorkflow = filepath.Join(workflowsDir, "scorecard.yml")
+
+// scorecardSecurity holds scorecard.yml to its trust boundary. Its one job
+// holds an OIDC token and security-events write, so it may run only on
+// triggers that execute this repository's own default-branch code (never
+// pull_request or pull_request_target, which a fork can drive), only in
+// reliant-labs/forge, with read-only workflow permissions, an unpersisted
+// checkout, no secrets, and every action pinned to a commit digest.
+func scorecardSecurity(raw []byte) error {
+	var wf struct {
+		On          map[string]yaml.Node `yaml:"on"`
+		Permissions string               `yaml:"permissions"`
+		Jobs        map[string]struct {
+			If          string            `yaml:"if"`
+			Permissions map[string]string `yaml:"permissions"`
+			Steps       []struct {
+				Uses string            `yaml:"uses"`
+				Run  string            `yaml:"run"`
+				With map[string]string `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(raw, &wf); err != nil {
+		return err
+	}
+	allowed := map[string]bool{"branch_protection_rule": true, "schedule": true, "push": true, "workflow_dispatch": true}
+	for ev, node := range wf.On {
+		if !allowed[ev] {
+			return fmt.Errorf("trigger %q may run code this repository's main did not merge", ev)
+		}
+		if ev == "push" {
+			var push struct {
+				Branches []string `yaml:"branches"`
+			}
+			if err := node.Decode(&push); err != nil || !slices.Equal(push.Branches, []string{"main"}) {
+				return fmt.Errorf("push must be limited to branches: [main]")
+			}
+		}
+	}
+	if wf.Permissions != "read-all" {
+		return fmt.Errorf("workflow-level permissions must be read-all, got %q", wf.Permissions)
+	}
+	j, ok := wf.Jobs["analysis"]
+	if !ok || len(wf.Jobs) != 1 {
+		return fmt.Errorf("expected only the analysis job")
+	}
+	if strings.Join(strings.Fields(j.If), " ") != "${{ github.repository == 'reliant-labs/forge' }}" {
+		return fmt.Errorf("analysis must deny foreign repositories: %q", j.If)
+	}
+	writable := map[string]bool{"security-events": true, "id-token": true}
+	for k, v := range j.Permissions {
+		if v == "write" && !writable[k] {
+			return fmt.Errorf("analysis may write only security-events and id-token, not %s", k)
+		}
+	}
+	if strings.Contains(string(raw), "secrets.") {
+		return fmt.Errorf("no secret may reach the Scorecard workflow")
+	}
+	for i, s := range j.Steps {
+		if s.Run != "" {
+			return fmt.Errorf("step %d runs a script; publish_results allows only the listed actions", i)
+		}
+		ref := s.Uses[strings.LastIndex(s.Uses, "@")+1:]
+		if len(ref) != 40 {
+			return fmt.Errorf("%s runs beside the job's OIDC token: pin it by commit digest", s.Uses)
+		}
+		if strings.HasPrefix(s.Uses, "actions/checkout@") && s.With["persist-credentials"] != "false" {
+			return fmt.Errorf("checkout must not persist credentials")
+		}
+	}
+	return nil
+}
+
+func TestScorecardTrustBoundary(t *testing.T) {
+	raw, err := os.ReadFile(scorecardWorkflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scorecardSecurity(raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, from, to string }{
+		{"pull_request_target trigger", "  push:\n    branches: [main]", "  push:\n    branches: [main]\n  pull_request_target:"},
+		{"pull_request trigger", "  push:\n    branches: [main]", "  push:\n    branches: [main]\n  pull_request:"},
+		{"push from any branch", "    branches: [main]", "    branches: ['*']"},
+		{"foreign repository", "if: ${{ github.repository == 'reliant-labs/forge' }}", "if: ${{ true }}"},
+		{"workflow-level write", "permissions: read-all", "permissions: write-all"},
+		{"job contents write", "      contents: read\n", "      contents: write\n"},
+		{"persisted credentials", "persist-credentials: false", "persist-credentials: true"},
+		{"unpinned action", "ossf/scorecard-action@23f22cd43608bae7a1f1fa2603d7314dee9538a5", "ossf/scorecard-action@v2"},
+		{"secret", "publish_results: true", "publish_results: true\n          repo_token: ${{ secrets.SCORECARD_TOKEN }}"},
+		{"script step", "      - uses: ossf/scorecard-action", "      - run: curl example.com | sh\n      - uses: ossf/scorecard-action"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Count(string(raw), tc.from) != 1 {
+				t.Fatalf("fixture must replace exactly one occurrence of %q", tc.from)
+			}
+			mutated := strings.Replace(string(raw), tc.from, tc.to, 1)
+			if err := scorecardSecurity([]byte(mutated)); err == nil {
+				t.Fatal("unsafe workflow passed the trust-boundary guard")
+			}
+		})
+	}
+}
+
 // TestCodecovIgnoresEveryGeneratedFile proves codecov.yml's ignore list names
 // every Go file that carries the "Code generated ... DO NOT EDIT." header, so
 // the public coverage figure counts only code people write. The list names

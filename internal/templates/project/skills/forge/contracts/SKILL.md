@@ -56,7 +56,7 @@ Three categories of internal package, three answers:
 | **Multi-impl with strategy pattern** (pluggable backends — local vs S3 storage, JWT vs Clerk auth) | Hand-written `contract.go` | The interface IS the abstraction; multiple implementations satisfy it, so it cannot be derived from one of them. Adapter, client and eventbus scaffolds still write `contract.go`. |
 | **Pure utility** (string formatters, math helpers, no I/O / time / state) | Optional — see "Pure-utility packages" below | Nothing meaningful to mock. |
 
-The contract linter enforces this. Every package in the module's root `internal/` tree with exported methods needs a contract: a `contract.go` or a `//forge:contract` type (`requirecontract`). Everything below that says "`contract.go`" about lint behaviour applies equally to a marked type.
+The lane needs no strictness settings. `requirecontract` requires a `contract.go` or `//forge:contract` type in root `internal/` packages with exported struct methods, subject to the exemptions below; exported free functions alone do not trigger it. `contracts.exclude` is still supported. Below, "`contract.go`" lint behaviour also applies to marked types.
 
 It judges a package's API, which is its non-test, hand-written source. Methods
 and vars in `_test.go` files are never flagged, so a test fake that satisfies a

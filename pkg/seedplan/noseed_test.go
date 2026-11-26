@@ -157,6 +157,61 @@ func TestMaterialize_NoSeedTableGetsNoRows(t *testing.T) {
 	}
 }
 
+// Reset must not let TRUNCATE expand the plan into application-owned tables,
+// even when their FK uses ON DELETE CASCADE. PostgreSQL must refuse atomically.
+func TestReset_RefusesReferencesOutsidePlan(t *testing.T) {
+	requirePG(t)
+	for _, scoped := range []bool{false, true} {
+		name := "no-seed"
+		if scoped {
+			name = "scoped"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			db, cleanup, err := pgtest.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(cleanup)
+			migration := noSeedMigration
+			if scoped {
+				// Prove the same protection for an unmarked, out-of-scope table.
+				migration = strings.ReplaceAll(migration, "forge:no-seed", "app-owned")
+			}
+			if _, err := db.Exec(migration + `
+INSERT INTO jobs VALUES ('real-job', 'Application job');
+INSERT INTO assignments VALUES ('real-job', 1, decode('deadbeef', 'hex'));
+INSERT INTO assignment_acks VALUES ('real-ack', 'real-job', 1);
+INSERT INTO job_leases VALUES ('real-job', 'real-holder');
+INSERT INTO notes VALUES ('real-note', 'real-job', 'real-job');
+`); err != nil {
+				t.Fatal(err)
+			}
+			cfg := Config{Rows: 5}
+			if scoped {
+				cfg.Tables = []string{"jobs", "notes"}
+			}
+			plan, err := BuildPlanFromDB(ctx, db, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Reset(ctx, db, plan); err == nil || !strings.Contains(err.Error(), "outside the seed plan") {
+				t.Fatalf("Reset must refuse references outside the seed plan, got %v", err)
+			}
+			for _, table := range []string{"jobs", "notes", "assignments", "assignment_acks", "job_leases"} {
+				assertCount(t, db, table, 1)
+			}
+			var payload string
+			if err := db.QueryRow(`SELECT encode(payload, 'hex') FROM assignments WHERE job_id = 'real-job'`).Scan(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload != "deadbeef" {
+				t.Fatalf("application payload changed: %s", payload)
+			}
+		})
+	}
+}
+
 func keptNames(tables []schemadef.Table) string {
 	names := make([]string, len(tables))
 	for i, t := range tables {

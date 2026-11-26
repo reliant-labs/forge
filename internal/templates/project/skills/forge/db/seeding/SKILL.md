@@ -86,8 +86,10 @@ into a `forge:no-seed` table cannot hold a row without one, so it is left out to
 and the seed warns, naming it; a nullable reference into it is written NULL. The
 table keeps its store, test factory and frontend mocks — the marker is about rows
 in a database, and is independent of `forge:no-entity`. `forge db seed reset`
-empties the seeded tables with `TRUNCATE … CASCADE`, which postgres extends to
-every table referencing them, marked or not.
+empties only the planned tables with `TRUNCATE … RESTRICT`. If another table
+references them (including a `forge:no-seed` table), reset refuses without
+emptying any table. Resolve those references before resetting; reset never
+cascades into tables outside the plan.
 
 Keep seed data out of migrations: migrations define schema, seeds populate it.
 Mixing them makes both harder to reason about.

@@ -868,21 +868,26 @@ func New(o Options) *Client {
 `
 	pkg := func(name string) string { return strings.Replace(src, "%s", name, 1) }
 	root := writeTree(t, map[string]string{
-		"pkg/sdk/sdk.go":                "package sdk\n\nimport _ \"example.com/app/pkg/sdk/internal/conn\"\n",
-		"pkg/sdk/client.go":             pkg("sdk"),
-		"pkg/sdk/internal/conn/conn.go": pkg("conn"),
-		"internal/server/client.go":     pkg("server"),
-		"pkg/public/public.go":          "package public\n\nimport _ \"example.com/app/internal/server\"\n",
+		"pkg/sdk/sdk.go":                  "package sdk\n\nimport _ \"example.com/app/pkg/sdk/internal/conn\"\n",
+		"pkg/sdk/client.go":               pkg("sdk"),
+		"pkg/sdk/internal/conn/conn.go":   pkg("conn"),
+		"pkg/internal/orphan/orphan.go":   pkg("orphan"),
+		"pkg/internal/rangerconn/conn.go": pkg("rangerconn"),
+		"pkg/rangerclient/client.go":      "package rangerclient\nimport _ \"example.com/app/pkg/internal/rangerconn\"\n",
+		"internal/server/client.go":       pkg("server"),
+		"pkg/public/public.go":            "package public\n\nimport _ \"example.com/app/internal/server\"\n",
 	})
 	res, err := Lint(root, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var want []string
-	for _, line := range []string{"23", "26", "29"} {
-		want = append(want, RuleRawHTTPClient+" pkg/sdk/client.go:"+line)
+	for _, file := range []string{"pkg/sdk/client.go", "pkg/sdk/internal/conn/conn.go", "pkg/internal/rangerconn/conn.go"} {
+		for _, line := range []string{"23", "26", "29"} {
+			want = append(want, RuleRawHTTPClient+" "+file+":"+line)
+		}
 	}
-	for _, file := range []string{"internal/server/client.go", "pkg/sdk/internal/conn/conn.go"} {
+	for _, file := range []string{"internal/server/client.go", "pkg/internal/orphan/orphan.go"} {
 		for _, line := range []string{"12", "15", "19", "23", "26", "29"} {
 			want = append(want, RuleRawHTTPClient+" "+file+":"+line)
 		}

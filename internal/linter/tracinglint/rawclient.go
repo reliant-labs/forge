@@ -29,14 +29,14 @@
 //		hc = &http.Client{}
 //	}
 //
-// in a package another module can import directly (reach.go). Internal
-// dependencies of public packages do not qualify. Whether that client is traced is the
+// in a public package or a nested internal/ dependency of one (reach.go).
+// Whether that client is traced is the
 // importing program's choice, made in another module forge cannot see, and
 // importing forge's observe into a public SDK to build the default would
 // impose forge's telemetry stack on every user of it. Only the exact shape is
 // exempt: the client (or http.DefaultClient) is the whole right-hand side of
 // an assignment, directly in the body of `if X == nil`, to that same X.
-// Internal code keeps the finding: there the author controls both sides.
+// The module-root internal/ tree keeps the finding: there the author controls both sides.
 
 package tracinglint
 
@@ -62,15 +62,15 @@ const rawHTTPClientRemediation = "use observe.NewHTTPClient(observe.HTTPClientOp
 	"a whole SDK file that must not import forge takes `// forge:lint-disable-file " + RuleRawHTTPClient + ": <why>`"
 
 // rawHTTPClientFindings flags untraced *http.Client constructions and uses of
-// the package-level default client. external says another module can reach
-// f's package, which exempts the caller-supplied-client default.
-func rawHTTPClientFindings(f *goFile, external bool) []finding.Finding {
+// the package-level default client. callerFacing says f's package
+// implements a module's public client code, which exempts the caller-supplied-client default.
+func rawHTTPClientFindings(f *goFile, callerFacing bool) []finding.Finding {
 	httpName := f.importName(httpPath)
 	if httpName == "" || exportsTelemetry(f) {
 		return nil
 	}
 	var fallback map[ast.Node]bool
-	if external {
+	if callerFacing {
 		fallback = nilFallbacks(f.file)
 	}
 	var out []finding.Finding

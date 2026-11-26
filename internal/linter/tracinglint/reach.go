@@ -71,14 +71,14 @@ type pkgNode struct {
 
 // reach is the per-package answer, keyed by absolute directory.
 type reach struct {
-	external map[string]bool
-	untraced map[string]bool
+	callerFacing map[string]bool
+	untraced     map[string]bool
 }
 
 // buildReach reads the import graph under root. A tree without a module path
 // yields an empty reach: nothing is exempt.
 func buildReach(root, module string) (reach, error) {
-	r := reach{external: map[string]bool{}, untraced: map[string]bool{}}
+	r := reach{callerFacing: map[string]bool{}, untraced: map[string]bool{}}
 	if module == "" {
 		return r, nil
 	}
@@ -126,13 +126,20 @@ func buildReach(root, module string) (reach, error) {
 	for dir, n := range nodes {
 		if !n.main && !hasInternalSegment(n.modRel) {
 			importable = append(importable, dir)
-			r.external[dir] = true
+			r.callerFacing[dir] = true
 		}
 	}
-	// A public package can execute its internal dependencies, but an outside
-	// caller cannot import those implementations to configure their defaults.
-	// Keep execution reachability separate from the caller-default exemption.
+	// A package under a nested internal/ tree can implement a public
+	// library's caller-facing behaviour even though the caller cannot import
+	// that package directly. The module's root internal/ is different: it
+	// remains application-internal even when a public package imports it.
 	externallyRun, _ := closure(importable)
+	for dir := range externallyRun {
+		n := nodes[dir]
+		if !n.main && !n.buildUncertain && !strings.HasPrefix(n.modRel, "internal/") && hasInternalSegment(n.modRel) {
+			r.callerFacing[dir] = true
+		}
+	}
 
 	tracedBy, untracedBy := map[string]bool{}, map[string]bool{}
 	for dir, n := range nodes {

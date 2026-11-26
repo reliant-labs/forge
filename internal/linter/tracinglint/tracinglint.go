@@ -217,7 +217,7 @@ func Lint(root string, opts Options) (Result, error) {
 				res.Findings = append(res.Findings, s.finding(f))
 			}
 		}
-		res.Findings = append(res.Findings, rawHTTPClientFindings(f, rc.external[filepath.Dir(f.abs)])...)
+		res.Findings = append(res.Findings, rawHTTPClientFindings(f, rc.callerFacing[filepath.Dir(f.abs)])...)
 		res.Findings = append(res.Findings, rawSQLOpenFindings(f)...)
 	}
 	for _, dir := range sortedKeys(pkgs) {

@@ -30,10 +30,10 @@ alone without a directive:
   file in a main's closure is excluded by the current Go build context, that
   main cannot establish the untraced exemption.
 - **A library's default for a client its caller supplies.** In a package
-  another module can import directly (not its internal implementation dependencies),
+  another module can import, or a dependency under its nested `internal/` tree,
   `if o.HTTPClient == nil { o.HTTPClient = &http.Client{} }` (or
   `http.DefaultClient`, assigned to the very value tested) is not flagged:
-  tracing is the caller's choice. Internal code keeps the finding. A public
+  tracing is the caller's choice. Module-root `internal/` code keeps the finding. A public
   SDK file that must not import forge but builds clients some other way
   takes `// forge:lint-disable-file forge-tracing-raw-http-client: <why>`.
 

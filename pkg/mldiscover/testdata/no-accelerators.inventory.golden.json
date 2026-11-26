@@ -1,0 +1,50 @@
+{
+  "context": "gke_acme-web_europe-west1_web",
+  "server_version": "v1.33.5-gke.1080000",
+  "collected_at": "2026-11-25T10:00:00Z",
+  "cloud": "gke",
+  "provider": "gcp",
+  "accelerators": [],
+  "machines": [],
+  "components": [
+    {
+      "kind": "gmp",
+      "category": "monitoring",
+      "status": "present",
+      "owner": "theirs",
+      "via": "gke-managed",
+      "matched_by": [
+        "crd:podmonitorings.monitoring.googleapis.com"
+      ]
+    },
+    {
+      "kind": "kube-state-metrics",
+      "category": "monitoring",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v2.13.0",
+      "namespace": "monitoring",
+      "workload": "Deployment/kube-state-metrics",
+      "selector": {
+        "app.kubernetes.io/name": "kube-state-metrics"
+      },
+      "pods": 1,
+      "matched_by": [
+        "image:*kube-state-metrics*"
+      ]
+    },
+    {
+      "kind": "node-problem-detector",
+      "category": "node-health",
+      "status": "present",
+      "owner": "theirs",
+      "via": "gke-managed",
+      "matched_by": [
+        "condition:KernelDeadlock"
+      ]
+    }
+  ],
+  "warnings": [
+    "could not list jobs.batch (jobs.batch is forbidden: User \"dev@acme.example\" cannot list resource \"jobs\" in API group \"batch\" at the cluster scope): components it would show are missing from this inventory"
+  ]
+}

@@ -1,0 +1,122 @@
+[
+  {
+    "id": "driver-skew",
+    "severity": "medium",
+    "confidence": "certain",
+    "title": "Pool a100-pool runs 2 NVIDIA driver versions",
+    "vendor": "nvidia",
+    "evidence": [
+      "driver 535.183.01 on gke-gpu-a100-pool-2",
+      "driver 550.54.15 on gke-gpu-a100-pool-1"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Align pool a100-pool's node image so every node runs one driver: upgrade or recreate the older nodes (GKE: the pool's gpu-driver-version; EKS: the AMI release; self-managed: the driver install). Mixed drivers make NCCL and CUDA behaviour differ by node."
+    }
+  },
+  {
+    "id": "image-streaming-off",
+    "severity": "medium",
+    "confidence": "certain",
+    "title": "Image Streaming is off on GPU pool a100-pool",
+    "cloud": "gke",
+    "evidence": [
+      "pool a100-pool: gke-gpu-a100-pool-1, gke-gpu-a100-pool-2 without cloud.google.com/gke-image-streaming=true",
+      "Artifact Registry image: us-docker.pkg.dev/acme-ml/research/finetune:2026-11-20",
+      "Artifact Registry image: us-docker.pkg.dev/acme-ml/serving/vllm-openai:v0.6.4"
+    ],
+    "fix": {
+      "kind": "command",
+      "summary": "Enable Image Streaming on node pool a100-pool, so accelerator pods start before their Artifact Registry image is fully pulled.",
+      "command": "gcloud container node-pools update a100-pool --cluster=gpu --location=us-central1 --project=acme-ml --enable-image-streaming",
+      "docs": "https://cloud.google.com/kubernetes-engine/docs/how-to/image-streaming"
+    }
+  },
+  {
+    "id": "job-not-queued",
+    "severity": "medium",
+    "confidence": "likely",
+    "title": "1 accelerator Job skips Kueue's quota",
+    "evidence": [
+      "Job/research/eval-adhoc: 2 × nvidia.com/gpu per pod, no kueue.x-k8s.io/queue-name label"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Add the label kueue.x-k8s.io/queue-name: \u003cLocalQueue\u003e to each Job. (Unless Kueue's manageJobsWithoutQueueName is on, which discovery cannot read.)",
+      "docs": "https://kueue.sigs.k8s.io/docs/overview/"
+    }
+  },
+  {
+    "id": "llm-scales-on-cpu",
+    "severity": "medium",
+    "confidence": "likely",
+    "title": "1 inference server scales on the wrong signal",
+    "evidence": [
+      "Deployment/llm/llama-predictor (vllm): HorizontalPodAutoscaler/llm/llama-predictor scales on cpu"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Scale on queue depth, not CPU: a KEDA ScaledObject with a Prometheus trigger on vllm:num_requests_waiting (or KV-cache usage; Triton: nv_inference_queue_duration_us).",
+      "docs": "https://keda.sh/docs/latest/scalers/prometheus/"
+    }
+  },
+  {
+    "id": "model-downloaded-per-pod",
+    "severity": "medium",
+    "confidence": "certain",
+    "title": "1 workload downloads its model on every pod start",
+    "evidence": [
+      "Deployment/llm/llama-predictor: storage-initializer fetches gs://acme-models/llama-3.1-8b-instruct on every start"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Ship the weights by digest as an OCI artifact the node pulls once (an image volume or a KServe modelcar), or cache them on the nodes with KServe LocalModelCache.",
+      "docs": "https://kserve.github.io/website/latest/modelserving/storage/modelcache/localmodel/"
+    }
+  },
+  {
+    "id": "shm-too-small",
+    "severity": "medium",
+    "confidence": "certain",
+    "title": "2 workloads run accelerators with the 64 MiB /dev/shm default",
+    "evidence": [
+      "Deployment/llm/llama-predictor: 2 pods, container kserve-container mounts no memory emptyDir at /dev/shm",
+      "Job/research/eval-adhoc: 1 pod, container eval mounts no memory emptyDir at /dev/shm"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Mount an emptyDir {medium: Memory} (with a sizeLimit) at /dev/shm in each accelerator container: NCCL, PyTorch DataLoader workers and vLLM's tensor parallelism need more than 64 MiB."
+    }
+  },
+  {
+    "id": "image-not-warm",
+    "severity": "low",
+    "confidence": "likely",
+    "title": "1 accelerator image is not warm on every node of its pool",
+    "evidence": [
+      "us-docker.pkg.dev/acme-ml/research/finetune:2026-11-20: not on gke-gpu-a100-pool-2 (pool a100-pool; present on 1 of 2 nodes)",
+      "node.status.images lists at most 50 images per node by default, so a busy node may hold an image it does not list"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Pre-pull the image on the pool (a pre-pull DaemonSet, kube-fledged), or bake it into the node image (GKE: a secondary boot disk), so a new pod does not wait for the pull.",
+      "docs": "https://github.com/senthilrch/kube-fledged"
+    }
+  },
+  {
+    "id": "image-volumes-unavailable",
+    "severity": "info",
+    "confidence": "certain",
+    "title": "Image volumes are unavailable: weights cannot be mounted from an OCI artifact without a sidecar",
+    "evidence": [
+      "API server v1.31.4-gke.1256000: the ImageVolume feature gate is on by default from Kubernetes 1.35",
+      "Node/gke-gpu-a100-pool-1: containerd 1.7.24, image volumes need 2.1+",
+      "Node/gke-gpu-a100-pool-2: containerd 1.7.24, image volumes need 2.1+"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Upgrade to Kubernetes 1.35+ with containerd 2.1+ to mount weights as an image volume. Until then, KServe's modelcar sidecar or an init-container copy is the fallback.",
+      "docs": "https://kubernetes.io/docs/concepts/storage/volumes/#image"
+    }
+  }
+]

@@ -1,0 +1,239 @@
+{
+  "context": "lab-mixed",
+  "server_version": "v1.35.0",
+  "collected_at": "2026-11-25T10:00:00Z",
+  "cloud": "other",
+  "provider": "aws",
+  "accelerators": [
+    {
+      "vendor": "amd",
+      "resource": "amd.com/gpu",
+      "product": "AMD_Instinct_MI300X_OAM",
+      "nodes": 1,
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 8,
+      "detected_by": "extended-resource"
+    },
+    {
+      "vendor": "tpu",
+      "resource": "google.com/tpu",
+      "product": "tpu-v5-lite-podslice",
+      "nodes": 1,
+      "capacity": 4,
+      "allocatable": 4,
+      "allocated": 0,
+      "detected_by": "extended-resource"
+    },
+    {
+      "vendor": "neuron",
+      "resource": "aws.amazon.com/neuroncore",
+      "product": "trn1.32xlarge",
+      "nodes": 1,
+      "capacity": 32,
+      "allocatable": 32,
+      "allocated": 8,
+      "detected_by": "extended-resource"
+    },
+    {
+      "vendor": "gaudi",
+      "resource": "habana.ai/gaudi",
+      "product": "dl1.24xlarge",
+      "nodes": 1,
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 0,
+      "detected_by": "extended-resource"
+    },
+    {
+      "vendor": "generic",
+      "resource": "example.com/fpga",
+      "nodes": 1,
+      "capacity": 2,
+      "allocatable": 2,
+      "allocated": 0,
+      "detected_by": "extended-resource"
+    }
+  ],
+  "machines": [
+    {
+      "name": "amd-mi300-1",
+      "vendor": "amd",
+      "resource": "amd.com/gpu",
+      "product": "AMD_Instinct_MI300X_OAM",
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 8,
+      "ready": true,
+      "container_runtime": "containerd://2.1.4",
+      "kubelet_version": "v1.35.0",
+      "detected_by": "extended-resource",
+      "instance_type": "bm.gpu.mi300x.8"
+    },
+    {
+      "name": "fpga-1",
+      "vendor": "generic",
+      "resource": "example.com/fpga",
+      "capacity": 2,
+      "allocatable": 2,
+      "allocated": 0,
+      "ready": true,
+      "container_runtime": "containerd://2.1.4",
+      "kubelet_version": "v1.35.0",
+      "detected_by": "extended-resource"
+    },
+    {
+      "name": "gaudi-1",
+      "vendor": "gaudi",
+      "resource": "habana.ai/gaudi",
+      "product": "dl1.24xlarge",
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 0,
+      "ready": true,
+      "container_runtime": "containerd://2.1.4",
+      "kubelet_version": "v1.35.0",
+      "detected_by": "extended-resource",
+      "instance_type": "dl1.24xlarge"
+    },
+    {
+      "name": "tpu-v5e-1",
+      "vendor": "tpu",
+      "resource": "google.com/tpu",
+      "product": "tpu-v5-lite-podslice",
+      "capacity": 4,
+      "allocatable": 4,
+      "allocated": 0,
+      "ready": true,
+      "container_runtime": "containerd://2.1.4",
+      "kubelet_version": "v1.35.0",
+      "detected_by": "extended-resource"
+    },
+    {
+      "name": "trn1-1",
+      "vendor": "neuron",
+      "resource": "aws.amazon.com/neuroncore",
+      "product": "trn1.32xlarge",
+      "capacity": 32,
+      "allocatable": 32,
+      "allocated": 8,
+      "ready": true,
+      "container_runtime": "containerd://2.1.4",
+      "kubelet_version": "v1.35.0",
+      "detected_by": "extended-resource",
+      "instance_type": "trn1.32xlarge"
+    }
+  ],
+  "components": [
+    {
+      "kind": "amd-device-metrics-exporter",
+      "category": "accel-metrics",
+      "vendor": "amd",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v1.2.0",
+      "namespace": "kube-amd-gpu",
+      "workload": "DaemonSet/amd-metrics-exporter",
+      "selector": {
+        "app.kubernetes.io/name": "metrics-exporter"
+      },
+      "metrics_port": 5000,
+      "pods": 1,
+      "matched_by": [
+        "image:*device-metrics-exporter*"
+      ]
+    },
+    {
+      "kind": "neuron-device-plugin",
+      "category": "device-plugin",
+      "vendor": "neuron",
+      "status": "present",
+      "owner": "theirs",
+      "version": "2.22.4.0",
+      "namespace": "kube-system",
+      "workload": "DaemonSet/neuron-device-plugin-daemonset",
+      "selector": {
+        "name": "neuron-device-plugin-ds"
+      },
+      "pods": 1,
+      "matched_by": [
+        "image:*neuron-device-plugin*"
+      ]
+    },
+    {
+      "kind": "node-problem-detector",
+      "category": "node-health",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.8.19",
+      "namespace": "kube-system",
+      "workload": "DaemonSet/node-problem-detector",
+      "selector": {
+        "app.kubernetes.io/name": "node-problem-detector"
+      },
+      "pods": 5,
+      "matched_by": [
+        "condition:KernelDeadlock",
+        "image:*node-problem-detector*"
+      ],
+      "chart_version": "2.3.14"
+    },
+    {
+      "kind": "amd-gpu-operator",
+      "category": "operator",
+      "vendor": "amd",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v1.2.0",
+      "namespace": "kube-amd-gpu",
+      "workload": "Deployment/amd-gpu-operator-gpu-operator-charts-controller-manager",
+      "selector": {
+        "app.kubernetes.io/name": "gpu-operator-charts"
+      },
+      "pods": 1,
+      "resources": 1,
+      "matched_by": [
+        "crd:deviceconfigs.amd.com",
+        "image:*rocm/gpu-operator*"
+      ]
+    },
+    {
+      "kind": "spegel",
+      "category": "pull-cache",
+      "status": "present",
+      "owner": "forge",
+      "version": "v0.8.2",
+      "namespace": "forge-ml",
+      "workload": "DaemonSet/spegel",
+      "selector": {
+        "app.kubernetes.io/name": "spegel"
+      },
+      "pods": 5,
+      "matched_by": [
+        "image:*spegel*"
+      ],
+      "chart_version": "0.8.2"
+    },
+    {
+      "kind": "kueue",
+      "category": "queue",
+      "status": "present",
+      "owner": "forge",
+      "version": "v0.20.7",
+      "namespace": "forge-ml",
+      "workload": "Deployment/kueue-controller-manager",
+      "selector": {
+        "control-plane": "controller-manager"
+      },
+      "pods": 1,
+      "resources": 7,
+      "matched_by": [
+        "crd:clusterqueues.kueue.x-k8s.io",
+        "crd:localqueues.kueue.x-k8s.io",
+        "crd:workloads.kueue.x-k8s.io",
+        "image:*kueue*"
+      ],
+      "chart_version": "0.20.7"
+    }
+  ]
+}

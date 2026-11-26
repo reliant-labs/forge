@@ -18,6 +18,10 @@ type Inventory struct {
 	// Cloud is where the nodes run, from their labels and provider IDs:
 	// one of CloudGKE, CloudEKS, CloudAKS, CloudOther.
 	Cloud string `json:"cloud"`
+	// Provider is the infrastructure the nodes' providerIDs name, managed
+	// service or not: one of ProviderGCP, ProviderAWS, ProviderAzure, or
+	// empty. A self-managed cluster on EC2 is Cloud "other", Provider "aws".
+	Provider string `json:"provider,omitempty"`
 	// Accelerators groups the accelerator nodes by (vendor, resource,
 	// product, pool).
 	Accelerators []AcceleratorGroup `json:"accelerators"`
@@ -26,6 +30,12 @@ type Inventory struct {
 	// Components is every ML-relevant component found, in a stable order
 	// (category, then kind, then namespace).
 	Components []Component `json:"components"`
+	// Coverage is one row per observability signal an ML cluster should
+	// have (see the Signal constants): whether it is collected, by what, how
+	// that was determined, and what is missing. It is what the console's
+	// coverage-gap view reads. Every signal in Signals() has a row, so an
+	// absent signal is a row with StatusMissing, never an absent row.
+	Coverage []SignalCoverage `json:"coverage"`
 	// Warnings says what discovery could not see (a refused list, a CRD
 	// whose controller is missing), so an absence is never overstated.
 	Warnings []string `json:"warnings,omitempty"`
@@ -84,7 +94,8 @@ type AcceleratorGroup struct {
 	DetectedBy string `json:"detected_by"`
 }
 
-// Machine is one node with accelerator capacity.
+// Machine is one node with accelerator capacity, or with accelerator labels
+// and no capacity yet (its group's DetectedBy is "label").
 type Machine struct {
 	Name        string `json:"name"`
 	Vendor      string `json:"vendor"`
@@ -108,6 +119,14 @@ type Machine struct {
 	ContainerRuntime string `json:"container_runtime,omitempty"`
 	// KubeletVersion is nodeInfo.kubeletVersion.
 	KubeletVersion string `json:"kubelet_version,omitempty"`
+	// Sharing is the node's device sharing (see AcceleratorGroup.Sharing).
+	Sharing string `json:"sharing,omitempty"`
+	// DriverVersion is the driver version the node's labels report.
+	DriverVersion string `json:"driver_version,omitempty"`
+	// DetectedBy is DetectedByResource or DetectedByLabel.
+	DetectedBy string `json:"detected_by"`
+	// InstanceType is the node.kubernetes.io/instance-type label.
+	InstanceType string `json:"instance_type,omitempty"`
 }
 
 // Component categories.
@@ -180,7 +199,21 @@ type Component struct {
 	// "image:<pattern>", "label:<key>", "capacity:<resource>",
 	// "clusterpolicy:<field>", "group:<api group>".
 	MatchedBy []string `json:"matched_by"`
+	// ChartVersion is the version in the workload's helm.sh/chart label,
+	// when a helm chart installed it.
+	ChartVersion string `json:"chart_version,omitempty"`
+	// Config is what discovery learned of the component's configuration
+	// (the DCGM fields it exports, NPD's monitors and conditions, a
+	// collector's receivers), nil when it learned nothing.
+	Config *ComponentConfig `json:"config,omitempty"`
 }
+
+// Provider values.
+const (
+	ProviderGCP   = "gcp"
+	ProviderAWS   = "aws"
+	ProviderAzure = "azure"
+)
 
 // Has reports whether a component of kind is present (StatusPresent).
 func (inv *Inventory) Has(kind string) bool {

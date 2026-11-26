@@ -53,6 +53,17 @@ type Snapshot struct {
 	Jobs         []batchv1.Job                           `json:"jobs,omitempty"`
 	HPAs         []autoscalingv2.HorizontalPodAutoscaler `json:"hpas,omitempty"`
 
+	// ConfigMaps holds only the ConfigMaps ConfigRefs named (an exporter's
+	// counters CSV, node-problem-detector's monitor configs, a collector's
+	// config, kube-system/kubelet-config, kube-system/kubeadm-config), each
+	// read by name with get, never listed. Annotations and managedFields are
+	// stripped; data is kept, since it is the configuration being inventoried.
+	ConfigMaps []corev1.ConfigMap `json:"configmaps,omitempty"`
+	// Probes holds what an opt-in metrics probe (`forge ml discover
+	// --probe`) read from the endpoints ProbeTargets named: metric family
+	// names and label keys only, never sample values.
+	Probes []MetricsProbe `json:"probes,omitempty"`
+
 	// ReadErrors records each list the grant refused or that failed. A
 	// missing read is reported, never fatal: discovery says what it could
 	// not see instead of claiming a component is absent.

@@ -1,10 +1,6 @@
 package mlrecs
 
-import (
-	"time"
-
-	"github.com/reliant-labs/forge/pkg/mldiscover"
-)
+import "time"
 
 // Severity values, worst first.
 const (
@@ -106,6 +102,10 @@ type Options struct {
 	// Now decides whether a decision has expired. Zero means the
 	// snapshot's CollectedAt.
 	Now time.Time
+	// Propose is what the ml.k each FixKCL diff is taken against was (or
+	// will be) written with: pass the same options to Propose, so
+	// Fix.KCLDiff applies to the file the user has.
+	Propose ProposeOptions
 }
 
 // Rule describes one rule Evaluate runs, for `forge ml discover --rules` and
@@ -120,20 +120,6 @@ type Rule struct {
 	Fix string `json:"fix"`
 }
 
-// Rules lists every rule Evaluate runs, in catalogue order.
-func Rules() []Rule {
-	// TODO(contract stub): implemented by the pkg/mlrecs task.
-	return nil
-}
-
-// Evaluate runs every rule over a snapshot and its inventory. It is pure and
-// deterministic: findings are sorted by severity, then ID, then evidence, and
-// dismissed findings last.
-func Evaluate(s *mldiscover.Snapshot, inv *mldiscover.Inventory, opts Options) []Finding {
-	// TODO(contract stub): implemented by the pkg/mlrecs task.
-	return []Finding{}
-}
-
 // ProposeOptions tunes Propose.
 type ProposeOptions struct {
 	// Namespace is where forge.Install charts render (default "forge-ml").
@@ -144,14 +130,7 @@ type ProposeOptions struct {
 	// Date stamps the header and observed_at (YYYY-MM-DD). Zero means the
 	// inventory's CollectedAt.
 	Date time.Time
-}
-
-// Propose writes the env's ml.k for an inventory: one forge.MLStack for the
-// cluster, every found component adopted, each suggested install written but
-// commented out, and `observed` listing what discovery found running so the
-// KCL refuses installing a duplicate. The output is deterministic, valid KCL
-// that `import forge` resolves.
-func Propose(inv *mldiscover.Inventory, findings []Finding, opts ProposeOptions) string {
-	// TODO(contract stub): implemented by the pkg/mlrecs task.
-	return ""
+	// Decisions are the env's forge.RecommendationDecisions, written back
+	// into the stack so a re-proposed ml.k keeps them.
+	Decisions []Decision
 }

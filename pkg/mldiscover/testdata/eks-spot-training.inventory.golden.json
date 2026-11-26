@@ -1,0 +1,89 @@
+{
+  "context": "arn:aws:eks:us-west-2:123456789012:cluster/training",
+  "server_version": "v1.30.8-eks-2d98532",
+  "collected_at": "2026-11-25T10:00:00Z",
+  "cloud": "eks",
+  "provider": "aws",
+  "accelerators": [
+    {
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "g5.12xlarge",
+      "pool": "gpu-spot",
+      "nodes": 3,
+      "capacity": 12,
+      "allocatable": 12,
+      "allocated": 8,
+      "detected_by": "extended-resource"
+    }
+  ],
+  "machines": [
+    {
+      "name": "ip-10-0-1-11.us-west-2.compute.internal",
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "g5.12xlarge",
+      "pool": "gpu-spot",
+      "capacity": 4,
+      "allocatable": 4,
+      "allocated": 4,
+      "ready": true,
+      "spot": true,
+      "container_runtime": "containerd://1.7.23",
+      "kubelet_version": "v1.30.8-eks-3c20087",
+      "detected_by": "extended-resource",
+      "instance_type": "g5.12xlarge"
+    },
+    {
+      "name": "ip-10-0-1-12.us-west-2.compute.internal",
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "g5.12xlarge",
+      "pool": "gpu-spot",
+      "capacity": 4,
+      "allocatable": 4,
+      "allocated": 4,
+      "ready": true,
+      "spot": true,
+      "container_runtime": "containerd://1.7.23",
+      "kubelet_version": "v1.30.8-eks-3c20087",
+      "detected_by": "extended-resource",
+      "instance_type": "g5.12xlarge"
+    },
+    {
+      "name": "ip-10-0-1-13.us-west-2.compute.internal",
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "g5.12xlarge",
+      "pool": "gpu-spot",
+      "capacity": 4,
+      "allocatable": 4,
+      "allocated": 0,
+      "ready": true,
+      "spot": true,
+      "container_runtime": "containerd://1.7.23",
+      "kubelet_version": "v1.30.8-eks-3c20087",
+      "detected_by": "extended-resource",
+      "instance_type": "g5.12xlarge"
+    }
+  ],
+  "components": [
+    {
+      "kind": "nvidia-device-plugin",
+      "category": "device-plugin",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.16.2",
+      "namespace": "kube-system",
+      "workload": "DaemonSet/nvidia-device-plugin-daemonset",
+      "selector": {
+        "name": "nvidia-device-plugin-ds"
+      },
+      "pods": 3,
+      "matched_by": [
+        "image:*k8s-device-plugin"
+      ]
+    }
+  ]
+}

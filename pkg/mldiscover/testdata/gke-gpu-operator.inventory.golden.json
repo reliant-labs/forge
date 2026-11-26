@@ -1,0 +1,197 @@
+{
+  "context": "gke_acme-ml_us-central1_gpu",
+  "server_version": "v1.31.4-gke.1256000",
+  "collected_at": "2026-11-25T10:00:00Z",
+  "cloud": "gke",
+  "provider": "gcp",
+  "accelerators": [
+    {
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "NVIDIA-A100-SXM4-40GB",
+      "pool": "a100-pool",
+      "nodes": 2,
+      "capacity": 16,
+      "allocatable": 16,
+      "allocated": 6,
+      "driver_versions": [
+        "535.183.01",
+        "550.54.15"
+      ],
+      "detected_by": "extended-resource"
+    }
+  ],
+  "machines": [
+    {
+      "name": "gke-gpu-a100-pool-1",
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "NVIDIA-A100-SXM4-40GB",
+      "pool": "a100-pool",
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 5,
+      "ready": true,
+      "container_runtime": "containerd://1.7.24",
+      "kubelet_version": "v1.31.4-gke.1256000",
+      "driver_version": "550.54.15",
+      "detected_by": "extended-resource",
+      "instance_type": "a2-highgpu-8g"
+    },
+    {
+      "name": "gke-gpu-a100-pool-2",
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "NVIDIA-A100-SXM4-40GB",
+      "pool": "a100-pool",
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 1,
+      "ready": true,
+      "container_runtime": "containerd://1.7.24",
+      "kubelet_version": "v1.31.4-gke.1256000",
+      "driver_version": "535.183.01",
+      "detected_by": "extended-resource",
+      "instance_type": "a2-highgpu-8g"
+    }
+  ],
+  "components": [
+    {
+      "kind": "dcgm-exporter",
+      "category": "accel-metrics",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "version": "3.3.9-3.6.1-ubuntu22.04",
+      "namespace": "gpu-operator",
+      "workload": "DaemonSet/nvidia-dcgm-exporter",
+      "via": "gpu-operator",
+      "selector": {
+        "app": "nvidia-dcgm-exporter"
+      },
+      "metrics_port": 9400,
+      "pods": 2,
+      "matched_by": [
+        "clusterpolicy:spec.dcgmExporter.enabled",
+        "container:nvidia-dcgm-exporter",
+        "image:*dcgm-exporter*",
+        "label:app=nvidia-dcgm-exporter"
+      ]
+    },
+    {
+      "kind": "nvidia-device-plugin",
+      "category": "device-plugin",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.17.0",
+      "namespace": "gpu-operator",
+      "workload": "DaemonSet/nvidia-device-plugin-daemonset",
+      "via": "gpu-operator",
+      "selector": {
+        "app": "nvidia-device-plugin-daemonset"
+      },
+      "pods": 2,
+      "matched_by": [
+        "image:*k8s-device-plugin"
+      ]
+    },
+    {
+      "kind": "gmp",
+      "category": "monitoring",
+      "status": "present",
+      "owner": "theirs",
+      "via": "gke-managed",
+      "matched_by": [
+        "crd:podmonitorings.monitoring.googleapis.com"
+      ]
+    },
+    {
+      "kind": "node-problem-detector",
+      "category": "node-health",
+      "status": "present",
+      "owner": "theirs",
+      "via": "gke-managed",
+      "matched_by": [
+        "condition:KernelDeadlock",
+        "condition:ReadonlyFilesystem"
+      ]
+    },
+    {
+      "kind": "gpu-operator",
+      "category": "operator",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v24.9.2",
+      "namespace": "gpu-operator",
+      "workload": "Deployment/gpu-operator",
+      "selector": {
+        "app": "gpu-operator"
+      },
+      "pods": 1,
+      "resources": 1,
+      "matched_by": [
+        "crd:clusterpolicies.nvidia.com",
+        "image:*/gpu-operator"
+      ],
+      "chart_version": "v24.9.2"
+    },
+    {
+      "kind": "kueue",
+      "category": "queue",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.10.1",
+      "namespace": "kueue-system",
+      "workload": "Deployment/kueue-controller-manager",
+      "selector": {
+        "control-plane": "controller-manager"
+      },
+      "pods": 1,
+      "resources": 4,
+      "matched_by": [
+        "crd:clusterqueues.kueue.x-k8s.io",
+        "crd:localqueues.kueue.x-k8s.io",
+        "crd:workloads.kueue.x-k8s.io",
+        "image:*kueue*"
+      ],
+      "chart_version": "0.10.1"
+    },
+    {
+      "kind": "kserve",
+      "category": "serving",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.14.1",
+      "namespace": "kserve",
+      "workload": "Deployment/kserve-controller-manager",
+      "selector": {
+        "control-plane": "kserve-controller-manager"
+      },
+      "pods": 1,
+      "resources": 4,
+      "matched_by": [
+        "crd:inferenceservices.serving.kserve.io",
+        "crd:servingruntimes.serving.kserve.io",
+        "image:*kserve-controller*"
+      ]
+    },
+    {
+      "kind": "vllm",
+      "category": "serving",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.6.4",
+      "namespace": "llm",
+      "workload": "Deployment/llama-predictor",
+      "selector": {
+        "app": "isvc.llama-predictor"
+      },
+      "pods": 2,
+      "matched_by": [
+        "image:*vllm*"
+      ]
+    }
+  ]
+}

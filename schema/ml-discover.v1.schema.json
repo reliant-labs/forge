@@ -1,0 +1,565 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/reliant-labs/forge/main/schema/ml-discover.v1.schema.json",
+  "title": "forge ml discover document (forge.dev/ml-discover/v1)",
+  "description": "What a cluster runs for ML, the recommendations, and the proposed ml.k: the output of `forge ml discover --json`. Generated from the Go type forge encodes it with.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "description": "Schema is forge.dev/ml-discover/v1.",
+      "type": "string"
+    },
+    "context": {
+      "description": "Context is the kube context the snapshot was read through.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "server_version": {
+      "description": "ServerVersion is the API server's gitVersion.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "collected_at": {
+      "description": "CollectedAt is when the snapshot was read.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "cloud": {
+      "description": "Cloud is where the nodes run, from their labels and provider IDs: one of CloudGKE, CloudEKS, CloudAKS, CloudOther.",
+      "type": "string"
+    },
+    "provider": {
+      "description": "Provider is the infrastructure the nodes' providerIDs name, managed service or not: one of ProviderGCP, ProviderAWS, ProviderAzure, or empty. A self-managed cluster on EC2 is Cloud \"other\", Provider \"aws\".",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "accelerators": {
+      "description": "Accelerators groups the accelerator nodes by (vendor, resource, product, pool).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AcceleratorGroup"
+      }
+    },
+    "machines": {
+      "description": "Machines is one row per node that has accelerator capacity.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Machine"
+      }
+    },
+    "components": {
+      "description": "Components is every ML-relevant component found, in a stable order (category, then kind, then namespace).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Component"
+      }
+    },
+    "warnings": {
+      "description": "Warnings says what discovery could not see or apply: a refused list, a CRD whose controller is missing, an env whose decisions did not render. An absence is never overstated.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "findings": {
+      "description": "Findings are the recommendations, worst first; a finding an env's forge.RecommendationDecision dismisses is still listed, marked, last.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Finding"
+      }
+    },
+    "proposal": {
+      "$ref": "#/$defs/MLDiscoverProposal",
+      "description": "Proposal is the env's ml.k as discovery proposes it."
+    },
+    "snapshot": {
+      "description": "Snapshot is where this run's read was saved (.forge/state/ml-inventory-\u003ccontext\u003e.json inside a project, or --save-snapshot), when it was.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "collected_at",
+    "cloud",
+    "accelerators",
+    "machines",
+    "components",
+    "warnings",
+    "findings",
+    "proposal"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "AcceleratorGroup": {
+      "description": "AcceleratorGroup is a set of nodes carrying the same accelerator.",
+      "type": "object",
+      "properties": {
+        "vendor": {
+          "description": "Vendor is one of the Vendor constants.",
+          "type": "string"
+        },
+        "resource": {
+          "description": "Resource is the extended resource the devices are requested by (nvidia.com/gpu, amd.com/gpu, google.com/tpu, aws.amazon.com/neuroncore, habana.ai/gaudi).",
+          "type": "string"
+        },
+        "product": {
+          "description": "Product is the device model when a label names it (NVIDIA-H100-80GB-HBM3, from GFD's nvidia.com/gpu.product or cloud.google.com/gke-accelerator).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pool": {
+          "description": "Pool is the node pool when a label names it (GKE, EKS, AKS, Karpenter).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nodes": {
+          "description": "Nodes is how many nodes are in the group.",
+          "type": "integer"
+        },
+        "capacity": {
+          "description": "Capacity and Allocatable sum the nodes' status for Resource; Allocatable below Capacity means the device plugin marked devices unhealthy.",
+          "type": "integer"
+        },
+        "allocatable": {
+          "type": "integer"
+        },
+        "allocated": {
+          "description": "Allocated sums the Resource limits of the running and pending pods bound to these nodes.",
+          "type": "integer"
+        },
+        "sharing": {
+          "description": "Sharing is how devices are shared when a label says so: \"mig\", \"time-slicing\", \"mps\", or empty.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "driver_versions": {
+          "description": "DriverVersions lists the distinct driver versions the nodes' labels report (GFD nvidia.com/cuda.driver.*), sorted.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "detected_by": {
+          "description": "DetectedBy says how the vendor was recognised: \"extended-resource\" or \"label\" (a label with no capacity yet: the device plugin is missing or not ready).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "vendor",
+        "resource",
+        "nodes",
+        "capacity",
+        "allocatable",
+        "allocated",
+        "detected_by"
+      ],
+      "additionalProperties": false
+    },
+    "Component": {
+      "description": "Component is one ML-relevant component discovery found.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Kind is the stable component id, the same vocabulary as forge.Adopt.kind / forge.Install.kind (see Kinds).",
+          "type": "string"
+        },
+        "category": {
+          "description": "Category is one of the Category constants.",
+          "type": "string"
+        },
+        "vendor": {
+          "description": "Vendor is set for vendor-specific components.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "Status is StatusPresent or StatusCRDOnly.",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Owner is OwnerTheirs or OwnerForge.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Version is the image tag (or chart label) of the matched workload.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "namespace": {
+          "description": "Namespace and Workload locate the matched object (DaemonSet/nvidia-dcgm-exporter).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workload": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "via": {
+          "description": "Via names what manages it when that is not the component itself: \"gpu-operator\" (a DCGM exporter the ClusterPolicy deploys) or \"gke-managed\" (gke-managed-system).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selector": {
+          "description": "Selector is the matched workload's pod selector, what forge.Adopt scrapes by.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "metrics_port": {
+          "description": "MetricsPort is the container port the exporter serves metrics on.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pods": {
+          "description": "Pods counts the component's running pods (a DaemonSet's ready pods).",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "resources": {
+          "description": "Resources counts the custom objects of its CRDs (ClusterQueues, InferenceServices).",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "matched_by": {
+          "description": "MatchedBy lists the signatures that matched, as \"crd:\u003cname\u003e\", \"image:\u003cpattern\u003e\", \"label:\u003ckey\u003e\", \"capacity:\u003cresource\u003e\", \"clusterpolicy:\u003cfield\u003e\", \"group:\u003capi group\u003e\".",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "chart_version": {
+          "description": "ChartVersion is the version in the workload's helm.sh/chart label, when a helm chart installed it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "category",
+        "status",
+        "owner",
+        "matched_by"
+      ],
+      "additionalProperties": false
+    },
+    "Dismissal": {
+      "description": "Dismissal is the decision that dismissed a finding.",
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "expires": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason",
+        "expires"
+      ],
+      "additionalProperties": false
+    },
+    "Finding": {
+      "description": "Finding is one recommendation: a rule that matched, with its evidence and the adopt-first fix.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "ID is the rule's stable id (accel-telemetry-missing).",
+          "type": "string"
+        },
+        "severity": {
+          "description": "Severity is one of the Severity constants.",
+          "type": "string"
+        },
+        "confidence": {
+          "description": "Confidence is one of the Confidence constants.",
+          "type": "string"
+        },
+        "title": {
+          "description": "Title is the one-line finding (\"3 nodes with nvidia.com/gpu have no utilisation source\").",
+          "type": "string"
+        },
+        "vendor": {
+          "description": "Vendor and Cloud scope the finding when it is vendor- or cloud-specific.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cloud": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "description": "Evidence lists the facts the rule matched on, one per line, naming objects as kind/namespace/name.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fix": {
+          "$ref": "#/$defs/Fix",
+          "description": "Fix is what to do about it."
+        },
+        "dismissed": {
+          "description": "Dismissed is set when a forge.RecommendationDecision in the env dismisses this id and has not expired. A dismissed finding is still reported, marked, and sorted last.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Dismissal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "severity",
+        "confidence",
+        "title",
+        "evidence",
+        "fix"
+      ],
+      "additionalProperties": false
+    },
+    "Fix": {
+      "description": "Fix is a finding's remedy.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Kind is FixKCL, FixCommand or FixManual.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "Summary is the fix in one sentence.",
+          "type": "string"
+        },
+        "kcl_diff": {
+          "description": "KCLDiff is a unified diff against the env's ml.k as Propose writes it (`--- a/ml.k` / `+++ b/ml.k`), for FixKCL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "command": {
+          "description": "Command is the exact command, for FixCommand.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "docs": {
+          "description": "Docs is a URL to the upstream documentation of the fix.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "summary"
+      ],
+      "additionalProperties": false
+    },
+    "MLDiscoverProposal": {
+      "description": "MLDiscoverProposal is the proposed ml.k.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Path is where the ml.k goes (--out, else deploy/kcl/\u003cenv\u003e/ml.k); empty when neither --env nor --out placed it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "written": {
+          "description": "Written is true when --write wrote it this run. False with --write means the file already held exactly this.",
+          "type": "boolean"
+        },
+        "exists": {
+          "description": "Exists is true when a file was already at Path.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ml_k": {
+          "description": "MLK is the proposed file, valid KCL that `import forge` resolves; empty when there is nothing to propose.",
+          "type": "string"
+        },
+        "diff": {
+          "description": "Diff is the unified diff from the file at Path to MLK, when one existed and differs.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "written",
+        "ml_k"
+      ],
+      "additionalProperties": false
+    },
+    "Machine": {
+      "description": "Machine is one node with accelerator capacity, or with accelerator labels and no capacity yet (its group's DetectedBy is \"label\").",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "vendor": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "product": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pool": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "capacity": {
+          "type": "integer"
+        },
+        "allocatable": {
+          "type": "integer"
+        },
+        "allocated": {
+          "type": "integer"
+        },
+        "ready": {
+          "description": "Ready is the node's Ready condition.",
+          "type": "boolean"
+        },
+        "unschedulable": {
+          "description": "Unschedulable is spec.unschedulable (cordoned).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "spot": {
+          "description": "Spot is true when a cloud spot/preemptible label is set.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "conditions": {
+          "description": "Conditions lists every condition that is not the healthy value for its type (Ready=False, MemoryPressure=True, an NPD condition that is True).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "container_runtime": {
+          "description": "ContainerRuntime is nodeInfo.containerRuntimeVersion (containerd://2.1.4).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kubelet_version": {
+          "description": "KubeletVersion is nodeInfo.kubeletVersion.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sharing": {
+          "description": "Sharing is the node's device sharing (see AcceleratorGroup.Sharing).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "driver_version": {
+          "description": "DriverVersion is the driver version the node's labels report.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detected_by": {
+          "description": "DetectedBy is DetectedByResource or DetectedByLabel.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instance_type": {
+          "description": "InstanceType is the node.kubernetes.io/instance-type label.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "vendor",
+        "resource",
+        "capacity",
+        "allocatable",
+        "allocated",
+        "ready"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

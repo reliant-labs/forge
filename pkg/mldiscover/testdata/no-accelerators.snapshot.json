@@ -1,0 +1,38 @@
+{
+  "schema": "forge.dev/ml-snapshot/v1",
+  "context": "gke_acme-web_europe-west1_web",
+  "server_version": "v1.33.5-gke.1080000",
+  "collected_at": "2026-11-25T10:00:00Z",
+  "api_groups": ["apps", "batch", "monitoring.googleapis.com"],
+  "crds": ["podmonitorings.monitoring.googleapis.com"],
+  "nodes": [
+    {
+      "metadata": {"name": "gke-web-default-pool-1", "labels": {"cloud.google.com/gke-nodepool": "default-pool", "node.kubernetes.io/instance-type": "e2-standard-4", "topology.kubernetes.io/region": "europe-west1"}},
+      "spec": {"providerID": "gce://acme-web/europe-west1-b/gke-web-default-pool-1"},
+      "status": {
+        "capacity": {"cpu": "4", "memory": "16380140Ki", "pods": "110"},
+        "allocatable": {"cpu": "3920m", "memory": "13034220Ki", "pods": "110"},
+        "conditions": [{"type": "KernelDeadlock", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.33.5-gke.1080000", "containerRuntimeVersion": "containerd://2.0.6"}
+      }
+    },
+    {
+      "metadata": {"name": "gke-web-default-pool-2", "labels": {"cloud.google.com/gke-nodepool": "default-pool", "node.kubernetes.io/instance-type": "e2-standard-4", "topology.kubernetes.io/region": "europe-west1"}},
+      "spec": {"providerID": "gce://acme-web/europe-west1-c/gke-web-default-pool-2"},
+      "status": {
+        "capacity": {"cpu": "4", "memory": "16380140Ki", "pods": "110"},
+        "allocatable": {"cpu": "3920m", "memory": "13034220Ki", "pods": "110"},
+        "conditions": [{"type": "KernelDeadlock", "status": "False"}, {"type": "Ready", "status": "False"}],
+        "nodeInfo": {"kubeletVersion": "v1.33.5-gke.1080000", "containerRuntimeVersion": "containerd://2.0.6"}
+      }
+    }
+  ],
+  "deployments": [
+    {
+      "metadata": {"name": "kube-state-metrics", "namespace": "monitoring", "labels": {"app.kubernetes.io/name": "kube-state-metrics"}},
+      "spec": {"selector": {"matchLabels": {"app.kubernetes.io/name": "kube-state-metrics"}}, "template": {"metadata": {"labels": {"app.kubernetes.io/name": "kube-state-metrics"}}, "spec": {"containers": [{"name": "kube-state-metrics", "image": "registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0", "resources": {}}]}}},
+      "status": {"replicas": 1, "readyReplicas": 1}
+    }
+  ],
+  "read_errors": [{"resource": "jobs.batch", "error": "jobs.batch is forbidden: User \"dev@acme.example\" cannot list resource \"jobs\" in API group \"batch\" at the cluster scope"}]
+}

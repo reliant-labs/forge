@@ -1,0 +1,172 @@
+{
+  "schema": "forge.dev/ml-discover/v1",
+  "context": "gke_acme_us-central1_gpu",
+  "server_version": "v1.31.2-gke.1000",
+  "collected_at": "2026-11-25T09:30:00Z",
+  "cloud": "gke",
+  "provider": "gcp",
+  "accelerators": [
+    {
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "NVIDIA-H100-80GB-HBM3",
+      "pool": "h100",
+      "nodes": 1,
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 2,
+      "driver_versions": [
+        "550.127.05"
+      ],
+      "detected_by": "extended-resource"
+    }
+  ],
+  "machines": [
+    {
+      "name": "gke-gpu-h100-0",
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "NVIDIA-H100-80GB-HBM3",
+      "pool": "h100",
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 2,
+      "ready": true,
+      "container_runtime": "containerd://1.7.24",
+      "kubelet_version": "v1.31.2-gke.1000",
+      "driver_version": "550.127.05",
+      "detected_by": "extended-resource"
+    }
+  ],
+  "components": [
+    {
+      "kind": "dcgm-exporter",
+      "category": "accel-metrics",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "version": "3.3.9-3.6.1-ubuntu22.04",
+      "namespace": "gpu-operator",
+      "workload": "DaemonSet/nvidia-dcgm-exporter",
+      "via": "gpu-operator",
+      "selector": {
+        "app": "nvidia-dcgm-exporter"
+      },
+      "metrics_port": 9400,
+      "pods": 1,
+      "matched_by": [
+        "clusterpolicy:spec.dcgmExporter.enabled",
+        "container:nvidia-dcgm-exporter",
+        "image:*dcgm-exporter*",
+        "label:app=nvidia-dcgm-exporter"
+      ]
+    },
+    {
+      "kind": "nvidia-device-plugin",
+      "category": "device-plugin",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.17.0",
+      "namespace": "gpu-operator",
+      "workload": "DaemonSet/nvidia-device-plugin-daemonset",
+      "via": "gpu-operator",
+      "selector": {
+        "app": "nvidia-device-plugin-daemonset"
+      },
+      "pods": 1,
+      "matched_by": [
+        "image:*k8s-device-plugin"
+      ]
+    },
+    {
+      "kind": "gpu-operator",
+      "category": "operator",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v24.9.0",
+      "namespace": "gpu-operator",
+      "workload": "Deployment/gpu-operator",
+      "selector": {
+        "app": "gpu-operator"
+      },
+      "pods": 1,
+      "resources": 1,
+      "matched_by": [
+        "crd:clusterpolicies.nvidia.com",
+        "image:*/gpu-operator"
+      ]
+    },
+    {
+      "kind": "kueue",
+      "category": "queue",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.10.1",
+      "namespace": "kueue-system",
+      "workload": "Deployment/kueue-controller-manager",
+      "selector": {
+        "app.kubernetes.io/name": "kueue"
+      },
+      "pods": 1,
+      "resources": 5,
+      "matched_by": [
+        "crd:clusterqueues.kueue.x-k8s.io",
+        "crd:localqueues.kueue.x-k8s.io",
+        "crd:workloads.kueue.x-k8s.io",
+        "image:*kueue*"
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "no-node-health",
+      "severity": "medium",
+      "confidence": "likely",
+      "title": "1 accelerator node has no node health detection: bad nodes keep getting work",
+      "evidence": [
+        "no node-problem-detector, no EKS node monitoring agent, and every node condition is one of the kubelet's five"
+      ],
+      "fix": {
+        "kind": "kcl",
+        "summary": "First option: keep GKE node auto-repair on for the accelerator pools (it repairs nodes whose GPU device or driver fails). Otherwise install node-problem-detector as the stack's node_health, with a kernel-log rule that sets GPUProblem on a fatal NVIDIA Xid.",
+        "kcl_diff": "--- a/ml.k\n+++ b/ml.k\n@@ -59,43 +59,42 @@\n             }\n         }\n     ]\n-    # Suggested for finding no-node-health: uncomment to install.\n-    # node_health = forge.Install {\n-    #     kind = \"node-problem-detector\"\n-    #     chart = forge.HelmChart {\n-    #         name = \"node-problem-detector\"\n-    #         repo = \"https://charts.deliveryhero.io/\"\n-    #         chart = \"node-problem-detector\"\n-    #         version = \"2.3.14\"\n-    #         namespace = \"forge-ml\"\n-    #         delivery = \"bundle\"\n-    #         values = {\n-    #             \"settings\": {\n-    #                 \"custom_monitor_definitions\": {\n-    #                     \"gpu-xid-monitor.json\": \"\"\"{\n-    #   \"plugin\": \"kmsg\",\n-    #   \"logPath\": \"/dev/kmsg\",\n-    #   \"lookback\": \"5m\",\n-    #   \"bufferSize\": 10,\n-    #   \"source\": \"gpu-xid-monitor\",\n-    #   \"conditions\": [\n-    #     {\"type\": \"GPUProblem\", \"reason\": \"NoGPUXid\", \"message\": \"no fatal NVIDIA Xid in the kernel log\"}\n-    #   ],\n-    #   \"rules\": [\n-    #     {\"type\": \"permanent\", \"condition\": \"GPUProblem\", \"reason\": \"NVIDIAXid\", \"pattern\": \"NVRM: Xid [(][^)]*[)]: (48|64|74|79|94|95|119|120|140),.*\"}\n-    #   ]\n-    # }\n-    # \"\"\"\n-    #                 }\n-    #                 \"log_monitors\": [\n-    #                     \"/config/kernel-monitor.json\"\n-    #                     \"/config/docker-monitor.json\"\n-    #                     \"/custom-config/gpu-xid-monitor.json\"\n-    #                 ]\n-    #             }\n-    #         }\n-    #     }\n-    # }\n+    node_health = forge.Install {\n+        kind = \"node-problem-detector\"\n+        chart = forge.HelmChart {\n+            name = \"node-problem-detector\"\n+            repo = \"https://charts.deliveryhero.io/\"\n+            chart = \"node-problem-detector\"\n+            version = \"2.3.14\"\n+            namespace = \"forge-ml\"\n+            delivery = \"bundle\"\n+            values = {\n+                \"settings\": {\n+                    \"custom_monitor_definitions\": {\n+                        \"gpu-xid-monitor.json\": \"\"\"{\n+      \"plugin\": \"kmsg\",\n+      \"logPath\": \"/dev/kmsg\",\n+      \"lookback\": \"5m\",\n+      \"bufferSize\": 10,\n+      \"source\": \"gpu-xid-monitor\",\n+      \"conditions\": [\n+        {\"type\": \"GPUProblem\", \"reason\": \"NoGPUXid\", \"message\": \"no fatal NVIDIA Xid in the kernel log\"}\n+      ],\n+      \"rules\": [\n+        {\"type\": \"permanent\", \"condition\": \"GPUProblem\", \"reason\": \"NVIDIAXid\", \"pattern\": \"NVRM: Xid [(][^)]*[)]: (48|64|74|79|94|95|119|120|140),.*\"}\n+      ]\n+    }\n+    \"\"\"\n+                    }\n+                    \"log_monitors\": [\n+                        \"/config/kernel-monitor.json\"\n+                        \"/config/docker-monitor.json\"\n+                        \"/custom-config/gpu-xid-monitor.json\"\n+                    ]\n+                }\n+            }\n+        }\n+    }\n     queue = forge.Adopt {kind = \"kueue\", namespace = \"kueue-system\", version = \"v0.10.1\"}\n     # Dismiss a finding until a date:\n     # decisions = [forge.RecommendationDecision {id = \"\u003cfinding id\u003e\", reason = \"\u003cwhy\u003e\", expires = \"YYYY-MM-DD\"}]\n",
+        "docs": "https://github.com/kubernetes/node-problem-detector"
+      }
+    },
+    {
+      "id": "shm-too-small",
+      "severity": "medium",
+      "confidence": "certain",
+      "title": "1 workload runs accelerators with the 64 MiB /dev/shm default",
+      "evidence": [
+        "Job/research/train: 1 pod, container trainer mounts no memory emptyDir at /dev/shm"
+      ],
+      "fix": {
+        "kind": "manual",
+        "summary": "Mount an emptyDir {medium: Memory} (with a sizeLimit) at /dev/shm in each accelerator container: NCCL, PyTorch DataLoader workers and vLLM's tensor parallelism need more than 64 MiB."
+      }
+    },
+    {
+      "id": "image-volumes-unavailable",
+      "severity": "info",
+      "confidence": "certain",
+      "title": "Image volumes are unavailable: weights cannot be mounted from an OCI artifact without a sidecar",
+      "evidence": [
+        "API server v1.31.2-gke.1000: the ImageVolume feature gate is on by default from Kubernetes 1.35",
+        "Node/gke-gpu-h100-0: containerd 1.7.24, image volumes need 2.1+"
+      ],
+      "fix": {
+        "kind": "manual",
+        "summary": "Upgrade to Kubernetes 1.35+ with containerd 2.1+ to mount weights as an image volume. Until then, KServe's modelcar sidecar or an init-container copy is the fallback.",
+        "docs": "https://kubernetes.io/docs/concepts/storage/volumes/#image"
+      }
+    }
+  ],
+  "proposal": {
+    "written": false,
+    "ml_k": "# ml.k: the ML stack of this env's cluster.\n#\n# Generated by `forge ml discover` on 2026-11-25 from kube context \"gke_acme_us-central1_gpu\".\n# This file is yours to edit. It adopts what discovery found running (forge never\n# upgrades, reconfigures or removes what it did not install) and writes each\n# suggested install commented out, under the id of the finding that suggests it.\n#\n# Wire it into this env's main.k:\n#\n#     import .ml\n#\n#     forge.Bundle {\n#         ml_stacks = ml.ml_stacks\n#     }\nimport forge\n\nml_stacks = [forge.MLStack {\n    cluster = forge.ClusterTarget {cluster = \"gke_acme_us-central1_gpu\", namespace = \"forge-ml\"}\n    # What discovery found running that forge did not install: the KCL refuses\n    # a forge.Install of any of these kinds.\n    observed = [\n        \"dcgm-exporter\"\n        \"gpu-operator\"\n        \"kueue\"\n        \"nvidia-device-plugin\"\n    ]\n    observed_at = \"2026-11-25\"\n    accelerators = [\n        # 8 × NVIDIA-H100-80GB-HBM3 (nvidia.com/gpu) on 1 node, pool h100\n        forge.Accelerators {\n            vendor = \"nvidia\"\n            metrics = forge.Adopt {\n                kind = \"dcgm-exporter\"\n                namespace = \"gpu-operator\"\n                version = \"3.3.9-3.6.1-ubuntu22.04\"\n                note = \"managed by the GPU Operator\"\n                selector = {\"app\": \"nvidia-dcgm-exporter\"}\n                port = 9400\n                allow = [\n                    \"DCGM_FI_DEV_GPU_UTIL\"\n                    \"DCGM_FI_PROF_GR_ENGINE_ACTIVE\"\n                    \"DCGM_FI_PROF_SM_ACTIVE\"\n                    \"DCGM_FI_PROF_SM_OCCUPANCY\"\n                    \"DCGM_FI_PROF_PIPE_TENSOR_ACTIVE\"\n                    \"DCGM_FI_PROF_DRAM_ACTIVE\"\n                    \"DCGM_FI_DEV_FB_USED\"\n                    \"DCGM_FI_DEV_FB_FREE\"\n                    \"DCGM_FI_DEV_GPU_TEMP\"\n                    \"DCGM_FI_DEV_POWER_USAGE\"\n                    \"DCGM_FI_DEV_XID_ERRORS\"\n                    \"DCGM_FI_DEV_ECC_DBE_VOL_TOTAL\"\n                    \"DCGM_FI_DEV_ROW_REMAP_FAILURE\"\n                    \"DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS\"\n                    \"DCGM_FI_DEV_PCIE_REPLAY_COUNTER\"\n                    \"DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL\"\n                    \"DCGM_FI_DEV_CLOCK_THROTTLE_REASONS\"\n                    \"DCGM_FI_DEV_CLOCKS_EVENT_REASONS\"\n                ]\n            }\n        }\n    ]\n    # Suggested for finding no-node-health: uncomment to install.\n    # node_health = forge.Install {\n    #     kind = \"node-problem-detector\"\n    #     chart = forge.HelmChart {\n    #         name = \"node-problem-detector\"\n    #         repo = \"https://charts.deliveryhero.io/\"\n    #         chart = \"node-problem-detector\"\n    #         version = \"2.3.14\"\n    #         namespace = \"forge-ml\"\n    #         delivery = \"bundle\"\n    #         values = {\n    #             \"settings\": {\n    #                 \"custom_monitor_definitions\": {\n    #                     \"gpu-xid-monitor.json\": \"\"\"{\n    #   \"plugin\": \"kmsg\",\n    #   \"logPath\": \"/dev/kmsg\",\n    #   \"lookback\": \"5m\",\n    #   \"bufferSize\": 10,\n    #   \"source\": \"gpu-xid-monitor\",\n    #   \"conditions\": [\n    #     {\"type\": \"GPUProblem\", \"reason\": \"NoGPUXid\", \"message\": \"no fatal NVIDIA Xid in the kernel log\"}\n    #   ],\n    #   \"rules\": [\n    #     {\"type\": \"permanent\", \"condition\": \"GPUProblem\", \"reason\": \"NVIDIAXid\", \"pattern\": \"NVRM: Xid [(][^)]*[)]: (48|64|74|79|94|95|119|120|140),.*\"}\n    #   ]\n    # }\n    # \"\"\"\n    #                 }\n    #                 \"log_monitors\": [\n    #                     \"/config/kernel-monitor.json\"\n    #                     \"/config/docker-monitor.json\"\n    #                     \"/custom-config/gpu-xid-monitor.json\"\n    #                 ]\n    #             }\n    #         }\n    #     }\n    # }\n    queue = forge.Adopt {kind = \"kueue\", namespace = \"kueue-system\", version = \"v0.10.1\"}\n    # Dismiss a finding until a date:\n    # decisions = [forge.RecommendationDecision {id = \"\u003cfinding id\u003e\", reason = \"\u003cwhy\u003e\", expires = \"YYYY-MM-DD\"}]\n}]\n"
+  },
+  "warnings": []
+}

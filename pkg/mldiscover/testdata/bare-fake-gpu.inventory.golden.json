@@ -1,0 +1,114 @@
+{
+  "context": "k3d-fake-gpu",
+  "server_version": "v1.33.1+k3s1",
+  "collected_at": "2026-11-25T10:00:00Z",
+  "cloud": "other",
+  "accelerators": [
+    {
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "Tesla-K80",
+      "nodes": 2,
+      "capacity": 16,
+      "allocatable": 16,
+      "allocated": 6,
+      "driver_versions": [
+        "535.104.05"
+      ],
+      "detected_by": "extended-resource"
+    }
+  ],
+  "machines": [
+    {
+      "name": "k3d-fake-gpu-agent-0",
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "Tesla-K80",
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 4,
+      "ready": true,
+      "container_runtime": "containerd://1.7.23-k3s2",
+      "kubelet_version": "v1.33.1+k3s1",
+      "driver_version": "535.104.05",
+      "detected_by": "extended-resource"
+    },
+    {
+      "name": "k3d-fake-gpu-agent-1",
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "Tesla-K80",
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 2,
+      "ready": true,
+      "container_runtime": "containerd://1.7.23-k3s2",
+      "kubelet_version": "v1.33.1+k3s1",
+      "driver_version": "535.104.05",
+      "detected_by": "extended-resource"
+    }
+  ],
+  "components": [
+    {
+      "kind": "dcgm-exporter",
+      "category": "accel-metrics",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "version": "0.2.1",
+      "namespace": "gpu-operator",
+      "workload": "DaemonSet/nvidia-dcgm-exporter",
+      "selector": {
+        "app": "nvidia-dcgm-exporter"
+      },
+      "metrics_port": 9400,
+      "pods": 2,
+      "matched_by": [
+        "container:nvidia-dcgm-exporter",
+        "label:app=nvidia-dcgm-exporter"
+      ]
+    },
+    {
+      "kind": "nvidia-device-plugin",
+      "category": "device-plugin",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "matched_by": [
+        "capacity:nvidia.com/gpu"
+      ]
+    },
+    {
+      "kind": "kueue",
+      "category": "queue",
+      "status": "crd-only",
+      "owner": "theirs",
+      "matched_by": [
+        "crd:clusterqueues.kueue.x-k8s.io",
+        "crd:localqueues.kueue.x-k8s.io",
+        "crd:resourceflavors.kueue.x-k8s.io",
+        "crd:workloads.kueue.x-k8s.io"
+      ]
+    },
+    {
+      "kind": "vllm",
+      "category": "serving",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.7.3",
+      "namespace": "serving",
+      "workload": "Deployment/chat",
+      "selector": {
+        "app": "chat"
+      },
+      "pods": 4,
+      "matched_by": [
+        "args:vllm serve",
+        "image:*vllm*"
+      ]
+    }
+  ],
+  "warnings": [
+    "kueue: CRDs clusterqueues.kueue.x-k8s.io, localqueues.kueue.x-k8s.io, resourceflavors.kueue.x-k8s.io, workloads.kueue.x-k8s.io are installed but no controller runs; forge treats it as absent (a leftover from an uninstall, or a controller in another cluster)"
+  ]
+}

@@ -1,0 +1,36 @@
+cluster        gke_acme_us-central1_gpu (v1.31.2-gke.1000, gke)
+accelerators   24 × NVIDIA-H100-80GB-HBM3 (nvidia.com/gpu) on 3 nodes (pool h100; driver 550.127.05; 16 allocated; only 23 allocatable)
+               0 × NVIDIA-L4 (nvidia.com/gpu) on 1 node (pool l4; 0 allocated; labelled but no capacity: device plugin missing or not ready)
+               FOUND gpu-operator v24.9.0 (Deployment/gpu-operator/gpu-operator) — adopt
+gpu metrics    FOUND dcgm-exporter 3.3.9-3.6.1-ubuntu22.04 via gpu-operator (DaemonSet/gpu-operator/nvidia-dcgm-exporter :9400, 3 pods) — adopt
+node health    FOUND node-problem-detector v0.8.20 (DaemonSet/forge-ml/node-problem-detector, 4 pods) — installed by forge
+queueing       FOUND kueue v0.10.1 (Deployment/kueue-system/kueue-controller-manager, 2 objects) — adopt
+training       CRD ONLY kuberay (its CRDs are installed but no controller runs; 1 object)
+               MISSING kubeflow-trainer — install (forge's default); kuberay is adopt-only, never installed by default
+serving        none found (kserve is adopted when present, never installed by default)
+monitoring     none found (no Prometheus Operator, GMP, kube-state-metrics or OTel collector)
+image pulls    none found (no spegel or dragonfly pull cache)
+could not see  could not read jobs.batch: forbidden
+
+findings       1, worst first (and 1 dismissed)
+  HIGH      accel-exporter-duplicate  2 DCGM exporters run on 3 nodes
+            evidence  DaemonSet/gpu-operator/nvidia-dcgm-exporter
+                      DaemonSet/monitoring/dcgm-exporter
+            fix       Remove the second exporter; two break each other's profiling counters.
+  dismissed kubelet-tracing-off  kubelet tracing may be off
+            dismissed until 2027-06-01: GKE does not expose kubelet tracing config
+            confidence unverified
+            evidence  kubelet config is not readable through the API
+            fix       Enable kubelet tracing on the node pool.
+                      $ gcloud container node-pools update h100 --cluster gpu --system-config-from-file=kubelet.yaml
+
+proposal       deploy/kcl/prod/ml.k differs (diff below): run with --write to update it
+               wire it into deploy/kcl/prod/main.k:
+                   import .ml
+                   ml_stacks = ml.ml_stacks   # in its forge.Bundle
+
+--- a/deploy/kcl/prod/ml.k
++++ b/deploy/kcl/prod/ml.k
+@@ -1 +1 @@
+-import  forge
++import forge

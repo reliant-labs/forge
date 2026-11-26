@@ -1,0 +1,143 @@
+{
+  "schema": "forge.dev/ml-snapshot/v1",
+  "context": "k3d-fake-gpu",
+  "server_version": "v1.33.1+k3s1",
+  "collected_at": "2026-11-25T10:00:00Z",
+  "api_groups": ["apps", "batch", "kueue.x-k8s.io"],
+  "crds": ["clusterqueues.kueue.x-k8s.io", "localqueues.kueue.x-k8s.io", "workloads.kueue.x-k8s.io", "resourceflavors.kueue.x-k8s.io"],
+  "custom_resources": {"clusterqueues.kueue.x-k8s.io": 0, "localqueues.kueue.x-k8s.io": 0, "workloads.kueue.x-k8s.io": 0, "resourceflavors.kueue.x-k8s.io": 0},
+  "nodes": [
+    {
+      "metadata": {"name": "k3d-fake-gpu-server-0", "labels": {"node-role.kubernetes.io/control-plane": "true"}},
+      "spec": {"providerID": "k3s://k3d-fake-gpu-server-0"},
+      "status": {
+        "capacity": {"cpu": "8", "memory": "16273592Ki", "pods": "110"},
+        "allocatable": {"cpu": "8", "memory": "16273592Ki", "pods": "110"},
+        "conditions": [{"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.33.1+k3s1", "containerRuntimeVersion": "containerd://1.7.23-k3s2"}
+      }
+    },
+    {
+      "metadata": {
+        "name": "k3d-fake-gpu-agent-0",
+        "labels": {
+          "nvidia.com/gpu.deploy.device-plugin": "true",
+          "nvidia.com/gpu.deploy.dcgm-exporter": "true",
+          "nvidia.com/gpu.present": "true",
+          "nvidia.com/gpu.product": "Tesla-K80",
+          "nvidia.com/gpu.count": "8",
+          "nvidia.com/gpu.memory": "11441",
+          "nvidia.com/cuda.driver.major": "535",
+          "nvidia.com/cuda.driver.minor": "104",
+          "nvidia.com/cuda.driver.rev": "05",
+          "run.ai/simulated-gpu-node-pool": "default"
+        }
+      },
+      "spec": {"providerID": "k3s://k3d-fake-gpu-agent-0"},
+      "status": {
+        "capacity": {"cpu": "8", "memory": "16273592Ki", "nvidia.com/gpu": "8", "pods": "110"},
+        "allocatable": {"cpu": "8", "memory": "16273592Ki", "nvidia.com/gpu": "8", "pods": "110"},
+        "conditions": [{"type": "MemoryPressure", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.33.1+k3s1", "containerRuntimeVersion": "containerd://1.7.23-k3s2"},
+        "images": [{"names": ["docker.io/vllm/vllm-openai:v0.7.3"], "sizeBytes": 9876543210}]
+      }
+    },
+    {
+      "metadata": {
+        "name": "k3d-fake-gpu-agent-1",
+        "labels": {
+          "nvidia.com/gpu.deploy.device-plugin": "true",
+          "nvidia.com/gpu.deploy.dcgm-exporter": "true",
+          "nvidia.com/gpu.present": "true",
+          "nvidia.com/gpu.product": "Tesla-K80",
+          "nvidia.com/gpu.count": "8",
+          "nvidia.com/gpu.memory": "11441",
+          "nvidia.com/cuda.driver.major": "535",
+          "nvidia.com/cuda.driver.minor": "104",
+          "nvidia.com/cuda.driver.rev": "05",
+          "nvidia.com/mig.config": "all-1g.5gb",
+          "nvidia.com/mig.config.state": "failed",
+          "run.ai/simulated-gpu-node-pool": "default"
+        }
+      },
+      "spec": {"providerID": "k3s://k3d-fake-gpu-agent-1"},
+      "status": {
+        "capacity": {"cpu": "8", "memory": "16273592Ki", "nvidia.com/gpu": "8", "pods": "110"},
+        "allocatable": {"cpu": "8", "memory": "16273592Ki", "nvidia.com/gpu": "8", "pods": "110"},
+        "conditions": [{"type": "MemoryPressure", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.33.1+k3s1", "containerRuntimeVersion": "containerd://1.7.23-k3s2"},
+        "images": [{"names": ["docker.io/vllm/vllm-openai:v0.7.3"], "sizeBytes": 9876543210}]
+      }
+    }
+  ],
+  "daemonsets": [
+    {
+      "metadata": {"name": "nvidia-dcgm-exporter", "namespace": "gpu-operator", "labels": {"app": "nvidia-dcgm-exporter", "component": "status-exporter"}},
+      "spec": {
+        "selector": {"matchLabels": {"app": "nvidia-dcgm-exporter"}},
+        "template": {
+          "metadata": {"labels": {"app": "nvidia-dcgm-exporter", "component": "status-exporter"}},
+          "spec": {
+            "nodeSelector": {"nvidia.com/gpu.deploy.dcgm-exporter": "true"},
+            "containers": [{"name": "nvidia-dcgm-exporter", "image": "ghcr.io/run-ai/fake-gpu-operator/status-exporter:0.2.1", "ports": [{"name": "http", "containerPort": 9400}], "resources": {}}]
+          }
+        }
+      },
+      "status": {"currentNumberScheduled": 2, "numberMisscheduled": 0, "desiredNumberScheduled": 2, "numberReady": 2}
+    },
+    {
+      "metadata": {"name": "device-plugin", "namespace": "gpu-operator", "labels": {"app": "device-plugin"}},
+      "spec": {
+        "selector": {"matchLabels": {"app": "device-plugin"}},
+        "template": {"metadata": {"labels": {"app": "device-plugin"}}, "spec": {"nodeSelector": {"nvidia.com/gpu.deploy.device-plugin": "true"}, "containers": [{"name": "nvidia-device-plugin-ctr", "image": "ghcr.io/run-ai/fake-gpu-operator/device-plugin:0.2.1", "resources": {}}]}}
+      },
+      "status": {"currentNumberScheduled": 2, "numberMisscheduled": 0, "desiredNumberScheduled": 2, "numberReady": 2}
+    }
+  ],
+  "deployments": [
+    {
+      "metadata": {"name": "status-updater", "namespace": "gpu-operator", "labels": {"app": "status-updater"}},
+      "spec": {"selector": {"matchLabels": {"app": "status-updater"}}, "template": {"metadata": {"labels": {"app": "status-updater"}}, "spec": {"containers": [{"name": "status-updater", "image": "ghcr.io/run-ai/fake-gpu-operator/status-updater:0.2.1", "resources": {}}]}}},
+      "status": {"replicas": 1, "readyReplicas": 1}
+    },
+    {
+      "metadata": {"name": "chat", "namespace": "serving", "labels": {"app": "chat"}},
+      "spec": {
+        "replicas": 4,
+        "selector": {"matchLabels": {"app": "chat"}},
+        "template": {
+          "metadata": {"labels": {"app": "chat"}},
+          "spec": {
+            "containers": [{"name": "vllm", "image": "vllm/vllm-openai:v0.7.3", "command": ["vllm", "serve"], "args": ["Qwen/Qwen2.5-7B-Instruct", "--port", "8000"], "ports": [{"name": "http", "containerPort": 8000}],
+              "resources": {"limits": {"nvidia.com/gpu": "1"}}, "volumeMounts": [{"name": "shm", "mountPath": "/dev/shm"}]}],
+            "volumes": [{"name": "shm", "emptyDir": {"medium": "Memory", "sizeLimit": "8Gi"}}]
+          }
+        }
+      },
+      "status": {"replicas": 4, "readyReplicas": 4}
+    }
+  ],
+  "jobs": [
+    {
+      "metadata": {"name": "bench", "namespace": "serving"},
+      "spec": {"template": {"spec": {"restartPolicy": "Never", "containers": [{"name": "bench", "image": "ghcr.io/acme/llm-bench:0.3", "resources": {"limits": {"nvidia.com/gpu": "2"}}}]}}},
+      "status": {"active": 1}
+    }
+  ],
+  "pods": [
+    {"metadata": {"name": "nvidia-dcgm-exporter-aaaaa", "namespace": "gpu-operator", "labels": {"app": "nvidia-dcgm-exporter", "component": "status-exporter"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "DaemonSet", "name": "nvidia-dcgm-exporter", "uid": "1111aaaa-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "k3d-fake-gpu-agent-0", "containers": [{"name": "nvidia-dcgm-exporter", "image": "ghcr.io/run-ai/fake-gpu-operator/status-exporter:0.2.1", "resources": {}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "nvidia-dcgm-exporter-bbbbb", "namespace": "gpu-operator", "labels": {"app": "nvidia-dcgm-exporter", "component": "status-exporter"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "DaemonSet", "name": "nvidia-dcgm-exporter", "uid": "1111aaaa-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "k3d-fake-gpu-agent-1", "containers": [{"name": "nvidia-dcgm-exporter", "image": "ghcr.io/run-ai/fake-gpu-operator/status-exporter:0.2.1", "resources": {}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "chat-6f7d8c9b4-c1", "namespace": "serving", "labels": {"app": "chat", "pod-template-hash": "6f7d8c9b4"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "chat-6f7d8c9b4", "uid": "2222aaaa-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "k3d-fake-gpu-agent-0", "containers": [{"name": "vllm", "image": "vllm/vllm-openai:v0.7.3", "command": ["vllm", "serve"], "args": ["Qwen/Qwen2.5-7B-Instruct", "--port", "8000"], "resources": {"limits": {"nvidia.com/gpu": "1"}}, "volumeMounts": [{"name": "shm", "mountPath": "/dev/shm"}]}], "volumes": [{"name": "shm", "emptyDir": {"medium": "Memory", "sizeLimit": "8Gi"}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "chat-6f7d8c9b4-c2", "namespace": "serving", "labels": {"app": "chat", "pod-template-hash": "6f7d8c9b4"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "chat-6f7d8c9b4", "uid": "2222aaaa-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "k3d-fake-gpu-agent-0", "containers": [{"name": "vllm", "image": "vllm/vllm-openai:v0.7.3", "command": ["vllm", "serve"], "args": ["Qwen/Qwen2.5-7B-Instruct", "--port", "8000"], "resources": {"limits": {"nvidia.com/gpu": "1"}}, "volumeMounts": [{"name": "shm", "mountPath": "/dev/shm"}]}], "volumes": [{"name": "shm", "emptyDir": {"medium": "Memory", "sizeLimit": "8Gi"}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "chat-6f7d8c9b4-c3", "namespace": "serving", "labels": {"app": "chat", "pod-template-hash": "6f7d8c9b4"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "chat-6f7d8c9b4", "uid": "2222aaaa-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "k3d-fake-gpu-agent-1", "containers": [{"name": "vllm", "image": "vllm/vllm-openai:v0.7.3", "command": ["vllm", "serve"], "args": ["Qwen/Qwen2.5-7B-Instruct", "--port", "8000"], "resources": {"limits": {"nvidia.com/gpu": "1"}}, "volumeMounts": [{"name": "shm", "mountPath": "/dev/shm"}]}], "volumes": [{"name": "shm", "emptyDir": {"medium": "Memory", "sizeLimit": "8Gi"}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "chat-6f7d8c9b4-c4", "namespace": "serving", "labels": {"app": "chat", "pod-template-hash": "6f7d8c9b4"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "chat-6f7d8c9b4", "uid": "2222aaaa-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "k3d-fake-gpu-agent-1", "containers": [{"name": "vllm", "image": "vllm/vllm-openai:v0.7.3", "command": ["vllm", "serve"], "args": ["Qwen/Qwen2.5-7B-Instruct", "--port", "8000"], "resources": {"limits": {"nvidia.com/gpu": "1"}}, "volumeMounts": [{"name": "shm", "mountPath": "/dev/shm"}]}], "volumes": [{"name": "shm", "emptyDir": {"medium": "Memory", "sizeLimit": "8Gi"}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "bench-k8m2n", "namespace": "serving", "labels": {"job-name": "bench"}, "ownerReferences": [{"apiVersion": "batch/v1", "kind": "Job", "name": "bench", "uid": "3333aaaa-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "k3d-fake-gpu-agent-0", "containers": [{"name": "bench", "image": "ghcr.io/acme/llm-bench:0.3", "resources": {"limits": {"nvidia.com/gpu": "2"}}}]}, "status": {"phase": "Running"}}
+  ]
+}

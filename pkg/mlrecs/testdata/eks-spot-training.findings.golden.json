@@ -1,0 +1,169 @@
+[
+  {
+    "id": "accel-telemetry-missing",
+    "severity": "high",
+    "confidence": "certain",
+    "title": "3 nodes with nvidia.com/gpu have no utilisation source",
+    "vendor": "nvidia",
+    "evidence": [
+      "Node/ip-10-0-1-11.us-west-2.compute.internal: 4 × nvidia.com/gpu (g5.12xlarge), no metrics source runs on it",
+      "Node/ip-10-0-1-12.us-west-2.compute.internal: 4 × nvidia.com/gpu (g5.12xlarge), no metrics source runs on it",
+      "Node/ip-10-0-1-13.us-west-2.compute.internal: 4 × nvidia.com/gpu (g5.12xlarge), no metrics source runs on it"
+    ],
+    "fix": {
+      "kind": "kcl",
+      "summary": "Install NVIDIA's dcgm-exporter chart as the stack's NVIDIA metrics source (forge.Install, pinned); forge scrapes it with the allow list in ml.k.",
+      "kcl_diff": "--- a/ml.k\n+++ b/ml.k\n@@ -26,69 +26,68 @@\n         # 12 × g5.12xlarge (nvidia.com/gpu) on 3 nodes, pool gpu-spot\n         forge.Accelerators {\n             vendor = \"nvidia\"\n-            # Suggested for finding accel-telemetry-missing: uncomment to install.\n-            # metrics = forge.Install {\n-            #     kind = \"dcgm-exporter\"\n-            #     chart = forge.HelmChart {\n-            #         name = \"dcgm-exporter\"\n-            #         repo = \"https://nvidia.github.io/dcgm-exporter/helm-charts\"\n-            #         chart = \"dcgm-exporter\"\n-            #         version = \"4.9.0\"\n-            #         namespace = \"forge-ml\"\n-            #         delivery = \"bundle\"\n-            #         values = {\n-            #             \"affinity\": {\n-            #                 \"nodeAffinity\": {\n-            #                     \"requiredDuringSchedulingIgnoredDuringExecution\": {\n-            #                         \"nodeSelectorTerms\": [\n-            #                             {\n-            #                                 \"matchExpressions\": [\n-            #                                     {\n-            #                                         \"key\": \"node.kubernetes.io/instance-type\"\n-            #                                         \"operator\": \"In\"\n-            #                                         \"values\": [\n-            #                                             \"g5.12xlarge\"\n-            #                                         ]\n-            #                                     }\n-            #                                 ]\n-            #                             }\n-            #                         ]\n-            #                     }\n-            #                 }\n-            #             }\n-            #             \"serviceMonitor\": {\n-            #                 \"enabled\": False\n-            #             }\n-            #             \"tolerations\": [\n-            #                 {\n-            #                     \"operator\": \"Exists\"\n-            #                 }\n-            #             ]\n-            #         }\n-            #     }\n-            #     selector = {\"app.kubernetes.io/name\": \"dcgm-exporter\"}\n-            #     port = 9400\n-            #     allow = [\n-            #         \"DCGM_FI_DEV_GPU_UTIL\"\n-            #         \"DCGM_FI_PROF_GR_ENGINE_ACTIVE\"\n-            #         \"DCGM_FI_PROF_SM_ACTIVE\"\n-            #         \"DCGM_FI_PROF_SM_OCCUPANCY\"\n-            #         \"DCGM_FI_PROF_PIPE_TENSOR_ACTIVE\"\n-            #         \"DCGM_FI_PROF_DRAM_ACTIVE\"\n-            #         \"DCGM_FI_DEV_FB_USED\"\n-            #         \"DCGM_FI_DEV_FB_FREE\"\n-            #         \"DCGM_FI_DEV_GPU_TEMP\"\n-            #         \"DCGM_FI_DEV_POWER_USAGE\"\n-            #         \"DCGM_FI_DEV_XID_ERRORS\"\n-            #         \"DCGM_FI_DEV_ECC_DBE_VOL_TOTAL\"\n-            #         \"DCGM_FI_DEV_ROW_REMAP_FAILURE\"\n-            #         \"DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS\"\n-            #         \"DCGM_FI_DEV_PCIE_REPLAY_COUNTER\"\n-            #         \"DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL\"\n-            #         \"DCGM_FI_DEV_CLOCK_THROTTLE_REASONS\"\n-            #         \"DCGM_FI_DEV_CLOCKS_EVENT_REASONS\"\n-            #     ]\n-            # }\n+            metrics = forge.Install {\n+                kind = \"dcgm-exporter\"\n+                chart = forge.HelmChart {\n+                    name = \"dcgm-exporter\"\n+                    repo = \"https://nvidia.github.io/dcgm-exporter/helm-charts\"\n+                    chart = \"dcgm-exporter\"\n+                    version = \"4.9.0\"\n+                    namespace = \"forge-ml\"\n+                    delivery = \"bundle\"\n+                    values = {\n+                        \"affinity\": {\n+                            \"nodeAffinity\": {\n+                                \"requiredDuringSchedulingIgnoredDuringExecution\": {\n+                                    \"nodeSelectorTerms\": [\n+                                        {\n+                                            \"matchExpressions\": [\n+                                                {\n+                                                    \"key\": \"node.kubernetes.io/instance-type\"\n+                                                    \"operator\": \"In\"\n+                                                    \"values\": [\n+                                                        \"g5.12xlarge\"\n+                                                    ]\n+                                                }\n+                                            ]\n+                                        }\n+                                    ]\n+                                }\n+                            }\n+                        }\n+                        \"serviceMonitor\": {\n+                            \"enabled\": False\n+                        }\n+                        \"tolerations\": [\n+                            {\n+                                \"operator\": \"Exists\"\n+                            }\n+                        ]\n+                    }\n+                }\n+                selector = {\"app.kubernetes.io/name\": \"dcgm-exporter\"}\n+                port = 9400\n+                allow = [\n+                    \"DCGM_FI_DEV_GPU_UTIL\"\n+                    \"DCGM_FI_PROF_GR_ENGINE_ACTIVE\"\n+                    \"DCGM_FI_PROF_SM_ACTIVE\"\n+                    \"DCGM_FI_PROF_SM_OCCUPANCY\"\n+                    \"DCGM_FI_PROF_PIPE_TENSOR_ACTIVE\"\n+                    \"DCGM_FI_PROF_DRAM_ACTIVE\"\n+                    \"DCGM_FI_DEV_FB_USED\"\n+                    \"DCGM_FI_DEV_FB_FREE\"\n+                    \"DCGM_FI_DEV_GPU_TEMP\"\n+                    \"DCGM_FI_DEV_POWER_USAGE\"\n+                    \"DCGM_FI_DEV_XID_ERRORS\"\n+                    \"DCGM_FI_DEV_ECC_DBE_VOL_TOTAL\"\n+                    \"DCGM_FI_DEV_ROW_REMAP_FAILURE\"\n+                    \"DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS\"\n+                    \"DCGM_FI_DEV_PCIE_REPLAY_COUNTER\"\n+                    \"DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL\"\n+                    \"DCGM_FI_DEV_CLOCK_THROTTLE_REASONS\"\n+                    \"DCGM_FI_DEV_CLOCKS_EVENT_REASONS\"\n+                ]\n+            }\n         }\n     ]\n     # Suggested for finding no-node-health: uncomment to install.\n",
+      "docs": "https://github.com/NVIDIA/dcgm-exporter"
+    }
+  },
+  {
+    "id": "gpu-jobs-bypass-queue",
+    "severity": "medium",
+    "confidence": "certain",
+    "title": "2 Jobs request accelerators with no queue: no fair share or preemption",
+    "evidence": [
+      "Job/ml/hparam-sweep: 1 × nvidia.com/gpu per pod",
+      "Job/ml/train-llama-ft: 4 × nvidia.com/gpu per pod"
+    ],
+    "fix": {
+      "kind": "kcl",
+      "summary": "Install Kueue as the stack's queue (forge.Install, pinned; delivery \"bootstrap\" because it ships CRDs, so apply it with `forge env deploy \u003cenv\u003e --target kueue`), then give each team a LocalQueue and label jobs with kueue.x-k8s.io/queue-name. The diff also installs JobSet (`--target jobset`), Kueue's unit for multi-pod training.",
+      "kcl_diff": "--- a/ml.k\n+++ b/ml.k\n@@ -128,31 +128,29 @@\n     #         }\n     #     }\n     # }\n-    # Suggested for finding gpu-jobs-bypass-queue: uncomment to install.\n-    # queue = forge.Install {\n-    #     kind = \"kueue\"\n-    #     # It ships CRDs, so it is a bootstrap chart: apply it with `forge env deploy \u003cenv\u003e --target kueue`.\n-    #     chart = forge.HelmChart {\n-    #         name = \"kueue\"\n-    #         oci = \"oci://registry.k8s.io/kueue/charts/kueue\"\n-    #         version = \"0.20.7\"\n-    #         namespace = \"forge-ml\"\n-    #         delivery = \"bootstrap\"\n-    #     }\n-    # }\n+    queue = forge.Install {\n+        kind = \"kueue\"\n+        # It ships CRDs, so it is a bootstrap chart: apply it with `forge env deploy \u003cenv\u003e --target kueue`.\n+        chart = forge.HelmChart {\n+            name = \"kueue\"\n+            oci = \"oci://registry.k8s.io/kueue/charts/kueue\"\n+            version = \"0.20.7\"\n+            namespace = \"forge-ml\"\n+            delivery = \"bootstrap\"\n+        }\n+    }\n     training = [\n-        # Suggested for finding gpu-jobs-bypass-queue: uncomment to install.\n-        # forge.Install {\n-        #     kind = \"jobset\"\n-        #     # It ships CRDs, so it is a bootstrap chart: apply it with `forge env deploy \u003cenv\u003e --target jobset`.\n-        #     chart = forge.HelmChart {\n-        #         name = \"jobset\"\n-        #         oci = \"oci://registry.k8s.io/jobset/charts/jobset\"\n-        #         version = \"0.13.1\"\n-        #         namespace = \"forge-ml\"\n-        #         delivery = \"bootstrap\"\n-        #     }\n-        # }\n+        forge.Install {\n+            kind = \"jobset\"\n+            # It ships CRDs, so it is a bootstrap chart: apply it with `forge env deploy \u003cenv\u003e --target jobset`.\n+            chart = forge.HelmChart {\n+                name = \"jobset\"\n+                oci = \"oci://registry.k8s.io/jobset/charts/jobset\"\n+                version = \"0.13.1\"\n+                namespace = \"forge-ml\"\n+                delivery = \"bootstrap\"\n+            }\n+        }\n     ]\n     # Suggested for finding no-p2p-cache: uncomment to install.\n     # pull_cache = forge.Install {\n",
+      "docs": "https://kueue.sigs.k8s.io/docs/overview/"
+    }
+  },
+  {
+    "id": "no-node-health",
+    "severity": "medium",
+    "confidence": "likely",
+    "title": "3 accelerator nodes have no node health detection: bad nodes keep getting work",
+    "evidence": [
+      "no node-problem-detector, no EKS node monitoring agent, and every node condition is one of the kubelet's five"
+    ],
+    "fix": {
+      "kind": "kcl",
+      "summary": "First option: the EKS node monitoring agent add-on with node auto repair, which sets AcceleratedHardwareReady and replaces bad GPU nodes. Otherwise install node-problem-detector as the stack's node_health, with a kernel-log rule that sets GPUProblem on a fatal NVIDIA Xid.",
+      "kcl_diff": "--- a/ml.k\n+++ b/ml.k\n@@ -91,43 +91,42 @@\n             # }\n         }\n     ]\n-    # Suggested for finding no-node-health: uncomment to install.\n-    # node_health = forge.Install {\n-    #     kind = \"node-problem-detector\"\n-    #     chart = forge.HelmChart {\n-    #         name = \"node-problem-detector\"\n-    #         repo = \"https://charts.deliveryhero.io/\"\n-    #         chart = \"node-problem-detector\"\n-    #         version = \"2.3.14\"\n-    #         namespace = \"forge-ml\"\n-    #         delivery = \"bundle\"\n-    #         values = {\n-    #             \"settings\": {\n-    #                 \"custom_monitor_definitions\": {\n-    #                     \"gpu-xid-monitor.json\": \"\"\"{\n-    #   \"plugin\": \"kmsg\",\n-    #   \"logPath\": \"/dev/kmsg\",\n-    #   \"lookback\": \"5m\",\n-    #   \"bufferSize\": 10,\n-    #   \"source\": \"gpu-xid-monitor\",\n-    #   \"conditions\": [\n-    #     {\"type\": \"GPUProblem\", \"reason\": \"NoGPUXid\", \"message\": \"no fatal NVIDIA Xid in the kernel log\"}\n-    #   ],\n-    #   \"rules\": [\n-    #     {\"type\": \"permanent\", \"condition\": \"GPUProblem\", \"reason\": \"NVIDIAXid\", \"pattern\": \"NVRM: Xid [(][^)]*[)]: (48|64|74|79|94|95|119|120|140),.*\"}\n-    #   ]\n-    # }\n-    # \"\"\"\n-    #                 }\n-    #                 \"log_monitors\": [\n-    #                     \"/config/kernel-monitor.json\"\n-    #                     \"/config/docker-monitor.json\"\n-    #                     \"/custom-config/gpu-xid-monitor.json\"\n-    #                 ]\n-    #             }\n-    #         }\n-    #     }\n-    # }\n+    node_health = forge.Install {\n+        kind = \"node-problem-detector\"\n+        chart = forge.HelmChart {\n+            name = \"node-problem-detector\"\n+            repo = \"https://charts.deliveryhero.io/\"\n+            chart = \"node-problem-detector\"\n+            version = \"2.3.14\"\n+            namespace = \"forge-ml\"\n+            delivery = \"bundle\"\n+            values = {\n+                \"settings\": {\n+                    \"custom_monitor_definitions\": {\n+                        \"gpu-xid-monitor.json\": \"\"\"{\n+      \"plugin\": \"kmsg\",\n+      \"logPath\": \"/dev/kmsg\",\n+      \"lookback\": \"5m\",\n+      \"bufferSize\": 10,\n+      \"source\": \"gpu-xid-monitor\",\n+      \"conditions\": [\n+        {\"type\": \"GPUProblem\", \"reason\": \"NoGPUXid\", \"message\": \"no fatal NVIDIA Xid in the kernel log\"}\n+      ],\n+      \"rules\": [\n+        {\"type\": \"permanent\", \"condition\": \"GPUProblem\", \"reason\": \"NVIDIAXid\", \"pattern\": \"NVRM: Xid [(][^)]*[)]: (48|64|74|79|94|95|119|120|140),.*\"}\n+      ]\n+    }\n+    \"\"\"\n+                    }\n+                    \"log_monitors\": [\n+                        \"/config/kernel-monitor.json\"\n+                        \"/config/docker-monitor.json\"\n+                        \"/custom-config/gpu-xid-monitor.json\"\n+                    ]\n+                }\n+            }\n+        }\n+    }\n     # Suggested for finding gpu-jobs-bypass-queue: uncomment to install.\n     # queue = forge.Install {\n     #     kind = \"kueue\"\n",
+      "docs": "https://github.com/kubernetes/node-problem-detector"
+    }
+  },
+  {
+    "id": "no-p2p-cache",
+    "severity": "medium",
+    "confidence": "likely",
+    "title": "Accelerator images fan out to many nodes with no peer-to-peer pull cache",
+    "evidence": [
+      "123456789012.dkr.ecr.us-west-2.amazonaws.com/train:2026-11-18: 5 accelerator pods on 2 nodes"
+    ],
+    "fix": {
+      "kind": "kcl",
+      "summary": "Install Spegel as the stack's pull_cache (one small DaemonSet: nodes pull layers from each other instead of the registry). It needs containerd's registry config_path and discard_unpacked_layers=false; check its compatibility notes for your node image first.",
+      "kcl_diff": "--- a/ml.k\n+++ b/ml.k\n@@ -154,17 +154,16 @@\n         #     }\n         # }\n     ]\n-    # Suggested for finding no-p2p-cache: uncomment to install.\n-    # pull_cache = forge.Install {\n-    #     kind = \"spegel\"\n-    #     chart = forge.HelmChart {\n-    #         name = \"spegel\"\n-    #         oci = \"oci://ghcr.io/spegel-org/helm-charts/spegel\"\n-    #         version = \"0.8.2\"\n-    #         namespace = \"forge-ml\"\n-    #         delivery = \"bundle\"\n-    #     }\n-    # }\n+    pull_cache = forge.Install {\n+        kind = \"spegel\"\n+        chart = forge.HelmChart {\n+            name = \"spegel\"\n+            oci = \"oci://ghcr.io/spegel-org/helm-charts/spegel\"\n+            version = \"0.8.2\"\n+            namespace = \"forge-ml\"\n+            delivery = \"bundle\"\n+        }\n+    }\n     # Dismiss a finding until a date:\n     # decisions = [forge.RecommendationDecision {id = \"\u003cfinding id\u003e\", reason = \"\u003cwhy\u003e\", expires = \"YYYY-MM-DD\"}]\n }]\n",
+      "docs": "https://spegel.dev/docs/getting-started/"
+    }
+  },
+  {
+    "id": "shm-too-small",
+    "severity": "medium",
+    "confidence": "certain",
+    "title": "2 workloads run accelerators with the 64 MiB /dev/shm default",
+    "evidence": [
+      "Job/ml/hparam-sweep: 4 pods, container trial mounts no memory emptyDir at /dev/shm",
+      "Job/ml/train-llama-ft: 1 pod, container train mounts no memory emptyDir at /dev/shm"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Mount an emptyDir {medium: Memory} (with a sizeLimit) at /dev/shm in each accelerator container: NCCL, PyTorch DataLoader workers and vLLM's tensor parallelism need more than 64 MiB."
+    }
+  },
+  {
+    "id": "spot-no-termination-handling",
+    "severity": "medium",
+    "confidence": "likely",
+    "title": "3 spot accelerator nodes get no graceful interruption notice",
+    "cloud": "eks",
+    "evidence": [
+      "Node/ip-10-0-1-11.us-west-2.compute.internal: spot, 4 × nvidia.com/gpu",
+      "Node/ip-10-0-1-12.us-west-2.compute.internal: spot, 4 × nvidia.com/gpu",
+      "Node/ip-10-0-1-13.us-west-2.compute.internal: spot, 4 × nvidia.com/gpu"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Install aws-node-termination-handler in queue mode (its helm chart, oci://public.ecr.aws/aws-ec2/helm/aws-node-termination-handler), or, if Karpenter provisions these nodes, set its interruption queue (settings.interruptionQueue), so a two-minute notice drains pods and lets training checkpoint.",
+      "docs": "https://github.com/aws/aws-node-termination-handler"
+    }
+  },
+  {
+    "id": "weights-in-image",
+    "severity": "medium",
+    "confidence": "certain",
+    "title": "1 accelerator image is over 10 GB: weights are likely baked into the image",
+    "evidence": [
+      "123456789012.dkr.ecr.us-west-2.amazonaws.com/train:2026-11-18: 14.1 GB on Node/ip-10-0-1-11.us-west-2.compute.internal, used by Job/ml/hparam-sweep, Job/ml/train-llama-ft"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Split it into a weights artifact (a CNCF ModelPack OCI artifact, one layer per weight file) and a slim runtime image, so a code change does not re-pull the weights."
+    }
+  },
+  {
+    "id": "accel-unallocated",
+    "severity": "low",
+    "confidence": "likely",
+    "title": "1 node had idle, unrequested accelerators at snapshot time",
+    "evidence": [
+      "pool gpu-spot: Node/ip-10-0-1-13.us-west-2.compute.internal: 4 × nvidia.com/gpu allocatable, none requested"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "One snapshot is not a trend. If these nodes stay unrequested, lower the pool's minimum size in its autoscaler (cluster autoscaler, Karpenter, the cloud's node pool) so it scales down."
+    }
+  },
+  {
+    "id": "hf-transfer-off",
+    "severity": "low",
+    "confidence": "likely",
+    "title": "1 container downloads from Hugging Face without the fast path",
+    "evidence": [
+      "Job/ml/train-llama-ft: train downloads hf://meta-llama/Llama-3.1-8B from the Hugging Face Hub with neither HF_XET_HIGH_PERFORMANCE nor HF_HUB_ENABLE_HF_TRANSFER set"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Set HF_XET_HIGH_PERFORMANCE=1 (huggingface_hub with hf_xet; HF_HUB_ENABLE_HF_TRANSFER is deprecated), or better, stop downloading per pod.",
+      "docs": "https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables"
+    }
+  },
+  {
+    "id": "image-not-warm",
+    "severity": "low",
+    "confidence": "likely",
+    "title": "1 accelerator image is not warm on every node of its pool",
+    "evidence": [
+      "123456789012.dkr.ecr.us-west-2.amazonaws.com/train:2026-11-18: not on ip-10-0-1-13.us-west-2.compute.internal (pool gpu-spot; present on 2 of 3 nodes)",
+      "node.status.images lists at most 50 images per node by default, so a busy node may hold an image it does not list"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Pre-pull the image on the pool (a pre-pull DaemonSet, kube-fledged), or bake it into the node image (GKE: a secondary boot disk), so a new pod does not wait for the pull.",
+      "docs": "https://github.com/senthilrch/kube-fledged"
+    }
+  },
+  {
+    "id": "image-volumes-unavailable",
+    "severity": "info",
+    "confidence": "certain",
+    "title": "Image volumes are unavailable: weights cannot be mounted from an OCI artifact without a sidecar",
+    "evidence": [
+      "API server v1.30.8-eks-2d98532: the ImageVolume feature gate is on by default from Kubernetes 1.35",
+      "Node/ip-10-0-1-11.us-west-2.compute.internal: containerd 1.7.23, image volumes need 2.1+",
+      "Node/ip-10-0-1-12.us-west-2.compute.internal: containerd 1.7.23, image volumes need 2.1+",
+      "Node/ip-10-0-1-13.us-west-2.compute.internal: containerd 1.7.23, image volumes need 2.1+"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Upgrade to Kubernetes 1.35+ with containerd 2.1+ to mount weights as an image volume. Until then, KServe's modelcar sidecar or an init-container copy is the fallback.",
+      "docs": "https://kubernetes.io/docs/concepts/storage/volumes/#image"
+    }
+  }
+]

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -612,7 +613,12 @@ func (d *DB) lock(ctx context.Context, exclusive bool) (func(), error) {
 		// a mount without it), read unlocked: a database swapped mid-read
 		// makes grype fail, which is "not scanned", never a pass.
 		if _, err := os.Stat(d.lockPath()); err != nil {
-			return func() {}, nil
+			if errors.Is(err, fs.ErrNotExist) {
+				return func() {}, nil
+			}
+			// Any other failure (permission, I/O) is no proof the keeper is
+			// not swapping the database: refuse, so the scan is unscanned.
+			return nil, fmt.Errorf("lock the vulnerability database %s: %w", d.lockPath(), err)
 		}
 		opts = append(opts, flock.SetFlag(os.O_RDONLY))
 	}
@@ -624,9 +630,9 @@ func (d *DB) lock(ctx context.Context, exclusive bool) (func(), error) {
 	}
 	ok, err := try()
 	if err != nil {
-		if d.ReadOnly {
-			return func() {}, nil
-		}
+		// Read-only or not, a lock that cannot be taken is not a lock: the
+		// caller reports the scan unscanned rather than read a database
+		// that may be mid-replacement.
 		return nil, fmt.Errorf("lock the vulnerability database %s: %w", d.lockPath(), err)
 	}
 	if !ok {

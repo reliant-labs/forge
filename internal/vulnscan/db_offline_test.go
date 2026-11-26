@@ -149,3 +149,33 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// Review B1 on #3001: a read-only database whose lock cannot be checked is
+// not read unlocked: the keeper may be swapping it, and a scan of a
+// half-replaced database must be "not scanned", never clean.
+func TestReadOnlyDatabaseRefusesAnUncheckableLock(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root reads through directory permissions")
+	}
+	db, _, _, _ := newTestDB(t, testNow.Add(-2*time.Hour), testNow)
+	// The lock lives in a directory this process cannot search, so the stat
+	// fails with a permission error rather than "not there".
+	locked := filepath.Join(db.Dir, "sealed")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "lock"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	ro := *db
+	ro.Dir, ro.ReadOnly, ro.ConfigDir = locked, true, t.TempDir()
+	if release, err := ro.lock(context.Background(), false); err == nil {
+		release()
+		t.Fatal("lock() read a database whose lock it could not check")
+	}
+}

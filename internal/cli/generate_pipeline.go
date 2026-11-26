@@ -448,6 +448,9 @@ func generateSteps() []GenStep {
 		// the pin. See generate_forge_pin.go.
 		{Name: "reconcile forge_version with go.mod", Gate: hasForgeYAML, GateReason: "no forge.yaml (directory-scan fallback)", Run: stepReconcileForgePin, Tag: "config"},
 		{Name: "announce project", Gate: always, Run: stepAnnounceProject, Tag: "config", ReadOnly: true},
+		// Prints only: names the owned files a forge template fix has not
+		// reached yet, whatever the pin. See generate_template_fixes.go.
+		{Name: adviseTemplateFixesStep, Gate: always, Run: stepAdviseTemplateFixes, Tag: "validate", ReadOnly: true},
 		// After every refusal: this rewrites .forge-kcl/ (and kcl.mod), and
 		// its writes are journaled so a later failure restores them.
 		{Name: "sync forge KCL module vendor", Gate: always, Run: stepSyncForgeKCL, Tag: "config"},

@@ -227,8 +227,9 @@ device set, image digest, and its pod-start timeline (02-views §Pod start).
 **Joining keys we inject** (when we launch) or **infer** (when we observe), in priority
 order: labels `ml.reliant.dev/run`, `ml.reliant.dev/phase`, `ml.reliant.dev/attempt`
 (stamped by `forge ml run` on the CR and propagated to pods) → env/resource attributes
-in OTLP (`ml.run.id`, `ml.phase.key`, `ml.phase.kind`, `ml.attempt`, `ml.rank`,
-`ml.world_size`; the step breakdown uses `ml.step.phase`, see 01 rule 9) →
+in OTLP (`ml.run.id`, `ml.attempt`, `ml.world_size`, and `ml.rank` on per-rank
+instruments; the step breakdown uses `ml.step.phase`, see 01 rule 9; the phase is joined
+from the ledger by run and attempt, so there is no phase attribute) →
 MLflow `MLFLOW_RUN_ID` / W&B `WANDB_RUN_ID` + `WANDB_RUN_GROUP` env on the pod spec →
 heuristics (CR name prefix, owner references, Kueue workload name). An observed job with
 no key becomes a single-phase run named after its CR, marked `observed`, and the
@@ -245,20 +246,45 @@ extended resource + GFD labels + DCGM series + DRA `ResourceSlice` device; Healt
 
 ## 9. Mapping to forge objects
 
-| Our entity                     | forge object                                                                                | Note                                                                  |
-| ------------------------------ | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| TrainingTemplate (+ phases)    | `forge.Training` (KCL, ml-workloads §3.1), extended with `phases`                           | template changes ship in a Release; a run records the release version |
-| Launch                         | recorded event, like a deploy; `forge ml run`, `MLService.LaunchRun`                        | production launches use the Changes approval pattern                  |
-| Run pinned for reproducibility | `Training.runs: [TrainingRun]` in KCL                                                       | ml-workloads decision 5 (b)                                           |
-| ModelVersion                   | release `Artifact{Kind: oci}` (ModelPack media types)                                       | `CarriedFrom` for model-only releases (decision 7)                    |
-| Alias per env                  | the release deployed to that env                                                            | no second ledger                                                      |
-| InferenceService               | `forge.Workload` kind `service` + `accelerators` + `model`, or `forge.Manifests` for KServe | adopt-only for existing KServe/vLLM                                   |
-| Revision verdict               | `forge obs check` + metric findings in `pkg/releasehealth`                                  | TTFT p95, ITL p95, queue p95, error share, tokens/s/accelerator       |
-| Split / online comparison      | **Changes** + `experimentstats` (binary today; continuous = decision 8 b)                   | —                                                                     |
-| Finding                        | `pkg/mlrecs` rule; dismissal = `forge.RecommendationDecision` (KCL)                         | fix = KCL diff / PR                                                   |
-| ML stack component             | `forge.MLStack` `Adopt` / `Install`                                                         | discover → adopt → install-only-missing                               |
-| Telemetry sources              | `forge.Telemetry` `MetricsScrape` (allow-listed), node agent, cluster collector             | vendor adapters as versioned data (decision 3)                        |
-| Code joins                     | runtime-context (`observe.ComponentChain`), release `Commits`                               | "step time +18% since commit abc"                                     |
+| Our entity                     | forge object                                                                                                                                                          | Note                                                                                      |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| TrainingTemplate (+ phases)    | `forge.Training` (KCL, ml-workloads §3.1), extended with `phases`                                                                                                     | template changes ship in a Release; a run records the release version                     |
+| Launch                         | recorded event, like a deploy; `forge ml run`, `MLService.LaunchRun`                                                                                                  | production launches use the Changes approval pattern                                      |
+| Run pinned for reproducibility | `Training.runs: [TrainingRun]` in KCL                                                                                                                                 | ml-workloads decision 5 (b)                                                               |
+| ModelVersion                   | release `Artifact{Kind: oci}` (ModelPack media types)                                                                                                                 | `CarriedFrom` for model-only releases (decision 7)                                        |
+| Alias per env                  | the release deployed to that env                                                                                                                                      | no second ledger                                                                          |
+| InferenceService               | `forge.Workload` kind `service` + `accelerators` + `model`, or a KServe `InferenceService` in `forge.Manifests` with `release_inputs` and the release-stamp option    | adopt-only for existing KServe/vLLM; the model is an `oci` artifact in the release ledger |
+| Revision verdict               | `forge obs check` + metric findings in `pkg/releasehealth`                                                                                                            | TTFT p95, ITL p95, queue p95, error share, tokens/s/accelerator                           |
+| Split / online comparison      | **Changes** + `experimentstats` (binary today; continuous = decision 8 b)                                                                                             | —                                                                                         |
+| Finding                        | `pkg/mlrecs` rule; dismissal = `forge.RecommendationDecision` (KCL)                                                                                                   | fix = KCL diff / PR                                                                       |
+| ML stack component             | `forge.MLStack` `Adopt` / `Install` (`forge.Install` with a pinned `forge.HelmChart`)                                                                                 | discover → adopt → install-only-missing                                                   |
+| Telemetry sources              | `forge.Telemetry` `MetricsScrape` (allow-listed), node agent, a generic, opt-in Kubernetes inventory and events capability on forge's existing collector (forge#2998) | vendor adapters as versioned data (decision 3)                                            |
+| Code joins                     | runtime-context (`observe.ComponentChain`), release `Commits`                                                                                                         | "step time +18% since commit abc"                                                         |
+
+### Object → existing OTel attribute or observability RPC first
+
+Every object that touches telemetry is joined by an existing OTel name where one exists.
+`ml.*` is used only for run, attempt, step and checkpoint. The full mapping, with
+stability, is in [01-metrics-inventory.md](01-metrics-inventory.md#attribute-mapping).
+
+| Object          | Join key                                                                  |
+| --------------- | ------------------------------------------------------------------------- |
+| Node            | `k8s.node.name`, `host.name`                                              |
+| Device          | `hw.id` with `hw.type = gpu`                                              |
+| Pod             | `k8s.pod.name`                                                            |
+| Job / workload  | `k8s.job.name`, `service.name`                                            |
+| Release         | `service.version`                                                         |
+| Model (serving) | `gen_ai.request.model`, plus the release ledger through `service.version` |
+| Run             | `ml.run.id`                                                               |
+| Attempt         | `ml.attempt`                                                              |
+| Step            | `ml.train.step*`                                                          |
+| Checkpoint      | `ml.checkpoint.*`                                                         |
+
+Telemetry reads go through control-plane `ObservabilityService` (`SearchLogs`,
+`ListTraces` / `GetTrace`, `GetMetric`, `GetFlamegraph`, `QueryPanel`) and the alerting
+`ListAlerts`, not through new `Ml*` read RPCs (control-plane#3772, in progress). The ML
+service keeps the ledger reads (runs, phases, attempts, checkpoints, lineage) and the
+write APIs.
 
 ## 10. Mapping to MLflow and W&B (import, never rebuild)
 

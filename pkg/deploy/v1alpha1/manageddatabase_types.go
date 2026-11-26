@@ -15,6 +15,7 @@ import (
 // +kubebuilder:validation:Enum=postgres
 type Engine string
 
+// EnginePostgres is PostgreSQL, run by CloudNativePG: the only engine.
 const EnginePostgres Engine = "postgres"
 
 // DeletionPolicy decides what deleting the resource does to the DATA.

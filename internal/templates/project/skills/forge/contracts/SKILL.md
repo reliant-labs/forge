@@ -228,7 +228,9 @@ method through the in-process chain assembled in the OWNED `observe_chain.go`
 (span, metrics, structured log, panic recovery). Add a method to `Service` and
 the wrapper appears on the next `forge generate`. `// forge:no-observe` on the
 constructor opts the package out; on one method, routes that method around the
-chain.
+chain. Lifecycle methods (`Run`/`Drain`/`Close`/`Ready(ctx) error`, a worker's
+`Start`/`Stop`, `Close() error`) go around the chain by default;
+`// forge:observe` on one routes it through.
 
 That decorator is the ONLY per-package observability codegen — request-scoped
 observability is Connect interceptors at the handler boundary

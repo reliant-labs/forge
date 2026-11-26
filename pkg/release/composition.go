@@ -52,10 +52,11 @@ func sameResource(a, b SnapshotResource) bool {
 	return reflect.DeepEqual(a, b)
 }
 
-// Compose validates scope/base integrity, overlays selected inventory, preserves
-// unselected spec bytes and provenance, and checks the complete dependency graph.
-// Admission and compatibility-report authority are verified by the caller; this
-// function checks exact subjects/policy and never treats absence as permission.
+// ComposeSnapshot validates scope/base integrity, overlays selected inventory,
+// preserves unselected spec bytes and provenance, and checks the complete
+// dependency graph. Admission and compatibility-report authority are verified
+// by the caller; this function checks exact subjects/policy and never treats
+// absence as permission.
 func ComposeSnapshot(in CompositionInput) (Snapshot, error) {
 	c := clone(in.Candidate)
 	if err := c.Validate(); err != nil {

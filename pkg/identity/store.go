@@ -65,6 +65,7 @@ type MemKeyStore struct {
 	SaveErr error
 }
 
+// Load returns a copy of the stored value, or (nil, nil) when none is stored.
 func (s *MemKeyStore) Load(_ context.Context, name string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -75,6 +76,7 @@ func (s *MemKeyStore) Load(_ context.Context, name string) ([]byte, error) {
 	return bytes.Clone(v), nil
 }
 
+// Save stores a copy of value, or returns SaveErr when it is set.
 func (s *MemKeyStore) Save(_ context.Context, name string, value []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -104,6 +106,7 @@ func (d DirKeyStore) path(name string) string {
 	return filepath.Join(d.Dir, url.PathEscape(name))
 }
 
+// Load reads the entry's file, or returns (nil, nil) when there is none.
 func (d DirKeyStore) Load(_ context.Context, name string) ([]byte, error) {
 	raw, err := os.ReadFile(d.path(name))
 	if errors.Is(err, os.ErrNotExist) {
@@ -115,6 +118,8 @@ func (d DirKeyStore) Load(_ context.Context, name string) ([]byte, error) {
 	return raw, nil
 }
 
+// Save replaces the entry's file atomically, mode 0600, creating Dir if
+// needed.
 func (d DirKeyStore) Save(_ context.Context, name string, value []byte) error {
 	return writeFileAtomic(d.path(name), value, 0o600)
 }
@@ -154,6 +159,7 @@ type Outputs interface {
 // OutputsFunc adapts a function to Outputs.
 type OutputsFunc func(ctx context.Context, out Output) error
 
+// Publish calls f.
 func (f OutputsFunc) Publish(ctx context.Context, out Output) error { return f(ctx, out) }
 
 // Output is everything a consumer of the instance is configured from.
@@ -290,6 +296,7 @@ type MachineOutput struct {
 // It is the dev publication: `.forge/identity/<name>.json`.
 type FileOutputs struct{ Path string }
 
+// Publish writes out as indented JSON to Path.
 func (f FileOutputs) Publish(_ context.Context, out Output) error {
 	raw, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {

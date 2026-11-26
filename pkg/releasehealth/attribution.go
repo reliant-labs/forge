@@ -47,13 +47,14 @@ const MinVersionShare = 0.5
 type LiveState string
 
 const (
-	// LiveUnknown: the promotion records no apply or cluster-rollout gate,
-	// so nothing says when it went live; its promoted_at stands in.
+	// LiveUnknown means the promotion records no apply or cluster-rollout
+	// gate, so nothing says when it went live; its promoted_at stands in.
 	LiveUnknown LiveState = "unknown"
-	// LiveShipped: an attempt shipped the release, at the time LiveAt returns.
+	// LiveShipped means an attempt shipped the release, at the time LiveAt
+	// returns.
 	LiveShipped LiveState = "shipped"
-	// LiveNotShipped: the promotion records deploy gates, and every attempt
-	// so far failed: its release has not run yet.
+	// LiveNotShipped means the promotion records deploy gates, and every
+	// attempt so far failed: its release has not run yet.
 	LiveNotShipped LiveState = "not_shipped"
 )
 

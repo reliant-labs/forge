@@ -18,7 +18,9 @@
 //     that opens one span per method, records call metrics and logs failures,
 //     through DefaultComponentChain or the package's own observe_chain.go
 //     seam. It is the default; `// forge:no-observe` on the package (or one
-//     method) opts out. compose.go constructs the package wrapped. Each
+//     method) opts out, and lifecycle methods (Run, Drain, Close, Ready)
+//     delegate directly unless marked `// forge:observe`. compose.go
+//     constructs the package wrapped. Each
 //     method carries a generated *Op (component_op.go), so its span also
 //     names its code (forge.op, code.function.name, code.file.path), is
 //     marked forge.slow when the call runs far above the op's own normal,

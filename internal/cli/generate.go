@@ -1123,8 +1123,9 @@ var pipelineSteps = generateSteps
 //	              them apart.
 //	Changed == 0  every emitter fired and the bytes already matched. This
 //	              is the normal, healthy re-run and stays a quiet one-liner.
-//	Changed > 0   real work landed. Name the counts; the file names are
-//	              already on screen from the per-step output above.
+//	Changed > 0   real work landed. Name the counts, then the files
+//	              (printChangedFiles): the per-step output above names
+//	              what each step rendered, not what changed.
 //
 // Whichever it is, a run that leaves the project not compiling, or that went
 // on past a failed step, says so on the same line and never under a green
@@ -1164,6 +1165,7 @@ func printGenerateOutcome(w io.Writer, sum checksums.WriteSummary, outside []str
 	}
 	fmt.Fprintf(w, "%s Code generation complete — %d file(s) written, %d changed (%s)%s.\n",
 		mark, sum.Touched, sum.Changed(), detail, but)
+	printChangedFiles(w, sum, flags.Verbose)
 	if len(outside) > 0 {
 		// Counted above, and named here: no forge writer recorded these, so
 		// either a step wrote them directly or another process did while

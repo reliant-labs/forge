@@ -1069,6 +1069,12 @@ type CIGateConfig struct {
 	// no package names still runs the full suite. Go-only. See
 	// internal/cigate/affected_readers.go.
 	AffectedReaders bool `yaml:"affected_readers,omitempty"`
+	// AffectedModules, when "auto", maps a change in a nested module the
+	// root go.mod replaces onto a local directory (`replace X => ./sdk/go`)
+	// to the root packages that import it, and runs the module's own
+	// affected tests in a test-mod-<dir> row. Empty (the default) sends any
+	// such change to the full suite, as before.
+	AffectedModules string `yaml:"affected_modules,omitempty"`
 	// AffectedReach caps how far affected mode follows the import graph.
 	// Unset is every test package whose binary links a changed package
 	// (full transitive reach). See CIGateAffectedReach.

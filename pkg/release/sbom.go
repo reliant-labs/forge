@@ -22,7 +22,7 @@ type SBOMRef struct {
 	Generator string `json:"generator,omitempty"` // "syft@v1.x.y"
 	Source    string `json:"source,omitempty"`    // image | registry | binary | lockfile | ci-provided
 	Referrer  string `json:"referrer,omitempty"`  // repo@sha256:… of the referrer manifest, when attached
-	Status    string `json:"status,omitempty"`    // ok | unavailable
+	Status    string `json:"status,omitempty"`    // ok | unavailable | not_applicable
 	Reason    string `json:"reason,omitempty"`
 }
 
@@ -49,15 +49,77 @@ const (
 	// SBOMStatusUnavailable records that no SBOM could be produced, and
 	// Reason says why, so a reader can say "not scanned" with a cause.
 	SBOMStatusUnavailable = "unavailable"
+	// SBOMStatusNotApplicable records that the artifact is not code that
+	// ships, so no SBOM describes it ([SBOMApplicable] is false), and
+	// Reason says what it is instead. It names no SBOM and never counts as
+	// a missing one.
+	//
+	// It RECORDS the rule; it is never an input to it. Coverage and the
+	// gates decide applicability from the artifact by [SBOMApplicable], so
+	// a ref claiming not_applicable on an image cannot take that image out
+	// of a gate. A forge that predates this value reads it as an unknown
+	// status it tolerates (see [SBOMRef]), and already leaves the same
+	// artifacts out of coverage by the same rule.
+	SBOMStatusNotApplicable = "not_applicable"
 )
 
 // SBOMFormatCycloneDXJSON is the format forge's own generator writes.
 const SBOMFormatCycloneDXJSON = "cyclonedx-json@1.6"
 
+// Why an artifact gets no SBOM: the Reason of an [SBOMStatusNotApplicable]
+// ref, one per class [SBOMNotApplicable] knows.
+const (
+	// SBOMNotApplicableSourcemaps is a frontend's source maps
+	// ([SourcemapsArtifactName]): debugging data, not code that runs.
+	SBOMNotApplicableSourcemaps = "source maps are debugging data, not code that runs"
+	// SBOMNotApplicableGitSource is a [KindGit] source pin: it names a
+	// commit, not bytes that ship. A site built from it is its own artifact,
+	// with its own SBOM (of the source's lockfile).
+	SBOMNotApplicableGitSource = "a git source pin names a commit, not bytes that ship"
+)
+
+// SBOMApplicable reports whether an SBOM describes the artifact: whether it
+// is code that ships (an image, a host binary, an npm package or a Go
+// module). It is the one rule the cut records SBOMs by and every coverage
+// count and gate judges by, so "N of N applicable" means the same thing
+// wherever it is printed.
+func SBOMApplicable(name string, a Artifact) bool {
+	_, na := SBOMNotApplicable(name, a)
+	return !na
+}
+
+// SBOMNotApplicable reports whether no SBOM describes the artifact, and why
+// (one of the SBOMNotApplicable* reasons). The inverse of [SBOMApplicable].
+func SBOMNotApplicable(name string, a Artifact) (reason string, ok bool) {
+	if _, maps := SourcemapsFrontend(name); maps {
+		return SBOMNotApplicableSourcemaps, true
+	}
+	switch a.Kind {
+	case KindOCI, KindFile, KindNPM, KindGoModule:
+		return "", false
+	case KindGit:
+		return SBOMNotApplicableGitSource, true
+	}
+	return fmt.Sprintf("an artifact of kind %q is not code that ships", a.Kind), true
+}
+
+// NotApplicableSBOMRef is the ref recorded on an artifact no SBOM describes,
+// and false for one an SBOM does.
+func NotApplicableSBOMRef(name string, a Artifact) (SBOMRef, bool) {
+	reason, ok := SBOMNotApplicable(name, a)
+	if !ok {
+		return SBOMRef{}, false
+	}
+	return SBOMRef{Status: SBOMStatusNotApplicable, Reason: reason}, true
+}
+
 // HasSBOM reports whether the ref names stored SBOM bytes. An
-// [SBOMStatusUnavailable] ref, which records only that there is none, does
-// not.
+// [SBOMStatusUnavailable] or [SBOMStatusNotApplicable] ref, which records
+// only that there is none, does not.
 func (s *SBOMRef) HasSBOM() bool { return s != nil && s.Digest != "" }
+
+// NotApplicable reports whether the ref records that no SBOM applies.
+func (s *SBOMRef) NotApplicable() bool { return s != nil && s.Status == SBOMStatusNotApplicable }
 
 // validate checks the invariants every value of the vocabulary shares. It
 // is deliberately silent on Source and Status values it does not know (see
@@ -74,6 +136,9 @@ func (s *SBOMRef) validate() error {
 	}
 	if s.Referrer != "" && s.Digest == "" {
 		return fmt.Errorf("sbom referrer %q needs a digest", s.Referrer)
+	}
+	if s.Status == SBOMStatusNotApplicable && s.Digest != "" {
+		return fmt.Errorf("sbom status %q names no SBOM, but carries digest %s", SBOMStatusNotApplicable, s.Digest)
 	}
 	return nil
 }

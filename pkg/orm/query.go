@@ -11,6 +11,8 @@ import (
 // Where* convenience helpers. Postgres semantics (ILIKE is native).
 type Operator string
 
+// The operators, each spelled as the SQL it compiles to. In and NotIn take a
+// slice; IsNull and IsNotNull take no value.
 const (
 	Eq              Operator = "="
 	NotEq           Operator = "!="
@@ -30,7 +32,9 @@ const (
 type Order string
 
 const (
-	Asc  Order = "ASC"
+	// Asc sorts ascending.
+	Asc Order = "ASC"
+	// Desc sorts descending.
 	Desc Order = "DESC"
 )
 

@@ -119,7 +119,10 @@ func (l LogEmitter) Summary(ds []Diagnostic) {
 // nil to Registry.Boot.
 type NopEmitter struct{}
 
-func (NopEmitter) Emit(Diagnostic)      {}
+// Emit drops the diagnostic.
+func (NopEmitter) Emit(Diagnostic) {}
+
+// Summary drops the summary.
 func (NopEmitter) Summary([]Diagnostic) {}
 
 // MultiEmitter fans Emit and Summary calls out to every base emitter

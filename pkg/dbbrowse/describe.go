@@ -25,6 +25,8 @@ type Database struct {
 // TableKind is the kind of relation a [Table] is.
 type TableKind string
 
+// The TableKind values, one per kind of relation the browser lists: Postgres's
+// pg_class relkind r, p, v, m and f.
 const (
 	KindTable            TableKind = "table"
 	KindPartitionedTable TableKind = "partitioned_table"

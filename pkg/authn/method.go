@@ -18,17 +18,17 @@ import (
 type Channel uint8
 
 const (
-	// ChannelUnknown: the interceptor could not tell where the credential
+	// ChannelUnknown means the interceptor could not tell where the credential
 	// came from — a Policy.ExtractToken whose token is in neither the
 	// Authorization nor the API-key header (a cookie included: see
 	// inferChannel), or a Policy.ExtractCredential that said so.
 	ChannelUnknown Channel = iota
-	// ChannelAuthorization: "Authorization: Bearer <credential>" — another
+	// ChannelAuthorization is "Authorization: Bearer <credential>" — another
 	// service, a CLI, a script, a test.
 	ChannelAuthorization
-	// ChannelAPIKeyHeader: the API-key header ("X-API-Key" by default).
+	// ChannelAPIKeyHeader is the API-key header ("X-API-Key" by default).
 	ChannelAPIKeyHeader
-	// ChannelCookie: a cookie — in a scaffolded project, the HttpOnly
+	// ChannelCookie is a cookie — in a scaffolded project, the HttpOnly
 	// session cookie native sign-in sets. Only a Policy.ExtractCredential
 	// reports it; it is never inferred. On its own it is not proof of a
 	// browser: see [Method.IsBrowserSession].

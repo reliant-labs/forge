@@ -83,6 +83,10 @@ func fullyDeclaredShape() release.Shape {
 			Reach: release.ExternalDatabaseReachDirect, Port: 6432,
 		}},
 		UptimeChecks: []release.ShapeUptimeCheck{{Name: "web", Target: "web", Method: "GET", IntervalSeconds: 60, TimeoutSeconds: 10, Source: release.UptimeSourceDefault}},
+		StatusPage: &release.ShapeStatusPage{
+			Title: "Shop status", Links: []release.ShapeStatusLink{{Label: "Help", URL: "https://shop.example.com/help"}},
+			Components: []release.ShapeStatusComponent{{Name: "Website", Checks: []string{"web"}}},
+		},
 		ReleaseProbes: []release.ShapeReleaseProbe{{
 			Target: "web", Kind: release.ReleaseProbeKindFrontend, Paths: []string{"/"}, Method: "GET",
 			RatePerMin: 4, TimeoutSeconds: 10, Source: release.ReleaseProbeSourceDefault,

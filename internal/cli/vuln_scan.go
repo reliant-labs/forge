@@ -131,7 +131,7 @@ func runVulnScan(ctx context.Context, out, errOut io.Writer, deps vulnDeps, dir 
 		if env.GradeNote != "" {
 			notes = append(notes, env.GradeNote)
 		}
-		in = vulnscan.DocumentInput{Env: opts.deployed, Release: rel.Version, Gate: env.Gate, GradedAs: env.GradedAs, Artifacts: rs.Artifacts, Now: now, Notes: notes}
+		in = vulnscan.DocumentInput{Env: opts.deployed, Release: rel.Version, Gate: env.Gate, GradedAs: env.GradedAs, Artifacts: rs.Artifacts, NotApplicable: rs.NotApplicable, Now: now, Notes: notes}
 	default:
 		source, name := "", ""
 		if opts.image != "" {

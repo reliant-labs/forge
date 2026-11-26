@@ -82,8 +82,8 @@ func declaredSpan(lines []string, raw string, d directive) string {
 	case TokenDisableNextLine:
 		t := nextLineTargets(lines, d.line)
 		return lineSpan(t[0], t[len(t)-1])
-	case TokenNolint:
-		if isDirectiveOnlyLine(raw, TokenNolint) {
+	case TokenNolint, TokenDisableLine:
+		if isDirectiveOnlyLine(raw, d.token) {
 			t := nextLineTargets(lines, d.line)
 			return lineSpan(t[0], t[len(t)-1])
 		}

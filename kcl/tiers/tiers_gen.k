@@ -23,6 +23,7 @@ schema Workload:
     """WorkloadSpec is everything that runs, as ONE declaration (ADR 0002)."""
     activeDeadlineSeconds?: int
     args?: [str]
+    autoscale?: Autoscale
     before?: [str]
     clusterRBAC?: [PolicyRule]
     command?: [str]
@@ -106,6 +107,7 @@ workload_json = lambda v: Workload -> {str:} {
     _d = {
         "activeDeadlineSeconds": v.activeDeadlineSeconds
         "args": v.args
+        "autoscale": autoscale_json(v.autoscale) if v.autoscale else Undefined
         "before": v.before
         "clusterRBAC": [policy_rule_json(_i) for _i in v.clusterRBAC] if v.clusterRBAC else Undefined
         "command": v.command
@@ -216,6 +218,29 @@ managed_database_json = lambda v: ManagedDatabase -> {str:} {
         "instances": v.instances
         "restore": database_restore_json(v.restore) if v.restore else Undefined
         "storageGiB": v.storageGiB
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
+schema Autoscale:
+    """Autoscale is the replica range of an autoscaled workload, and the CPU use it holds the pods to."""
+    cpuTargetPercent: int = 70
+    maxReplicas: int
+    minReplicas: int
+
+    check:
+        cpuTargetPercent >= 10, "Autoscale.cpuTargetPercent must be at least 10"
+        cpuTargetPercent <= 95, "Autoscale.cpuTargetPercent must be at most 95"
+        maxReplicas >= 1, "Autoscale.maxReplicas must be at least 1"
+        maxReplicas <= 10, "Autoscale.maxReplicas must be at most 10"
+        minReplicas >= 1, "Autoscale.minReplicas must be at least 1"
+        minReplicas <= 10, "Autoscale.minReplicas must be at most 10"
+
+autoscale_json = lambda v: Autoscale -> {str:} {
+    _d = {
+        "cpuTargetPercent": v.cpuTargetPercent
+        "maxReplicas": v.maxReplicas
+        "minReplicas": v.minReplicas
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }

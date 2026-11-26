@@ -223,3 +223,87 @@ type failedRowCP struct{}
 func (failedRowCP) Call(_ context.Context, _ string, _, out any) error {
 	return json.Unmarshal([]byte(`{"convergences":[{"promotionId":"promo-1","revision":"`+oldBundle+`","state":"failed","reason":"x"}]}`), out)
 }
+
+const managedSecretFailedStatus = `{"environmentVerdict":"DEPLOY_VERDICT_DIVERGED","deployments":[
+ {"deployment":{"id":"dep-api","name":"api","observed":{"state":"DEPLOY_OBSERVED_STATE_DEGRADED","lastError":"ManagedSecretFailed: env var DATABASE_URL: tenantsecret: not found: DATABASE_URL"}},"verdict":"DEPLOY_VERDICT_DIVERGED"}]}`
+
+// A FIRST deploy (the platform has applied no revision of the env, so there is
+// no previous revision for workload status to describe) whose workload keeps
+// reporting why it cannot start fails with that message once the grace runs
+// out, instead of sitting out the apply budget as "still applying".
+func TestHostedWaitFailsAFirstDeployWhoseWorkloadKeepsFailing(t *testing.T) {
+	cp := &appliedCP{revisions: []string{""}, staleStatus: managedSecretFailedStatus}
+	cp.fakeCP.status = readyStatus(digestA)
+	p := HostedProvider{Client: cp, PollInterval: time.Millisecond, ApplyBudget: 10 * time.Second,
+		FirstDeployFailureGrace: 30 * time.Millisecond,
+		Rollout:                 cluster.RolloutPolicy{Mode: cluster.RolloutWait, Timeout: 10 * time.Second},
+		RecordBundle:            func(context.Context, string) (string, error) { return newBundle, nil }}
+	var err error
+	start := time.Now()
+	out := captureStdout(t, func() {
+		err = p.Deploy(context.Background(), hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{}))
+	})
+	var failed *FirstDeployFailedError
+	if !errors.As(err, &failed) {
+		t.Fatalf("err = %v, want a FirstDeployFailedError\n%s", err, out)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("took %s: the wait sat out the apply budget instead of the grace", elapsed)
+	}
+	var pending *ApplyPendingError
+	if errors.As(err, &pending) || strings.Contains(err.Error(), "still applying") {
+		t.Errorf("err = %v, reported as still applying", err)
+	}
+	for _, want := range []string{"api", "ManagedSecretFailed", "DATABASE_URL", "FAILED"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want %q", err, want)
+		}
+	}
+	if n := strings.Count(out, "workload api reports: ManagedSecretFailed"); n != 1 {
+		t.Errorf("failure printed %d times, want once:\n%s", n, out)
+	}
+}
+
+// A first deploy whose workload fails briefly (the platform mints identity
+// secrets moments after an env's first deploy) and then applies is a success.
+func TestHostedWaitToleratesATransientFirstDeployFailure(t *testing.T) {
+	cp := &appliedCP{
+		revisions:        []string{"", "", "", newBundle},
+		staleStatus:      managedSecretFailedStatus,
+		statusAfterApply: readyStatus(digestA)(0),
+	}
+	cp.fakeCP.status = readyStatus(digestA)
+	p := HostedProvider{Client: cp, PollInterval: time.Millisecond, ApplyBudget: 10 * time.Second,
+		FirstDeployFailureGrace: 5 * time.Second,
+		Rollout:                 cluster.RolloutPolicy{Mode: cluster.RolloutWait, Timeout: 10 * time.Second},
+		RecordBundle:            func(context.Context, string) (string, error) { return newBundle, nil }}
+	var err error
+	out := captureStdout(t, func() {
+		err = p.Deploy(context.Background(), hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{}))
+	})
+	if err != nil {
+		t.Fatalf("deploy: %v\n%s", err, out)
+	}
+}
+
+// A REDEPLOY is never judged on workload status before the apply lands: it
+// may describe the previous revision.
+func TestHostedWaitDoesNotJudgeARedeployOnTheOldRevisionsFailure(t *testing.T) {
+	cp := &appliedCP{revisions: []string{oldBundle}, staleStatus: managedSecretFailedStatus}
+	cp.fakeCP.status = readyStatus(digestA)
+	p := HostedProvider{Client: cp, PollInterval: time.Millisecond, ApplyBudget: 100 * time.Millisecond,
+		FirstDeployFailureGrace: time.Millisecond,
+		Rollout:                 cluster.RolloutPolicy{Mode: cluster.RolloutWait, Timeout: 100 * time.Millisecond},
+		RecordBundle:            func(context.Context, string) (string, error) { return newBundle, nil }}
+	var err error
+	out := captureStdout(t, func() {
+		err = p.Deploy(context.Background(), hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{}))
+	})
+	var pending *ApplyPendingError
+	if !errors.As(err, &pending) {
+		t.Fatalf("err = %v, want still applying", err)
+	}
+	if strings.Contains(out, "ManagedSecretFailed") {
+		t.Errorf("the previous revision's failure leaked into the output:\n%s", out)
+	}
+}

@@ -14,28 +14,29 @@ import (
 type Kind string
 
 const (
-	// KindRefused: the request was refused before it reached the database —
-	// the lexical guard, an empty or oversized statement, or limits out of
+	// KindRefused means the request was refused before it reached the database
+	// — the lexical guard, an empty or oversized statement, or limits out of
 	// range. The request is wrong; retrying it unchanged cannot help.
 	KindRefused Kind = "refused"
-	// KindReadOnly: the database refused a write inside the read-only
+	// KindReadOnly means the database refused a write inside the read-only
 	// transaction. The guard let the statement through (or was bypassed); the
 	// transaction is the real boundary, and this is it holding.
 	KindReadOnly Kind = "read_only"
-	// KindPermission: the role may not read something the statement named
+	// KindPermission means the role may not read something the statement named
 	// (SQLSTATE 42501) — a column marked forge:secret, for example.
 	KindPermission Kind = "permission_denied"
-	// KindTimeout: the statement outran its timeout, or waited past the lock
-	// timeout.
+	// KindTimeout means the statement outran its timeout, or waited past the
+	// lock timeout.
 	KindTimeout Kind = "timeout"
-	// KindCanceled: the caller's context was canceled.
+	// KindCanceled means the caller's context was canceled.
 	KindCanceled Kind = "canceled"
-	// KindSQL: the database rejected the statement itself — a syntax error, an
-	// unknown column, a multi-statement string reaching the extended protocol.
+	// KindSQL means the database rejected the statement itself — a syntax
+	// error, an unknown column, a multi-statement string reaching the extended
+	// protocol.
 	KindSQL Kind = "sql_error"
-	// KindUnavailable: no connection, or the connection broke.
+	// KindUnavailable means no connection, or the connection broke.
 	KindUnavailable Kind = "unavailable"
-	// KindAudit: the [Auditor] failed. The rows are withheld.
+	// KindAudit means the [Auditor] failed. The rows are withheld.
 	KindAudit Kind = "audit_failed"
 )
 

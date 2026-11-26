@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/checksums"
 )
 
 // scaffoldSplitService is a two-owner service: the order lifecycle and the
@@ -215,6 +217,73 @@ func TestScaffoldTests_NeverReofferAnImplementedRPC(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(targetDir, ScaffoldTestFileName("CancelOrder"))); err != nil {
 		t.Errorf("a newly stubbed RPC must get its scaffold test: %v", err)
+	}
+}
+
+// TestScaffoldTests_RenamedFileIsNotReborn pins the rename the scaffold
+// header offers. Ranger's agents kept every real test in a file named
+// handlers_scaffold_<rpc>_test.go, afraid a rename would make the next
+// generate write the scaffold back. It must not, even when the RPC itself
+// is re-stubbed (its handler file deleted) — the one pass that offers a
+// scaffold test for an RPC that already has tests.
+func TestScaffoldTests_RenamedFileIsNotReborn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// ledger: the project has a forge.yaml, so the scaffold-once
+		// ledger records the birth. Without it (or after `forge project
+		// rescaffold` dropped the entry) only the package's own test
+		// files can say the RPC already has its test.
+		ledger bool
+	}{
+		{name: "with the scaffold-once ledger", ledger: true},
+		{name: "without a ledger entry", ledger: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			checksums.ResetScaffoldLedgerCache()
+			t.Cleanup(checksums.ResetScaffoldLedgerCache)
+			projectDir := t.TempDir()
+			if tc.ledger {
+				if err := os.WriteFile(filepath.Join(projectDir, "forge.yaml"), []byte("name: app\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			targetDir := filepath.Join(projectDir, "internal", "handlers", "admin")
+			svc := scaffoldSplitService()
+			if err := GenerateServiceStub(svc, targetDir); err != nil {
+				t.Fatalf("GenerateServiceStub: %v", err)
+			}
+
+			born := filepath.Join(targetDir, ScaffoldTestFileName("ShipOrder"))
+			body, err := os.ReadFile(born)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The header names the rename, so nobody has to guess it is allowed.
+			if !strings.Contains(string(body), "Rename it freely") || !strings.Contains(string(body), "rpc_ship_order_test.go") {
+				t.Errorf("scaffold header does not offer the rename to rpc_ship_order_test.go:\n%s", body)
+			}
+
+			// The owner renames it beside the handler, keeping its func name,
+			// then deletes the handler so forge re-stubs ShipOrder.
+			renamed := filepath.Join(targetDir, "rpc_ship_order_test.go")
+			if err := os.Rename(born, renamed); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(filepath.Join(targetDir, RPCHandlerFileName("ShipOrder"))); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := GenerateMissingHandlerStubs(svc, projectDir, targetDir, nil, nil); err != nil {
+				t.Fatalf("GenerateMissingHandlerStubs: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(targetDir, RPCHandlerFileName("ShipOrder"))); err != nil {
+				t.Fatalf("ShipOrder should have been re-stubbed: %v", err)
+			}
+			if _, err := os.Stat(born); err == nil {
+				t.Errorf("forge re-birthed %s beside the renamed %s — both declare TestShipOrder_Generated, so the package's tests no longer compile",
+					filepath.Base(born), filepath.Base(renamed))
+			}
+		})
 	}
 }
 

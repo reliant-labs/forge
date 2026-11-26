@@ -114,6 +114,13 @@ func goldenCases() []goldenCase {
 			w.Spec.Env = []v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "10s"}, {Name: "SHUTDOWN_TIMEOUT", Value: "1m"}}
 			return w
 		}()}},
+		// forge.Autoscale: the Deployment states no replicas, the HPA follows
+		// it, and the spread and the PDB key on maxReplicas.
+		{name: "autoscale", ws: []v1alpha1.Workload{func() v1alpha1.Workload {
+			w := scaffoldAPI()
+			w.Spec.Autoscale = &v1alpha1.Autoscale{MinReplicas: 2, MaxReplicas: 6}
+			return w
+		}()}},
 		{name: "restricted", profile: v1alpha1.ProfileRestricted, ws: restrictedSet()},
 		{name: "before_broadcast", ws: []v1alpha1.Workload{
 			scaffoldMigrate(),

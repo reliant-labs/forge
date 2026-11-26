@@ -195,6 +195,13 @@ func vulnSBOMPush(ctx context.Context, deps vulnDeps, opts vulnSBOMPushOptions, 
 	if err != nil {
 		return err
 	}
+	// The pre-read of which SBOMs the control plane records
+	// (GetReleaseVulnerabilities) needs vuln:read, which a session's token
+	// does not carry and whose refusal names no scope to elevate for: declare
+	// it, so a session is elevated before the read (declareVulnReadScope).
+	// The upload itself (RecordReleaseSBOM) is called with the credential as
+	// it is, as a cut calls it.
+	declareVulnReadScope(client)
 	f, err := readHostedVulnFeatures(ctx, client)
 	if err != nil {
 		return sbomPushReadError(env, "ask it which vulnerability features it serves", err)

@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
@@ -399,6 +402,103 @@ func TestParseSBOMOverrides(t *testing.T) {
 	for _, bad := range [][]string{{"nodigest"}, {"=x"}, {"a="}, {"a=" + sha("1"), "a=" + sha("2")}} {
 		if _, err := parseSBOMOverrides(bad); err == nil {
 			t.Errorf("%v accepted", bad)
+		}
+	}
+}
+
+// The push's pre-read of which SBOMs the control plane records
+// (GetReleaseVulnerabilities) needs vuln:read. A session credential's token
+// does not carry it, and the control plane's refusal ("missing vuln:read in
+// target organization") names no scope to elevate for, so the push declares
+// it: the session is exchanged for vuln:read before the read, and the upload
+// goes out on the session's own token. On cicd the undeclared read was
+// refused, every SBOM was sent blind, and the push said so in a note.
+func TestVulnSBOMPushElevatesForVulnReadBeforeThePreRead(t *testing.T) {
+	t.Parallel()
+	fake := &fakeVulnService{features: []string{hostedVulnFeatureFindings}, idempotent: true}
+	h := newPushHarness(t, fake)
+	api := h.put(cdxDoc(pushImage, sha("1"), "a"))
+	carry := h.put(cdxDoc(pushCarry, sha("4"), "c"))
+	site := h.put(cdxDoc(pushSite, sha("9"), "s"))
+	legacy := h.put(cdxDoc(pushNoSBOM, sha("5"), "l"))
+	h.index(map[string]string{pushCarry: carry, pushSite: site, pushNoSBOM: legacy})
+	fake.releaseVulns = map[string]map[string]any{"v1.0.0": {"releaseVersion": "v1.0.0", "artifacts": []map[string]any{
+		{"artifactName": pushImage, "sbomDigest": api},
+	}}}
+
+	var (
+		mu                      sync.Mutex
+		exchanges               []string
+		readBearers, sendBearer []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proc := strings.TrimPrefix(r.URL.Path, "/")
+		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		switch proc {
+		case "controlplane.v1.AccessTokenService/ExchangeToken":
+			var req struct {
+				Scopes []string `json:"scopes"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			mu.Lock()
+			exchanges = append(exchanges, bearer+" "+strings.Join(req.Scopes, ","))
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"secret": "rlat_vuln_read",
+				"token":  map[string]any{"expiresAt": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)},
+			})
+			return
+		case procGetReleaseVulnerabilities:
+			mu.Lock()
+			readBearers = append(readBearers, bearer)
+			mu.Unlock()
+			if bearer != "rlat_vuln_read" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"code":"permission_denied","message":"missing vuln:read in target organization"}`))
+				return
+			}
+		case procRecordReleaseSBOM:
+			mu.Lock()
+			sendBearer = append(sendBearer, bearer)
+			mu.Unlock()
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	h.deps.hostedClient = func(context.Context, vulnEnv) (cloudCaller, error) {
+		// A session, as the credential helper or `forge login` hands it
+		// over: no scope declared here; the push must declare its own.
+		return cloud.NewClient(cloud.Endpoint{Env: "prod", URL: srv.URL}, cloud.Credential{Token: "rlat_session", Source: cloud.SourceLogin}), nil
+	}
+
+	doc, code := h.push()
+	if code != 0 {
+		t.Fatalf("exit %d: %+v", code, doc)
+	}
+	for _, n := range doc.Notes {
+		if strings.Contains(n, "could not read which SBOMs") {
+			t.Errorf("the pre-read was refused: %s", n)
+		}
+	}
+	if a := statusOf(doc, pushImage); a.Status != sbomPushAlready || a.From != sbomFromControlPlane {
+		t.Errorf("api: %+v; want already recorded, read from the control plane", a)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(exchanges) != 1 || exchanges[0] != "rlat_session vuln:read" {
+		t.Errorf("exchanges %v; want the session exchanged once for vuln:read", exchanges)
+	}
+	if len(readBearers) != 1 || readBearers[0] != "rlat_vuln_read" {
+		t.Errorf("GetReleaseVulnerabilities bearers %v; want one read on the vuln:read token", readBearers)
+	}
+	if len(sendBearer) != 3 {
+		t.Errorf("RecordReleaseSBOM calls %d, want 3 (carry, site, legacy)", len(sendBearer))
+	}
+	for _, b := range sendBearer {
+		if b != "rlat_session" {
+			t.Errorf("an upload went out on %q, want the session's own token", b)
 		}
 	}
 }

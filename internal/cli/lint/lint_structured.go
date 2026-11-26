@@ -324,6 +324,8 @@ func (o lintStepOutcome) failedBeyondGap() bool {
 // The lint.rules check leads: a dial the run cannot honour is reported with
 // every verdict it would have changed.
 func collectLintOutcomes(rc *lintRunCtx) []lintStepOutcome {
+	// The deploy-tree lanes share one KCL render per env (lint_kcl_memo.go).
+	rc.ctx = withKCLRenderMemo(rc.ctx)
 	return append(lintRulesOutcomes(rc.cfg), collectLintOutcomesFrom(rc, lintPipeline())...)
 }
 
@@ -472,6 +474,8 @@ func collectTargetedOutcomes(
 	if len(lanes) == 0 {
 		return nil, false, nil
 	}
+	// Lanes named together share one KCL render per env (lint_kcl_memo.go).
+	ctx = withKCLRenderMemo(ctx)
 	outcomes := lintRulesOutcomes(cfg)
 	for _, lane := range lanes {
 		if progress != nil {

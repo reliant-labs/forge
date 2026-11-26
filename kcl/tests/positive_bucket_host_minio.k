@@ -11,16 +11,22 @@ container-free dev shape:
      the region, and the store KEYS of its root credentials;
   3. the rendered FileSecrets `generate`s those keys (hex), merged into the
      declared provider: an author's own spec for one of them wins, and every
-     other declared entry and field renders as declared.
+     other declared entry and field renders as declared;
+  4. a compose MinIO beside it is accepted, because a host MinIO named
+     `blobs` has keys of its own (BLOBS_ROOT_*, not the compose MinIO's
+     MINIO_ROOT_*): the compose one keeps its own buckets and literals, and
+     the host MinIO's buckets are not handed to it.
 """
 
 import forge
 import forge.workloads as fw
 
 _host = forge.BucketOnMinIO {infra = "blobs"}
+_compose = forge.BucketOnMinIO {port = 9123}
 _buckets = [
     forge.Bucket {name = "gtm-assets", runtime = _host, cors_origins = ["http://localhost:5173"]}
     forge.Bucket {name = "avatars", runtime = _host, public_read = True, cors_origins = ["http://localhost:3000", "http://localhost:5173"]}
+    forge.Bucket {name = "legacy", runtime = _compose}
 ]
 
 output = forge.render(forge.Bundle {
@@ -38,6 +44,7 @@ output = forge.render(forge.Bundle {
             env = forge.bucket_env("GTM_ASSETS", "gtm-assets")
             runtime = forge.OnHost {}
         }
+        forge.minio_workload(_compose, _buckets)
     ]
     secret_provider = forge.FileSecrets {
         path = "secrets/dev.yaml"
@@ -74,3 +81,8 @@ assert_generates_password = _gen["BLOBS_ROOT_PASSWORD"] == {bytes = 32, encoding
 assert_author_spec_wins = _gen["BLOBS_ROOT_USER"].bytes == 12 and _gen["BLOBS_ROOT_USER"].prefix == "dev" and _gen["BLOBS_ROOT_USER"].encoding == "hex"
 assert_keeps_author_generate = _gen["AUTH_API_KEY"].bytes == 24 and len(_gen) == 3
 assert_keeps_provider_fields = output.secret_provider.type == "file" and output.secret_provider.path == "secrets/dev.yaml"
+
+# 4. The compose MinIO beside it.
+_mc = [w for w in output.workloads if w.name == "minio"][0].runtime
+assert_compose_keeps_its_own = _mc.env.MINIO_BUCKETS == "legacy" and _mc.env.MINIO_PUBLIC_BUCKETS == ""
+assert_compose_keeps_literals = _mc.env.MINIO_ROOT_USER == "minioadmin" and _mc.env.MINIO_ROOT_PASSWORD == "minioadmin" and _mc.env.MINIO_PORT == "9123"

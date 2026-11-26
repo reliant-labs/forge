@@ -1,7 +1,9 @@
 """
-Negative test — a host MinIO and the compose MinIO (forge.minio_workload) in one env.
-The compose MinIO reads its root user from MINIO_ROOT_USER, the same store
-key a host MinIO named `minio` is generated under, so the pair is refused.
+Negative test — a host MinIO NAMED `minio` and the compose MinIO
+(forge.minio_workload) in one env. The compose MinIO reads its root user from
+MINIO_ROOT_USER, the same store key that host MinIO is generated under, so
+the pair is refused. (Another name, e.g. `blobs`, is accepted: see
+positive_bucket_host_minio.k.)
 """
 
 # expect: their root-credential keys collide

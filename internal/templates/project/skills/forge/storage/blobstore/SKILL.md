@@ -98,9 +98,12 @@ it holds dev files. The pin can never take a later fix, so a host MinIO is for
 dev data only; anything shared or long-lived belongs on `forge.BucketOnS3` or
 `forge.OnHosted`.
 
-Also do not mix the two MinIOs in one env: a host MinIO named `minio` and the
-compose `forge.minio_workload` both use the root-credential names
-`MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`, so render refuses the pair.
+A host MinIO can sit beside the compose `forge.minio_workload` (the host one
+serving host processes, the compose one pods and containers) unless the
+HostInfra is named `minio`: its keys would then be `MINIO_ROOT_USER` /
+`MINIO_ROOT_PASSWORD`, the names the compose MinIO reads too, so render
+refuses that pair. Name it something else (`blobs` gives `BLOBS_ROOT_*`), or
+pick one MinIO per env.
 
 `forge.Bucket` fields:
 

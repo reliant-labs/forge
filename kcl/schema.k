@@ -9698,13 +9698,14 @@ schema Bundle:
         # for the bucket's: the two must agree.
         len(_host_minio_region_mismatches(buckets, infra)) == 0, \
             "Bundle.buckets ${_host_minio_region_mismatches(buckets, infra)}: a BucketOnMinIO's region must be its host MinIO's (HostInfra.minio_region, default \"us-east-1\"), which is the region clients sign for"
-        # One MinIO shape per env. The compose MinIO reads its root user
-        # from MINIO_ROOT_USER, the very store key a host MinIO named
-        # `minio` is generated under, so beside each other one's credentials
-        # silently become the other's; and two servers serving one env's
-        # buckets is never the intent.
-        not any i in infra { i.engine == "minio" } or len(_compose_minio_names(workloads, buckets)) == 0, \
-            "Bundle runs MinIO both on the host (${[i.name for i in infra if i.engine == 'minio']}, forge.HostInfra) and in docker compose (${_compose_minio_names(workloads, buckets)}): their root-credential keys collide (MINIO_ROOT_USER / MINIO_ROOT_PASSWORD). Pick one per env: drop the forge.minio_workload and bind every bucket to forge.BucketOnMinIO {infra = ...}, or drop the minio HostInfra"
+        # The compose MinIO reads its root user from MINIO_ROOT_USER, the
+        # very store key a host MinIO named `minio` is generated under, so
+        # beside each other one's credentials silently become the other's.
+        # Any other host MinIO name has keys of its own (`blobs` ->
+        # BLOBS_ROOT_*) and may sit beside the compose MinIO: the host one
+        # serves host processes, the compose one pods and containers.
+        not any i in infra { i.engine == "minio" and _minio_root_secrets(i.name).user == "MINIO_ROOT_USER" } or len(_compose_minio_names(workloads, buckets)) == 0, \
+            "Bundle runs MinIO both on the host (HostInfra 'minio') and in docker compose (${_compose_minio_names(workloads, buckets)}), and their root-credential keys collide: a host MinIO named `minio` is generated under MINIO_ROOT_USER / MINIO_ROOT_PASSWORD, which the compose MinIO reads too. Rename the HostInfra (e.g. \"blobs\") so its keys are BLOBS_ROOT_*, or pick one MinIO per env"
         # A host MinIO's root credentials are generated into the env's
         # secret file, never committed: the env needs one.
         not any i in infra { i.engine == "minio" } or (secret_provider and secret_provider.type == "file"), \

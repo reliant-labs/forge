@@ -540,6 +540,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "type Service interface {\n\t// forge:no-observe\n\tHealthz() error\n}",
 		},
 		{
+			Name:      "forge:observe",
+			AppliesTo: "contract",
+			Effect:    "Routes one lifecycle method back through the generated observability decorator's chain. Lifecycle methods — Run, Drain, Close and Ready shaped `func(context.Context) error`, a worker's Start, Stop and RunContext, and io.Closer's `Close() error` — delegate directly by default, because a span around Run would last as long as the process and Ready is a probe called every few seconds. No effect on any other method; `forge:no-observe` wins over it.",
+			Placement: "above one interface method, or on its implementation's doc comment",
+			Example:   "type Service interface {\n\t// forge:observe\n\tReady(ctx context.Context) error\n}",
+		},
+		{
 			Name:      "forge:no-capture",
 			AppliesTo: "contract",
 			Effect:    "Keeps parameters out of the forge.forensics event a component span records when a call fails or runs slow. Forensics is redacted at generation time already (IDs, numbers and bools by value; other strings and collections by length; everything else by type); this drops the named parameters entirely, or every parameter when bare. forge.yaml `observability: {forensics: false}` turns capture off project-wide.",

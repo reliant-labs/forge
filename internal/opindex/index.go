@@ -504,8 +504,9 @@ func (pkg *loadedPackage) componentOps() []Op {
 
 // decoratorOps reads the op literals out of a generated decorator: every
 // method whose body routes through `<recv>.chain.Run(ctx, "<op>", …)` or
-// `<recv>.chain.Around(ctx, "<op>", …)`. A `// forge:no-observe` method
-// delegates directly, has no span, and so is no op. The wrapped interface is
+// `<recv>.chain.Around(ctx, "<op>", …)`. A `// forge:no-observe` method,
+// or a lifecycle method (Run, Drain, Close, Ready; exempt unless marked
+// `// forge:observe`), delegates directly, has no span, and so is no op. The wrapped interface is
 // the type of the decorator struct's `inner` field.
 func decoratorOps(f *ast.File) []wrappedMethod {
 	inner := map[string]string{} // decorator struct -> wrapped interface

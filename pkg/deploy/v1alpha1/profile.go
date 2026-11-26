@@ -170,6 +170,13 @@ var FieldProfiles = map[string]Profile{
 	"successfulJobsHistoryLimit": ProfileRestricted,
 	"failedJobsHistoryLimit":     ProfileRestricted,
 	"ttlSecondsAfterFinished":    ProfileRestricted,
+	// How a cron's ticks fire (overlap, lateness, time zone) only schedules
+	// the author's own runs. Restricted, but unreachable on hosted while
+	// schedule and kind cron stay Full: a field is admitted only beside a
+	// kind that is.
+	"concurrencyPolicy":       ProfileRestricted,
+	"startingDeadlineSeconds": ProfileRestricted,
+	"timeZone":                ProfileRestricted,
 	// The rollout strategy trades the author's OWN availability against
 	// running one version at a time. It reaches nothing outside their
 	// workload, so a hosted user decides it.

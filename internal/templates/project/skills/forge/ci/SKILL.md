@@ -281,6 +281,10 @@ before `forge lint` then (a scaffolded `release.yml` is the usual place);
 
 New or tightened lint rules warn for one release first: `ci/lint-rollout`.
 
+The golangci-lint rules the scaffolded `.golangci.yml` gates on, which gofmt
+and go vet do not check (goimports' three import groups, funlen's 80
+statements, the complexity caps), and the fix for each: `ci/golangci`.
+
 ## Linting the workflows themselves
 
 Forge has no dedicated CI-workflow analyzer. What covers the workflows today:

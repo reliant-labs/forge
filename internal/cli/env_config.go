@@ -53,6 +53,15 @@ type envConfigWorkload struct {
 	// secret store, sorted. The table masks them unless --show-secrets is
 	// given; --json carries their values, as scripts read them from it.
 	SecretVars []string `json:"secret_vars,omitempty"`
+	// Runtime is where the env runs the workload (host, compose, cluster,
+	// hosted, build-only); empty for a frontend.
+	Runtime string `json:"runtime,omitempty"`
+	// ListenPorts are the ports a long-running HOST workload binds in this
+	// env, resolved the way env up resolves them (a running stack's
+	// reservation, not a fresh guess). Absent for every other workload: a
+	// job, a worker with no listen port, or anything off the host binds no
+	// port on this machine, whatever a PORT variable in its Env says.
+	ListenPorts []int `json:"listen_ports,omitempty"`
 }
 
 // envConfigMissingSecret is one declared secret the store lacks: the
@@ -192,15 +201,16 @@ func reportMissingSecrets(w io.Writer, env string, report envConfigReport) {
 // launched with is worth reading back regardless of which lowering runs it.
 func collectEnvConfigWorkloads(e *KCLEntities) []envConfigWorkload {
 	var out []envConfigWorkload
-	add := func(name, kind string, vars []KCLEnvVar) {
-		out = append(out, envConfigWorkload{Name: name, Kind: kind, Env: envVarMap(vars)})
-	}
 	for _, w := range e.Workloads {
 		// A workload declares ONE env for every runtime (spec.env).
-		add(w.Name, w.Kind, w.EnvVars())
+		row := envConfigWorkload{Name: w.Name, Kind: w.Kind, Env: envVarMap(w.EnvVars()), Runtime: w.Runtime.Type}
+		if w.OnRuntime(RuntimeHost) && w.LongRunning() {
+			row.ListenPorts = w.HostPorts()
+		}
+		out = append(out, row)
 	}
 	for _, f := range e.Frontends {
-		add(f.Name, "frontend", f.EffectiveEnvVars())
+		out = append(out, envConfigWorkload{Name: f.Name, Kind: "frontend", Env: envVarMap(f.EffectiveEnvVars())})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Kind != out[j].Kind {
@@ -269,7 +279,7 @@ func renderEnvConfigTable(cmd *cobra.Command, report envConfigReport, showSecret
 		if i > 0 {
 			fmt.Fprintln(out)
 		}
-		fmt.Fprintf(out, "%s (%s)\n", w.Name, w.Kind)
+		fmt.Fprintf(out, "%s\n", envConfigHeading(w))
 		if len(w.Env) == 0 {
 			fmt.Fprintln(out, "  (no configuration declared)")
 			continue
@@ -297,6 +307,35 @@ func renderEnvConfigTable(cmd *cobra.Command, report envConfigReport, showSecret
 		}
 	}
 	return nil
+}
+
+// envConfigHeading is one workload's heading in the table: its name, kind
+// and runtime, and for a long-running host process the port(s) it binds.
+// The bind port is said outright because a PORT variable alone misleads: a
+// job or a worker is handed the project's PORT default (8080, the container
+// convention) and binds nothing, while the host api binds a port resolved at
+// launch — and a reader took the job's 8080 for the api's (Ranger friction
+// #6).
+//
+// The "name (kind)" prefix is unchanged from before, so a reader or script
+// that keyed on it still finds it.
+func envConfigHeading(w envConfigWorkload) string {
+	head := w.Name + " (" + w.Kind + ")"
+	var notes []string
+	if w.Runtime != "" {
+		notes = append(notes, "on "+w.Runtime)
+	}
+	if len(w.ListenPorts) > 0 {
+		ports := make([]string, len(w.ListenPorts))
+		for i, p := range w.ListenPorts {
+			ports[i] = fmt.Sprintf("localhost:%d", p)
+		}
+		notes = append(notes, "listens on "+strings.Join(ports, ", "))
+	}
+	if len(notes) == 0 {
+		return head
+	}
+	return head + " — " + strings.Join(notes, ", ")
 }
 
 // maskedSecret is how the table shows a secret-sourced value: that it is

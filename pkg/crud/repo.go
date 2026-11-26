@@ -199,6 +199,44 @@ func NewRepo[M any]() *Repo[M] {
 	return &Repo[M]{}
 }
 
+// ErrNoDatabase is what a Repo method returns, instead of panicking, when the
+// orm.Context it was handed has no database to run on: the Context is nil, or
+// its Bun() returned nil. errors.Is(err, ErrNoDatabase) holds on the returned
+// error; on the wire it is CodeInternal with a generic, client-safe message.
+//
+// A real handle never does either — orm.Client and orm.Tx always return a
+// live bun.IDB — so in practice it is a test double: the mock forge generates
+// for a Deps interface that embeds orm.Context (a store package's
+// MockDatabase, say) with BunFunc unset. A generated mock answers an unset
+// method that has an error result with contractkit.MockNotSet, but Bun has
+// no error result to refuse on, so the mock returns bun.IDB's zero value,
+// nil. Every Repo method used to call straight through it
+// (db.Bun().NewSelect()) and panic: the handler died mid-response, and the
+// client saw `unavailable: unexpected EOF` with nothing saying why. Worse,
+// the first such call panicked inside ensureMeta's sync.Once, which counts a
+// panic as done, so the package-level repo then ran every later call — a
+// real database's included — on empty metadata.
+//
+// The diagnostic is retained as a server-side cause, never as the wire
+// message: production handlers can also encounter a misconfigured handle.
+var ErrNoDatabase = errors.New("no database: the orm.Context is nil or its Bun() returned nil " +
+	"(a generated orm.Context mock, such as MockDatabase, with BunFunc unset?); " +
+	"give the test a real database (the generated harness's NewMigratedTestDB) or set BunFunc")
+
+// prepare is every exported query method's first step: it refuses a handle no
+// query can run on (ErrNoDatabase, as op's error) BEFORE ensureMeta, whose
+// sync.Once a nil handle would otherwise panic inside and poison, and then
+// derives the metadata.
+func (r *Repo[M]) prepare(db orm.Context, op string) error {
+	if db == nil || db.Bun() == nil {
+		// Keep operation and configuration details in the server-side cause.
+		cause := fmt.Errorf("%s %s: %w", op, strings.ToLower(r.modelType().Name()), ErrNoDatabase)
+		return svcerr.WithCause(svcerr.Internal("internal server error"), cause)
+	}
+	r.ensureMeta(db)
+	return nil
+}
+
 // modelType returns the (dereferenced) struct type of M.
 func (r *Repo[M]) modelType() reflect.Type {
 	var zero M
@@ -652,14 +690,18 @@ func (r *Repo[M]) columnExcludedFromSet(col string) bool {
 // handler shim used to pull from the generated db.<Entity>Columns var and
 // hand to pkg/crud for order_by validation. Derived from Bun's schema.
 func (r *Repo[M]) Columns(db orm.Context) []string {
-	r.ensureMeta(db)
+	if r.prepare(db, "columns") != nil {
+		return nil
+	}
 	return r.m.columns
 }
 
 // PkColumn is the primary-key column name (the List handler's cursor
 // column). Derived from Bun's schema.
 func (r *Repo[M]) PkColumn(db orm.Context) string {
-	r.ensureMeta(db)
+	if r.prepare(db, "pk column") != nil {
+		return ""
+	}
 	return r.m.pkColumn
 }
 
@@ -756,7 +798,9 @@ func (r *Repo[M]) fillULIDColumns(entity *M) {
 //     column's type and a ULID does not;
 //   - managed timestamps are stamped; nil array fields are normalized to {}.
 func (r *Repo[M]) Create(ctx context.Context, db orm.Context, entity *M) error {
-	r.ensureMeta(db)
+	if err := r.prepare(db, "create"); err != nil {
+		return err
+	}
 	ctx, span := r.startSpan(ctx, "Create")
 	defer span.End()
 
@@ -850,7 +894,9 @@ func (r *Repo[M]) Create(ctx context.Context, db orm.Context, entity *M) error {
 // misuse (forgetting to set the PK) instead of surfacing the caller's
 // mistake as a NOT NULL violation.
 func (r *Repo[M]) Upsert(ctx context.Context, db orm.Context, entity *M) error {
-	r.ensureMeta(db)
+	if err := r.prepare(db, "upsert"); err != nil {
+		return err
+	}
 	ctx, span := r.startSpan(ctx, "Upsert")
 	defer span.End()
 
@@ -904,7 +950,9 @@ func (r *Repo[M]) updatedAtStampValue(entity *M) any {
 // orm.ErrNoRows. The legacy-TEXT deleted_at filter is
 // applied; Bun-native soft delete auto-excludes tombstones from the SELECT.
 func (r *Repo[M]) Get(ctx context.Context, db orm.Context, id any) (*M, error) {
-	r.ensureMeta(db)
+	if err := r.prepare(db, "get"); err != nil {
+		return nil, err
+	}
 	ctx, span := r.startSpan(ctx, "Get", attribute.String("id", fmt.Sprint(id)))
 	defer span.End()
 
@@ -925,7 +973,9 @@ func (r *Repo[M]) Get(ctx context.Context, db orm.Context, id any) (*M, error) {
 // Only key's primary-key fields are read. A missing row is the repo's
 // not-found error (notFound).
 func (r *Repo[M]) GetByPK(ctx context.Context, db orm.Context, key *M) (*M, error) {
-	r.ensureMeta(db)
+	if err := r.prepare(db, "get"); err != nil {
+		return nil, err
+	}
 	ctx, span := r.startSpan(ctx, "Get")
 	defer span.End()
 
@@ -987,7 +1037,9 @@ func (r *Repo[M]) pkIdents() []any {
 // this package always pass their own clamped page size (MaxPageSize), so the
 // wire stays bounded.
 func (r *Repo[M]) List(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*M, error) {
-	r.ensureMeta(db)
+	if err := r.prepare(db, "list"); err != nil {
+		return nil, err
+	}
 	ctx, span := r.startSpan(ctx, "List")
 	defer span.End()
 
@@ -1006,7 +1058,9 @@ func (r *Repo[M]) List(ctx context.Context, db orm.Context, opts ...orm.QueryOpt
 
 // Count returns the number of matching rows under the same scope as List.
 func (r *Repo[M]) Count(ctx context.Context, db orm.Context, opts ...orm.QueryOption) (int64, error) {
-	r.ensureMeta(db)
+	if err := r.prepare(db, "count"); err != nil {
+		return 0, err
+	}
 	ctx, span := r.startSpan(ctx, "Count")
 	defer span.End()
 
@@ -1027,7 +1081,9 @@ func (r *Repo[M]) Count(ctx context.Context, db orm.Context, opts ...orm.QueryOp
 // needs an explicit WhereAllWithDeleted to see tombstones; the legacy-TEXT
 // path simply omits the deleted_at filter.
 func (r *Repo[M]) ListAll(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*M, error) {
-	r.ensureMeta(db)
+	if err := r.prepare(db, "list all"); err != nil {
+		return nil, err
+	}
 	ctx, span := r.startSpan(ctx, "ListAll")
 	defer span.End()
 
@@ -1079,7 +1135,9 @@ func (r *Repo[M]) scopeRead(q *bun.SelectQuery) {
 //
 // opts tune this one call; see Preserve and NoReadBack.
 func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M, opts ...UpdateOption) error {
-	r.ensureMeta(db)
+	if err := r.prepare(db, "update"); err != nil {
+		return err
+	}
 	var o updateOptions
 	for _, opt := range opts {
 		opt(&o)
@@ -1155,7 +1213,9 @@ func (r *Repo[M]) Update(ctx context.Context, db orm.Context, entity *M, opts ..
 // opts tune this one call. Preserve is a full-replace option and is
 // rejected here: the mask already names exactly what is written.
 func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, fields []string, opts ...UpdateOption) error {
-	r.ensureMeta(db)
+	if err := r.prepare(db, "update"); err != nil {
+		return err
+	}
 	var o updateOptions
 	for _, opt := range opts {
 		opt(&o)
@@ -1267,7 +1327,9 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 // write policy (forge:read-only, forge:immutable) decide which fields to
 // pass themselves.
 func (r *Repo[M]) UpdateWhere(ctx context.Context, db orm.Context, values *M, fields []string, filters ...orm.QueryOption) (int64, error) {
-	r.ensureMeta(db)
+	if err := r.prepare(db, "update where"); err != nil {
+		return 0, err
+	}
 	if values == nil {
 		return 0, fmt.Errorf("update %s where: nil values — pass a %s carrying the column values to write", r.m.table, r.m.entityName)
 	}
@@ -1660,7 +1722,9 @@ func appendCol(cols []string, c string) []string {
 // gives for the same id. See
 // requireRowTouched for why that, and not a silent success.
 func (r *Repo[M]) Delete(ctx context.Context, db orm.Context, id any) error {
-	r.ensureMeta(db)
+	if err := r.prepare(db, "delete"); err != nil {
+		return err
+	}
 	ctx, span := r.startSpan(ctx, "Delete", attribute.String("id", fmt.Sprint(id)))
 	defer span.End()
 
@@ -1724,7 +1788,9 @@ func (r *Repo[M]) Delete(ctx context.Context, db orm.Context, id any) error {
 // column, so it is how a COMPOSITE-key entity is deleted (Delete takes one
 // id). Soft delete and the not-found answer are Delete's.
 func (r *Repo[M]) DeleteByPK(ctx context.Context, db orm.Context, key *M) error {
-	r.ensureMeta(db)
+	if err := r.prepare(db, "delete"); err != nil {
+		return err
+	}
 	ctx, span := r.startSpan(ctx, "Delete")
 	defer span.End()
 

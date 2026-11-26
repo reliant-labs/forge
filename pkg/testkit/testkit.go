@@ -67,6 +67,8 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/auth"
 	"github.com/reliant-labs/forge/pkg/dbgrants"
+	"github.com/reliant-labs/forge/pkg/migratekit"
+	"github.com/reliant-labs/forge/pkg/mountkit"
 	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/orm"
 	"github.com/reliant-labs/forge/pkg/pgtest"
@@ -135,7 +137,7 @@ func NewPostgresDB(t testing.TB) orm.Context {
 // file).
 func NewMigratedPostgresDB(t testing.TB, migrations fs.FS) orm.Context {
 	t.Helper()
-	key, err := migrationsKey(migrations)
+	key, err := migrationsKey(migrations, upSQL)
 	if err != nil {
 		t.Fatalf("hash embedded migrations: %v", err)
 	}
@@ -166,13 +168,83 @@ func NewMigratedPostgresDB(t testing.TB, migrations fs.FS) orm.Context {
 	return client
 }
 
-// migrationsKey names a migration set for pgtest.NewFromTemplate: the file names
-// and bytes of every *.up.sql, so any edit, addition or rename builds a new
-// template and a stale one is never served.
-func migrationsKey(migrations fs.FS) (string, error) {
+// NewMigratedPostgresURL returns the DSN (a postgres:// URL) of a fresh,
+// isolated real-postgres database with the project's embedded migrations
+// applied — for code that connects by URL rather than taking an orm.Context:
+// the whole server's composition graph booted in process (it opens its own
+// pool from its config's DATABASE_URL), a second pool, a subprocess.
+//
+//	dsn := testkit.NewMigratedPostgresURL(t, forgedb.Source())
+//	cfg := config.Defaults()
+//	cfg.DatabaseUrl = dsn
+//
+// Unlike NewMigratedPostgresDB, the migrations are applied by pkg/migratekit,
+// the migrator a server runs at boot, with its applied record and read-only
+// grants. So a server root booted on the DSN with AUTO_MIGRATE on finds the
+// schema current and applies nothing, instead of replaying the chain onto
+// tables that already exist. migrations is laid out as for
+// NewMigratedPostgresDB: the SQL under "migrations/" when present (the
+// embedded `forgedb.Source()` layout), else at the root, in golang-migrate's
+// NNNN_name.up.sql naming.
+//
+// The chain runs once per migration set and every call clones it (pgtest's
+// templates), so the database costs a CREATE DATABASE. It is dropped via
+// t.Cleanup, after every other session on it is terminated.
+func NewMigratedPostgresURL(t testing.TB, migrations fs.FS) string {
+	t.Helper()
+	key, err := migrationsKey(migrations, func(string) bool { return true })
+	if err != nil {
+		t.Fatalf("hash embedded migrations: %v", err)
+	}
+	_, dir := migrationsRoot(migrations)
+	// A key of its own: a template built by the raw replay NewMigratedPostgresDB
+	// runs carries no applied record, and serving one here would make the
+	// server's boot migration replay the chain.
+	db, dsn, cleanup, err := pgtest.NewFromTemplate("migratekit-"+key, func(db *sql.DB, _ string) error {
+		if _, err := migratekit.Apply(context.Background(), db, migrations, dir); err != nil {
+			return &migrationError{file: "(migratekit.Apply over " + dir + ")", err: err}
+		}
+		return nil
+	})
+	if err != nil {
+		var me *migrationError
+		if errors.As(err, &me) {
+			t.Fatalf("apply embedded migrations: %v", err)
+		}
+		t.Fatalf("open test postgres: %v", err)
+	}
+	// The caller connects by DSN; this handle would only hold a session open.
+	if err := db.Close(); err != nil {
+		cleanup()
+		t.Fatalf("close test postgres pool before returning DSN: %v", err)
+	}
+	t.Cleanup(cleanup)
+	return dsn
+}
+
+// migrationsRoot is where the SQL of an embedded migration set sits: its
+// "migrations/" directory when that holds anything, else the FS root. The dir
+// it names is the path inside migrations, as migratekit takes it.
+func migrationsRoot(migrations fs.FS) (fs.FS, string) {
+	if sub, err := fs.Sub(migrations, "migrations"); err == nil {
+		if entries, err := fs.ReadDir(sub, "."); err == nil && len(entries) > 0 {
+			return sub, "migrations"
+		}
+	}
+	return migrations, "."
+}
+
+// upSQL selects the files NewMigratedPostgresDB runs.
+func upSQL(p string) bool { return strings.HasSuffix(p, ".up.sql") }
+
+// migrationsKey names a migration set for pgtest.NewFromTemplate: the names
+// and bytes of every file include selects (every *.up.sql, for the raw
+// replay; every file, grants included, for migratekit), so any edit, addition
+// or rename builds a new template and a stale one is never served.
+func migrationsKey(migrations fs.FS, include func(path string) bool) (string, error) {
 	h := sha256.New()
 	err := fs.WalkDir(migrations, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".up.sql") {
+		if err != nil || d.IsDir() || !include(p) {
 			return err
 		}
 		b, err := fs.ReadFile(migrations, p)
@@ -219,12 +291,7 @@ func applyUpMigrations(db *sql.DB, migrations fs.FS) error {
 }
 
 func runUpMigrations(db *sql.DB, migrations fs.FS) error {
-	root := migrations
-	if sub, err := fs.Sub(migrations, "migrations"); err == nil {
-		if entries, err := fs.ReadDir(sub, "."); err == nil && len(entries) > 0 {
-			root = sub
-		}
-	}
+	root, _ := migrationsRoot(migrations)
 	names, err := fs.Glob(root, "*.up.sql")
 	if err != nil {
 		return err
@@ -382,7 +449,9 @@ func NewConnectClient[C any](
 	handlerOpts ...connect.HandlerOption,
 ) (*httptest.Server, C) {
 	t.Helper()
-	opts := append([]connect.HandlerOption(nil), handlerOpts...)
+	// Production's JSON codec first (serverkit.Chain's), so a JSON request a
+	// test sends gets the error a client would; a handlerOpts codec wins.
+	opts := append([]connect.HandlerOption{mountkit.JSONCodecOption()}, handlerOpts...)
 	if warn := newWarnInvalidRequests(t); warn != nil {
 		opts = append(opts, connect.WithInterceptors(warn))
 	}

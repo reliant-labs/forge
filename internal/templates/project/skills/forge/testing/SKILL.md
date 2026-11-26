@@ -153,6 +153,7 @@ task test -- ./internal/handlers/users/... # only that package tree
 task test -- -v ./...                      # verbose; use when debugging
 task test -- -run TestCreate ./internal/handlers/users/...
 task test GOTESTRACE=                      # without the race detector
+task test:short -- -v ./internal/foo/...   # the inner loop, listing every test and skip
 ```
 
 The race detector is ON by default in `task test`. `Taskfile.yml` is yours —
@@ -197,10 +198,14 @@ func TestRendersProd(t *testing.T) {
 }
 ```
 
-`testkit.Slow` (`forge/pkg/testkit`) skips under `-short` and in the
-integration lane (`-tags=integration` also compiles the untagged tests, which
-`task test` already ran), and runs in `task test`. Its skip message is `why`
-plus where the test runs instead. A helper that does the slow work for several
+`testkit.Slow` (import `github.com/reliant-labs/forge/pkg/testkit`) skips
+under `-short` and in the integration lane (`-tags=integration` also compiles
+the untagged tests, which `task test` already ran), and runs in `task test`.
+So a green `task test:short` says nothing about a slow test: `go test` without
+`-v` prints no skip, and the package's `ok` line looks the same whether its
+slow tests passed or never ran. Prove one with `task test -- -run TestX
+./<pkg>/...`; `task test:short -- -v ./<pkg>/...` shows the skip. Its skip
+message is `why` plus where the test runs instead. A helper that does the slow work for several
 tests can call it with the test's `t`. `testkit.SlowSkipped()` answers the
 same question for a `TestMain` that builds something only slow tests use.
 Never call it from an integration-tagged test: it would skip in the only lane
@@ -244,7 +249,8 @@ testkit.Eventually(t, "the worker drains the queue", func() bool { return q.Len(
 reply := testkit.Receive(t, "the reply", replies) // a closed channel counts too
 ```
 
-`testkit.Eventually` and `testkit.Receive` (`forge/pkg/testkit`) return the
+`testkit.Eventually` and `testkit.Receive` (`github.com/reliant-labs/forge/pkg/testkit`;
+never hand-roll the poll loop) return the
 moment the event happens and fail only after `testkit.DefaultWaitTimeout`
 (30s, or `testkit.Within(d)`): a deadline a busy machine never reaches, which a
 passing test never pays for. A test with a `go test -timeout` nearer than that
@@ -258,7 +264,7 @@ field), or `testing/synctest`, whose clock is fake.
 | Rule | Flags | Does not flag |
 |---|---|---|
 | `forge-test-fixed-sleep` | `time.Sleep(d)` or a bare `<-time.After(d)` in a test body (a `*testing.T` / `testing.TB` func, a `t.Run` literal, a suite's `Test*` method) with more of the test after it | a sleep in a loop (a poll — the remedy), in a goroutine, fake or handler, as the last statement, right before a context `cancel()`, of at most 2ms (a timestamp tick), in a helper process that calls `os.Exit`, or inside `synctest` |
-| `forge-test-tight-deadline` | an event wait that FAILS the test after a constant deadline under 5s: a `select` case on `time.After` / a timer / a `context.WithTimeout` ctx whose body calls `t.Fatal`/`t.Error`/`Fail`; testify `Eventually`; a poll bounded by `time.Now().Add(d)`, `time.Since(start) < d`, or a counted loop of sleeps that can exit early | a negative assertion (expiry is the pass), a deadline of 5s or more, a duration the file does not spell as a constant |
+| `forge-test-tight-deadline` | an event wait that FAILS the test after a constant deadline under 5s: a `select` case on `time.After` / a timer / a `context.WithTimeout` ctx whose body calls `t.Fatal`/`t.Error`/`Fail`; testify `Eventually`; a poll bounded by `time.Now().Add(d)`, `time.Since(start) < d`, or a counted loop of sleeps that can exit early | a negative assertion (expiry is the pass), a fixed-duration workload with no early exit, a deadline of 5s or more, a duration the file does not spell as a constant |
 | `forge-test-wall-clock-bound` | a test that fails when real elapsed time passes a constant under 5s: `if time.Since(start) > d { t.Fatal }`, `assert.Less(t, elapsed, d)`, `assert.WithinDuration(t, time.Now(), x, d)` | a lower bound (`elapsed < backoff` → fail: load cannot make it fail) |
 
 A deliberate wait — a negative assertion written as a sleep, a test OF timing —
@@ -272,45 +278,15 @@ time.Sleep(100 * time.Millisecond)
 Trailing the line works too: `time.Sleep(d) // forge:lint-disable-line forge-test-fixed-sleep: <why>`.
 
 The rules warn in a project pinned below the release after the one that ships
-them, then gate.
+them, then gate. Load `testing/test-waits` for exactly what each flags, and for
+how to write a negative assertion, a fixed-duration workload or a latency-bound
+test so the rule agrees.
 
 ## Find testdata from the package directory, never from runtime.Caller
 
-`-trimpath` is forge's default build mode (the scaffolded Taskfile adds it to
-`GOFLAGS`), and under it `runtime.Caller` reports a module-relative path such as
-`example.com/app/internal/x/x_test.go`, not a file on disk. So a test that finds
-its testdata or the repository root from its own source path passes in a plain
-`go test` and fails in a trimmed one. `go test` runs each test in its package's
-source directory, so resolve paths against that instead:
-
-```go
-fixture, err := filepath.Abs("testdata/orders.json") // the package dir is the cwd
-
-// The module root: walk up from the cwd to the go.mod.
-root, _ := os.Getwd()
-for {
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
-		break
-	}
-	parent := filepath.Dir(root)
-	if parent == root {
-		t.Fatal("no go.mod above the package directory")
-	}
-	root = parent
-}
-```
-
-`forge lint` flags the other shape (the `caller-paths` lane, also
-`forge lint --caller-paths` alone), in every `.go` file:
-
-| Rule | Flags | Does not flag |
-|---|---|---|
-| `forge-runtime-caller-path` | a `runtime.Caller` call whose file result is kept in a variable (`_, file, _, ok := runtime.Caller(0)`) and used as anything but text: joined, passed to `filepath.Dir` or a helper, returned, stored in a field | the file discarded (`_`); a file only displayed (`filepath.Base`, or `fmt` / `log` / `slog` / `errors`) |
-
-A deliberate use is suppressed at its line with the reason
-(`// forge:lint-disable-next-line forge-runtime-caller-path: <why>`). The rule
-warns in a project pinned below v1.12.0, then gates; `lint.rules` raises or
-lowers it like any rule.
+Under `-trimpath`, forge's default, `runtime.Caller` reports a module path, not
+a file: resolve testdata and the module root from the cwd (the package
+directory). The recipe and the `caller-paths` lint lane: `testing/fixture-paths`.
 
 ## Don't hand-roll what forge already provides
 
@@ -349,6 +325,8 @@ is compiled into the default lane, where nothing skips it.
 - `testing/flow` — hand-written multi-entity RPC tests: seed the FK spine with `seedplan.SeedGraph`, drive the real service against a migrated DB, assert the derived result + the negative/gap case.
 - `testing/e2e` — full-stack flows behind `//go:build e2e`.
 - `testing/patterns` — copy-paste-ready table-driven templates for the four most common test shapes.
+- `testing/test-waits` — the test-waits lint rules, their 5s floor, and the escapes for negative assertions, workloads and latency-bound tests.
+- `testing/fixture-paths` — find testdata and the module root from the package directory, never from `runtime.Caller`.
 
 For Next.js / vite-spa / React frontends, this Go-flavored skill does NOT apply. Load the top-level `frontend-testing` skill instead — it covers Vitest + Testing Library patterns, the `mockTransport()` seam, and the four-state page coverage rule.
 <!-- @forge-only:end -->

@@ -151,6 +151,30 @@ func runRoot(ctx context.Context, deps Deps, root rootSpec) error {
 	})
 }
 
+// ServerConfig is the serverkit.Config a process runs with for cfg — the
+// projection runRoot applies — exported so an in-process test of the
+// composition graph boots the server root the way `{{.Name}} server` does.
+// Start from config.Defaults(), point its database URL at a database of the
+// test's own (testkit.NewMigratedPostgresURL(t, forgedb.Source())) and its
+// port at a free one (pgtest.ReserveLoopbackPort), then:
+//
+//	skCfg, err := cmd.ServerConfig(cfg)
+//	drainer := serverkit.NewDrainer(skCfg)
+//	g := &app.Graph{Ctx: ctx, Cfg: cfg, Log: logger, ServerCfg: skCfg,
+//		Probes: &serverkit.Probes{Drainer: drainer, Logger: logger}}
+//
+// and run the server root's method of g (graph_gen.go) in a goroutine, under
+// lifecyclekit.Policy{Drainer: drainer, Logger: logger}, until the test
+// cancels ctx. The test package imports this one, so it is an external test
+// package (package app_test). Change the projection in serverkitConfig, below.
+func ServerConfig(cfg *config.Config) (serverkit.Config, error) {
+{{- if .ConfigInputs}}
+	return serverkitConfig(cfg, rootConfigs{})
+{{- else}}
+	return serverkitConfig(cfg)
+{{- end}}
+}
+
 {{- if .ConfigInputs}}
 // serverkitConfig projects this project's typed *config.Config — and each
 // config the root's command loaded beside it (configs) — onto the

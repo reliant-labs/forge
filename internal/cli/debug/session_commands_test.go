@@ -797,4 +797,3 @@ func TestResolveShortFuncName_BothReceiverSpellings(t *testing.T) {
 		}
 	})
 }
-

@@ -517,13 +517,18 @@ func testUploadCoverageOmitted(l *testlocal.Lane, la *testlocal.Assembly, err er
 // results file as captured (secret-scrubbed) when it is a format the control
 // plane ingests raw, else forge's normalised document.
 func testUploadResults(l *testlocal.Lane, la *testlocal.Assembly) ([]byte, string, string, error) {
-	p := l.ResultsPath()
-	if p == "" {
+	if why := l.ResultsProblem(); why != "" {
+		// capture.json names a file outside the lane directory: an artifact
+		// of unreviewed code must not make this job read, and upload,
+		// anything but its own lane.
+		return nil, "", why, nil
+	}
+	if l.ResultsPath() == "" {
 		return nil, "", "the lane captured no results file", nil
 	}
 	switch l.Format {
 	case testreport.LaneFormatGoJSON, testreport.LaneFormatJUnit, testreport.LaneFormatVitest:
-		f, err := os.Open(p)
+		f, err := l.OpenResults()
 		if err != nil {
 			return nil, "", "", err
 		}

@@ -25,6 +25,7 @@ import (
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/templates"
 	"github.com/reliant-labs/forge/internal/toolpin"
+	"github.com/reliant-labs/forge/pkg/hostslot"
 )
 
 // lintFlags holds the flag values for the lint command.
@@ -320,7 +321,7 @@ func runLintCommand(cmd *cobra.Command, flags lintFlags, args []string) error {
 	// A full lint (golangci-lint, every frontend's eslint and tsc) is heavy:
 	// take a host heavy slot (pkg/hostslot) so it queues behind the other
 	// heavy jobs on this machine instead of slowing all of them down.
-	release, err := cmdutil.HoldHeavySlot(cmd.Context(), cmd.ErrOrStderr())
+	release, err := cmdutil.HoldHeavySlotInLane(cmd.Context(), cmd.ErrOrStderr(), lintSlotLane(flags.scope, paths))
 	if err != nil {
 		return err
 	}
@@ -342,6 +343,22 @@ func runLintCommand(cmd *cobra.Command, flags lintFlags, args []string) error {
 	// lint.rules, --scope and the gap policy mean the same thing in each
 	// (lint_structured.go, lint_rules.go).
 	return runLintStructured(cmd.Context(), flags, paths)
+}
+
+// lintSlotLane is the heavy-slot lane a run waits in. A run narrowed to named
+// paths — --scope, or Go package paths (`forge lint ./internal/x/...`) — is
+// the express lane's own example of work bounded to minutes: its Go lanes
+// run on those packages only and the whole-project lanes are skipped. In the
+// bulk lane it queued behind every hour-long whole-repo lint and test run on
+// the machine; on a shared box with every slot held, agents measured a
+// 15-second scoped lint at 2–4 minutes, nearly all of it waiting (Ranger
+// build, friction #10). A whole-project run stays bulk; FORGE_SLOT_LANE, when
+// set, decides either way (cmdutil.HoldHeavySlotInLane).
+func lintSlotLane(scope, paths []string) string {
+	if len(scope) > 0 || keepForPaths(paths) != nil {
+		return hostslot.LaneExpress
+	}
+	return ""
 }
 
 // registerLintFlags declares every `forge lint` flag and the visible /

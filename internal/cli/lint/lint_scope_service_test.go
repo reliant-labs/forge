@@ -2,6 +2,7 @@ package lint
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -70,6 +71,70 @@ func TestScopeReportsAServicesOtherHalf(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The real convention collector scans proto/ regardless of rc.paths or scope.
+// Exercise both dispatch paths so a fabricated finding cannot hide a regression
+// in collection, anchoring, filtering, or gating.
+func TestScopedConventionCollectorFindsServiceProto(t *testing.T) {
+	root := scopeFixture(t)
+	for rel, body := range map[string]string{
+		"proto/services/jobs/v1/jobs.proto": `syntax = "proto3";
+package jobs.v1;
+service JobService {
+  rpc RotateKey(RotateKeyRequest) returns (RotateKeyResponse);
+}
+message RotateKeyRequest {}
+message RotateKeyResponse {}
+`,
+		"gen/forge_descriptor/fixture.json": `{"services":[{"name":"JobService","package":"jobs.v1","ProtoFile":"services/jobs/v1/jobs.proto","methods":[{"name":"RotateKey","activity":{"mutating":true}}]}]}`,
+	} {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(root)
+	var convention linterStep
+	for _, step := range lintPipeline() {
+		if step.name == "forge convention lint" {
+			convention = step
+		}
+	}
+	if convention.collect == nil {
+		t.Fatal("convention lane missing from pipeline")
+	}
+	for _, paths := range [][]string{nil, {"internal/handlers/jobs"}, {"internal/handlers"}} {
+		scope, err := parseLintScope(root, paths)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rc := &lintRunCtx{ctx: context.Background(), cwd: root, paths: []string{"internal/handlers/jobs"}, scope: scope}
+		full := collectLintOutcomesFrom(rc, []linterStep{convention})
+		targeted, handled, err := collectTargetedOutcomes(rc.ctx, lintFlags{conventions: true}, rc.paths, root, nil, nil, scope, nil)
+		if err != nil || !handled {
+			t.Fatalf("targeted collection: handled=%v err=%v", handled, err)
+		}
+		for _, outcomes := range [][]lintStepOutcome{full, targeted} {
+			found := false
+			for _, o := range outcomes {
+				for _, f := range o.findings {
+					if f.Rule == "forgeconv-activity-declared" && f.File == "proto/services/jobs/v1/jobs.proto" {
+						found = true
+						if !o.gated || f.Severity != lintSevError {
+							t.Fatalf("scope %v did not gate real proto error: %+v", paths, o)
+						}
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("scope %v lost real activity finding: %+v", paths, outcomes)
+			}
+		}
 	}
 }
 

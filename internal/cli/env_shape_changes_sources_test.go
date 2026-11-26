@@ -197,18 +197,39 @@ func TestEnvShapeChanges_ReadsAtTheReleasesPinnedCommit(t *testing.T) {
 	if _, ok := got["pending-provider-copy"]; !ok {
 		t.Fatalf("changes = %v, want the pinned commit's declaration (the moved ref declares none)", got)
 	}
-	if want := []string{reliantRepo + "@main", reliantRepo + "@" + pinned}; !reflect.DeepEqual(src.calls, want) {
-		t.Errorf("resolved %v, want %v", src.calls, want)
+	if want := []string{reliantRepo + "@" + pinned}; !reflect.DeepEqual(src.calls, want) {
+		t.Errorf("resolved %v, want %v (never resolve the moving declared ref)", src.calls, want)
 	}
 
-	// A pin that names the commit the ref resolves to costs one resolution.
+	// A legacy pin with no repository still resolves its exact commit.
 	src.calls = nil
-	ctx = withChangeSourcePins(context.Background(), map[string]release.Source{"reliant-web": {Repo: reliantRepo, Commit: moved}})
+	ctx = withChangeSourcePins(context.Background(), map[string]release.Source{"reliant-web": {Commit: moved}})
 	if _, _, err := envShapeChanges(ctx, &strings.Builder{}, t.TempDir(), &KCLEntities{Frontends: []FrontendEntity{sourcedFrontend("reliant-web", reliantRepo, "main")}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(src.calls) != 1 {
 		t.Errorf("resolved %v, want one resolution", src.calls)
+	}
+}
+
+func TestEnvShapeChanges_RejectsMismatchedPinRepository(t *testing.T) {
+	for _, overridden := range []bool{false, true} {
+		src := &fakeChangeSources{t: t, root: t.TempDir(), over: map[string]bool{reliantRepo: overridden}}
+		useChangeSources(t, src)
+		otherRepo := "github.com/acme/other"
+		ctx := withChangeSourcePins(context.Background(), map[string]release.Source{
+			"reliant-web": {Repo: otherRepo, Commit: pinSHA},
+		})
+		_, _, err := envShapeChanges(ctx, &strings.Builder{}, t.TempDir(),
+			&KCLEntities{Frontends: []FrontendEntity{sourcedFrontend("reliant-web", reliantRepo, "main")}})
+		for _, want := range []string{`frontend "reliant-web"`, otherRepo, reliantRepo, "align"} {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("override=%v: error = %v, want %q", overridden, err, want)
+			}
+		}
+		if len(src.calls) != 0 {
+			t.Fatalf("resolved %v despite mismatched repository", src.calls)
+		}
 	}
 }
 

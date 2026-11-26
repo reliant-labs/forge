@@ -189,10 +189,16 @@ func sourceChangesDeclarations(ctx context.Context, r changeSourceResolver, fron
 
 // resolveChangeSource is the repository root of fe's source at the commit
 // its release pins (pin), else at its declared ref, and that checkout's
-// origin label. The declared ref is resolved first: it is the build's own
-// cache entry, so a pin that names the commit it resolved to costs no fetch.
+// origin label. Reject a mismatched repository before resolving anything:
+// reading the declared source would not describe the frontend the bundle ships.
 func resolveChangeSource(ctx context.Context, r changeSourceResolver, fe FrontendEntity, pin release.Source) (string, string, error) {
+	if pin.Repo != "" && pin.Repo != fe.Source.Repo {
+		return "", "", fmt.Errorf("the release pins repository %q but the frontend declares %q; align the frontend source and release pin", pin.Repo, fe.Source.Repo)
+	}
 	src := gitsource.Source{Repo: fe.Source.Repo, Ref: fe.Source.Ref}
+	if pin.Commit != "" {
+		src.Ref = pin.Commit
+	}
 	res, err := r.Resolve(ctx, src)
 	if err != nil {
 		return "", "", err
@@ -200,18 +206,9 @@ func resolveChangeSource(ctx context.Context, r changeSourceResolver, fe Fronten
 	if res.Overridden {
 		return res.Dir, fe.Source.Repo + " (local override)", nil
 	}
-	if pin.Commit != "" && (pin.Repo == "" || pin.Repo == fe.Source.Repo) && res.Commit != pin.Commit {
-		res, err = r.Resolve(ctx, gitsource.Source{Repo: fe.Source.Repo, Ref: pin.Commit})
-		if err != nil {
-			return "", "", fmt.Errorf("the release pins %s at %s: %w", fe.Source.Repo, pin.Commit, err)
-		}
-		if res.Commit == "" {
-			res.Commit = pin.Commit
-		}
-	}
 	at := res.Commit
 	if at == "" {
-		at = fe.Source.Ref
+		at = src.Ref
 	}
 	return res.Dir, fe.Source.Repo + "@" + changeSourceAt(at), nil
 }

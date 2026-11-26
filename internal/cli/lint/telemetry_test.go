@@ -1,6 +1,7 @@
 package lint
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -301,7 +302,7 @@ func TestTelemetryLaneJudgesARenderedEnv(t *testing.T) {
 		"deploy/kcl/kcl.mod":    secretsKCLMod,
 		"deploy/kcl/dev/main.k": telemetryMainK,
 	})
-	res := telemetryFindings(root, &config.ProjectConfig{})
+	res := telemetryFindings(context.Background(), root, &config.ProjectConfig{})
 	if !res.adopted || res.envs != 1 || res.targets != 1 || len(res.unrendered) != 0 {
 		t.Fatalf("adopted=%v envs=%d targets=%d unrendered=%v", res.adopted, res.envs, res.targets, res.unrendered)
 	}
@@ -320,7 +321,7 @@ func TestTelemetryLaneJudgesARenderedEnv(t *testing.T) {
 	// A project with no forge.Telemetry is not rendered.
 	clean := t.TempDir()
 	writeTree(t, clean, map[string]string{"deploy/kcl/dev/main.k": "this would not render\n"})
-	if res := telemetryFindings(clean, &config.ProjectConfig{}); res.adopted || len(res.findings) != 0 {
+	if res := telemetryFindings(context.Background(), clean, &config.ProjectConfig{}); res.adopted || len(res.findings) != 0 {
 		t.Errorf("a project without telemetry: %+v", res)
 	}
 }

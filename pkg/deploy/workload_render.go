@@ -13,6 +13,7 @@ import (
 
 	"github.com/jinzhu/inflection"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -47,8 +48,8 @@ import (
 //
 // Per kind:
 //
-//	service   Deployment + Service (+ PDB, PVC) + ServiceAccount [+ RBAC] [+ NetworkPolicy]
-//	worker    Deployment (+ PDB, PVC) + ServiceAccount [+ RBAC] [+ NetworkPolicy]
+//	service   Deployment (+ HPA) + Service (+ PDB, PVC) + ServiceAccount [+ RBAC] [+ NetworkPolicy]
+//	worker    Deployment (+ HPA) (+ PDB, PVC) + ServiceAccount [+ RBAC] [+ NetworkPolicy]
 //	operator  Deployment [+ Service when it declares ports] (+ PDB, PVC) + ServiceAccount
 //	          + Role + RoleBinding (config-read defaults, leases derived)
 //	          + ClusterRole + ClusterRoleBinding (CRD rules derived)
@@ -131,15 +132,17 @@ func UnenforceableSourceCIDRsError(p v1alpha1.Port) error {
 // RestrictedKinds is every object kind RenderWorkloads may emit under
 // ProfileRestricted: the objects that reach only the hosted user's own pods. No
 // RBAC kind is in it, ever. A gating job is an initContainer inside a
-// Deployment or Job, so it needs no kind of its own.
+// Deployment or Job, so it needs no kind of its own. A HorizontalPodAutoscaler
+// scales only the workload's own Deployment, within its declared range.
 var RestrictedKinds = map[string]bool{
-	"Deployment":            true,
-	"Service":               true,
-	"ServiceAccount":        true,
-	"PersistentVolumeClaim": true,
-	"NetworkPolicy":         true,
-	"PodDisruptionBudget":   true,
-	"Job":                   true,
+	"Deployment":              true,
+	"HorizontalPodAutoscaler": true,
+	"Service":                 true,
+	"ServiceAccount":          true,
+	"PersistentVolumeClaim":   true,
+	"NetworkPolicy":           true,
+	"PodDisruptionBudget":     true,
+	"Job":                     true,
 }
 
 func sortedKindNames(m map[string]bool) []string {
@@ -456,16 +459,26 @@ func (set *workloadSet) renderLongRunning(w *workload, ctx Context) ([]runtime.O
 		// against the grace, so the drain still gets its whole budget after.
 		pod.TerminationGracePeriodSeconds = new(grace + preStopSeconds(s))
 	}
-	if s.Replicas > 1 {
+	// The spread and the PDB are per pod SET, so an autoscaled workload keys
+	// them on its maximum: they stay put while the count moves, and neither
+	// does anything at one pod (a maxUnavailable-1 PDB never blocks a drain).
+	multiReplica := s.EffectiveMaxReplicas() > 1
+	if multiReplica {
 		pod.TopologySpreadConstraints = spreadConstraints(w.name)
 	}
 
-	replicas := s.Replicas
+	// An autoscaled Deployment states NO spec.replicas: the
+	// HorizontalPodAutoscaler writes it through the scale subresource, and a
+	// stated count would be applied over whatever it scaled to on every apply.
+	var replicas *int32
+	if s.Autoscale == nil {
+		replicas = new(s.Replicas)
+	}
 	dep := &appsv1.Deployment{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: objectMeta(w.name, ctx.Namespace, labels),
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
+			Replicas: replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: copyLabels(selector)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: copyLabels(labels), Annotations: s.PodAnnotations},
@@ -506,6 +519,9 @@ func (set *workloadSet) renderLongRunning(w *workload, ctx Context) ([]runtime.O
 	}
 	dep.Spec.ProgressDeadlineSeconds = new(DefaultProgressDeadlineSeconds)
 	objs := []runtime.Object{dep}
+	if s.Autoscale != nil {
+		objs = append(objs, horizontalPodAutoscaler(w.name, ctx.Namespace, labels, *s.Autoscale))
+	}
 
 	// expand.k:507-515: a service is dialled by name. So is an operator
 	// that declares ports: they are its webhook, metrics or API endpoint
@@ -530,8 +546,8 @@ func (set *workloadSet) renderLongRunning(w *workload, ctx Context) ([]runtime.O
 	}
 	// expand.k:272-282: a PDB above one replica, so a drain takes one at a
 	// time. Omitted at one replica, where it would be vacuous or block the
-	// drain forever.
-	if s.Replicas > 1 {
+	// drain forever. An autoscaled workload keys it on its maximum (above).
+	if multiReplica {
 		objs = append(objs, &policyv1.PodDisruptionBudget{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "policy/v1", Kind: "PodDisruptionBudget"},
 			ObjectMeta: objectMeta(w.name+"-pdb", ctx.Namespace, labels),
@@ -558,6 +574,77 @@ func (set *workloadSet) renderLongRunning(w *workload, ctx Context) ([]runtime.O
 		objs = append(objs, np)
 	}
 	return objs, nil
+}
+
+// The scaling behaviour an autoscaled workload's HorizontalPodAutoscaler
+// states (see horizontalPodAutoscaler).
+const (
+	// hpaScaleDownStabilizationSeconds is how long the autoscaler looks back
+	// before removing pods: it scales down only to the HIGHEST count any
+	// recommendation in the window asked for, so a dip in load does not
+	// drop pods that the next burst needs again.
+	hpaScaleDownStabilizationSeconds int32 = 300
+	// hpaPolicyPeriodSeconds is the window every scaling policy is rated
+	// over.
+	hpaPolicyPeriodSeconds int32 = 60
+	// hpaScaleUpPods is how many pods a scale-up may add per period beside
+	// doubling, so a workload at one or two pods can still grow by four.
+	hpaScaleUpPods int32 = 4
+)
+
+// horizontalPodAutoscaler renders an autoscaled workload's autoscaling/v2
+// HorizontalPodAutoscaler: named after the workload, scaling its Deployment
+// within the declared range on the pods' average CPU utilization.
+//
+// A Resource (pod-level) metric rather than ContainerResource, so a
+// sidecar's use counts against the pod request that covers it.
+//
+// The behaviour is STATED, NOT DEFAULTED, for the same reason as the
+// Deployment's rollingUpdate: an absent behaviour is filled in by the API
+// server, and a later change to Kubernetes' defaults would then change how
+// a running workload scales with nothing in its declaration having moved.
+// Scale-down waits out a 300s stabilization window and may then remove every
+// excess pod at once; scale-up has no window and may double the pods, or add
+// four, whichever is more, every 60s.
+func horizontalPodAutoscaler(name, namespace string, labels map[string]string, a v1alpha1.Autoscale) *autoscalingv2.HorizontalPodAutoscaler {
+	a = a.WithDefaults()
+	maxPolicy := autoscalingv2.MaxChangePolicySelect
+	return &autoscalingv2.HorizontalPodAutoscaler{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "autoscaling/v2", Kind: "HorizontalPodAutoscaler"},
+		ObjectMeta: objectMeta(name, namespace, labels),
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{APIVersion: "apps/v1", Kind: "Deployment", Name: name},
+			MinReplicas:    new(a.MinReplicas),
+			MaxReplicas:    a.MaxReplicas,
+			Metrics: []autoscalingv2.MetricSpec{{
+				Type: autoscalingv2.ResourceMetricSourceType,
+				Resource: &autoscalingv2.ResourceMetricSource{
+					Name: corev1.ResourceCPU,
+					Target: autoscalingv2.MetricTarget{
+						Type:               autoscalingv2.UtilizationMetricType,
+						AverageUtilization: new(a.CPUTargetPercent),
+					},
+				},
+			}},
+			Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{
+				ScaleUp: &autoscalingv2.HPAScalingRules{
+					StabilizationWindowSeconds: new(int32(0)),
+					SelectPolicy:               &maxPolicy,
+					Policies: []autoscalingv2.HPAScalingPolicy{
+						{Type: autoscalingv2.PercentScalingPolicy, Value: 100, PeriodSeconds: hpaPolicyPeriodSeconds},
+						{Type: autoscalingv2.PodsScalingPolicy, Value: hpaScaleUpPods, PeriodSeconds: hpaPolicyPeriodSeconds},
+					},
+				},
+				ScaleDown: &autoscalingv2.HPAScalingRules{
+					StabilizationWindowSeconds: new(hpaScaleDownStabilizationSeconds),
+					SelectPolicy:               &maxPolicy,
+					Policies: []autoscalingv2.HPAScalingPolicy{
+						{Type: autoscalingv2.PercentScalingPolicy, Value: 100, PeriodSeconds: hpaPolicyPeriodSeconds},
+					},
+				},
+			},
+		},
+	}
 }
 
 // renderJob renders a STANDALONE one-shot (expand.k:638-744).
@@ -616,11 +703,13 @@ func (set *workloadSet) renderJob(w *workload, ctx Context) ([]runtime.Object, e
 	return objs, nil
 }
 
-// renderCron renders a CronJob (expand.k:536-619). It sets no
-// concurrencyPolicy or startingDeadlineSeconds: Kubernetes' defaults (Allow,
-// none) apply. The history limits and the finished-Job TTL are the
-// workload's own, and unset leaves Kubernetes' defaults (3/1, no expiry).
-// A cron is never gated (capabilities.k:188-190).
+// renderCron renders a CronJob (expand.k:536-619). Every schedule field is
+// the workload's own and rendered only when declared: forge adds no default
+// of its own, so an unset concurrencyPolicy, startingDeadlineSeconds, timeZone
+// and history limit leaves Kubernetes' (Allow, none, the controller's zone,
+// 3/1), and a CronJob a cluster already runs does not change under a newer
+// forge. The jobTemplate carries the workload's labels, so each spawned Job
+// does. A cron is never gated (capabilities.k:188-190).
 func (set *workloadSet) renderCron(w *workload, ctx Context) []runtime.Object {
 	pod := set.podSpec(w, ctx, nil)
 	pod.RestartPolicy = corev1.RestartPolicyOnFailure
@@ -630,16 +719,25 @@ func (set *workloadSet) renderCron(w *workload, ctx Context) []runtime.Object {
 		ObjectMeta: objectMeta(w.name, ctx.Namespace, labels),
 		Spec: batchv1.CronJobSpec{
 			Schedule:                   w.spec.Schedule,
+			TimeZone:                   cronTimeZone(w.spec.TimeZone),
+			ConcurrencyPolicy:          batchv1.ConcurrencyPolicy(w.spec.ConcurrencyPolicy),
+			StartingDeadlineSeconds:    w.spec.StartingDeadlineSeconds,
 			SuccessfulJobsHistoryLimit: w.spec.SuccessfulJobsHistoryLimit,
 			FailedJobsHistoryLimit:     w.spec.FailedJobsHistoryLimit,
-			JobTemplate: batchv1.JobTemplateSpec{Spec: batchv1.JobSpec{
-				ActiveDeadlineSeconds:   w.spec.ActiveDeadlineSeconds,
-				TTLSecondsAfterFinished: w.spec.TTLSecondsAfterFinished,
-				Template: corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{Labels: copyLabels(labels), Annotations: w.spec.PodAnnotations},
-					Spec:       pod,
+			JobTemplate: batchv1.JobTemplateSpec{
+				// The Jobs the CronJob controller spawns carry the workload's
+				// labels too, so a Job (not only its pods) is selectable by
+				// name and kind: for status, for prune, and for attribution.
+				ObjectMeta: metav1.ObjectMeta{Labels: copyLabels(labels)},
+				Spec: batchv1.JobSpec{
+					ActiveDeadlineSeconds:   w.spec.ActiveDeadlineSeconds,
+					TTLSecondsAfterFinished: w.spec.TTLSecondsAfterFinished,
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: copyLabels(labels), Annotations: w.spec.PodAnnotations},
+						Spec:       pod,
+					},
 				},
-			}},
+			},
 		},
 	}
 	objs := []runtime.Object{cj}
@@ -648,6 +746,15 @@ func (set *workloadSet) renderCron(w *workload, ctx Context) []runtime.Object {
 		objs = append(objs, np)
 	}
 	return objs
+}
+
+// cronTimeZone is CronJob.spec.timeZone: nil when the workload names no
+// zone, so a cluster older than Kubernetes 1.27 never sees the field.
+func cronTimeZone(tz string) *string {
+	if tz == "" {
+		return nil
+	}
+	return &tz
 }
 
 // podSpec is the pod every kind shares: identity, hardening, the main

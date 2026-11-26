@@ -157,6 +157,34 @@ func TestPruneOwned_NeverTouchesWhatForgeDidNotStamp(t *testing.T) {
 	}
 }
 
+// Turning autoscale off: the render stops producing the workload's
+// HorizontalPodAutoscaler and states replicas again, and the prune deletes the
+// HPA, so nothing is left to fight the declared count (replicas_handover.go).
+//
+// Mutation that fails it: drop HorizontalPodAutoscaler from ownedPrunableKinds.
+func TestPruneOwned_DeletesTheHPAOfAWorkloadNoLongerAutoscaled(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake kubectl (this test binary) through many subprocesses; runs in task test")
+	}
+	cl := newFakeCluster(t)
+	hpa := ownedDoc("HorizontalPodAutoscaler", "autoscaling/v2", "openbao", ownedNS,
+		"spec:\n  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: openbao}\n  minReplicas: 2\n  maxReplicas: 4\n")
+	applyStamped(t, stream(storeDeploy, hpa))
+	next := stream(ownedDoc("Deployment", "apps/v1", "openbao", ownedNS, "spec: {replicas: 3}\n"))
+	applyStamped(t, next)
+
+	pruned, _, err := PruneOwned(context.Background(), ownedTestCtx, next, ownedTestOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pruned) != 1 || !strings.Contains(pruned[0], "openbao") || cl.has("HorizontalPodAutoscaler", ownedNS, "openbao") {
+		t.Errorf("pruned %v, want the HPA the render stopped producing", pruned)
+	}
+	if !cl.has("Deployment", ownedNS, "openbao") {
+		t.Error("the workload must survive")
+	}
+}
+
 // More removals than a deploy may make is a wrong render, and deletes nothing.
 func TestPruneOwned_RefusesAWholesaleRemoval(t *testing.T) {
 	if testing.Short() {

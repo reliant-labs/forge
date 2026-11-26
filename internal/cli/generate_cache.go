@@ -1562,6 +1562,13 @@ func (c *generateCacheRun) record(w io.Writer, pctx *pipelineContext, ran []GenS
 		fmt.Fprintf(w, "ℹ️  not recorded as a verified fixed point: %s failed; the next run runs every step.\n", strings.Join(pctx.SoftFailures, ", "))
 		return false
 	}
+	if len(pctx.foreignChanges) > 0 {
+		// Not the run's output, so not in sum — but the tree the run ended
+		// on is not one generate produced (a file created mid-run is not
+		// in the pre-run fingerprint, so movedDuringRun cannot see it).
+		fmt.Fprintf(w, "ℹ️  not recorded as a verified fixed point: %d file(s) forge does not own changed while generate ran; the next run runs every step.\n", len(pctx.foreignChanges))
+		return false
+	}
 	if pctx.validateCaveats.any() {
 		// The tree does not compile, so a skip that replays "nothing to do"
 		// would hide that from every run until something else moved it.

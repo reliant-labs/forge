@@ -33,10 +33,22 @@ var ownSlots atomic.Int32
 // holds while the parent waits for it: on a host with one bulk slot, a
 // deadlock (`forge generate` hung for 6h in E2E Scaffold, forge#948).
 func HoldHeavySlot(ctx context.Context, stderr io.Writer) (release func(), err error) {
+	return HoldHeavySlotInLane(ctx, stderr, "")
+}
+
+// HoldHeavySlotInLane is HoldHeavySlot for a command that knows which lane
+// its work belongs in (hostslot.LaneExpress for one bounded to minutes). An
+// explicit FORGE_SLOT_LANE in the environment still wins: the caller's
+// declaration is a default, and the person running the command may know
+// better. lane "" is FORGE_SLOT_LANE, else bulk.
+func HoldHeavySlotInLane(ctx context.Context, stderr io.Writer, lane string) (release func(), err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	s, err := hostslot.Acquire(ctx, hostslot.Heavy, hostslot.Options{Out: stderr, Env: os.Environ()})
+	if strings.TrimSpace(os.Getenv(hostslot.EnvLane)) != "" {
+		lane = ""
+	}
+	s, err := hostslot.Acquire(ctx, hostslot.Heavy, hostslot.Options{Out: stderr, Env: os.Environ(), Lane: lane})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, err

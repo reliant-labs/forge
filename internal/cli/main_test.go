@@ -163,12 +163,21 @@ func TestMain(m *testing.M) {
 	connectAPIGet = func(context.Context, string, string) ([]byte, error) {
 		return nil, errors.New("unit tests do not read a cluster's API server")
 	}
-	if dir, err := os.MkdirTemp("", "forge-cli-state-"); err == nil {
-		connectStateDir = func() string { return dir }
-		// Removed after the suite like every process-wide fixture; one was
-		// left behind per run (806 on one machine).
-		registerSharedTempDir(dir)
-	}
+	// The directory is made on first use, not here: every helper process a
+	// test launches (this binary re-executed with -test.run=TestHelper…) runs
+	// TestMain too, and most exit through os.Exit or a kill, never reaching
+	// the cleanup below. Made eagerly, each one left an empty
+	// forge-cli-state-* in /tmp (13,524 on one machine, ~8.7k a day). A
+	// helper never registers a cluster issuer, so it now makes nothing.
+	connectStateDir = sync.OnceValue(func() string {
+		dir, err := os.MkdirTemp("", "forge-cli-state-")
+		if err != nil {
+			// Never fall back to the project dir: that is the source tree.
+			panic(fmt.Sprintf("cli: make the connect state dir: %v", err))
+		}
+		registerProcessStateDir(dir)
+		return dir
+	})
 	// Nor does any test reach a deployed site: status probes a cloud env's
 	// shipped frontends at their real URLs.
 	probeDeployedURL = func(context.Context, string) bool { return false }
@@ -182,6 +191,12 @@ func TestMain(m *testing.M) {
 	if err := isolateLedgerHome(); err != nil {
 		fmt.Fprintf(os.Stderr, "cli: isolate the ledger home: %v\n", err)
 		os.Exit(1)
+	}
+	// From here on TestMain may own process state dirs, so every exit it
+	// takes removes them first: os.Exit runs no deferred cleanup.
+	exit := func(code int) {
+		removeProcessStateDirs()
+		os.Exit(code)
 	}
 	// A shell a host application spawned (a Reliant agent's) exports a
 	// credential helper. No test may reach the developer's real session
@@ -209,7 +224,7 @@ func TestMain(m *testing.M) {
 			func(context.Context, cloudcred.Request) (cloudcred.Token, error) {
 				return cloudcred.Token{Token: token, Source: "fake host session"}, nil
 			})
-		os.Exit(0)
+		exit(0)
 	}
 	if args, ok := pluginInvocation(os.Args[1:]); ok {
 		// Re-point os.Args at the plugin subcommand: cobra reads os.Args[1:],
@@ -217,16 +232,16 @@ func TestMain(m *testing.M) {
 		os.Args = append([]string{os.Args[0]}, args...)
 		if err := NewRootCmd().Execute(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			exit(1)
 		}
-		os.Exit(0)
+		exit(0)
 	}
 	checkHostTools := func() error { return nil }
 	if hostToolTripwireSetup != nil {
 		check, err := hostToolTripwireSetup()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "cli: install the host-tool tripwire: %v\n", err)
-			os.Exit(1)
+			exit(1)
 		}
 		checkHostTools = check
 	}
@@ -249,7 +264,7 @@ func TestMain(m *testing.M) {
 			fmt.Fprintf(os.Stderr, "cli: kept fixture tree %s\n", dir)
 		}
 	}
-	os.Exit(code)
+	exit(code)
 }
 
 // hostToolTripwireSetup is installed by hermetic_host_test.go, which only the
@@ -295,22 +310,64 @@ func sharedTempDirs() []string {
 func removeSharedTempDirs() error {
 	var firstErr error
 	for _, dir := range sharedTempDirs() {
-		_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return nil // best effort; RemoveAll reports what actually fails
-			}
-			if d.IsDir() {
-				_ = os.Chmod(p, 0o700)
-			} else if d.Type().IsRegular() {
-				_ = os.Chmod(p, 0o600)
-			}
-			return nil
-		})
-		if err := os.RemoveAll(dir); err != nil && firstErr == nil {
+		if err := removeTree(dir); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
+}
+
+func removeTree(dir string) error {
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // best effort; RemoveAll reports what actually fails
+		}
+		if d.IsDir() {
+			_ = os.Chmod(p, 0o700)
+		} else if d.Type().IsRegular() {
+			_ = os.Chmod(p, 0o600)
+		}
+		return nil
+	})
+	return os.RemoveAll(dir)
+}
+
+var processStateTemp struct {
+	sync.Mutex
+	dirs []string
+}
+
+// registerProcessStateDir hands TestMain a directory this process made for its
+// own state (the ledger home, the connect state dir), to remove on EVERY exit
+// TestMain takes: a pass, a failure, or a helper dispatch. Unlike a shared
+// fixture tree, nothing in one is worth keeping after a failed run; keeping
+// them is how /tmp filled with them. FORGE_KEEP_TEST_TREES still keeps them.
+func registerProcessStateDir(dir string) {
+	processStateTemp.Lock()
+	defer processStateTemp.Unlock()
+	processStateTemp.dirs = append(processStateTemp.dirs, dir)
+}
+
+func processStateDirs() []string {
+	processStateTemp.Lock()
+	defer processStateTemp.Unlock()
+	return append([]string(nil), processStateTemp.dirs...)
+}
+
+// removeProcessStateDirs deletes every registered process state dir, best
+// effort: it runs on the way out of the process, where a failure can only be
+// reported.
+func removeProcessStateDirs() {
+	keep := os.Getenv("FORGE_KEEP_TEST_TREES") != ""
+	for _, dir := range processStateDirs() {
+		if keep {
+			fmt.Fprintf(os.Stderr, "cli: kept state dir %s\n", dir)
+			continue
+		}
+		if err := removeTree(dir); err != nil {
+			fmt.Fprintf(os.Stderr, "cli: remove state dir: %v\n", err)
+		}
+	}
 }
 
 // requireProtoToolchain skips the calling test unless the real proto toolchain
@@ -417,6 +474,8 @@ func isolateLedgerHome() error {
 	if err != nil {
 		return err
 	}
-	registerSharedTempDir(dir)
+	// Process state, not a fixture worth keeping: removed on a failed run
+	// too, which is where the forge-test-ledger-* dirs in /tmp came from.
+	registerProcessStateDir(dir)
 	return os.Setenv(ledgerfile.DefaultHomeEnv, dir)
 }

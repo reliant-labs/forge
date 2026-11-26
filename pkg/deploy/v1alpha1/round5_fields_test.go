@@ -192,3 +192,64 @@ func TestCronJobHistory(t *testing.T) {
 	bad.TTLSecondsAfterFinished = ptr(int32(-1))
 	mustFail(t, bad.Validate(ProfileFull), "ttlSecondsAfterFinished must not be negative")
 }
+
+// TestCronScheduleFields: concurrencyPolicy (an enum), startingDeadlineSeconds
+// (10-86400) and timeZone (an IANA name, never "Local") are cron-only, and
+// Restricted-allowed for when cron is.
+func TestCronScheduleFields(t *testing.T) {
+	cron := WorkloadSpec{Kind: KindCron, Image: pinnedImage, Args: []string{"x"}, Schedule: "0 3 * * *",
+		ConcurrencyPolicy: CronConcurrencyForbid, StartingDeadlineSeconds: ptr(int64(300)), TimeZone: "America/New_York"}
+	mustPass(t, cron, ProfileFull)
+	for _, field := range []string{"concurrencyPolicy", "startingDeadlineSeconds", "timeZone"} {
+		if FieldProfiles[field] != ProfileRestricted {
+			t.Errorf("%s must be Restricted-allowed, got %s", field, FieldProfiles[field])
+		}
+	}
+	for _, p := range []CronConcurrencyPolicy{CronConcurrencyAllow, CronConcurrencyForbid, CronConcurrencyReplace} {
+		ok := cron
+		ok.ConcurrencyPolicy = p
+		mustPass(t, ok, ProfileFull)
+	}
+	for _, tz := range []string{"Etc/UTC", "UTC", "Europe/Berlin", "America/Argentina/Buenos_Aires", "Etc/GMT+5"} {
+		ok := cron
+		ok.TimeZone = tz
+		mustPass(t, ok, ProfileFull)
+	}
+	for _, d := range []int64{MinCronStartingDeadlineSeconds, MaxCronStartingDeadlineSeconds} {
+		ok := cron
+		ok.StartingDeadlineSeconds = ptr(d)
+		mustPass(t, ok, ProfileFull)
+	}
+
+	for _, c := range []struct {
+		mutate func(*WorkloadSpec)
+		want   string
+	}{
+		{func(s *WorkloadSpec) { s.ConcurrencyPolicy = "forbid" }, `concurrencyPolicy "forbid" must be Allow, Forbid or Replace`},
+		{func(s *WorkloadSpec) { s.StartingDeadlineSeconds = ptr(int64(9)) }, "startingDeadlineSeconds must be 10-86400 (got 9)"},
+		{func(s *WorkloadSpec) { s.StartingDeadlineSeconds = ptr(int64(86401)) }, "startingDeadlineSeconds must be 10-86400 (got 86401)"},
+		{func(s *WorkloadSpec) { s.TimeZone = "Local" }, `timeZone "Local" is the zone of whatever controller reads it`},
+		{func(s *WorkloadSpec) { s.TimeZone = "Mars/Olympus_Mons" }, `timeZone "Mars/Olympus_Mons" is not a known IANA time zone`},
+		{func(s *WorkloadSpec) { s.TimeZone = "../etc/passwd" }, `timeZone "../etc/passwd" must be an IANA time zone name`},
+		{func(s *WorkloadSpec) { s.TimeZone = "Europe/Berlin " }, `timeZone "Europe/Berlin " must be an IANA time zone name`},
+	} {
+		bad := cron
+		c.mutate(&bad)
+		mustFail(t, bad.Validate(ProfileFull), c.want)
+	}
+
+	job := WorkloadSpec{Kind: KindJob, Image: pinnedImage, Args: []string{"x"}}
+	for field, mutate := range map[string]func(*WorkloadSpec){
+		"concurrencyPolicy":       func(s *WorkloadSpec) { s.ConcurrencyPolicy = CronConcurrencyForbid },
+		"startingDeadlineSeconds": func(s *WorkloadSpec) { s.StartingDeadlineSeconds = ptr(int64(60)) },
+		"timeZone":                func(s *WorkloadSpec) { s.TimeZone = "Etc/UTC" },
+	} {
+		bad := job
+		mutate(&bad)
+		mustFail(t, bad.Validate(ProfileFull), field+` is not supported for kind "job"`)
+	}
+
+	// The hosted gate is the cron kind and its schedule, not these fields:
+	// a hosted cron is still refused whatever it declares.
+	mustFail(t, cron.Validate(ProfileRestricted), "schedule: not allowed under the restricted profile")
+}

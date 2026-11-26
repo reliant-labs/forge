@@ -73,8 +73,8 @@ type service struct {
 //
 // The marker above opts this adapter into the generated observability
 // decorator (routed through the owned observe_chain.go seam). Adapters do I/O,
-// so keep it. To opt out, replace it with `// forge:no-observe` on this line;
-// `// forge:no-observe` on a single Service method skips just that method.
+// so keep it. To opt out, replace it with a forge:no-observe marker line; the
+// same marker on a single Service method skips just that method.
 func New(deps Deps) (Service, error) {
 	if deps.HTTPClient == nil {
 		// Always supply a defaulted client so a minimal wiring (just a

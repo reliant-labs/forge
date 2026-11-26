@@ -358,7 +358,7 @@ message LedgerEntity {
 		"forge:optional-dep", "forge:optional-checked", "forge:constructor",
 		"forge:no-observe", "forge:service", "forge:exclude-contract",
 		"forge:external-component", "forge:not-a-component", "forge:outbound-io",
-		"forge:resolves-caller", "forge:no-capture",
+		"forge:resolves-caller", "forge:no-capture", "forge:observe",
 	} {
 		if !got[want] {
 			t.Errorf("markerSpecs missing recognized marker %q", want)
@@ -587,7 +587,9 @@ func TestAnnotations_GoMarkerNamesMatchRecognizers(t *testing.T) {
 		"forge:no-observe": true, "forge:service": true,
 		// Read by the decorator generator; contract.ParseNoCaptureComment is
 		// pinned against the registry in codegen's go_markers_test.go.
-		"forge:no-capture":       true,
+		"forge:no-capture": true,
+		// Likewise contract.IsObserveComment.
+		"forge:observe":          true,
 		"forge:exclude-contract": true, "forge:external-component": true,
 		"forge:not-a-component": true, "forge:outbound-io": true,
 		// Recognized by codegen.FindOptionalComponentMarker, pinned in

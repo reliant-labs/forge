@@ -3,6 +3,21 @@
 // An undeclared attribute panics in development and is dropped elsewhere, so a stray user id never
 // becomes a series per user. Add one by copying recordsCreated and exposing a function that names
 // what happened. The declarations are the schema (`forge obs metrics declared`). Depth: `observability`.
+//
+// A value per entity that can go away (a queue's depth per tenant, a job's state on the replica that
+// leads it) is a KeyedGauge, not an Int64Gauge: a synchronous gauge exports its last value forever,
+// while a KeyedGauge series stops the moment you Delete it.
+//
+//	var queueDepth = metrics.Default().Int64KeyedGauge(metrics.Spec{
+//		Name: "queue_depth", Unit: "{message}", Description: "Messages waiting, per tenant.", Since: "v0.1.0",
+//		Attributes: []metrics.Attribute{
+//			{Key: "tenant"},
+//		},
+//	})
+//	queueDepth.Set(ctx, n, attribute.String("tenant", id)) // on change
+//	queueDepth.Delete(attribute.String("tenant", id))      // the tenant left this replica
+//
+// A value cheapest to read when asked for is an Int64ObservableGauge with a callback.
 package metrics
 
 import (

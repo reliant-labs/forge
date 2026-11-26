@@ -214,6 +214,10 @@ type pipelineContext struct {
 	// preRun is the work tree as it was before the first step wrote: the
 	// compile check reads what changed since (writeScopeOf).
 	preRun *workTreeSnapshot
+	// foreignChanges are the files that changed during the run that forge
+	// neither owns nor wrote (completeWriteSummary): not counted as the
+	// run's output, but the tree moved, so it is no fixed point.
+	foreignChanges []string
 
 	// Verbose toggles per-step skip messages. See pipelineFlags.Verbose
 	// for the rationale; consumed by the gate-loop in runGeneratePipelineFlags.

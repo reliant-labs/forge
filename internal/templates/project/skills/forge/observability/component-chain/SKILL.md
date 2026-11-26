@@ -260,6 +260,15 @@ than one `WithSuccessSampling`, the last one wins.
 - **Opt ONE method out** — `// forge:no-observe` on that interface method's doc
   comment. The decorator still satisfies the interface, but that method
   delegates straight to the inner impl, around the chain.
+- **Lifecycle methods are exempt by default** — `Run`, `Drain`, `Close` and
+  `Ready` shaped `func(context.Context) error` (what the composition graph
+  supervises), a worker's `Start`, `Stop` and `RunContext`, and io.Closer's
+  `Close() error` delegate directly, so a long-running component's `Run` is
+  not one span and one log line lasting the whole process, and a readiness
+  probe is not a span every few seconds. Name AND signature must match: a
+  business `Run(ctx, job) (Result, error)` is observed. `// forge:observe` on
+  a lifecycle method routes it back through the chain (`forge:no-observe`
+  wins over it).
 - **Handler packages are never wrapped** — they return a concrete `*Service`
   and otelconnect already owns the RPC edge; wrapping would change the
   `Components` field type.

@@ -743,13 +743,19 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// Read the write ledger BEFORE dropping the journal — it is the record
 	// of what forge's writers did — and check it against the pre-run
 	// fingerprint, which sees every write, journaled or not.
-	summary, outside := completeWriteSummary(checksums.SummarizeWrites(ctx.AbsPath), ctx.AbsPath, preRun)
+	var unstampable map[string]string
+	if ctx.Checksums != nil {
+		unstampable = ctx.Checksums.Unstampable
+	}
+	summary, outside, foreign := completeWriteSummary(checksums.SummarizeWrites(ctx.AbsPath), ctx.AbsPath, preRun, unstampable)
+	ctx.foreignChanges = foreign
 	checksums.CommitRollback()
 	if err := os.RemoveAll(filepath.Join(ctx.AbsPath, failedGenerateDir)); err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  Warning: could not clean up %s: %v\n", failedGenerateDir, err)
 	}
 	fmt.Println()
 	printGenerateOutcome(os.Stdout, summary, outside, flags, len(steps), totalSteps, runCaveatsOf(ctx))
+	printForeignChanges(os.Stdout, foreign)
 	printLeftAlone(os.Stdout, checksums.LeftAloneThisRun())
 	printExcludedSkips(os.Stdout, checksums.TakeExcludedSkips(), generateVerbose)
 	printUnrestoredExcluded(os.Stdout, excludeUnrestored)
@@ -1062,13 +1068,24 @@ func selectPipelineSteps(flags pipelineFlags) (steps []GenStep, total int, err e
 //
 // A nil snapshot (the tree could not be listed) leaves sum as the journal
 // alone reported it.
-func completeWriteSummary(sum checksums.WriteSummary, root string, pre *workTreeSnapshot) (checksums.WriteSummary, []string) {
+//
+// Not every file that moved is generate's, though. A shared checkout has
+// other writers — an editor, another agent — and a hand-written file one of
+// them saved while generate ran showed up as generate output: "64 file(s)
+// written … 1 of them changed outside forge's writers:
+// pkg/rangerclient/watcher_test.go", a test file forge neither owns nor
+// wrote. So a change the journal does not hold is generate's only when the
+// file is one forge owns (changedFileIsForges). The rest come back as
+// foreign: not counted, named apart by printForeignChanges, and the run is
+// not recorded as a fixed point (generateCacheRun.record), since the tree
+// moved under it either way.
+func completeWriteSummary(sum checksums.WriteSummary, root string, pre *workTreeSnapshot, unstampable map[string]string) (_ checksums.WriteSummary, outside, foreign []string) {
 	if pre == nil {
-		return sum, nil
+		return sum, nil, nil
 	}
 	changed, ok := pre.changedSince(root, nil)
 	if !ok {
-		return sum, nil
+		return sum, nil, nil
 	}
 	counted := map[string]bool{}
 	for _, set := range [][]string{sum.Created, sum.Updated, sum.Deleted} {
@@ -1076,9 +1093,12 @@ func completeWriteSummary(sum checksums.WriteSummary, root string, pre *workTree
 			counted[rel] = true
 		}
 	}
-	var outside []string
 	for _, rel := range changed {
 		if counted[rel] {
+			continue
+		}
+		if !strings.HasPrefix(rel, ".forge/") && !changedFileIsForges(root, rel, unstampable) {
+			foreign = append(foreign, rel)
 			continue
 		}
 		sum.Touched++
@@ -1099,7 +1119,45 @@ func completeWriteSummary(sum checksums.WriteSummary, root string, pre *workTree
 	sort.Strings(sum.Created)
 	sort.Strings(sum.Updated)
 	sort.Strings(sum.Deleted)
-	return sum, outside
+	return sum, outside, foreign
+}
+
+// changedFileIsForges reports whether rel, a file that changed during the
+// run without passing through forge's journaled writers, is one forge owns
+// and so plausibly wrote: it carries forge's certification marker, or it is a
+// comment-incapable output forge certifies by body hash (unstampable). Go's
+// generated-code header alone does not establish forge ownership; external
+// generators' writes are accounted for by their journal/capture instead. A
+// file that is gone or unreadable cannot be judged, and stays counted, as
+// every such change was before.
+//
+// A hand-written file is never forge's here: every forge write to one (a
+// scaffold birth, a reconciled compose.go, go.mod under tidy) goes through
+// the journal or an external tool's capture, so it is counted before this
+// is asked.
+func changedFileIsForges(root, rel string, unstampable map[string]string) bool {
+	if _, ok := unstampable[rel]; ok {
+		return true
+	}
+	content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil {
+		return true
+	}
+	return checksums.Verify(content) != checksums.NoMarker
+}
+
+// printForeignChanges names the files completeWriteSummary found changed
+// during the run that forge neither owns nor wrote. They are not in the
+// counts above them, and saying so is the point: the line used to list
+// another agent's test file as if generate had written it.
+func printForeignChanges(w io.Writer, foreign []string) {
+	if len(foreign) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "ℹ️  %d file(s) changed while generate ran that no forge writer wrote, not counted above: %s\n",
+		len(foreign), strings.Join(foreign, ", "))
+	fmt.Fprintf(w, "   forge does not own them; another process changed them (an editor, another agent in this checkout, "+
+		"or a generate hook writing an output it does not declare).\n")
 }
 
 // pipelineSteps is the step plan runGeneratePipelineFlags executes —
@@ -1128,8 +1186,9 @@ var pipelineSteps = generateSteps
 //	              them apart.
 //	Changed == 0  every emitter fired and the bytes already matched. This
 //	              is the normal, healthy re-run and stays a quiet one-liner.
-//	Changed > 0   real work landed. Name the counts; the file names are
-//	              already on screen from the per-step output above.
+//	Changed > 0   real work landed. Name the counts, then the files
+//	              (printChangedFiles): the per-step output above names
+//	              what each step rendered, not what changed.
 //
 // Whichever it is, a run that leaves the project not compiling, or that went
 // on past a failed step, says so on the same line and never under a green
@@ -1169,10 +1228,12 @@ func printGenerateOutcome(w io.Writer, sum checksums.WriteSummary, outside []str
 	}
 	fmt.Fprintf(w, "%s Code generation complete — %d file(s) written, %d changed (%s)%s.\n",
 		mark, sum.Touched, sum.Changed(), detail, but)
+	printChangedFiles(w, sum, flags.Verbose)
 	if len(outside) > 0 {
-		// Counted above, and named here: no forge writer recorded these, so
-		// either a step wrote them directly or another process did while
-		// generate ran. Either way the tree moved, and the reader decides.
+		// Counted above, and named here: files forge owns that no forge
+		// writer recorded, so a step most likely wrote them directly.
+		// Files forge does not own are not among them: printForeignChanges
+		// names those apart, uncounted.
 		fmt.Fprintf(w, "   %d of them changed outside forge's writers: %s\n", len(outside), strings.Join(outside, ", "))
 	}
 }

@@ -54,6 +54,8 @@ func TestCreateUser(t *testing.T) {
 
 Scaffold contract: forge-generated rows assert `WantErr: connect.CodeUnimplemented` and are SELF-DESTRUCTING — they fail the moment the handler is implemented, forcing real `Check`/`WantErr` assertions to replace them. There is deliberately no "any outcome" mode in `pkg/tdd`: every row must be able to fail.
 
+Renaming the scaffold file: `handlers_scaffold_<rpc>_test.go` is only the birth name. Once it holds real tests, rename it (`rpc_<rpc>_test.go`, beside the handler `rpc_<rpc>.go`) or delete it. `.forge/scaffolded/` records that forge wrote it, so `forge generate` never writes it again — not even when the RPC is re-stubbed (a renamed file may keep its `Test<Rpc>_Generated` func). The next run lists the old path once as "absent on purpose"; nothing to do. `forge project rescaffold <path>` is the only way to get a fresh one.
+
 When to use: validating a single handler's request/response/error contract. This is the default unit-test shape for any RPC. The scaffold-once, user-owned CRUD test (`handlers_crud_test.go`) drives the same in-process service against a real migrated DB — `<pkg>.NewTest<Svc>(t, <pkg>.WithDB(db))`, then `svc.Create<Entity>(ctx, connect.NewRequest(<pkg>.NewCreate<Entity>Request(t, db, 0)))`. (`<pkg>.NewTest<Svc>Server(t)` exists too, returning an `httptest.Server` + typed client, for tests that need the wire. Its server checks each request's protovalidate rules as production does; for now it only logs a violation (`go test -v` shows it) and lets the request through, and a later release rejects it with `invalid_argument` as production does. Pass `<pkg>.WithRequestValidation()` (or `testkit.ValidateRequests()` to `testkit.NewConnectClient`) to reject now.) A handler whose `Deps` declares its entity's generated store (`Widgets db.WidgetStore`, `service-layer`) runs the same CRUD ops through that field, and the harness gives it two answers: by default the real store over the test database (the lifecycle test above is unchanged), or the generated double you pass for a test with no database at all — `<pkg>.NewTest<Svc>(t, <pkg>.WithWidgetsDeps(<pkg>.Deps{Widgets: &<pkg>.StubWidgets{GetWidgetByIDFunc: …}}))`, asserting calls with `CallCount`. An unprogrammed method answers `testkit.StubNotConfigured`, never a nil error. A handler's own access checks live in the handler, so exercise them the same way as any other branch: drive the handler with claims that hold — or lack — what the check requires via `<pkg>.AuthedContext(t, testkit.WithRoles(...), testkit.WithOrgID(...))` and assert the `CodePermissionDenied` / `CodeNotFound` outcome.
 
 ## Pattern 2: Contract test (use `tdd.TableContract`)
@@ -214,6 +216,7 @@ The `pkg/tdd` library exports:
 | `tdd.WithTimeout(d)` | deadlined `context.Context` for `Case.Ctx` |
 | `app.AuthedContext(t, opts...)` | claims-bearing `Case.Ctx` (generated re-export of `testkit.AuthedContext`) |
 | `app.NewMigratedTestDB(t)` / `testkit.NewMigratedPostgresDB(t, fs)` | real postgres with embedded `db/migrations` applied — `NewTest<X>`'s default database once the project has a migration; call it yourself and pass `app.WithDB(db)` when the test seeds rows on the same database (migrations apply verbatim; a migration postgres rejects fails loudly) |
+| `testkit.NewMigratedPostgresURL(t, forgedb.Source())` | the same migrated, isolated database, as a DSN, for code that connects by URL: the whole server booted in process (below), a second pool, a subprocess. Applied by `migratekit`, so a server booting on it with AUTO_MIGRATE finds the schema current |
 | `<pkg>.WithConfig(cfg)` | the config `NewTest<X>` hands the component, typed as its `Deps.Config`: the root `*config.Config` (default `config.Defaults()`) or its own block or per-process config `*config.<Block>` (default `config.Defaults<Block>()`), each the config Load yields with nothing set |
 | `tdd.SetupMockDB(t)` | real-postgres `*sql.DB` (pkg/pgtest; no driver import needed) |
 | `seedplan.SeedGraph(t, db, "<table>")` | populate a migrated DB: seeds the table + its FK ancestors as one connected spine, every value already satisfying the schema's CHECK/enum/length constraints (`testing/flow`) |
@@ -236,6 +239,37 @@ constraint, then returns `g.PK("<parent>")` for the ids your RPC needs. Reach
 for it before writing a `CreateX` chain. Hand-written rows are still right when
 the test turns on a SPECIFIC value (an accepted estimate, an overdue invoice)
 — then name every enum explicitly, e.g. `Status: "ESTIMATE_STATUS_ACCEPTED"`.
+
+### The whole server in one test
+
+To test the real composition graph — every service behind forge's auth chain,
+the workers, the probes — boot the server root in process. `cmd.ServerConfig`
+(scaffolded into `cmd/<bin>/cmd/serve.go`) is the projection every process runs
+under, so the test builds the `app.Graph` the way `<bin> server` does. The test
+imports the cmd package, so it is an external test package (`package app_test`):
+
+```go
+port, _ := pgtest.ReserveLoopbackPort()
+cfg := config.Defaults()
+cfg.DatabaseUrl = testkit.NewMigratedPostgresURL(t, forgedb.Source())
+cfg.Port = int32(port)
+skCfg, err := cmd.ServerConfig(cfg)
+if err != nil {
+	t.Fatal(err)
+}
+drainer := serverkit.NewDrainer(skCfg)
+ctx, cancel := context.WithCancel(context.WithoutCancel(t.Context()))
+g := &app.Graph{Ctx: ctx, Cfg: cfg, Log: testkit.DiscardLogger(), ServerCfg: skCfg,
+	Probes: &serverkit.Probes{Drainer: drainer, Logger: testkit.DiscardLogger()}}
+done := make(chan error, 1)
+go func() { done <- g.RunServer(ctx, lifecyclekit.Policy{Drainer: drainer, Logger: testkit.DiscardLogger()}) }()
+t.Cleanup(func() { cancel(); _ = testkit.Receive(t, "server shutdown", done) })
+testkit.Eventually(t, "server ready", func() bool { /* GET http://127.0.0.1:<port>/readyz == 200 */ })
+```
+
+Call `testkit.Slow(t, "boots the whole server")` first when it runs over ~2s.
+A project whose serve.go predates `ServerConfig` adds it beside
+`serverkitConfig`: `func ServerConfig(cfg *config.Config) (serverkit.Config, error) { return serverkitConfig(cfg) }`.
 
 Forge's scaffolders emit Pattern 1 (unit; plus CRUD integration when entities exist) and Pattern 2 (contract) automatically. Hand-write Pattern 3 / Pattern 4 — those don't fit a generic helper.
 

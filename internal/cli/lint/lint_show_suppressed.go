@@ -329,7 +329,7 @@ func relSlash(root, path string) string {
 func renderSuppressionsText(w io.Writer, entries []declaredSuppression, scope *lintScope) {
 	where := "this project"
 	if scope != nil {
-		where = scope.String()
+		where = scope.summary()
 	}
 	if len(entries) == 0 {
 		_, _ = fmt.Fprintf(w, "No suppressions declared in %s.\n", where)

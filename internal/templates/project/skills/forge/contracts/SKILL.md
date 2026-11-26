@@ -56,7 +56,7 @@ Three categories of internal package, three answers:
 | **Multi-impl with strategy pattern** (pluggable backends — local vs S3 storage, JWT vs Clerk auth) | Hand-written `contract.go` | The interface IS the abstraction; multiple implementations satisfy it, so it cannot be derived from one of them. Adapter, client and eventbus scaffolds still write `contract.go`. |
 | **Pure utility** (string formatters, math helpers, no I/O / time / state) | Optional — see "Pure-utility packages" below | Nothing meaningful to mock. |
 
-The contract linter enforces this. By default, every `internal/` package with exported methods needs a contract: a `contract.go` or a `//forge:contract` type. Everything below that says "`contract.go`" about lint behaviour applies equally to a marked type.
+The contract linter enforces this. Every package in the module's root `internal/` tree with exported methods needs a contract: a `contract.go` or a `//forge:contract` type (`requirecontract`). Everything below that says "`contract.go`" about lint behaviour applies equally to a marked type.
 
 It judges a package's API, which is its non-test, hand-written source. Methods
 and vars in `_test.go` files are never flagged, so a test fake that satisfies a
@@ -70,35 +70,35 @@ satisfies nothing but such seams keeps its own API. A registry can satisfy a
 `Get`-only seam your `Deps` takes and still export `Register` for the
 composition root.
 
-## Set the linter floor
-
-In `forge.yaml`:
-
-```yaml
-contracts:
-  strict: true              # default true — require a contract (contract.go or a //forge:contract type)
-  allow_exported_vars: false # default false — no globals
-  allow_exported_funcs: true # default true — allow free functions
-  exclude:                   # opt-out for genuine pure utilities
-    - "internal/buildinfo"
-```
-
-`contracts.strict: true` makes the analyzer mandatory. Run via:
+## Run the contract lane
 
 ```bash
 forge lint --contract
 ```
 
-Add this to your per-phase gate (below).
+The rules are not configurable by severity. `forge.yaml` takes only two contract keys, both escape hatches; whether the lane runs at all is `features.contracts`:
 
-### Scope: `internal/` and `pkg/`
+```yaml
+contracts:
+  exclude:                  # paths that opt out of every contract rule
+    - "internal/buildinfo"
+  interface_types:          # project-local interfaces a contract method returns
+    - "billing.MeterClient"
+```
 
-The contract analyzer scans **both** `internal/` and `pkg/` by default. The conceptual difference is intent:
+`strict`, `allow_exported_vars` and `allow_exported_funcs` are gone: no analyzer ever read them, and forge's `forge.yaml` validation reports each one as a removed key, with what to do instead. Add the lane to your per-phase gate (below).
 
-- `internal/<name>/` — business logic. The contract pattern is mandatory here; this is where the test seam matters.
-- `pkg/<name>/` — library code (utilities, clients, shared types). The contract pattern is *optional* but the linter still scans. Use `contracts.exclude: - pkg/<name>` for genuine library packages where the contract.go shape adds noise without value (e.g. `pkg/httputil`, `pkg/crypto`, packages that wrap a third-party library's idiomatic API).
+### Scope: which packages need a contract
 
-Repeatedly adding `pkg/<X>` to `contracts.exclude` is a signal: either the package belongs in `internal/` (real business state → follow the contract pattern), or it's genuinely library code and the exclusion is correct. Don't reflexively exclude every `pkg/*` package.
+`requirecontract` covers the module's **root `internal/` tree** (`internal/<pkg>`, nested packages included). That is the tree forge composes and generates contract code for: the derived `Service`, `mock_gen.go` and the decorators.
+
+It does not cover:
+
+- `pkg/<name>/`, library code (utilities, clients, shared types). A contract is optional there.
+- a **nested** `internal/` (`pkg/<sdk>/internal/<x>`, `cmd/<tool>/internal/<x>`). Go makes it private to its parent, forge never composes it, and a `contract.go` written there gets no mock or decorator. The private plumbing of a public SDK under `pkg/` is library code, like the SDK.
+- the forge-shaped kinds: handlers, the `internal/app` seam, workers, operators and the ORM package.
+
+The single-seam rule (`contract`: a type implementing a `contract.go` interface exports only its methods) and `exportedvars` run on every package the lane scans, `pkg/` included.
 
 ### Package markers: which one, when
 
@@ -281,16 +281,23 @@ For integration tests that need the real implementation, use the generated harne
 
 ## Pure-utility packages — three options
 
-For packages that are exclusively pure functions on no state (`naming`, `format`, math helpers):
+For packages of pure logic on no state (`naming`, `format`, math helpers) that export methods. Only exported methods draw `requirecontract`: a package of top-level funcs needs no contract and no opt-out.
 
-### (A) Skip the contract
+### (A) Opt out of the contract
+In the package's `doc.go`, with a reason:
+```go
+// Package naming converts identifier case.
+//
+//forge:exclude-contract: pure string-case helpers, no I/O, time or state
+package naming
+```
+Or centrally, in `forge.yaml`:
 ```yaml
 contracts:
-  allow_exported_funcs: true
   exclude:
     - "internal/naming"
 ```
-Honest about the lack of test seam. Best for string-case conversions and pure formatters.
+This is honest about having no test seam, and it suits string-case conversions and pure formatters. The marker is refused (`forge-exclude-contract-outbound-io`, `forge-exclude-contract-multi-impl`) on a package that makes outbound calls or owns an interface with two or more implementations, because there the contract is the point; `contracts/package-markers` has the fixes.
 
 ### (B) Wrap functions in a `Service` struct
 Expose the functions as methods on a struct and mark it `//forge:contract` (or define a `Service` interface in `contract.go`). Mockable, but verbose at every call site (`naming.New().ToPascalCase(s)` instead of `naming.ToPascalCase(s)`).
@@ -299,6 +306,8 @@ Expose the functions as methods on a struct and mark it `//forge:contract` (or d
 Keep free functions for ergonomics AND expose a `Service` interface whose methods delegate to them. Pick this when consumers want mockability but you don't want to break call sites.
 
 **Decision rule:** pure utility with no I/O / time / randomness / external state → (A). Anything that touches one of those → (B) or (C). Don't apply this rule to your DB layer, HTTP clients, or anything that calls `time.Now()` — those are stateful and need a mock.
+
+A helper package that is private to a public SDK (`pkg/<sdk>/internal/<x>`) is outside `requirecontract`'s scope and needs none of these.
 
 ## Greenfield: `forge package new`
 

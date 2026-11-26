@@ -53,7 +53,8 @@ type contractDiagnostic struct {
 	Pos      token.Position
 	Message  string
 	// FixHint is the remediation, when the diagnostic carries its own (the
-	// exclusion gate's findings do; the analyzers' share one generic hint).
+	// exclusion gate's and requirecontract's findings do; the other
+	// analyzers' share one generic hint).
 	FixHint string
 	// Warning marks a non-gating diagnostic (a reasonless suppression of an
 	// exclusion-gate rule). Everything else gates.
@@ -186,7 +187,13 @@ func analyzeContractPackages(ctx context.Context, cwd string, paths []string, ga
 				continue
 			}
 			seen[key] = true
-			out = append(out, contractDiagnostic{Analyzer: act.Analyzer.Name, Pos: pos, Message: d.Message})
+			diag := contractDiagnostic{Analyzer: act.Analyzer.Name, Pos: pos, Message: d.Message}
+			if act.Analyzer == contract.RequireContractAnalyzer {
+				// The shared analyzer hint ("declare the method in the
+				// contract, or unexport it") assumes a contract exists.
+				diag.FixHint = contract.RequireContractFixHint
+			}
+			out = append(out, diag)
 		}
 	}
 

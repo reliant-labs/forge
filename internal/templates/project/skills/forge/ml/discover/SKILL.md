@@ -47,9 +47,19 @@ What is kept, and what never is:
   with every value under a key matching
   `token|password|passwd|secret|key|auth|authorization|header|credential|bearer|cookie`
   (any case, any depth, nested YAML strings included) replaced by `REDACTED`; a
-  DCGM counters CSV is kept minus its comments; anything else (a script, a PEM
-  block, binary data) is dropped, its key kept with a `DROPPED` marker; a data key
-  that itself matches is replaced whole;
+  DCGM counters CSV is kept minus its comments; a Grafana Alloy config is kept
+  as its component block headers alone (`pyroscope.ebpf "default" {}`), every
+  attribute dropped; anything else (a script, a PEM block, binary data) is
+  dropped, its key kept with a `DROPPED` marker; a data key that itself matches
+  is replaced whole;
+- container **command and args** keep their shape (model URLs, config paths and
+  flags are what discovery reads) with every credential in them replaced by
+  `REDACTED`: the value of a flag or variable named like one (`--token=…`,
+  `--api-key …`, `HF_TOKEN=…` in a script, a presigned URL's signature), a
+  sensitive header written into a command (`Authorization: …`) and a URL's
+  password; HTTP probe and lifecycle hook header values are replaced, their
+  names kept;
+- the snapshot file is written readable by its owner only (`0600`);
 - it **never** reads Secrets, `pods/log`, `pods/exec`, `nodes/proxy` (effectively
   exec on the node), never lists ConfigMaps, and uses no write verb.
 

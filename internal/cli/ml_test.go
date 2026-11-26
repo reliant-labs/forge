@@ -12,6 +12,15 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	k8sversion "k8s.io/apimachinery/pkg/version"
+	fakediscovery "k8s.io/client-go/discovery/fake"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
+	kubefake "k8s.io/client-go/kubernetes/fake"
+	metadatafake "k8s.io/client-go/metadata/fake"
+
 	"github.com/reliant-labs/forge/internal/exitcode"
 	"github.com/reliant-labs/forge/internal/mlcollect"
 	"github.com/reliant-labs/forge/internal/schemagen"
@@ -284,6 +293,176 @@ func TestMLDiscoverWrite(t *testing.T) {
 	if _, err := os.Stat(o.out); err != nil {
 		t.Errorf("--out: %v", err)
 	}
+}
+
+// TestMLDiscoverWriteKeepsDecisionsAndDiffsApply runs the real Evaluate and
+// Propose with --env --write --namespace and a connected cluster: the
+// written ml.k keeps the env's RecommendationDecisions, and every
+// finding's kcl_diff applies to the file written.
+func TestMLDiscoverWriteKeepsDecisionsAndDiffsApply(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "deploy", "kcl", "prod"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "deploy", "kcl", "prod", "main.k"), []byte("import forge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	render := `{"output": {"connected_clusters": {"lab-p4d": "lab-prod"}, "ml_stacks": [
+		{"cluster": {"cluster": "lab-p4d", "namespace": "gpu-observability"}, "decisions": [
+			{"id": "dcgm-nvlink-off", "decision": "dismiss", "reason": "single-node lab", "expires": "2027-06-01"}]}]}}`
+	out, err := mlRun(t, mlDiscoverOptions{projectDir: dir, env: "prod", write: true, jsonOut: true, namespace: "gpu-observability",
+		fromSnapshot: filepath.Join("..", "..", "pkg", "mldiscover", "testdata", "probed-forge-stack.snapshot.json"),
+		render:       func(context.Context, string, string) ([]byte, error) { return []byte(render), nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc MLDiscoverDocument
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	written, err := os.ReadFile(filepath.Join(dir, "deploy", "kcl", "prod", "ml.k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mlk := string(written)
+	for _, want := range []string{`id = "dcgm-nvlink-off"`, `connected_cluster = "lab-prod"`, `namespace = "gpu-observability"`} {
+		if !strings.Contains(mlk, want) {
+			t.Errorf("the written ml.k lacks %s:\n%s", want, mlk)
+		}
+	}
+	diffs := 0
+	for _, f := range doc.Findings {
+		if f.ID == "dcgm-nvlink-off" && f.Dismissed == nil {
+			t.Errorf("dcgm-nvlink-off is not dismissed by the env's decision")
+		}
+		if f.Fix.Kind != mlrecs.FixKCL || f.Dismissed != nil {
+			continue
+		}
+		if f.Fix.KCLDiff == "" {
+			t.Errorf("%s: fix.kind=kcl and no kcl_diff", f.ID)
+			continue
+		}
+		diffs++
+		if _, err := mlApplyUnifiedDiff(mlk, f.Fix.KCLDiff); err != nil {
+			t.Errorf("%s: kcl_diff does not apply to the written ml.k: %v", f.ID, err)
+		}
+	}
+	if diffs == 0 {
+		t.Fatal("no actionable finding to check: the fixture no longer exercises kcl_diff")
+	}
+}
+
+// TestMLDiscoverSavedSnapshotHoldsNoCredentials: a live read through the
+// real collector, saved inside a project and with --save-snapshot, keeps no
+// credential a pod's args or probe headers carried, and both files are
+// readable by their owner only, a file an older release left 0644 included.
+func TestMLDiscoverSavedSnapshotHoldsNoCredentials(t *testing.T) {
+	t.Parallel()
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "serving", Name: "vllm-0"}, Spec: corev1.PodSpec{
+		Containers: []corev1.Container{{Name: "vllm", Image: "vllm/vllm-openai:v0.6",
+			Args: []string{"--model=meta-llama/Llama-3-8B", "--api-key=cli-arg-secret", "--hf-token", "cli-next-secret"},
+			LivenessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+				Path: "/health", HTTPHeaders: []corev1.HTTPHeader{{Name: "Authorization", Value: "Bearer cli-probe-secret"}}}}},
+		}}}}
+	kube := kubefake.NewSimpleClientset(pod)
+	disco := kube.Discovery().(*fakediscovery.FakeDiscovery)
+	disco.FakedServerVersion = &k8sversion.Info{GitVersion: "v1.33.1"}
+	disco.Resources = []*metav1.APIResourceList{{GroupVersion: "v1"}}
+	scheme := metadatafake.NewTestScheme()
+	if err := metav1.AddMetaToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	clients := mlcollect.Clients{Kube: kube, Metadata: metadatafake.NewSimpleMetadataClient(scheme),
+		Dynamic: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())}
+	collect := func(ctx context.Context, kubeContext string) (*mldiscover.Snapshot, error) {
+		return mlcollect.Collect(ctx, clients, mlcollect.Options{Context: kubeContext,
+			Now: func() time.Time { return time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC) }})
+	}
+
+	dir := t.TempDir()
+	state := mlStateFile(dir, "k3d-gpu")
+	if err := os.MkdirAll(filepath.Dir(state), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(state, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	saved := filepath.Join(dir, "shared", "snapshot.json")
+	if _, err := mlRun(t, mlDiscoverOptions{projectDir: dir, kubeContext: "k3d-gpu", jsonOut: true, saveSnapshot: saved, collect: collect}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{state, saved} {
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o600 {
+			t.Errorf("%s: mode %v, want 0600", path, fi.Mode().Perm())
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{"cli-arg-secret", "cli-next-secret", "cli-probe-secret"} {
+			if strings.Contains(string(b), secret) {
+				t.Errorf("%s carries %q", path, secret)
+			}
+		}
+		if !strings.Contains(string(b), "--model=meta-llama/Llama-3-8B") {
+			t.Errorf("%s lost the args discovery reads", path)
+		}
+	}
+}
+
+// mlApplyUnifiedDiff applies a unified diff to base, failing on any hunk
+// whose context or removed lines are not in base where the hunk says.
+func mlApplyUnifiedDiff(base, diff string) (string, error) {
+	src := strings.SplitAfter(base, "\n")
+	if src[len(src)-1] == "" {
+		src = src[:len(src)-1]
+	}
+	lines := strings.SplitAfter(diff, "\n")
+	var out []string
+	next := 0
+	for i := 0; i < len(lines); i++ {
+		l := lines[i]
+		if strings.HasPrefix(l, "--- ") || strings.HasPrefix(l, "+++ ") || l == "" {
+			continue
+		}
+		var start, n int
+		if _, err := fmt.Sscanf(l, "@@ -%d,%d", &start, &n); err != nil {
+			return "", fmt.Errorf("line %d: expected a hunk header, got %q", i, l)
+		}
+		at := start - 1
+		if n == 0 {
+			at = start
+		}
+		if at < next {
+			return "", fmt.Errorf("hunk %q overlaps the previous one", l)
+		}
+		out = append(out, src[next:at]...)
+		next = at
+		for i+1 < len(lines) && lines[i+1] != "" && !strings.HasPrefix(lines[i+1], "@@ ") {
+			i++
+			h, body := lines[i][0], lines[i][1:]
+			switch h {
+			case ' ', '-':
+				if next >= len(src) || src[next] != body {
+					return "", fmt.Errorf("hunk %q: base line %d does not match %q", l, next+1, body)
+				}
+				if h == ' ' {
+					out = append(out, body)
+				}
+				next++
+			case '+':
+				out = append(out, body)
+			default:
+				return "", fmt.Errorf("hunk %q: unexpected line %q", l, lines[i])
+			}
+		}
+	}
+	return strings.Join(append(out, src[next:]...), ""), nil
 }
 
 func TestMLDiscoverRefusals(t *testing.T) {

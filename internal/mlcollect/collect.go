@@ -16,7 +16,9 @@
 // Before an object is stored the collector strips its managedFields and every
 // annotation, and blanks the literal value of every container env var (the
 // name and any valueFrom reference stay; EnvAllowlist keeps three DCGM
-// settings). ConfigMap data and custom object specs are redacted (redact.go).
+// settings), the credentials in every container's command and args, and the
+// value of every HTTP probe or lifecycle hook header. ConfigMap data and
+// custom object specs are redacted (redact.go).
 // A snapshot is written to .forge/state and may be shared as a fixture or
 // with a bug report, so it must not carry a credential.
 //
@@ -510,24 +512,100 @@ func stripTemplate(t *corev1.PodTemplateSpec) {
 	stripPodSpec(&t.Spec)
 }
 
-// stripPodSpec blanks every literal env value outside EnvAllowlist. The name
-// stays (a rule asks whether OTEL_EXPORTER_OTLP_* or NCCL_* is set), and so
-// does valueFrom, which only names a Secret or ConfigMap key and holds no
-// data.
+// stripPodSpec removes the credentials a pod spec can carry. It blanks every
+// literal env value outside EnvAllowlist: the name stays (a rule asks whether
+// OTEL_EXPORTER_OTLP_* or NCCL_* is set), and so does valueFrom, which only
+// names a Secret or ConfigMap key and holds no data. It redacts every
+// container's command and args (RedactArgs), its exec probes and lifecycle
+// hooks likewise, and replaces the value of every HTTP header a probe or hook
+// sends (an Authorization header is the usual one), keeping the name. A CSI
+// volume's attributes and a FlexVolume's options keep only values under
+// keys that do not name a credential.
 func stripPodSpec(p *corev1.PodSpec) {
-	blank := func(env []corev1.EnvVar) {
-		for j := range env {
-			if !EnvAllowlist[env[j].Name] {
-				env[j].Value = ""
-			}
-		}
+	for i := range p.InitContainers {
+		stripContainer(&p.InitContainers[i])
 	}
-	for _, cs := range [][]corev1.Container{p.InitContainers, p.Containers} {
-		for i := range cs {
-			blank(cs[i].Env)
-		}
+	for i := range p.Containers {
+		stripContainer(&p.Containers[i])
 	}
 	for i := range p.EphemeralContainers {
-		blank(p.EphemeralContainers[i].Env)
+		c := &p.EphemeralContainers[i].EphemeralContainerCommon
+		blankEnv(c.Env)
+		c.Command, c.Args = RedactArgs(c.Command), RedactArgs(c.Args)
+		for _, pr := range []*corev1.Probe{c.LivenessProbe, c.ReadinessProbe, c.StartupProbe} {
+			stripHandler(probeHandler(pr))
+		}
+		stripLifecycle(c.Lifecycle)
+	}
+	for i := range p.Volumes {
+		v := &p.Volumes[i].VolumeSource
+		if v.CSI != nil {
+			redactStringMap(v.CSI.VolumeAttributes)
+		}
+		if v.FlexVolume != nil {
+			redactStringMap(v.FlexVolume.Options)
+		}
+	}
+}
+
+func stripContainer(c *corev1.Container) {
+	blankEnv(c.Env)
+	c.Command, c.Args = RedactArgs(c.Command), RedactArgs(c.Args)
+	for _, pr := range []*corev1.Probe{c.LivenessProbe, c.ReadinessProbe, c.StartupProbe} {
+		stripHandler(probeHandler(pr))
+	}
+	stripLifecycle(c.Lifecycle)
+}
+
+func blankEnv(env []corev1.EnvVar) {
+	for j := range env {
+		if !EnvAllowlist[env[j].Name] {
+			env[j].Value = ""
+		}
+	}
+}
+
+func probeHandler(pr *corev1.Probe) *corev1.ProbeHandler {
+	if pr == nil {
+		return nil
+	}
+	return &pr.ProbeHandler
+}
+
+func stripLifecycle(l *corev1.Lifecycle) {
+	if l == nil {
+		return
+	}
+	for _, h := range []*corev1.LifecycleHandler{l.PostStart, l.PreStop} {
+		if h == nil {
+			continue
+		}
+		stripHandler(&corev1.ProbeHandler{Exec: h.Exec, HTTPGet: h.HTTPGet})
+	}
+}
+
+// stripHandler redacts an exec command and replaces every HTTP header value.
+func stripHandler(h *corev1.ProbeHandler) {
+	if h == nil {
+		return
+	}
+	if h.Exec != nil {
+		h.Exec.Command = RedactArgs(h.Exec.Command)
+	}
+	if h.HTTPGet != nil {
+		for i := range h.HTTPGet.HTTPHeaders {
+			h.HTTPGet.HTTPHeaders[i].Value = Redacted
+		}
+		h.HTTPGet.Path = RedactArgText(h.HTTPGet.Path)
+	}
+}
+
+func redactStringMap(m map[string]string) {
+	for k, v := range m {
+		if SensitiveKey.MatchString(k) {
+			m[k] = Redacted
+		} else {
+			m[k] = RedactArgText(v)
+		}
 	}
 }

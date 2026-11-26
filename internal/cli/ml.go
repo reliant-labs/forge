@@ -159,9 +159,11 @@ determined (probe, config, args, version-default, presence, unreadable), its
 sources and versions, and the parts missing.
 
 What it reads (get/list only; managedFields, annotations and container env
-values are stripped, and ConfigMap data and custom object specs redacted:
-values under keys like token, password, secret, key, auth, header become
-REDACTED, and data that is not JSON, YAML or a DCGM counters CSV is dropped):
+values are stripped, credentials in container args and probe headers become
+REDACTED, and ConfigMap data and custom object specs are redacted: values
+under keys like token, password, secret, key, auth, header become REDACTED, an
+Alloy config keeps only its component blocks, and data that is not JSON, YAML
+or a DCGM counters CSV is dropped):
 
 ` + mlcollect.ReadSetTable() + `
 It never reads: ` + strings.Join(mlcollect.Excluded, "; ") + `.
@@ -256,9 +258,13 @@ func runMLDiscover(ctx context.Context, o mlDiscoverOptions) error {
 		}
 	}
 
-	findings := o.evaluate(snap, inv, mlrecs.Options{Decisions: decisions})
+	// One set of proposal options for both: the decisions are written back
+	// into the ml.k (so --write keeps them), and each finding's kcl_diff is
+	// taken against the very file Propose writes.
+	popts := mlrecs.ProposeOptions{Namespace: o.namespace, ConnectedCluster: connected, Decisions: decisions}
+	findings := o.evaluate(snap, inv, mlrecs.Options{Decisions: decisions, Propose: popts})
 	inv.Coverage = mlrecs.LinkCoverage(inv.Coverage, findings)
-	mlk := o.propose(inv, findings, mlrecs.ProposeOptions{Namespace: o.namespace, ConnectedCluster: connected})
+	mlk := o.propose(inv, findings, popts)
 
 	doc.Inventory = *inv
 	if findings != nil {
@@ -465,7 +471,13 @@ func writeMLSnapshot(path string, s *mldiscover.Snapshot) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return atomicfile.WriteFile(path, append(b, '\n'), 0o644)
+	// Owner-only: a snapshot is redacted, but it still maps the cluster.
+	// atomicfile keeps an existing file's mode, so narrow one an older
+	// release wrote 0644.
+	if err := atomicfile.WriteFile(path, append(b, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 // mlInventoryWarnings is the inventory's warnings plus every read the

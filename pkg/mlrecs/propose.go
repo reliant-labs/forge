@@ -91,12 +91,15 @@ var slotKinds = map[string][]string{
 	slotPullCache:  {mldiscover.KindSpegel, mldiscover.KindDragonfly},
 }
 
-// suggestion is an install a FixKCL finding proposes.
+// suggestion is an install a FixKCL finding proposes. One install may be
+// suggested by several findings (three DCGM field-set findings all
+// reconfigure the one exporter); findingIDs keeps every one of them, so
+// applying any of them activates it.
 type suggestion struct {
-	findingID string
-	slot      string
-	vendor    string // for slotMetrics
-	kind      string
+	findingIDs []string
+	slot       string
+	vendor     string // for slotMetrics
+	kind       string
 	// reconfigure: the finding changes the values of a component forge
 	// already installed instead of adding one.
 	reconfigure bool
@@ -111,22 +114,22 @@ func suggestionsFor(f Finding, inv *mldiscover.Inventory) []suggestion {
 	switch f.ID {
 	case "accel-telemetry-missing":
 		if f.Vendor == mldiscover.VendorNVIDIA {
-			return []suggestion{{f.ID, slotMetrics, mldiscover.VendorNVIDIA, mldiscover.KindDCGMExporter, false}}
+			return []suggestion{{[]string{f.ID}, slotMetrics, mldiscover.VendorNVIDIA, mldiscover.KindDCGMExporter, false}}
 		}
 	case "no-node-health":
-		return []suggestion{{f.ID, slotNodeHealth, "", mldiscover.KindNodeProblemDetector, false}}
+		return []suggestion{{[]string{f.ID}, slotNodeHealth, "", mldiscover.KindNodeProblemDetector, false}}
 	case "gpu-jobs-bypass-queue":
-		out := []suggestion{{f.ID, slotQueue, "", mldiscover.KindKueue, false}}
+		out := []suggestion{{[]string{f.ID}, slotQueue, "", mldiscover.KindKueue, false}}
 		if !inv.Has(mldiscover.KindJobSet) {
-			out = append(out, suggestion{f.ID, slotTraining, "", mldiscover.KindJobSet, false})
+			out = append(out, suggestion{[]string{f.ID}, slotTraining, "", mldiscover.KindJobSet, false})
 		}
 		return out
 	case "no-p2p-cache":
-		return []suggestion{{f.ID, slotPullCache, "", mldiscover.KindSpegel, false}}
+		return []suggestion{{[]string{f.ID}, slotPullCache, "", mldiscover.KindSpegel, false}}
 	case "dcgm-profiling-off", "accel-error-counters-off", "dcgm-nvlink-off", "dcgm-pod-attribution-off":
-		return []suggestion{{f.ID, slotMetrics, mldiscover.VendorNVIDIA, mldiscover.KindDCGMExporter, true}}
+		return []suggestion{{[]string{f.ID}, slotMetrics, mldiscover.VendorNVIDIA, mldiscover.KindDCGMExporter, true}}
 	case "npd-no-gpu-rules":
-		return []suggestion{{f.ID, slotNodeHealth, "", mldiscover.KindNodeProblemDetector, true}}
+		return []suggestion{{[]string{f.ID}, slotNodeHealth, "", mldiscover.KindNodeProblemDetector, true}}
 	}
 	return nil
 }
@@ -172,17 +175,25 @@ func propose(inv *mldiscover.Inventory, findings []Finding, opts ProposeOptions,
 		opts.Namespace = DefaultNamespace
 	}
 	p := &proposer{inv: inv, opts: opts, active: active}
-	seen := map[string]bool{}
+	seen := map[string]int{} // dedup key -> index in p.sugg
 	for _, f := range findings {
 		for _, sg := range suggestionsFor(f, inv) {
-			k := sg.slot + "/" + sg.vendor + "/" + sg.kind
-			if !seen[k] {
-				seen[k] = true
+			k := sg.slot + "/" + sg.vendor + "/" + sg.kind + "/" + strconv.FormatBool(sg.reconfigure)
+			i, ok := seen[k]
+			if !ok {
+				seen[k] = len(p.sugg)
 				p.sugg = append(p.sugg, sg)
+				continue
+			}
+			if !contains(p.sugg[i].findingIDs, f.ID) {
+				p.sugg[i].findingIDs = append(p.sugg[i].findingIDs, f.ID)
 			}
 		}
 	}
-	sort.SliceStable(p.sugg, func(i, j int) bool { return p.sugg[i].findingID < p.sugg[j].findingID })
+	for i := range p.sugg {
+		sort.Strings(p.sugg[i].findingIDs)
+	}
+	sort.SliceStable(p.sugg, func(i, j int) bool { return p.sugg[i].findingIDs[0] < p.sugg[j].findingIDs[0] })
 	p.render()
 	return p.b.String()
 }
@@ -428,6 +439,16 @@ func (p *proposer) install(chart Chart, namespace string, scrape, full bool) []s
 	return append(out, "}")
 }
 
+// isActive reports whether any finding that suggests s is being applied.
+func (p *proposer) isActive(s suggestion) bool {
+	for _, id := range s.findingIDs {
+		if p.active[id] {
+			return true
+		}
+	}
+	return false
+}
+
 // reconfigureFor returns the reconfigure suggestions for a kind.
 func (p *proposer) reconfigureFor(kind string) []suggestion {
 	var out []suggestion
@@ -448,7 +469,7 @@ func (p *proposer) fullValues(kind string) bool {
 		return true
 	}
 	for _, s := range rs {
-		if p.active[s.findingID] {
+		if p.isActive(s) {
 			return true
 		}
 	}
@@ -511,9 +532,13 @@ func (p *proposer) emitSuggestion(indent int, s suggestion, prefix string) {
 	if !ok {
 		return
 	}
-	on := p.active[s.findingID]
+	on := p.isActive(s)
 	if !on {
-		p.line(indent, true, fmt.Sprintf("Suggested for finding %s: uncomment to install.", s.findingID))
+		what := "finding " + s.findingIDs[0]
+		if len(s.findingIDs) > 1 {
+			what = "findings " + strings.Join(s.findingIDs, ", ")
+		}
+		p.line(indent, true, fmt.Sprintf("Suggested for %s: uncomment to install.", what))
 	}
 	ls := p.install(chart, p.opts.Namespace, true, true)
 	ls[0] = prefix + ls[0]

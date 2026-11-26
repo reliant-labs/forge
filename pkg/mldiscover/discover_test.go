@@ -297,6 +297,39 @@ func TestPodAccelerators(t *testing.T) {
 	}
 }
 
+// TestPodAcceleratorsCountsSidecars pins the effective-request rule to
+// Kubernetes': a restartable (restartPolicy: Always) init container runs
+// beside the app containers for the pod's life, so its accelerators add to
+// theirs, and an ordinary init container runs beside only the sidecars
+// started before it.
+func TestPodAcceleratorsCountsSidecars(t *testing.T) {
+	always := corev1.ContainerRestartPolicyAlways
+	gpus := func(name, n string, sidecar bool) corev1.Container {
+		c := corev1.Container{Name: name, Resources: corev1.ResourceRequirements{Limits: rl("nvidia.com/gpu", n)}}
+		if sidecar {
+			c.RestartPolicy = &always
+		}
+		return c
+	}
+	for _, c := range []struct {
+		name string
+		init []corev1.Container
+		app  []corev1.Container
+		want int64
+	}{
+		{"app 2 + sidecar 1", []corev1.Container{gpus("side", "1", true)}, []corev1.Container{gpus("app", "2", false)}, 3},
+		{"init after the sidecar overlaps it", []corev1.Container{gpus("side", "1", true), gpus("init", "4", false)}, []corev1.Container{gpus("app", "2", false)}, 5},
+		{"init before the sidecar does not", []corev1.Container{gpus("init", "4", false), gpus("side", "1", true)}, []corev1.Container{gpus("app", "2", false)}, 4},
+		{"app and sidecars outweigh init", []corev1.Container{gpus("side", "2", true), gpus("init", "1", false)}, []corev1.Container{gpus("app", "2", false)}, 4},
+		{"ordinary init only", []corev1.Container{gpus("init", "4", false)}, []corev1.Container{gpus("app", "2", false)}, 4},
+	} {
+		got := PodSpecAccelerators(&corev1.PodSpec{InitContainers: c.init, Containers: c.app})
+		if got["nvidia.com/gpu"] != c.want {
+			t.Errorf("%s: got %v, want nvidia.com/gpu=%d", c.name, got, c.want)
+		}
+	}
+}
+
 func TestComponentStatusAndOwner(t *testing.T) {
 	s := &Snapshot{
 		CRDs: []string{"clusterqueues.kueue.x-k8s.io", "jobsets.jobset.x-k8s.io"},
@@ -398,5 +431,55 @@ func TestNodeCoverageSimulatesDaemonSets(t *testing.T) {
 	}
 	if got := NodeCoverage(s, Component{Vendor: VendorNVIDIA}); !reflect.DeepEqual(got, []string{"gpu"}) {
 		t.Errorf("workload-less component: got %v", got)
+	}
+}
+
+// TestNodeCoverageFollowsRequiredNodeAffinity: a DaemonSet's required node
+// affinity places it as the scheduler would — matchFields on metadata.name,
+// Gt/Lt on integer labels, and an empty term that selects nothing.
+func TestNodeCoverageFollowsRequiredNodeAffinity(t *testing.T) {
+	a := node("gpu-a", map[string]string{"gpu-count": "8"}, nil, nil)
+	b := node("gpu-b", map[string]string{"gpu-count": "2"}, nil, nil)
+	required := func(terms ...corev1.NodeSelectorTerm) *corev1.Affinity {
+		return &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{NodeSelectorTerms: terms},
+		}}
+	}
+	expr := func(key string, op corev1.NodeSelectorOperator, vals ...string) corev1.NodeSelectorTerm {
+		return corev1.NodeSelectorTerm{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: key, Operator: op, Values: vals}}}
+	}
+	ds := func(name string, aff *corev1.Affinity) appsv1.DaemonSet {
+		return appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "m"},
+			Spec: appsv1.DaemonSetSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Affinity: aff}}}}
+	}
+	s := &Snapshot{Nodes: []corev1.Node{a, b}, DaemonSets: []appsv1.DaemonSet{
+		ds("by-name", required(corev1.NodeSelectorTerm{MatchFields: []corev1.NodeSelectorRequirement{
+			{Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{"gpu-b"}}}})),
+		ds("not-name", required(corev1.NodeSelectorTerm{MatchFields: []corev1.NodeSelectorRequirement{
+			{Key: "metadata.name", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"gpu-b"}}}})),
+		ds("gt", required(expr("gpu-count", corev1.NodeSelectorOpGt, "4"))),
+		ds("lt", required(expr("gpu-count", corev1.NodeSelectorOpLt, "4"))),
+		ds("empty-term", required(corev1.NodeSelectorTerm{})),
+		ds("empty-or-gt", required(corev1.NodeSelectorTerm{}, expr("gpu-count", corev1.NodeSelectorOpGt, "4"))),
+		ds("no-terms", required()),
+		ds("bad-operator", required(expr("gpu-count", "Near", "4"))),
+	}}
+	for name, want := range map[string][]string{
+		"by-name":      {"gpu-b"},
+		"not-name":     {"gpu-a"},
+		"gt":           {"gpu-a"},
+		"lt":           {"gpu-b"},
+		"empty-term":   nil,
+		"empty-or-gt":  {"gpu-a"},
+		"no-terms":     nil,
+		"bad-operator": nil,
+	} {
+		got := NodeCoverage(s, Component{Namespace: "m", Workload: "DaemonSet/" + name})
+		if len(got) == 0 && len(want) == 0 {
+			continue
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %v, want %v", name, got, want)
+		}
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	resourcehelper "k8s.io/component-helpers/resource"
 )
 
 // Accelerator extended resources, as the device plugins publish them.
@@ -379,8 +381,12 @@ func PodActive(pod *corev1.Pod) bool {
 }
 
 // PodAccelerators returns the accelerator resources a pod requests, with
-// the effective count of each: the larger of the sum over its containers
-// and the largest init container, from limits, else requests.
+// the effective count of each by Kubernetes' own rule (the scheduler's and
+// kubelet's, from k8s.io/component-helpers/resource): the sum over its
+// containers and restartable (sidecar) init containers, or the largest
+// ordinary init container plus the sidecars started before it, whichever is
+// larger. A container that sets only a limit requests that limit, as the API
+// server defaults it.
 func PodAccelerators(pod *corev1.Pod) map[string]int64 {
 	return podSpecAccelerators(&pod.Spec)
 }
@@ -390,22 +396,18 @@ func PodAccelerators(pod *corev1.Pod) map[string]int64 {
 func PodSpecAccelerators(spec *corev1.PodSpec) map[string]int64 { return podSpecAccelerators(spec) }
 
 func podSpecAccelerators(spec *corev1.PodSpec) map[string]int64 {
+	// Only the accelerator requests matter, so the pod handed to the helper
+	// carries nothing else: no copy of the rest of the spec, and no
+	// pod-level resources or overhead (neither can name an extended
+	// resource).
+	pod := &corev1.Pod{Spec: corev1.PodSpec{
+		Containers:     acceleratorOnly(spec.Containers),
+		InitContainers: acceleratorOnly(spec.InitContainers),
+	}}
 	sum := map[string]int64{}
-	for i := range spec.Containers {
-		for r, n := range containerAccelerators(&spec.Containers[i]) {
-			sum[r] += n
-		}
-	}
-	for i := range spec.InitContainers {
-		for r, n := range containerAccelerators(&spec.InitContainers[i]) {
-			if n > sum[r] {
-				sum[r] = n
-			}
-		}
-	}
-	for r, n := range sum {
-		if n <= 0 {
-			delete(sum, r)
+	for name, q := range resourcehelper.PodRequests(pod, resourcehelper.PodResourcesOptions{}) {
+		if n := q.Value(); n > 0 && IsAcceleratorResource(string(name)) {
+			sum[string(name)] = n
 		}
 	}
 	if len(sum) == 0 {
@@ -414,14 +416,32 @@ func podSpecAccelerators(spec *corev1.PodSpec) map[string]int64 {
 	return sum
 }
 
+// acceleratorOnly returns containers reduced to their accelerator requests
+// (a limit standing in for a missing request) and restart policy, the two
+// facts the effective-request rule reads.
+func acceleratorOnly(cs []corev1.Container) []corev1.Container {
+	out := make([]corev1.Container, len(cs))
+	for i := range cs {
+		req := corev1.ResourceList{}
+		for r, n := range containerAccelerators(&cs[i]) {
+			req[corev1.ResourceName(r)] = *resource.NewQuantity(n, resource.DecimalSI)
+		}
+		out[i] = corev1.Container{Name: cs[i].Name, RestartPolicy: cs[i].RestartPolicy, Resources: corev1.ResourceRequirements{Requests: req}}
+	}
+	return out
+}
+
+// containerAccelerators is a container's accelerator requests: its request,
+// else its limit (the API server defaults an extended resource's request to
+// its limit, and a snapshot of a pod template may predate defaulting).
 func containerAccelerators(c *corev1.Container) map[string]int64 {
 	out := map[string]int64{}
-	for name, q := range c.Resources.Limits {
+	for name, q := range c.Resources.Requests {
 		if IsAcceleratorResource(string(name)) {
 			out[string(name)] = q.Value()
 		}
 	}
-	for name, q := range c.Resources.Requests {
+	for name, q := range c.Resources.Limits {
 		if _, ok := out[string(name)]; !ok && IsAcceleratorResource(string(name)) {
 			out[string(name)] = q.Value()
 		}

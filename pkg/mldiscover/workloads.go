@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/component-helpers/scheduling/corev1/nodeaffinity"
 )
 
 // Workload kinds a WorkloadRef names.
@@ -115,63 +116,27 @@ func NodeCoverage(s *Snapshot, c Component) []string {
 	return out
 }
 
-// daemonSetNodes simulates where a DaemonSet schedules: node selector,
-// required node affinity, and NoSchedule/NoExecute taints.
+// daemonSetNodes simulates where a DaemonSet schedules: node selector and
+// required node affinity (matched by the scheduler's own helper, so
+// matchFields, Gt/Lt and empty terms mean what they mean to Kubernetes),
+// and NoSchedule/NoExecute taints.
 func daemonSetNodes(s *Snapshot, ds *appsv1.DaemonSet) []string {
 	spec := &ds.Spec.Template.Spec
+	affinity := nodeaffinity.NewRequiredNodeAffinity(spec.NodeSelector, spec.Affinity)
 	var out []string
 	for i := range s.Nodes {
 		n := &s.Nodes[i]
-		if !labels.SelectorFromSet(spec.NodeSelector).Matches(labels.Set(n.Labels)) {
+		// A selector that does not parse schedules nowhere, as in the
+		// scheduler.
+		if ok, err := affinity.Match(n); err != nil || !ok {
 			continue
 		}
-		if !requiredAffinityMatches(spec.Affinity, n.Labels) || !tolerates(spec.Tolerations, n.Spec.Taints) {
+		if !tolerates(spec.Tolerations, n.Spec.Taints) {
 			continue
 		}
 		out = append(out, n.Name)
 	}
 	return out
-}
-
-func requiredAffinityMatches(a *corev1.Affinity, l map[string]string) bool {
-	if a == nil || a.NodeAffinity == nil || a.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-		return true
-	}
-	terms := a.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
-	if len(terms) == 0 {
-		return true
-	}
-	for _, t := range terms {
-		if termMatches(t, l) {
-			return true
-		}
-	}
-	return false
-}
-
-func termMatches(t corev1.NodeSelectorTerm, l map[string]string) bool {
-	for _, e := range t.MatchExpressions {
-		v, has := l[e.Key]
-		switch e.Operator {
-		case corev1.NodeSelectorOpIn:
-			if !has || !contains(e.Values, v) {
-				return false
-			}
-		case corev1.NodeSelectorOpNotIn:
-			if has && contains(e.Values, v) {
-				return false
-			}
-		case corev1.NodeSelectorOpExists:
-			if !has {
-				return false
-			}
-		case corev1.NodeSelectorOpDoesNotExist:
-			if has {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 func tolerates(tols []corev1.Toleration, taints []corev1.Taint) bool {

@@ -887,7 +887,7 @@ func (g *ProjectGenerator) generateServiceFiles() error {
 }
 
 // generatePkgAppConventions writes pkg/app/CONVENTIONS.md, the canonical
-// explainer for the wire_gen / Setup wiring shape + the no-per-RPC-nil-check rule. Per-
+// explainer for the composition-graph wiring (internal/app) + the no-per-RPC-nil-check rule. Per-
 // service service.go files trim their inline comment to a one-line pointer
 // at this file. The template carries no data so we read it raw.
 func (g *ProjectGenerator) generatePkgAppConventions() error {

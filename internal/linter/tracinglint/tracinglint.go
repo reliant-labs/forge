@@ -29,9 +29,11 @@
 //	                                      (uninstrumented.go).
 //
 // Every rule is a pure AST pass over the project's OWNED Go source: tests,
-// generated files and vendored trees are out of scope. Each errs toward
-// silence where the code may already be right; a false negative costs one
-// span, a false positive costs trust in the gate.
+// generated files and vendored trees are out of scope. So is code no traced
+// process runs: a package that only untraced programs reach (a load
+// generator, an example client), and that no other module can import
+// (reach.go). Each errs toward silence where the code may already be right;
+// a false negative costs one span, a false positive costs trust in the gate.
 package tracinglint
 
 import (
@@ -118,7 +120,9 @@ type Options struct {
 	// project with no server): its internal packages and its mains run only
 	// in its own binaries, which record no trace, so there is no trace there
 	// for a log line or a client to cut. Its library packages still run
-	// inside the traced processes that import them.
+	// inside the traced processes that import them. Without it, the same
+	// question is still answered per package from the import graph: code
+	// only untraced mains run is left out either way (reach.go).
 	LibraryOnly bool
 }
 
@@ -166,13 +170,18 @@ func Lint(root string, opts Options) (Result, error) {
 	if opts.LibraryOnly {
 		files = libraryFiles(files)
 	}
+	module := modulePath(root)
+	rc, err := buildReach(root, module)
+	if err != nil {
+		return Result{}, err
+	}
+	files = tracedFiles(files, rc)
 	var res Result
 	pkgs := map[string][]*goFile{}
 	for _, f := range files {
 		dir := filepath.Dir(f.abs)
 		pkgs[dir] = append(pkgs[dir], f)
 	}
-	module := modulePath(root)
 	var instrumented func(string) bool
 	if opts.Instrumented != nil {
 		instrumented = memoize(opts.Instrumented)
@@ -208,7 +217,7 @@ func Lint(root string, opts Options) (Result, error) {
 				res.Findings = append(res.Findings, s.finding(f))
 			}
 		}
-		res.Findings = append(res.Findings, rawHTTPClientFindings(f)...)
+		res.Findings = append(res.Findings, rawHTTPClientFindings(f, rc.external[filepath.Dir(f.abs)])...)
 		res.Findings = append(res.Findings, rawSQLOpenFindings(f)...)
 	}
 	for _, dir := range sortedKeys(pkgs) {
@@ -318,6 +327,18 @@ func libraryFiles(files []*goFile) []*goFile {
 			continue
 		}
 		out = append(out, f)
+	}
+	return out
+}
+
+// tracedFiles drops the files of packages only untraced programs run
+// (reach.go): no process that runs them records a trace to cut.
+func tracedFiles(files []*goFile, rc reach) []*goFile {
+	out := files[:0:0]
+	for _, f := range files {
+		if !rc.untraced[filepath.Dir(f.abs)] {
+			out = append(out, f)
+		}
 	}
 	return out
 }

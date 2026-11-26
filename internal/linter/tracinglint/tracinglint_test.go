@@ -470,10 +470,13 @@ var client3 = &http.Client{} // 10
 func TestLibraryOnly(t *testing.T) {
 	bad := "package %s\n\nimport \"net/http\"\n\nvar c = &http.Client{}\n"
 	pkg := func(name string) string { return strings.Replace(bad, "%s", name, 1) }
+	// The mains boot telemetry, so only LibraryOnly leaves them out (an
+	// untraced main is out of scope either way).
+	traced := "package main\n\nimport (\n\t\"net/http\"\n\n\t_ \"github.com/reliant-labs/forge/pkg/serverkit\"\n)\n\nvar c = &http.Client{}\n"
 	root := writeTree(t, map[string]string{
 		"internal/cli/cli.go":        pkg("cli"),
-		"cmd/tool/main.go":           pkg("main"),
-		"tools/build/main.go":        pkg("main"),
+		"cmd/tool/main.go":           traced,
+		"tools/build/main.go":        traced,
 		"pkg/client/client.go":       pkg("client"),
 		"pkg/client/internal/x/x.go": pkg("x"),
 		"root.go":                    pkg("app"),
@@ -638,5 +641,211 @@ func wire(infra *Infra) (billing.Service, error) {
 	// Idempotent, and nothing left for the rule.
 	if res, _ := Lint(root, Options{Instrumented: instrumented, Fix: true}); len(res.Findings)+len(res.Fixed) != 0 {
 		t.Fatalf("second run not clean: %+v", res)
+	}
+}
+
+// untracedSrc is a package with one finding of each of two rules, importing
+// the given paths blank so they join the import graph.
+func untracedSrc(pkg string, imports ...string) string {
+	var b strings.Builder
+	b.WriteString("package " + pkg + "\n\nimport (\n\t\"context\"\n\t\"log/slog\"\n\t\"net/http\"\n")
+	for _, p := range imports {
+		b.WriteString("\t_ \"" + p + "\"\n")
+	}
+	b.WriteString(")\n\nvar c = &http.Client{}\n\nfunc f(ctx context.Context) { slog.Info(\"x\") }\n")
+	return b.String()
+}
+
+// fileHits renders findings as "rule file", for trees whose line numbers
+// vary with their imports.
+func fileHits(res Result) []string {
+	var out []string
+	for _, f := range res.Findings {
+		out = append(out, f.Rule+" "+f.File)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Code only untraced programs run — a load generator, an example client — is
+// out of every tracing rule: no process that runs it records a trace. Code a
+// traced program also runs, code another module can import, and code no
+// program reaches keep the rules.
+func TestUntracedProgramsAreOutOfScope(t *testing.T) {
+	const mod = "example.com/app/"
+	flagged := func(file string) []string {
+		return []string{RuleLogWithoutCtx + " " + file, RuleRawHTTPClient + " " + file}
+	}
+	setup := "package boot\n\nimport \"github.com/reliant-labs/forge/pkg/observe\"\n\nfunc Boot() { _, _, _ = observe.Setup(nil, observe.Config{}) }\n"
+	setupAliased := "package boot\n\nimport o11y \"github.com/reliant-labs/forge/pkg/observe\"\n\nfunc Boot() { _, _, _ = o11y.Setup(nil, o11y.Config{}) }\n"
+	clientOnly := "package boot\n\nimport \"github.com/reliant-labs/forge/pkg/observe\"\n\nvar C = observe.NewHTTPClient(observe.HTTPClientOptions{})\n"
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  []string
+	}{
+		{
+			name: "an untraced main and its internal helper",
+			files: map[string]string{
+				"cmd/load/main.go":           untracedSrc("main", mod+"internal/loadgen"),
+				"internal/loadgen/gen.go":    untracedSrc("loadgen"),
+				"examples/kv/client/main.go": untracedSrc("main"),
+			},
+		},
+		{
+			name: "observe imported only for its client installs nothing",
+			files: map[string]string{
+				"cmd/load/main.go":      untracedSrc("main", mod+"internal/boot"),
+				"internal/boot/boot.go": clientOnly,
+			},
+		},
+		{
+			name: "the helper is also run by a main that imports serverkit",
+			files: map[string]string{
+				"cmd/load/main.go":        untracedSrc("main", mod+"internal/loadgen"),
+				"cmd/server/main.go":      "package main\n\nimport (\n\t_ \"" + mod + "internal/loadgen\"\n\t_ \"" + mod + "internal/app\"\n)\n",
+				"internal/app/app.go":     "package app\n\nimport _ \"github.com/reliant-labs/forge/pkg/serverkit\"\n",
+				"internal/loadgen/gen.go": untracedSrc("loadgen"),
+			},
+			want: flagged("internal/loadgen/gen.go"),
+		},
+		{
+			name: "the helper is also run by a main that calls observe.Setup",
+			files: map[string]string{
+				"cmd/load/main.go":        untracedSrc("main", mod+"internal/loadgen"),
+				"cmd/server/main.go":      "package main\n\nimport (\n\t_ \"" + mod + "internal/loadgen\"\n\t_ \"" + mod + "internal/boot\"\n)\n",
+				"internal/boot/boot.go":   setupAliased,
+				"internal/loadgen/gen.go": untracedSrc("loadgen"),
+			},
+			want: flagged("internal/loadgen/gen.go"),
+		},
+		{
+			name: "a main that installs telemetry through OpenTelemetry itself",
+			files: map[string]string{
+				"cmd/server/main.go": untracedSrc("main", "go.opentelemetry.io/otel/sdk/trace"),
+				"internal/boot/b.go": setup, // reached by no main: linted, and clean
+			},
+			want: flagged("cmd/server/main.go"),
+		},
+		{
+			name: "an importable package reached only by an untraced main",
+			files: map[string]string{
+				"cmd/load/main.go":           untracedSrc("main", mod+"pkg/sdk"),
+				"pkg/sdk/sdk.go":             untracedSrc("sdk", mod+"pkg/sdk/internal/conn"),
+				"pkg/sdk/internal/conn/c.go": untracedSrc("conn"),
+			},
+			want: append(flagged("pkg/sdk/internal/conn/c.go"), flagged("pkg/sdk/sdk.go")...),
+		},
+		{
+			name: "an internal package no main reaches",
+			files: map[string]string{
+				"internal/dead/dead.go": untracedSrc("dead"),
+			},
+			want: flagged("internal/dead/dead.go"),
+		},
+		{
+			// forge's gen/ is a nested module: it is read, not guessed at.
+			name: "an untraced main importing a nested module on disk",
+			files: map[string]string{
+				"cmd/load/main.go":     untracedSrc("main", mod+"gen/svc/v1"),
+				"gen/go.mod":           "module example.com/app/gen\n",
+				"gen/svc/v1/svc.pb.go": "package svcv1\n\nimport _ \"google.golang.org/protobuf/proto\"\n",
+			},
+		},
+		{
+			name: "a main whose nested-module import boots telemetry",
+			files: map[string]string{
+				"cmd/load/main.go":   untracedSrc("main", "example.com/platform/boot"),
+				"platform/go.mod":    "module example.com/platform\n",
+				"platform/boot/b.go": "package boot\n\nimport _ \"github.com/reliant-labs/forge/pkg/serverkit\"\n",
+			},
+			want: flagged("cmd/load/main.go"),
+		},
+		{
+			name: "a main importing a local package that is not on disk is unknown, so traced",
+			files: map[string]string{
+				"cmd/load/main.go": untracedSrc("main", mod+"gen/missing"),
+				"gen/go.mod":       "module example.com/app/gen\n",
+			},
+			want: flagged("cmd/load/main.go"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := Lint(writeTree(t, tc.files), Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, want := fileHits(res), append([]string(nil), tc.want...)
+			sort.Strings(want)
+			if strings.Join(got, "\n") != strings.Join(want, "\n") {
+				t.Fatalf("findings:\n  got:  %q\n  want: %q", got, want)
+			}
+		})
+	}
+}
+
+// A library another module can reach defaults a client its caller supplies
+// with `if X == nil { X = &http.Client{} }`: whether that client is traced is
+// the caller's choice. Internal code, and any other shape, keeps the finding.
+func TestRawHTTPClientCallerSuppliedDefault(t *testing.T) {
+	src := `package %s
+
+import "net/http"
+
+type Options struct{ HTTPClient *http.Client }
+
+type Client struct{ hc *http.Client }
+
+func New(o Options) *Client {
+	hc := o.HTTPClient
+	if hc == nil {
+		hc = &http.Client{}
+	}
+	if o.HTTPClient == nil {
+		o.HTTPClient = http.DefaultClient
+	}
+	c := &Client{hc: o.HTTPClient}
+	if nil == (c.hc) {
+		c.hc = new(http.Client)
+	}
+	var other *http.Client
+	if hc == nil {
+		other = &http.Client{} // 23: assigns another variable
+	}
+	if hc != nil {
+		hc = &http.Client{} // 26: not a nil test
+	}
+	if hc == nil {
+		hc := &http.Client{} // 29: a new variable
+		_ = hc
+	}
+	_ = other
+	return c
+}
+`
+	pkg := func(name string) string { return strings.Replace(src, "%s", name, 1) }
+	root := writeTree(t, map[string]string{
+		"pkg/sdk/sdk.go":                "package sdk\n\nimport _ \"example.com/app/pkg/sdk/internal/conn\"\n",
+		"pkg/sdk/client.go":             pkg("sdk"),
+		"pkg/sdk/internal/conn/conn.go": pkg("conn"),
+		"internal/server/client.go":     pkg("server"),
+	})
+	res, err := Lint(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, file := range []string{"pkg/sdk/client.go", "pkg/sdk/internal/conn/conn.go"} {
+		for _, line := range []string{"23", "26", "29"} {
+			want = append(want, RuleRawHTTPClient+" "+file+":"+line)
+		}
+	}
+	for _, line := range []string{"12", "15", "19", "23", "26", "29"} {
+		want = append(want, RuleRawHTTPClient+" internal/server/client.go:"+line)
+	}
+	assertHits(t, res, want...)
+	if r := res.Findings[0].Remediation; !strings.Contains(r, "forge:lint-disable-file "+RuleRawHTTPClient) ||
+		!strings.Contains(r, "if o.HTTPClient == nil") {
+		t.Errorf("remediation names neither the caller-supplied default nor the file directive: %s", r)
 	}
 }

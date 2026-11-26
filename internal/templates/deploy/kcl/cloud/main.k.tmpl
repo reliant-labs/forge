@@ -47,8 +47,9 @@ database to {{.ClaimableDatabaseStorageGiB}} GiB. The control plane publishes th
 
 Once the deploy is claimed and you deploy it to your organization, delete
 `claimable = True`, the `resources` line in `_hosted` (the default 250m /
-1 GiB is on the band) and the database's `spec`, then
-`forge env deploy {{.EnvName}}`.
+1 GiB is on the band){{if .DeclaresIdentity}}, the `signup = "open"` override on `identity`
+(unclaimed, anyone may sign up with an unverified address){{end}} and the database's
+`spec`, then `forge env deploy {{.EnvName}}`.
 {{- else}}
 `forge env deploy {{.EnvName}}`.
 {{- end}}
@@ -218,7 +219,17 @@ _bundle = forge.Bundle {
     # id and broker token to the API (forge.IdentityRef): nothing is copied by
     # hand. Bringing your own issuer instead? Delete this line and set
     # jwt_issuer / oidc_client_id in config.k.
+{{- if .Claimable}}
+    # `signup = "open"`: anyone may create an account on the sign-in screen,
+    # so the unclaimed deploy is usable before anyone claims it. An unclaimed
+    # org's identity sends no mail, so those accounts' addresses are not
+    # verified. Once the deploy is claimed, drop the override (identity.k's
+    # default is "invite") with `claimable = True`, or keep it once your
+    # organization delivers mail, which then verifies every new address.
+    identity = idn.IDENTITY | {signup = "open"}
+{{- else}}
     identity = idn.IDENTITY
+{{- end}}
 {{- end}}
 {{- if .HasFrontend}}
     # Where each frontend runs here, one binding each — rebind by editing its

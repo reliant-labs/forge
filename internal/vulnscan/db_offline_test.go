@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"testing"
 	"time"
@@ -157,6 +158,12 @@ func TestReadOnlyDatabaseRefusesAnUncheckableLock(t *testing.T) {
 	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root reads through directory permissions")
+	}
+	if runtime.GOOS == "windows" {
+		// os.Chmod only toggles the read-only attribute on Windows: a 0o000
+		// directory stays searchable, so the stat this test needs to fail
+		// succeeds.
+		t.Skip("Windows has no POSIX directory permissions to make the lock uncheckable")
 	}
 	db, _, _, _ := newTestDB(t, testNow.Add(-2*time.Hour), testNow)
 	// The lock lives in a directory this process cannot search, so the stat

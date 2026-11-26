@@ -16,10 +16,15 @@ _outs = [forge.render(forge.Bundle {
         enabled = _mode != "disabled"
         destination = forge.ObservabilityDestination {endpoint = "https://otlp.example.com"} if _mode != "no-destination" else Undefined
         telemetry_collector = forge.TelemetryCollector {namespace = "otel", pod_labels = {app = "otel"}} if _mode == "external" else Undefined
+        telemetry = [forge.Telemetry {
+            service_name = "prometheus", scope = "platform", cluster = "gke_acme_us-central1_gpu"
+            namespaces = ["monitoring"], selector = {app = "prometheus"}
+            metrics = [forge.MetricsScrape {port = 9090}]
+        }] if _mode not in ["no-scrape", "disabled"] else []
     }
     ml_stacks = [forge.MLStack {
         cluster = forge.ClusterTarget {cluster = "gke_acme_us-central1_gpu", namespace = "forge-ml"}
-        monitoring = [forge.Adopt {kind = "prometheus", namespace = "monitoring", selector = {app = "prometheus"}, port = 9090 if _mode != "no-scrape" else Undefined}]
+        monitoring = [forge.Adopt {kind = "prometheus", namespace = "monitoring"}]
     }]
 }) for policy in ["local", "flux"]]
 assert_no_remote_agent = all out in _outs {len([m for m in out.manifests if m.kind == "ObservabilityAgent" and m.metadata.labels["forge.dev/cluster"] == "gke_acme_us-central1_gpu"]) == 0}

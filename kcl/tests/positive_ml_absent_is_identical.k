@@ -3,8 +3,8 @@ Positive test — the ML stack is additive.
 
 An env that declares no stack renders byte-identically to one that declares
 `ml_stacks = []` (and the render-contract goldens, which predate MLStack and
-are unchanged, prove the same for every runtime). A stack of adoptions with no
-port lowers to nothing in the cluster: the render differs only by the
+are unchanged, prove the same for every runtime). A stack of adoptions
+lowers to nothing in the cluster: the render differs only by the
 `ml_stacks` projection, with observability on or off.
 """
 

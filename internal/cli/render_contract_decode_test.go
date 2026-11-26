@@ -600,7 +600,7 @@ func TestRenderContract_MLStack(t *testing.T) {
 	if got := strings.Join(modes, " "); got != "accelerators:adopt:dcgm-exporter node_health:install:node-problem-detector queue:adopt:kueue training:install:jobset" {
 		t.Errorf("components = %s", got)
 	}
-	if m[0].Components[0].ServiceName != "ml-dcgm-exporter" {
-		t.Errorf("scraped adoption's service_name = %q", m[0].Components[0].ServiceName)
+	if c := m[0].Components[0]; c.Namespace != "gpu-operator" || c.Version != "3.3.9" {
+		t.Errorf("adopted dcgm-exporter = %+v, want namespace gpu-operator, version 3.3.9", c)
 	}
 }

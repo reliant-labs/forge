@@ -52,15 +52,8 @@ type MLComponentOutput struct {
 	// Version is what discovery found for an adoption, or the Install
 	// chart's pinned version.
 	Version string `json:"version"`
-	// Selector, Port and Allow are an adoption's scrape (Port 0: none).
-	Selector map[string]string `json:"selector"`
-	Port     int               `json:"port"`
-	Allow    []string          `json:"allow"`
 	// Note is an adoption's reviewer note.
 	Note string `json:"note"`
-	// ServiceName is the service.name of the adoption's scrape when it
-	// renders (a port, and the env's observability on), else empty.
-	ServiceName string `json:"service_name"`
 	// Chart is the Install chart's name, else empty.
 	Chart string `json:"chart"`
 	// Reason is why forge installs it (required for an adopt-only kind).

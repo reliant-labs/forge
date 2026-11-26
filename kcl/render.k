@@ -2317,12 +2317,13 @@ _stamp_cluster = lambda manifest: any, context: str -> any {
     manifest | {metadata = _meta | {labels = {k: v for k, v in _labels if k != "forge.dev/cluster"} | {"forge.dev/cluster" = context}}}
 }
 
-# Include scraped ML clusters in the agent's placement and credential planning,
-# even when they run no forge workloads. An external collector owns those
+# Include the ML stacks' clusters an Observability.telemetry entry scrapes in
+# the agent's placement and credential planning, even when they run no forge
+# workloads (kcl/ml.k _ml_scraped_stacks). An external collector owns those
 # scrapes instead when telemetry_collector is declared.
 _obs_workloads = lambda agent_workloads: [any], agent_stacks: [any], agent_obs: any -> [any] {
-    _scraped = [x.cluster for x in _ml_scrapes(agent_stacks)] if agent_obs and agent_obs.enabled and not agent_obs.telemetry_collector else []
-    agent_workloads + [{kind = "service", runtime = {type = "cluster", target = s.cluster}} for s in agent_stacks if s.cluster.cluster in _scraped]
+    _scraped = _ml_scraped_stacks(agent_stacks, agent_obs) if agent_obs and agent_obs.enabled and not agent_obs.telemetry_collector else []
+    agent_workloads + [{kind = "service", runtime = {type = "cluster", target = s.cluster}} for s in _scraped]
 }
 
 # One ObservabilityAgent record per workload or scraped ML cluster, when the
@@ -2987,31 +2988,11 @@ _tel_managed_database = lambda db: any, t: Telemetry, b: Bundle -> any {
 # {t, svc}, in render order. A ManagedDatabase's default counts: it is the
 # database's Telemetry until replaced.
 _tel_declared = lambda b: Bundle -> [any] {
-    _own = _tel_declared_own(b)
-    _own + [{"t": t, "svc": t.service_name} for t in _ml_telemetry_of(b, [d.svc for d in _own])]
-}
-
-# The env's Telemetry before the ML stacks' derived scrapes: what replaces
-# one of those by declaring its service name.
-_tel_declared_own = lambda b: Bundle -> [any] {
     [{"t": w.telemetry, "svc": _tel_service_name(w)} for w in b.workloads if w.telemetry] \
         + [{"t": d.telemetry, "svc": d.telemetry.service_name or d.name} for d in b.infra if d.telemetry] \
         + [{"t": t, "svc": t.service_name or g.name} for g in b.manifests for t in g.telemetry] \
         + ([{"t": t, "svc": t.service_name} for t in b.observability.telemetry] if b.observability else []) \
         + [{"t": d.t, "svc": d.t.service_name or managed_database_service_name(d.db.name)} for d in _db_telemetries(b)]
-}
-
-# The Telemetry an env's ML stacks lower to (kcl/ml.k _ml_telemetry): one
-# scrape per adopted component with a port, only when observability is on.
-# `taken` are the service names the env declares itself.
-_ml_telemetry_of = lambda b: Bundle, taken: [str] -> [Telemetry] {
-    _ml_telemetry(b.ml_stacks, _obs_on(b), taken) if b.ml_stacks else []
-}
-
-# An ML stack's scrape, attached as Observability.telemetry is.
-_tel_ml = lambda t: Telemetry, b: Bundle -> any {
-    _tel_target(t, t.service_name, "ml-stack:" + t.cluster, "observability", "cluster", \
-        t.cluster, t.namespaces or [], t.selector or {}, "", {}, b)
 }
 
 # The CloudNativePG operator's default targets: one per cluster holding a
@@ -3036,7 +3017,6 @@ _render_telemetry = lambda b: Bundle -> [any] {
         + [_tel_host_infra(d, b) for d in b.infra if d.telemetry] \
         + [_tel_manifests(g, t, _pt, b) for g in b.manifests for t in g.telemetry] \
         + ([_tel_observability(t, b) for t in b.observability.telemetry] if b.observability else []) \
-        + [_tel_ml(t, b) for t in _ml_telemetry_of(b, [d.svc for d in _tel_declared_own(b)])] \
         + [_tel_managed_database(d.db, d.t, b) for d in _db_telemetries(b)] \
         + _tel_cnpg_operators(b)
 }
@@ -3402,7 +3382,7 @@ render = lambda bundle: Bundle -> any {
         # tools that read the stack and its decisions without parsing KCL.
         # Absent when none is declared, so an env without renders as before.
         if bundle.ml_stacks:
-            "ml_stacks": _ml_render(bundle.ml_stacks, _obs_on(bundle))
+            "ml_stacks": _ml_render(bundle.ml_stacks)
         # The env's own collector, which pulls its cluster targets instead of
         # forge's node agent: the peer the targets' NetworkPolicy rules admit
         # (internal/cluster/telemetry.go). Only beside declared telemetry.

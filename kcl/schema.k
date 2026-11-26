@@ -9503,9 +9503,10 @@ schema Bundle:
     external_secrets_operators: [ExternalSecretsOperator] = []
     # The ML components each cluster declares (forge.MLStack, kcl/ml.k),
     # any subset of them, one stack per cluster: each declared component is
-    # adopted (read where it runs) or installed (a pinned chart forge labels
-    # as its own), and only what a stack declares renders. `forge ml
-    # discover` proposes it. Empty renders nothing.
+    # adopted (an inventory assertion) or installed (a pinned chart forge
+    # labels as its own), and only what a stack declares renders. Scraping
+    # one is an Observability.telemetry entry. `forge ml discover` proposes
+    # it. Empty renders nothing.
     ml_stacks: [MLStack] = []
     _agent_workloads = _obs_workloads(workloads, ml_stacks, observability)
     # Where the values the secret store needs BEFORE it can serve a read live
@@ -9742,8 +9743,6 @@ schema Bundle:
         # The structural rules live on the schemas; these need the Bundle.
         len(_duplicates([s.cluster.cluster for s in ml_stacks])) == 0, \
             "Bundle.ml_stacks declares two stacks on cluster ${_duplicates([s.cluster.cluster for s in ml_stacks])}: one forge.MLStack per cluster context. Merge them into one"
-        len(_duplicates([x.svc for x in _ml_scrapes(ml_stacks)])) == 0, \
-            "Bundle.ml_stacks scrapes two components as service ${_duplicates([x.svc for x in _ml_scrapes(ml_stacks)])}: a scrape's service.name is unique in the env. Set service_name on one of them (forge.Adopt or forge.Install)"
         len(_duplicates([_eso_context(e) for e in external_secrets_operators])) == 0, \
             "Bundle.external_secrets_operators installs ESO twice on ${_duplicates([_eso_context(e) for e in external_secrets_operators])}: one cluster has one External Secrets Operator (several fight over the cluster-scoped CRDs and webhook configurations). Remove the duplicate; configure the one with `values`"
         len(_openbao_sources(required_secrets)) == 0 or openbao, \

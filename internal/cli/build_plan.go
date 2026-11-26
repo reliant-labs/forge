@@ -122,6 +122,10 @@ func runBuildPlan(ctx context.Context, cfg *config.ProjectConfig, entities *KCLE
 	bad := report.problems()
 	if len(bad) == 0 && report.releaseErr == nil {
 		fmt.Printf("\n[build] Plan OK: %d step(s) resolved; every one has what it needs to run. Nothing was built or pushed.\n", len(report.steps))
+		if n := opts.pushPlan.unresolvedCount(); n > 0 {
+			fmt.Printf("[build]   Not validated: %d hosted address(es) use %s for the org this plan could not learn without a "+
+				"control-plane credential. The pushing run resolves it from your credential, or refuses.\n", n, unresolvedOrgSegment)
+		}
 		return nil
 	}
 	var msgs []string

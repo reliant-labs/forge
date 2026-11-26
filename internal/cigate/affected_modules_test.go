@@ -81,6 +81,12 @@ func TestComputeAffected_ReplacedModules(t *testing.T) {
 			pkgs: []string{"ex.com/m/app"}, mod: &ModuleTests{Dir: "sdk/go", Path: "ex.com/sdk", Packages: []string{"ex.com/sdk/client", "ex.com/sdk/util"}}},
 		{name: "a nested test-only embed selects only the nested tests", mode: "auto", changed: []string{"sdk/go/util/golden.txt"},
 			mod: &ModuleTests{Dir: "sdk/go", Path: "ex.com/sdk", Packages: []string{"ex.com/sdk/client", "ex.com/sdk/util"}}},
+		{name: "Go testdata owned by a nested package selects its tests", mode: "auto", changed: []string{"sdk/go/util/testdata/input.go"},
+			mod: &ModuleTests{Dir: "sdk/go", Path: "ex.com/sdk", Packages: []string{"ex.com/sdk/client", "ex.com/sdk/util"}}},
+		{name: "unowned Go testdata reaches the root fallback", mode: "auto", changed: []string{"sdk/go/testdata/input.go"}, full: true,
+			mod: &ModuleTests{Dir: "sdk/go", Path: "ex.com/sdk", Full: true, Reason: "sdk/go/testdata/input.go is not Go source, an embedded file or testdata of a package in the module"}},
+		{name: "unowned Go testdata with a test suffix reaches the root fallback", mode: "auto", changed: []string{"sdk/go/testdata/input_test.go"}, full: true,
+			mod: &ModuleTests{Dir: "sdk/go", Path: "ex.com/sdk", Full: true, Reason: "sdk/go/testdata/input_test.go is not Go source, an embedded file or testdata of a package in the module"}},
 		{name: "a nested file nobody embeds keeps the root's full suite", mode: "auto", changed: []string{"sdk/go/notes.txt"}, full: true,
 			mod: &ModuleTests{Dir: "sdk/go", Path: "ex.com/sdk", Full: true, Reason: "sdk/go/notes.txt is not Go source, an embedded file or testdata of a package in the module"}},
 		// B1: a _test.go file is compiled only into its own package's test

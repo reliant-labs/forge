@@ -60,7 +60,7 @@ func TestEveryTelemetryProcedureDeclaresItsScope(t *testing.T) {
 	if seen == 0 {
 		t.Fatal("found no control-plane procedures: the scan is broken")
 	}
-	for _, triage := range []string{procUpdateIssueStatus, procAddIssueComment, procAssignIssue} {
+	for _, triage := range []string{procUpdateIssueStatus, procAddIssueComment, procUpdateIssueComment, procDeleteIssueComment, procAssignIssue} {
 		if declared[triage] != "obs:triage" {
 			t.Errorf("%s declares %q, want obs:triage (obs:read does not imply it)", triage, declared[triage])
 		}

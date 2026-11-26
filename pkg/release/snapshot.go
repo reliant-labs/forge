@@ -23,8 +23,6 @@ type SnapshotArtifact struct {
 	Origin    ArtifactOrigin `json:"origin"`
 }
 
-// ArtifactOrigin survives carry-forward verbatim. Receipt identifies the actual
-// effective build inputs, not merely the command's working directory.
 // ExternalArtifact records registry verification rather than inventing build
 // provenance for third-party bytes. DescriptorDigest must match OCI Content;
 // the resolver verifies descriptor/platform bytes before issuing this record.
@@ -33,6 +31,11 @@ type ExternalArtifact struct {
 	DescriptorDigest string `json:"descriptor_digest"`
 }
 
+// ArtifactOrigin is where an artifact's bytes came from: the release that
+// produced them, with the Source and BuildReceipt of a build, or External's
+// registry verification for third-party bytes. It survives carry-forward
+// verbatim. Receipt identifies the actual effective build inputs, not merely
+// the command's working directory.
 type ArtifactOrigin struct {
 	External *ExternalArtifact `json:"external,omitempty"`
 	Release  string            `json:"release"`
@@ -58,11 +61,16 @@ type Consumer struct {
 	DependsOn            []ConsumerDependency `json:"depends_on,omitempty"`
 }
 
+// ConsumerDependency is one peer a consumer requires: Consumer, compatible
+// under Contract. A composition that changes one side without the other needs
+// [CompatibilityEvidence] for that pair, or must select both.
 type ConsumerDependency struct {
 	Consumer ConsumerKey `json:"consumer"`
 	Contract string      `json:"contract"`
 }
 
+// ConsumerBinding fills one slot of a consumer with an artifact: the bytes
+// that consumer runs in that slot.
 type ConsumerBinding struct {
 	Consumer ConsumerKey `json:"consumer"`
 	Slot     string      `json:"slot"`
@@ -136,16 +144,14 @@ type CompatibilityEvidence struct {
 	ReportDigest      string      `json:"report_digest"`
 }
 
+// CompositionDecision records what composition did with one consumer (build
+// it, reuse identical bytes, or carry the base's bytes forward) and why.
 type CompositionDecision struct {
 	Consumer ConsumerKey `json:"consumer"`
 	Action   string      `json:"action"` // build, reuse, carry
 	Reason   string      `json:"reason"`
 }
 
-// Snapshot is full desired state, even when Selected is a strict subset.
-// Source describes composition; each artifact retains its original provenance.
-// Prerequisites are immutable non-bundled input references (including Secret
-// provider versions). Mutable/unverifiable prerequisites prohibit partial change.
 // SnapshotAsset preserves non-applied bundle assets (dashboards/metrics schema).
 type SnapshotAsset struct {
 	Path   string `json:"path"`
@@ -161,6 +167,10 @@ type ArtifactBuildEvent struct {
 	Origin   ArtifactOrigin `json:"origin"`
 }
 
+// Snapshot is full desired state, even when Selected is a strict subset.
+// Source describes composition; each artifact retains its original provenance.
+// Prerequisites are immutable non-bundled input references (including Secret
+// provider versions). Mutable/unverifiable prerequisites prohibit partial change.
 type Snapshot struct {
 	BootstrapFromPromotionID string               `json:"bootstrap_from_promotion_id,omitempty"`
 	BuildEvents              []ArtifactBuildEvent `json:"build_events,omitempty"`

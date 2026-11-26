@@ -130,4 +130,5 @@ Forge reads directives in a way that survives this:
 
 - Markers (`forge:exclude-contract`, `forge:constructor`, `forge:contract`, …) are found anywhere in the comment, so a move does not matter.
 - `forge:lint-disable-next-line` covers **the next line of code, plus the comment lines between it and that code**. After gofmt moves a directive to the end of a doc comment it still covers the declaration the comment documents, and it still covers a marker further down the same block. It never crosses a blank line or a line of code.
+- `forge:lint-disable-line`, trailing a line of code, covers that line (alone on its own line it covers what `-next-line` would), the positions golangci gives `//nolint:`.
 - The exclude-contract gate accepts an allowance anywhere in the marker's comment block. Mixing spellings (a spaced marker with an unspaced allowance) makes gofmt put the allowance *below* the marker, and that still applies.

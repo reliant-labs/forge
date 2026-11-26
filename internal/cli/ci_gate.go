@@ -347,7 +347,7 @@ func executeGate(cmd *cobra.Command, out io.Writer, in gateExec) cigate.Report {
 		tierForce = "--tier " + in.tier.Name
 	}
 	selected := applyAffectedMode(ctx, out, in.plan.selected, affectedArgs{
-		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, rules: cfg.CI.Gate.AffectedRules, reach: cfg.CI.Gate.AffectedReach, frontends: in.ciFrontends,
+		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, rules: cfg.CI.Gate.AffectedRules, modules: cfg.CI.Gate.AffectedModules, reach: cfg.CI.Gate.AffectedReach, frontends: in.ciFrontends,
 		env: env, skips: in.plan.skips, cache: cache, full: flags.full, tierForce: tierForce, decided: in.affected,
 	})
 	selected = cigate.WithFlakeBase(selected, base)
@@ -433,6 +433,7 @@ type affectedArgs struct {
 	root, base         string
 	ignore, env, skips []string
 	rules              []config.CIGateAffectedRule
+	modules            string
 	reach              *config.CIGateAffectedReach
 	frontends          []templates.FrontendCIConfig
 	cache              *cigate.VerdictCache
@@ -464,7 +465,7 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 		force = in.tierForce
 	}
 	a := cigate.ComputeAffected(ctx, cigate.AffectedInput{Root: in.root, BaseRef: in.base, Env: in.env, Force: force,
-		Ignore: in.ignore, Rules: in.rules, Reach: in.reach, ChangesOnly: !narrow})
+		Ignore: in.ignore, Rules: in.rules, Modules: in.modules, Reach: in.reach, ChangesOnly: !narrow})
 	a = cigate.ResolveGoClosures(ctx, in.root, in.env, checks, a, nil)
 	checks = cigate.WithLockfileChecks(checks, a, in.root, in.frontends)
 	a = cigate.WithLockfileReport(a, checks)
@@ -488,7 +489,7 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 	for _, p := range a.Deferred {
 		fmt.Fprintln(out, "  deferred to the full gate: "+p)
 	}
-	return cigate.WithFrontendTests(cigate.ApplyAffected(checks, a), a, in.root, in.frontends)
+	return cigate.WithModuleTests(cigate.WithFrontendTests(cigate.ApplyAffected(checks, a), a, in.root, in.frontends), a)
 }
 
 // narrowsUnit reports whether this run may narrow the unit-tests row: it is

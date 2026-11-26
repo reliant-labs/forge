@@ -600,6 +600,28 @@ func limitDeclaredShape(ctx context.Context, c HostedCaller, env string, declare
 	return reader.LimitShape(declared), nil
 }
 
+// checkAutoscaleApplied refuses the plan's autoscaled workloads unless the
+// control plane applies them. An older control plane decodes the spec and
+// ignores the unknown field, so the workload would run at one replica with
+// nothing saying so: refused, never stripped. It asks the control plane only
+// when a workload autoscales, so every other deploy costs no call.
+func checkAutoscaleApplied(ctx context.Context, c HostedCaller, plan []hostedPlanItem) error {
+	var scaled []string
+	for _, item := range plan {
+		if spec, ok := item.Spec.(v1alpha1.WorkloadSpec); ok && spec.Autoscale != nil {
+			scaled = append(scaled, item.Name)
+		}
+	}
+	if len(scaled) == 0 {
+		return nil
+	}
+	reader, err := HostedBundleReader(ctx, c)
+	if err != nil {
+		return err
+	}
+	return reader.CheckAutoscaledWorkloads(scaled)
+}
+
 func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvRef) (wireEnvironment, bool, error) {
 	if ref.Kind == "" {
 		// Never defaulted: the kind is immutable server-side, so a guess
@@ -1362,6 +1384,10 @@ type HostedProvider struct {
 	// recorded bundle applied; the wait is the longer of it and
 	// Rollout.Timeout. Zero means HostedApplyBudget.
 	ApplyBudget time.Duration
+	// FirstDeployFailureGrace is how long a workload of an env the platform
+	// has never applied a revision to may report a failure before the
+	// deploy ends as failed. Zero means HostedFirstDeployFailureGrace.
+	FirstDeployFailureGrace time.Duration
 	// OnRollout, when set, receives one outcome per published workload.
 	OnRollout func(cluster.RolloutObservation)
 	// OnEnvironment, when set, receives the control plane's environment id
@@ -1399,6 +1425,11 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	}
 	c, err := p.client()
 	if err != nil {
+		return err
+	}
+	// Before the environment is ensured or the bundle recorded: a control
+	// plane that predates autoscale would run the workload at one replica.
+	if err := checkAutoscaleApplied(ctx, c, plan); err != nil {
 		return err
 	}
 	// The env's kind is the CLI's derivation over the WHOLE env, carried on
@@ -1556,11 +1587,7 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 	// Charging that to the readiness budget would spend the (default 5m)
 	// timeout before any workload was looked at, so the apply budget is at
 	// least HostedApplyBudget.
-	floor := p.ApplyBudget
-	if floor <= 0 {
-		floor = HostedApplyBudget
-	}
-	applyBudget := max(policy.Timeout, floor)
+	applyBudget := p.applyWaitBudget(policy.Timeout)
 	applyDeadline := time.Now().Add(applyBudget)
 	for {
 		if !applied {
@@ -1585,6 +1612,9 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 				deadline = time.Now().Add(policy.Timeout)
 			default:
 				progress.announce(state, bundleDigest)
+				if ferr := p.firstDeployFailure(ctx, c, envID, state, plan, &progress, time.Now()); ferr != nil {
+					return p.firstDeployFailed(envName, ferr, plan, policy.Mode)
+				}
 				progress.heartbeat(time.Now(), state, bundleDigest, applyBudget)
 				if time.Now().After(applyDeadline) || ctx.Err() != nil {
 					return p.applyNotLanded(envName, promotionID, bundleDigest, state, time.Since(progress.started).Round(time.Second), plan, policy.Mode)
@@ -1679,6 +1709,16 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 	}
 }
 
+// applyWaitBudget allows the platform's apply phase at least its own budget,
+// independently of the readiness timeout.
+func (p HostedProvider) applyWaitBudget(readinessTimeout time.Duration) time.Duration {
+	floor := p.ApplyBudget
+	if floor <= 0 {
+		floor = HostedApplyBudget
+	}
+	return max(readinessTimeout, floor)
+}
+
 // rolloutSuperseded ends a wait whose promotion was replaced by a newer one:
 // every workload is observed NOT WAITED, and the error is returned, or only
 // printed under --rollout warn.
@@ -1727,6 +1767,9 @@ func (p HostedProvider) readinessTimedOut(envName string, last map[string]string
 // periodic "still waiting" line that shows a long apply is still being watched.
 type applyProgress struct {
 	current, failure string
+	// workloadFailures is, per workload of a first deploy, the failure it
+	// currently reports and since when (see firstDeployFailure).
+	workloadFailures map[string]workloadFailure
 	// started is when the apply wait began; lastBeat when the last "still
 	// waiting" line was printed (or the wait began).
 	started, lastBeat time.Time

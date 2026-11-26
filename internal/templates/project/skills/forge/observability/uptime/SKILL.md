@@ -134,3 +134,8 @@ sql-panel SELECTs (`UptimeSummarySQL`, `UptimeTimelineSQL`, `UptimeChecksSQL`,
 - a check's **status** at the end of the range is `unknown` when its newest
   probe is more than 15 minutes old, `down` while an incident is open, else
   `up`.
+
+## A status page
+
+`forge.StatusPage` turns checks into public components for your own users:
+`observability/status-page`.

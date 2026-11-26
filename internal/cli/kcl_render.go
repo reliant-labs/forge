@@ -230,6 +230,10 @@ type KCLEntities struct {
 	// UptimeChecks are Bundle.uptime resolved: the declared checks plus the
 	// ones forge derives for a hosted env. Empty when the env has none.
 	UptimeChecks []release.ShapeUptimeCheck `json:"uptime_checks,omitempty"`
+	// StatusPage is Bundle.status_page, resolved against UptimeChecks (every
+	// check a component names is one of them). Nil when the env declares
+	// none.
+	StatusPage *release.ShapeStatusPage `json:"status_page,omitempty"`
 
 	// Telemetry is every forge.Telemetry the env declares (output.telemetry),
 	// decoded and normalized: what a collector consumes. Nil when none is
@@ -1794,6 +1798,7 @@ type kclRenderRaw struct {
 	DataAccess               *release.ShapeDataAccess                  `json:"data_access,omitempty"`
 	ReleaseHealth            *release.ShapeReleaseHealth               `json:"release_health,omitempty"`
 	UptimeChecks             []release.ShapeUptimeCheck                `json:"uptime_checks,omitempty"`
+	StatusPage               *release.ShapeStatusPage                  `json:"status_page,omitempty"`
 	Identity                 *release.ShapeIdentity                    `json:"identity,omitempty"`
 	Identities               []release.ShapeIdentity                   `json:"identities,omitempty"`
 	Telemetry                json.RawMessage                           `json:"telemetry,omitempty"`
@@ -2246,6 +2251,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		DataAccess:               raw.DataAccess,
 		ReleaseHealth:            raw.ReleaseHealth,
 		UptimeChecks:             raw.UptimeChecks,
+		StatusPage:               raw.StatusPage,
 		Identity:                 raw.Identity,
 		Identities:               raw.Identities,
 		RenderedSecrets:          raw.RenderedSecrets,

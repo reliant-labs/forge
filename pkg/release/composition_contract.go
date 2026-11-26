@@ -1,6 +1,8 @@
 package release
 
-// Input is captured before build and never automatically rebased. Candidate is
+// CompositionInput is what ComposeSnapshot composes: the base snapshot, the
+// candidate and the consumers selected to change. It is captured before build
+// and never automatically rebased. Candidate is
 // an isolated full inventory; unselected candidate drift is never deployed.
 type CompositionInput struct {
 	Base      *Snapshot

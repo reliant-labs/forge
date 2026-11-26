@@ -154,6 +154,8 @@ func TestArtifactValidateSBOM(t *testing.T) {
 		{"tag, not a digest", &SBOMRef{Digest: "latest", Status: SBOMStatusOK}, false},
 		{"ok without a digest", &SBOMRef{Status: SBOMStatusOK}, false},
 		{"referrer without a digest", &SBOMRef{Referrer: "r@" + sbomTestDigest("d")}, false},
+		{"not applicable with a reason", &SBOMRef{Status: SBOMStatusNotApplicable, Reason: SBOMNotApplicableSourcemaps}, true},
+		{"not applicable naming an SBOM", &SBOMRef{Status: SBOMStatusNotApplicable, Digest: sbomTestDigest("c")}, false},
 	}
 	for _, tt := range tests {
 		a := base
@@ -363,5 +365,77 @@ func TestBackfillSBOMsFillsTheReferrerOfTheSameSBOM(t *testing.T) {
 	newer.Referrer = "ghcr.io/acme/api@" + sbomTestDigest("e")
 	if _, changed := BackfillSBOMs(existing, sbomTestRelease(map[string]*SBOMRef{"api": newer})); changed {
 		t.Fatal("the referrer of another SBOM was taken")
+	}
+}
+
+// SBOMApplicable is the one rule the cut records by and every coverage count
+// judges by: code that ships has an SBOM; source maps and git source pins do
+// not, and say why.
+func TestSBOMApplicable(t *testing.T) {
+	t.Parallel()
+	image := Artifact{Kind: KindOCI, Mode: ModeShared, Digests: map[string]string{SharedVariant: sbomTestDigest("a")}}
+	gitPin := Artifact{Kind: KindGit, Mode: ModeSource, Source: &Source{Repo: "github.com/acme/app", Ref: "main"}}
+	for _, tc := range []struct {
+		name   string
+		art    Artifact
+		reason string // "" = applicable
+	}{
+		{"ghcr.io/acme/api", image, ""},
+		{"cli-linux", Artifact{Kind: KindFile, Mode: ModeShared, Version: "linux"}, ""},
+		{"@acme/sdk", Artifact{Kind: KindNPM, Mode: ModeShared, Version: "1.0.0"}, ""},
+		{"example.com/acme/pkg", Artifact{Kind: KindGoModule, Mode: ModeShared, Version: "v0.1.0"}, ""},
+		{SourcemapsArtifactName("web"), image, SBOMNotApplicableSourcemaps},
+		{"web", gitPin, SBOMNotApplicableGitSource},
+	} {
+		reason, na := SBOMNotApplicable(tc.name, tc.art)
+		if na != (tc.reason != "") || reason != tc.reason || SBOMApplicable(tc.name, tc.art) == na {
+			t.Errorf("%s: SBOMNotApplicable = %q, %v; want %q", tc.name, reason, na, tc.reason)
+		}
+		ref, ok := NotApplicableSBOMRef(tc.name, tc.art)
+		if ok != na || (ok && (ref.Status != SBOMStatusNotApplicable || ref.Reason != tc.reason || ref.HasSBOM() || !ref.NotApplicable())) {
+			t.Errorf("%s: NotApplicableSBOMRef = %+v, %v", tc.name, ref, ok)
+		}
+		if ok {
+			a := tc.art
+			a.SBOM = &ref
+			if err := a.Validate(tc.name); err != nil {
+				t.Errorf("%s: a not-applicable ref does not validate: %v", tc.name, err)
+			}
+		}
+	}
+}
+
+// The semver proof for SBOMStatusNotApplicable: an older forge (one that
+// knows only ok and unavailable) reads a release carrying it, validates it,
+// and finds no SBOM on that artifact. Its coverage leaves the same artifacts
+// out by kind and name, so the value changes no older verdict.
+func TestOlderReaderToleratesNotApplicable(t *testing.T) {
+	t.Parallel()
+	r := sbomTestRelease(map[string]*SBOMRef{"api": okSBOM("c", "syft@v1.57.2")})
+	r.Artifacts["web.sourcemaps"] = Artifact{Kind: KindOCI, Mode: ModeShared, Digests: map[string]string{SharedVariant: sbomTestDigest("e")},
+		SBOM: &SBOMRef{Status: SBOMStatusNotApplicable, Reason: SBOMNotApplicableSourcemaps}}
+	line, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(line, []byte(`"status":"not_applicable"`)) {
+		t.Fatalf("the line under test carries no not_applicable ref: %s", line)
+	}
+	var back Release
+	if err := json.Unmarshal(line, &back); err != nil {
+		t.Fatal(err)
+	}
+	if err := back.Validate(); err != nil {
+		t.Fatalf("a release carrying not_applicable does not validate: %v", err)
+	}
+	// What an older reader's validate checks, with the status it does not know.
+	unknown := *back.Artifacts["web.sourcemaps"].SBOM
+	unknown.Status = "some-future-status"
+	if err := unknown.validate(); err != nil || unknown.HasSBOM() {
+		t.Fatalf("an unknown status without a digest: validate %v, HasSBOM %v", err, unknown.HasSBOM())
+	}
+	var old preSBOMRelease
+	if err := json.Unmarshal(line, &old); err != nil || len(old.Artifacts) != len(r.Artifacts) {
+		t.Fatalf("a forge without Artifact.SBOM refused the line: %v (%d artifacts)", err, len(old.Artifacts))
 	}
 }

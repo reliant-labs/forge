@@ -48,11 +48,11 @@ const MaxLinkKeyFields = 8
 // identifiers and the dot between them.
 const MaxTableNameLen = 2*MaxPostgresColumnLen + 1
 
-// KindBrowse's request: one table of one database, as the data browser reads
-// it. The console runs it through the data browser's own read (the same
-// admission and audit); nothing in it is SQL, so it stays inside the columns
-// the read-only role may read, and opening it in the data browser ("Open in
-// Data") is the same request.
+// BrowseView is KindBrowse's request: one table of one database, as the data
+// browser reads it. The console runs it through the data browser's own read
+// (the same admission and audit); nothing in it is SQL, so it stays inside the
+// columns the read-only role may read, and opening it in the data browser
+// ("Open in Data") is the same request.
 //
 //	"browse": {"database": "app", "table": "public.users",
 //	  "columns": ["id", "email", "created_at"],

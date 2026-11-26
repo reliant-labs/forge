@@ -54,7 +54,7 @@ import "context"
 type Service interface {
 	Run(ctx context.Context, in RunInput) (RunResult, error)
 	Ping(ctx context.Context) error
-	Close() error
+	Flush() error
 	Lookup(ctx context.Context, id string) (string, int, error)
 	Snapshot() State
 }
@@ -87,8 +87,8 @@ type State struct{ N int }
 		t.Errorf("Ping wrapper not the Run one-liner:\n%s", got)
 	}
 	// non-ctx error-only → context.Background(), unnamed closure ctx.
-	if !strings.Contains(got, `observe.RunOp(o.chain, context.Background(), forgeMiddlewareServiceOps.Close, observe.NoArgs{}, func(_ context.Context) error {`) {
-		t.Errorf("Close wrapper not background-ctx Run:\n%s", got)
+	if !strings.Contains(got, `observe.RunOp(o.chain, context.Background(), forgeMiddlewareServiceOps.Flush, observe.NoArgs{}, func(_ context.Context) error {`) {
+		t.Errorf("Flush wrapper not background-ctx Run:\n%s", got)
 	}
 	// (A, B, error) → general capture form.
 	if !strings.Contains(got, `err := observe.RunOp(o.chain, ctx, forgeMiddlewareServiceOps.Lookup, forgeMiddlewareServiceLookupArgs{id}`) ||

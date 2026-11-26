@@ -432,7 +432,9 @@ func collectSingleLinterJSON(
 	case flags.tracing:
 		// `forge lint --tracing --fix` is the migration: the named lane fixes
 		// its warnings too (--json refuses --fix, so it stays detect-only).
-		return report(collectTracingJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd, fix: flags.autoFix(), targeted: true}))
+		// Its rewrites stay inside --scope (or the named package paths),
+		// like --proto-format's below.
+		return report(collectTracingJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd, fix: flags.autoFix(), targeted: true, scope: scope, paths: paths}))
 	case flags.protoOptions:
 		return reportUngated(collectProtoOptionsJSON(protoDirDefault))
 	case flags.vendoredProtos:
@@ -1392,8 +1394,12 @@ func collectFrontendLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 	var out []lintJSONFinding
 	gated := false
 	deps := rc.frontendDeps()
+	// eslint --fix rewrites the whole frontend, so it applies only to a
+	// whole-project run: `forge lint --fix ./internal/x/...` confines the
+	// fixers to those Go packages (a --scope run skips this lane outright).
+	fix := rc.fix && formatWithFrontends(rc.scope, rc.paths, false)
 	for _, f := range frontends {
-		fs, g := collectFrontendDirJSON(ctx, deps, f.name, f.dir, cssHealth, rc.fix)
+		fs, g := collectFrontendDirJSON(ctx, deps, f.name, f.dir, cssHealth, fix)
 		out = append(out, fs...)
 		gated = gated || g
 	}

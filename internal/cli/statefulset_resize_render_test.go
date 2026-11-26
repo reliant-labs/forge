@@ -26,6 +26,9 @@ func renderStatefulSetProject(t *testing.T, bundleExtras string) map[string][]ma
 // cluster context.
 func renderStatefulSetProjectOn(t *testing.T, bundleExtras, clusterContext string) map[string][]map[string]any {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("renders a real KCL project; runs in task test")
+	}
 	dir := t.TempDir()
 	kclMod := "[package]\nname = \"stsresize\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n"
 	main := `import forge

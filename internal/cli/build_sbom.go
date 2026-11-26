@@ -29,6 +29,11 @@ import (
 // bytes always go to this machine's ledger SBOM store, whichever ledger the
 // env records releases in, so a scan never needs the network for them.
 //
+// An artifact that is not code that ships (a frontend's source maps, a git
+// source pin; release.SBOMApplicable) records a not_applicable ref saying
+// what it is, so every artifact of a cut is accounted for one way or the
+// other, and the cut reports "N of N applicable" with the rest named.
+//
 // WARN-FIRST. Nothing here can fail a cut: an artifact syft could not
 // describe is recorded as unavailable, with the reason, and the cut prints
 // one warning for it. Refusing a cut without an SBOM is the sbom-required
@@ -103,6 +108,10 @@ type sbomCut struct {
 	Built map[string]bool
 	// NoSBOM is --no-sbom.
 	NoSBOM bool
+	// Sources resolves a git-sourced frontend's pin to its checkout, for
+	// the lockfile its site's SBOM is read from. nil builds forge's
+	// resolver (the same cache the build and the release's pin used).
+	Sources pinResolver
 }
 
 // generateReleaseSBOMs sets Artifact.SBOM on every artifact it can describe
@@ -119,10 +128,18 @@ func generateReleaseSBOMs(ctx context.Context, in sbomCut, artifacts map[string]
 		warn = io.Discard
 	}
 	names := sortedArtifactNames(artifacts)
+	// Every artifact no SBOM describes says so, and why, whatever happens
+	// to the others: --no-sbom skips SBOMs, it does not make source maps
+	// code.
+	for _, name := range names {
+		if ref, ok := release.NotApplicableSBOMRef(name, artifacts[name]); ok {
+			setArtifactSBOM(artifacts, name, ref)
+		}
+	}
 	if in.NoSBOM {
 		n := 0
 		for _, name := range names {
-			if !sbomDescribes(name, artifacts[name]) {
+			if !release.SBOMApplicable(name, artifacts[name]) {
 				continue
 			}
 			setArtifactSBOM(artifacts, name, release.SBOMRef{Status: release.SBOMStatusUnavailable, Reason: "skipped: --no-sbom"})
@@ -134,34 +151,102 @@ func generateReleaseSBOMs(ctx context.Context, in sbomCut, artifacts map[string]
 		return
 	}
 
-	targets, refused := planReleaseSBOMTargets(in, artifacts)
+	targets, refused := planReleaseSBOMTargets(ctx, in, artifacts)
 	for name, ref := range refused {
 		setArtifactSBOM(artifacts, name, ref)
 	}
 	if len(targets) > 0 {
 		recordGeneratedSBOMs(ctx, in, artifacts, targets, warn)
 	}
+	printSBOMCoverage(warn, in.Version, artifacts, targets)
+}
 
-	generated, cached, unavailable := 0, 0, 0
-	for _, name := range names {
+// printSBOMCoverage is the cut's SBOM summary: how many of the artifacts an
+// SBOM applies to recorded one (and how many came from the cache), each one
+// that could not with why, and what was not applicable:
+//
+//	[build] SBOMs: 10 of 10 applicable artifacts recorded (6 from cache); 6 not applicable (3 source maps, 3 git source pins)
+func printSBOMCoverage(warn io.Writer, version string, artifacts map[string]release.Artifact, targets []plannedSBOM) {
+	applicable, recorded, cached, unavailable := 0, 0, 0, 0
+	var notApplicable []string
+	for _, name := range sortedArtifactNames(artifacts) {
 		ref := artifacts[name].SBOM
+		if !release.SBOMApplicable(name, artifacts[name]) {
+			if ref.NotApplicable() {
+				notApplicable = append(notApplicable, ref.Reason)
+			}
+			continue
+		}
+		applicable++
 		switch {
-		case ref == nil:
 		case ref.HasSBOM():
-			generated++
+			recorded++
+		case ref == nil:
+			// Every applicable artifact is planned or refused, so this
+			// is forge's bug; still never a silent gap in the count.
+			unavailable++
+			fmt.Fprintf(warn, "[build] warning: release %s recorded without an SBOM for %s: forge planned none for it\n", version, name)
 		default:
 			unavailable++
-			fmt.Fprintf(warn, "[build] warning: release %s recorded without an SBOM for %s: %s\n", in.Version, name, ref.Reason)
+			fmt.Fprintf(warn, "[build] warning: release %s recorded without an SBOM for %s: %s\n", version, name, ref.Reason)
 		}
 	}
 	for _, t := range targets {
-		if t.cached {
+		if t.cached && artifacts[t.name].SBOM.HasSBOM() {
 			cached++
 		}
 	}
-	if generated+unavailable > 0 {
-		fmt.Fprintf(warn, "[build] SBOMs: %d recorded (%d from cache), %d unavailable\n", generated, cached, unavailable)
+	if applicable+len(notApplicable) == 0 {
+		return
 	}
+	line := fmt.Sprintf("[build] SBOMs: %d of %d applicable artifacts recorded (%d from cache)", recorded, applicable, cached)
+	if unavailable > 0 {
+		line += fmt.Sprintf(", %d unavailable", unavailable)
+	}
+	if na := notApplicableSummary(notApplicable); na != "" {
+		line += "; " + na
+	}
+	fmt.Fprintln(warn, line)
+}
+
+// notApplicableSummary counts not-applicable artifacts by class, from their
+// reasons: "6 not applicable (3 source maps, 3 git source pins)". "" for
+// none.
+func notApplicableSummary(reasons []string) string {
+	if len(reasons) == 0 {
+		return ""
+	}
+	type class struct{ one, many string }
+	classes := map[string]class{
+		release.SBOMNotApplicableSourcemaps: {"source maps", "source maps"},
+		release.SBOMNotApplicableGitSource:  {"git source pin", "git source pins"},
+	}
+	counts := map[string]int{}
+	var order []string
+	for _, r := range reasons {
+		key := r
+		if _, ok := classes[r]; !ok {
+			key = ""
+		}
+		if counts[key] == 0 {
+			order = append(order, key)
+		}
+		counts[key]++
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i] > order[j] }) // the "other" class ("") last
+	parts := make([]string, 0, len(order))
+	for _, key := range order {
+		c, ok := classes[key]
+		if !ok {
+			c = class{"other", "other"}
+		}
+		label := c.many
+		if counts[key] == 1 {
+			label = c.one
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", counts[key], label))
+	}
+	return fmt.Sprintf("%d not applicable (%s)", len(reasons), strings.Join(parts, ", "))
 }
 
 // plannedSBOM is one target and, once generated, whether it was a cache hit.
@@ -340,13 +425,14 @@ func runSBOMHooks(ctx context.Context, in sbomGenerated, warn io.Writer, mu *syn
 // §1.1: the bytes that ship). It returns the targets, and an unavailable ref
 // for each artifact that should have an SBOM but cannot be described.
 // Artifacts that describe no shipped code (a source pin, a frontend's source
-// maps) get neither, and record no SBOM.
-func planReleaseSBOMTargets(in sbomCut, artifacts map[string]release.Artifact) ([]plannedSBOM, map[string]release.SBOMRef) {
+// maps; release.SBOMApplicable) get neither: the caller records them not
+// applicable.
+func planReleaseSBOMTargets(ctx context.Context, in sbomCut, artifacts map[string]release.Artifact) ([]plannedSBOM, map[string]release.SBOMRef) {
 	refused := map[string]release.SBOMRef{}
 	unavailable := func(name, source, reason string) {
 		refused[name] = release.SBOMRef{Status: release.SBOMStatusUnavailable, Source: source, Reason: reason}
 	}
-	sites := hostedSiteDirs(in.ProjectDir, in.Entities)
+	sites := hostedSiteDirs(ctx, in, artifacts)
 	var npmDirs, modDirs map[string]string
 
 	var out []plannedSBOM
@@ -356,21 +442,31 @@ func planReleaseSBOMTargets(in sbomCut, artifacts map[string]release.Artifact) (
 	}
 	for _, name := range sortedArtifactNames(artifacts) {
 		art := artifacts[name]
-		if !sbomDescribes(name, art) {
+		if !release.SBOMApplicable(name, art) {
 			continue
 		}
 		switch art.Kind {
 		case release.KindOCI:
 			if site, ok := sites[name]; ok {
 				// A static site: its bundle carries no package metadata, so
-				// the SBOM is of the frontend's lockfile (amendment 5).
+				// the SBOM is of the frontend's lockfile (amendment 5), in
+				// the checkout the site was built from: this one, or a
+				// git-sourced frontend's source at the pinned commit.
+				if site.unresolved != "" {
+					unavailable(name, release.SBOMSourceLockfile, site.unresolved)
+					continue
+				}
 				if site.dir == "" {
 					unavailable(name, release.SBOMSourceLockfile, fmt.Sprintf("frontend %s has no directory in this checkout to read a lockfile from", site.name))
 					continue
 				}
-				lock := findLockfile(site.dir, in.ProjectDir, jsLockfiles)
+				lock := findLockfile(site.dir, site.root, jsLockfiles)
 				if lock == "" {
-					unavailable(name, release.SBOMSourceLockfile, fmt.Sprintf("frontend %s has no lockfile (%s) in %s or above it", site.name, strings.Join(jsLockfiles, ", "), relOrAbs(in.ProjectDir, site.dir)))
+					where := relOrAbs(in.ProjectDir, site.dir)
+					if site.source != "" {
+						where = fmt.Sprintf("its source %s (%s), up to that checkout's root", site.source, site.dir)
+					}
+					unavailable(name, release.SBOMSourceLockfile, fmt.Sprintf("frontend %s has no lockfile (%s) in %s or above it", site.name, strings.Join(jsLockfiles, ", "), where))
 					continue
 				}
 				add(name, sbom.Target{Kind: sbom.KindLockfile, Ref: lock})
@@ -426,21 +522,6 @@ func planReleaseSBOMTargets(in sbomCut, artifacts map[string]release.Artifact) (
 	return out, refused
 }
 
-// sbomDescribes reports whether an artifact is code that ships, which an SBOM
-// describes. A git source pin (a frontend built from another repository)
-// names a commit, not bytes in this checkout; a frontend's source maps are
-// debugging data, not code that runs.
-func sbomDescribes(name string, art release.Artifact) bool {
-	if _, maps := release.SourcemapsFrontend(name); maps {
-		return false
-	}
-	switch art.Kind {
-	case release.KindOCI, release.KindFile, release.KindNPM, release.KindGoModule:
-		return true
-	}
-	return false
-}
-
 // sbomPolicyOff reports whether the env declares provenance_sbom off.
 func sbomPolicyOff(e *KCLEntities) bool {
 	return e != nil && e.DeliveryPolicy != nil && e.DeliveryPolicy.ProvenanceSBOM.Mode == release.DeliveryOff
@@ -483,13 +564,31 @@ func findLockfile(dir, stop string, names []string) string {
 	}
 }
 
-type hostedSite struct{ name, dir string }
+type hostedSite struct {
+	name, dir string
+	// root is where the lockfile walk stops: the project for a frontend in
+	// this checkout, the source checkout's root for a git-sourced one.
+	root string
+	// source is a git-sourced frontend's pin, for messages; "" in-repo.
+	source string
+	// unresolved says why a git-sourced frontend's checkout was not found.
+	unresolved string
+}
 
 // hostedSiteDirs maps each hosted static site's release key — the address
 // the build pushed it to, by the one rule the coverage gate and the push use
-// (hostedStaticDestinationForDecl) — to its frontend and directory.
-func hostedSiteDirs(projectDir string, e *KCLEntities) map[string]hostedSite {
+// (hostedStaticDestinationForDecl) — to its frontend and the directory its
+// code is in.
+//
+// A frontend built from a forge.GitSource has no directory in this checkout:
+// its code is the pinned source, which the build resolved (and rewrote Path
+// to) before pushing the site. A cut that did not build it — `--no-build`, or
+// a build --target narrowed away from the sites — resolves the pin here,
+// through the same resolver and cache as the build and the release's own git
+// pin, so the lockfile is the one at the commit the site was built from.
+func hostedSiteDirs(ctx context.Context, in sbomCut, artifacts map[string]release.Artifact) map[string]hostedSite {
 	out := map[string]hostedSite{}
+	e := in.Entities
 	if e == nil {
 		return out
 	}
@@ -497,13 +596,66 @@ func hostedSiteDirs(projectDir string, e *KCLEntities) map[string]hostedSite {
 		if !frontendIsHosted(fe) {
 			continue
 		}
-		dir := fe.Path
-		if dir != "" && !filepath.IsAbs(dir) {
-			dir = filepath.Join(projectDir, dir)
+		key := hostedStaticDestinationForDecl(e, imageRepository(fe.Image))
+		if _, ok := artifacts[key]; !ok {
+			continue
 		}
-		out[hostedStaticDestinationForDecl(e, imageRepository(fe.Image))] = hostedSite{name: fe.Name, dir: dir}
+		site := hostedSite{name: fe.Name, dir: fe.Path, root: in.ProjectDir}
+		if fe.Source != nil && fe.Source.Repo != "" {
+			site = sourcedSiteDir(ctx, in, artifacts, fe)
+		} else if site.dir != "" && !filepath.IsAbs(site.dir) {
+			site.dir = filepath.Join(in.ProjectDir, site.dir)
+		}
+		out[key] = site
 	}
 	return out
+}
+
+// sourcedSiteDir finds a git-sourced frontend's code: the directory the
+// build resolved, else the pin resolved now. The commit must be the one the
+// release pins for that frontend, when it pins one.
+func sourcedSiteDir(ctx context.Context, in sbomCut, artifacts map[string]release.Artifact, fe FrontendEntity) hostedSite {
+	src := toGitSource(fe.Source)
+	site := hostedSite{name: fe.Name, dir: fe.Path, source: src.String()}
+	commit := fe.SourceCommit
+	if site.dir == "" {
+		resolver := in.Sources
+		if resolver == nil {
+			r, err := frontendSourceResolver(in.ProjectDir)
+			if err != nil {
+				site.unresolved = fmt.Sprintf("frontend %s: its source %s could not be resolved to read its lockfile: %v", fe.Name, site.source, err)
+				return site
+			}
+			resolver = r
+		}
+		res, err := resolver.Resolve(ctx, src)
+		if err != nil {
+			site.unresolved = fmt.Sprintf("frontend %s: its source %s could not be resolved to read its lockfile: %v", fe.Name, site.source, err)
+			return site
+		}
+		site.dir, commit = res.Dir, res.Commit
+	}
+	if pin, ok := artifacts[fe.Name]; ok && pin.Kind == release.KindGit && pin.Source != nil &&
+		pin.Source.Commit != "" && commit != "" && pin.Source.Commit != commit {
+		site.unresolved = fmt.Sprintf("frontend %s: its source checkout %s is at %s, not the commit %s the release pins", fe.Name, site.dir, commit, pin.Source.Commit)
+		return site
+	}
+	site.root = sourceCheckoutRoot(site.dir, fe.Source.Subdir)
+	return site
+}
+
+// sourceCheckoutRoot is the root of the checkout a resolved source directory
+// is in: dir without the source's subdir.
+func sourceCheckoutRoot(dir, subdir string) string {
+	dir = filepath.Clean(dir)
+	sub := filepath.Clean(filepath.FromSlash(strings.Trim(subdir, "/")))
+	if sub == "." {
+		return dir
+	}
+	if root, ok := strings.CutSuffix(dir, string(filepath.Separator)+sub); ok {
+		return root
+	}
+	return dir
 }
 
 // fileArtifactPath is where harvestFileArtifacts read a file artifact from.

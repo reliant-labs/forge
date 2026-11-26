@@ -597,6 +597,9 @@ func limitDeclaredShape(ctx context.Context, c HostedCaller, env string, declare
 	if err := reader.CheckIdentities(declared); err != nil {
 		return release.Shape{}, fmt.Errorf("ensure environment %q: %w", env, err)
 	}
+	if err := reader.CheckScopedVulnExemptions(declared); err != nil {
+		return release.Shape{}, fmt.Errorf("ensure environment %q: %w", env, err)
+	}
 	return reader.LimitShape(declared), nil
 }
 

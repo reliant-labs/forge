@@ -283,11 +283,12 @@ An exemption's identity is its id **and** its scope: the same id with another sc
 a second entry, added beside the first; the same id and scope with a new reason or
 expiry replaces the one entry. The render records scoped exemptions in the shape's
 `vuln_gate.scoped_exemptions`, apart from `exemptions`, so a reader that predates
-scopes never reads one as an exemption of the advisory everywhere: a control plane
-that does not advertise `shape-vuln-scoped-exemptions` is sent the policy without
-them, and one that decodes them but whose rule reads only `exemptions` ignores them.
-Either way the finding stays in its gate (fail closed). `ci.vuln_scan.exemptions`
-(forge.yaml) stays unscoped.
+scopes never reads one as an exemption of the advisory everywhere. Hosted declaration
+and bundle recording refuse a scoped policy unless the control plane advertises both
+`shape-vuln-scoped-exemptions` (decoding) and `evaluates-scoped-vuln-exemptions`
+(occurrence-aware evaluation in promotion and vulnerability reads). Upgrade the
+control plane before using scoped policies there; decoding alone is not support.
+Local evaluation supports scopes. `ci.vuln_scan.exemptions` (forge.yaml) stays unscoped.
 
 The edit is made through KCL's own parser, not text matching: it finds the literal
 `VulnExemption`, `VulnPolicy`, `DeliveryPolicy` or `Bundle` the env declares and

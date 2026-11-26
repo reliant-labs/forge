@@ -3,8 +3,11 @@
 **Status:** proposal. The owner asked on 2026-11-26 how to compete with Langfuse
 on LLM and agent monitoring when selling to agentic companies, and approved
 writing this proposal. Nothing here beyond [Where it stands](#where-it-stands-2026-11-26)
-is built. The open owner decisions are collected in
-[section 15](#15-open-owner-decisions), and each says what it blocks.
+is built. The owner accepted every recommendation of section 15 on 2026-11-26
+("agreed with your recs"); they are the
+[Settled (owner, 2026-11-26)](#settled-owner-2026-11-26) list, and
+[section 15](#15-owner-decisions-decided-2026-11-26) keeps the options that were
+weighed. Slices land as their own pull requests ([section 17](#17-rollout-plan)).
 **Date:** 2026-11-26
 **Related:** [changes.md](changes.md) (prompts as Changes, the readout),
 [ml-workloads.md](ml-workloads.md) (the evals object model this reuses, decision 8
@@ -84,6 +87,56 @@ building an APM, a deploy system and a flag platform.
 6. **forge never stands in for another tool** (forge `reliant.md`, Philosophy).
    We read other conventions; we do not re-implement OpenInference's or
    OpenLLMetry's instrumentors, or Langfuse's REST API.
+
+## Settled (owner, 2026-11-26)
+
+The owner accepted every recommendation of
+[section 15](#15-owner-decisions-decided-2026-11-26) ("agreed with your recs",
+2026-11-26 06:01Z). Item N is decision N, the `DN` of the
+[rollout plan](#17-rollout-plan), and the sections above and below describe the
+chosen option.
+
+1. **Conventions are normalised at ingest, additively**: canonical keys are
+   added and the originals kept, from one forge table compiled to OTTL, with
+   golden vectors ([section 3.1](#31-one-canonical-shape-written-at-ingest)).
+2. **Langfuse compatibility is the OTLP path alias**, Basic → token at that
+   path, and the `langfuse.*` attributes, plus a migration guide and dual-run.
+   Their REST API is not emulated ([section 3.2](#32-accepting-langfuses-otel-export)).
+3. **Content capture is off by default**, declared per env in the release/env
+   document and enforced at the gateway, in a separate table with its own
+   retention; tool I/O is a second switch, and the org has a kill switch
+   ([section 4](#4-opt-in-content-capture)).
+4. **Content is read with a new scope, `obs:content:read`**, per env and not
+   implied by `obs:read`. Every read is audited, and an agent reads content only
+   with a person's grant.
+5. **Online evaluators:** LLM judges run in a control-plane evaluator worker,
+   code evaluators in the customer's code, and a Reliant workflow per batch
+   comes later for agentic trace review ([section 6.2](#62-online-evaluators)).
+6. **Evaluators are declared in the repo** (`evals.yaml` or a `forge.yaml`
+   section), with their live state (on, sample, budget) in the control plane,
+   like Changes.
+7. **Prompts are files in the release**, and a Change picks among them; console
+   edits open a PR as the edit path. A control-plane prompt store comes only for
+   a design partner who needs it ([section 7](#7-prompts-as-changes)).
+8. **The price table is LiteLLM's model cost map vendored into forge**, read
+   through a query-time dictionary, with overrides shared with the ML track's
+   price sheet ([section 9](#9-cost-a-price-table)).
+9. **Quality gates on promotion warn first**: new findings warn, and offline
+   eval gates are displayed first and block per env on opt-in, matching
+   ml-workloads decision 22 ([section 8](#8-quality-in-release-health-and-promotion-gates)).
+10. **One evals model with ML**: the ML spec's model, with its subject widened to
+    a release and a Change variant ([section 6.4](#64-datasets-and-offline-evals)).
+11. **One Python package shared with the ML track** (forge#2888), as a `genai`
+    module, and a TypeScript subpath export
+    ([section 10](#10-python-and-typescript-helpers)). The names are still to be
+    chosen with the package.
+12. **Open instrumentation and data, hosted loop**, with BYOC later as an
+    enterprise offer ([section 13](#13-open-source-and-self-host)).
+13. **AI data is billed on the flat GiB meter**, with no seats and no per-span
+    unit, and judge calls at the gateway's passthrough price, once bytes per
+    span are measured on the dogfood ([section 14](#14-pricing-angle)).
+14. **Autopilot stopping a prompt arm is opt-in per change**
+    ([section 12](#12-alerts-the-inbox-and-reliant-fixing-it)).
 
 ## 1. The market and where it stops
 
@@ -179,7 +232,7 @@ spellings of cost and cache tokens per query (`ai.go:60-105`). Five conventions
 times every reader (six dashboards, evaluators, release health, the trace view,
 the readout, `forge obs` CLI verbs) is a matrix that drifts. Normalising once
 costs a few attributes per span (billed bytes) and makes every reader simple.
-The alternative is [decision 1](#15-open-owner-decisions).
+The alternative is [decision 1](#15-owner-decisions-decided-2026-11-26).
 
 **Trace-level attributes propagate for free.** Langfuse asks users to copy
 `user.id`, `session.id` and tags onto every span with baggage processors, or its
@@ -200,9 +253,9 @@ header. Three depths are possible:
 | (b) (a) plus their REST API      | Nothing more                                                                                                    | Also `langfuse.get_prompt()`, `create_score()`, datasets and experiments through their SDK | Emulating a moving third-party API (v3's APIs were deleted from their Cloud ten days ago). A second product to maintain, against principle 6.    |
 | (c) Neither                      | Swap SDKs                                                                                                       | —                                                                                          | No code; a real migration project for every prospect.                                                                                            |
 
-Recommended: **(a)**, with a migration guide that maps each remaining Langfuse
+Settled: **(a)**, with a migration guide that maps each remaining Langfuse
 call to its equivalent: `get_prompt` → a Change evaluation, `create_score` →
-`score()` in our helpers, datasets → [section 6](#6-datasets-and-offline-evals).
+`score()` in our helpers, datasets → [section 6](#64-datasets-and-offline-evals).
 (a) is reading a convention, the same as reading OpenInference; (b) is standing
 in for another tool. **Dual-run** is the honest trial: an OTel Collector, or two
 span processors, sends the same spans to Langfuse and to us, so a prospect
@@ -240,7 +293,7 @@ genai_content = forge.GenAIContent {
 | Sampling    | Deterministic on the trace id, so a trace's content is all there or not there. Spans themselves are never sampled away (`KeepSampler`). A span with an error status keeps its content regardless of `sample`, because that is the trace someone will open.                                                                                                                                                           |
 | Size        | Per-attribute cap (default 64 KiB, maximum 1 MiB), truncation marked `forge.ai.content.truncated`, plus the edge's request limit. Images and audio are referenced, never inlined (out of v1).                                                                                                                                                                                                                        |
 | Storage     | **A separate table**, `genai_content` in the tenant database: `(TraceId, SpanId, Kind, Role, Index, Body, Truncated, Sha256, Timestamp, RetentionDays)`, its own TTL, ZSTD. The span keeps a reference. Separate so that content has its own retention, its own grant, its own deletion (by `user.id`, for an erasure request), and so that scanning `otel_traces` for a dashboard never reads megabytes of prompts. |
-| Read access | A person signed in, in the org, holding a content grant for that env. Proposed: a new scope `obs:content:read`, not implied by `obs:read`, on the precedent of `deploy:config:read` ("ITS OWN SCOPE, NOT A DEPLOY READ", `pkg/accesstoken/scope.go`). Every content read is audited. An agent reads content only with a person's grant ([decision 4](#15-open-owner-decisions)).                                     |
+| Read access | A person signed in, in the org, holding a content grant for that env. Settled: a new scope `obs:content:read`, not implied by `obs:read`, on the precedent of `deploy:config:read` ("ITS OWN SCOPE, NOT A DEPLOY READ", `pkg/accesstoken/scope.go`). Every content read is audited. An agent reads content only with a person's grant ([decision 4](#15-owner-decisions-decided-2026-11-26)).                        |
 | Browser     | The anonymous browser pipeline (`/_otel`) never carries content: the gateway strips it there unconditionally.                                                                                                                                                                                                                                                                                                        |
 | Billing     | Content bytes are ingest bytes on the same meter. Sampling and the size cap are the customer's cost controls.                                                                                                                                                                                                                                                                                                        |
 | Staff copy  | Content never reaches tenant zero's staff view of a customer org. For Reliant's own product, the Trace tab joins spans to the chat's messages under the chat's ACL and needs no capture (`agent-analytics.md` §7).                                                                                                                                                                                                   |
@@ -321,11 +374,11 @@ LLM judge (a rubric prompt, a judge model, an output score), or code. Like a
 Change, its shape lives in the repo and its live state in the control plane: an
 `evals.yaml` (or a `forge.yaml` section) declares the evaluator key, rubric,
 score name and type; the control plane decides on or off, the sample rate and a
-monthly judge budget ([decision 6](#15-open-owner-decisions)). A rubric change is
+monthly judge budget ([decision 6](#15-owner-decisions-decided-2026-11-26)). A rubric change is
 reviewed and versioned like code, and every score names the evaluator version
 that produced it.
 
-Where it runs is [decision 5](#15-open-owner-decisions):
+Where it runs is [decision 5](#15-owner-decisions-decided-2026-11-26):
 
 | Option                               | Fits                                                                                                                                    | Cost                                                                                                       |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
@@ -333,7 +386,7 @@ Where it runs is [decision 5](#15-open-owner-decisions):
 | (b) A Reliant workflow per batch     | Agentic review that needs tools: cluster failures, explain a regression, propose a dataset case (LangSmith's Engine, Langfuse's Topics) | Heavier per sample; the right engine for judgment that is more than one call, and it dogfoods Reliant.     |
 | (c) The customer's own code          | Code evaluators and judges they already have: run anywhere, write scores through the API or OTLP                                        | Nothing for us; always supported.                                                                          |
 
-Recommended: (a) for LLM judges, (c) for code evaluators in v1 (running a
+Settled: (a) for LLM judges, (c) for code evaluators in v1 (running a
 customer's code on our side needs a sandbox we do not have for this), (b) for
 agentic trace review as a later slice.
 
@@ -372,8 +425,8 @@ EvalRun. `forge evals run` and `forge evals record` are the CLI, matching
 `forge ml eval record` in ml-workloads. `forge evals check --suite <s> --baseline
 env:prod` exits 0 (pass), 1 (regressed) or 2 (cannot prove: too few items), the
 same contract as `forge obs check`, so CI gates without a vendor action. Sharing
-the model is [decision 10](#15-open-owner-decisions) and needs the ML track's
-agreement.
+the model is [decision 10](#15-owner-decisions-decided-2026-11-26), settled for
+one model; the ML track's own decisions of the same day (forge#2888) agree.
 
 ## 7. Prompts as Changes
 
@@ -429,7 +482,7 @@ with genai.chat(model=p["model"], prompt=p) as span: ...
 **What this gives up, and the decision.** Langfuse's most loved prompt feature is
 that a non-engineer edits a prompt in the UI and it is live without a deploy.
 With prompts in the release, an edit is a commit. Three answers
-([decision 7](#15-open-owner-decisions)):
+([decision 7](#15-owner-decisions-decided-2026-11-26)):
 
 | Option                                                                             | Edit without deploy              | Reviewed in git | Cost                                                                                                                                                                         |
 | ---------------------------------------------------------------------------------- | -------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -437,7 +490,7 @@ With prompts in the release, an edit is a commit. Three answers
 | (b) A control-plane prompt store; a variant references a stored, revisioned prompt | Yes                              | No              | A second versioned store with its own audit, delivered in the snapshot (size budget), and a variant the release never declared, which changes.md's validation refuses today. |
 | (c) (a), plus "edit in console" opens a PR                                         | Near: a person or Reliant merges | Yes             | The console's playground saves to a branch; Reliant opens the PR; the release train ships it.                                                                                |
 
-Recommended: **(a) now, (c) as the edit path**, and (b) only when a design
+Settled: **(a) now, (c) as the edit path**, and (b) only when a design
 partner's prompt editors cannot work through a PR.
 
 **A playground needs:** a console page that renders a prompt variant with
@@ -476,7 +529,7 @@ sentence Langfuse cannot say about a deploy.
 its digest (`forge evals record --release v1.4.0`). A declared gate
 (`forge.EvalGate {suite, baseline = "env:prod", max_regression = 0.01}`) is shown
 on the promotion plan from the first version and blocks the promote only when an
-env opts in ([decision 9](#15-open-owner-decisions); ml-workloads decision 22
+env opts in ([decision 9](#15-owner-decisions-decided-2026-11-26); ml-workloads decision 22
 recommends the same display-first order).
 
 ## 9. Cost: a price table
@@ -484,7 +537,7 @@ recommends the same display-first order).
 Cost is the first question an agentic company asks, and today we answer only
 where the gateway priced the call. The price data already exists in our stack:
 the LLM gateway bills with LiteLLM's model cost map, and control-plane
-`internal/llmlistprice` prices BYO-key calls at the same list rates. Proposed:
+`internal/llmlistprice` prices BYO-key calls at the same list rates. Settled:
 
 - **One source.** LiteLLM's model price map (MIT), vendored into forge as
   versioned data (`pkg/llmprice`) and refreshed by a bot PR, so the dashboard's
@@ -500,7 +553,7 @@ the LLM gateway bills with LiteLLM's model cost map, and control-plane
   price-table version.
 - **Overrides.** Negotiated prices declared per project, shared with the ML
   track's customer-declared price sheet (ml-workloads decision 21) rather than a
-  second format ([decision 8](#15-open-owner-decisions)).
+  second format ([decision 8](#15-owner-decisions-decided-2026-11-26)).
 - **No tokenizer.** A call with no usage reported shows no cost and says so.
   Langfuse retired its tokenizer on 2026-11-06 for the same reason.
 
@@ -531,7 +584,7 @@ Python ships as part of the one Python package the ML track builds first
 (forge#2888), as a `genai` module beside its training callbacks; TypeScript as a
 subpath export of `@reliantlabs/forge-web-runtime` for Node and edge runtimes,
 so the browser barrel stays free of server dependencies (the reason changes.md
-kept `changes.ts` pure). Packaging and names are [decision 11](#15-open-owner-decisions).
+kept `changes.ts` pure). Packaging and names are [decision 11](#15-owner-decisions-decided-2026-11-26).
 
 ## 11. Joins nobody else has
 
@@ -553,13 +606,13 @@ rate, a tool's error rate, cost per hour spike, judge score drop, feedback drop.
 They land in the Issues inbox like any alert; the existing autopilot receiver
 starts reliant's built-in `autopilot-oncall` workflow, which gets the trace
 links, the transcript (only where a person with the content grant has allowed
-that workflow to read content, [decision 4](#15-open-owner-decisions)), the
+that workflow to read content, [decision 4](#15-owner-decisions-decided-2026-11-26)), the
 release and the Change involved. What it may do is already settled by
 changes.md: **an unattended run may stop a Change** (stop never waits for
 approval), and it may open a PR. So for a bad prompt arm the fix path is stop
 the arm, add the failing trace to a dataset, and open a PR with a corrected
 prompt that the offline gate then checks. Whether autopilot stops an arm without
-asking is opt-in per change ([decision 14](#15-open-owner-decisions));
+asking is opt-in per change ([decision 14](#15-owner-decisions-decided-2026-11-26));
 changes.md keeps platform-side automatic stop on a metric out of v1, and this
 does not change that: the workflow is an agent calling `StopChange`.
 
@@ -578,11 +631,11 @@ So the honest positioning is: **open instrumentation, open data shapes, hosted
 loop.** Everything a customer emits is standard OTel in standard ClickHouse
 tables they can query with SQL and forward elsewhere at any time; leaving costs
 an endpoint change, in both directions. What we do not offer is the loop on
-their own servers. Options ([decision 12](#15-open-owner-decisions)): (a) that
+their own servers. Options ([decision 12](#15-owner-decisions-decided-2026-11-26)): (a) that
 positioning, with BYOC (the tenant ClickHouse in the customer's cloud, our control
 plane) as an enterprise offer later, the shape LangSmith and Braintrust moved to;
 (b) open-source a single-binary "forge obs server" with the loop; (c) say
-nothing. Recommended: (a). (b) is a second product and a support burden, and the
+nothing. Settled: (a). (b) is a second product and a support burden, and the
 buyers we target at first (agentic startups) choose managed in the large
 majority; Langfuse's own enterprise self-host is now bundled with a ClickHouse
 commercial plan. One gap (a) still has to close is local: the AI hub's sql
@@ -606,31 +659,34 @@ per-score unit (control-plane `internal/plansconfig/pricing.yaml`, pricing v2,
 
 The larger angle is the bundle: one bill and one product for APM, AI monitoring,
 evals, flags and experiments, and hosting, instead of Langfuse plus Datadog plus
-LaunchDarkly. Recommended: keep AI data on the flat meter with no separate SKU
-([decision 13](#15-open-owner-decisions)), because a per-span price is exactly
+LaunchDarkly. Settled: keep AI data on the flat meter with no separate SKU
+([decision 13](#15-owner-decisions-decided-2026-11-26)), because a per-span price is exactly
 where we undercut everyone.
 
-## 15. Open owner decisions
+## 15. Owner decisions (decided 2026-11-26)
 
-Per project rules, the owner decides architectural choices. Each row gives the
-realistic options, a recommendation and what it blocks.
+The owner accepted every recommendation this section proposed ("agreed with your
+recs", 2026-11-26 06:01Z). They are recorded as the
+[Settled (owner, 2026-11-26)](#settled-owner-2026-11-26) list, and the sections
+above already describe the chosen option. The options that were weighed and not
+chosen, for the record:
 
-| #   | Decision                         | Options                                                                                                                                                                                           | Recommendation                                                                                                                            | Blocks                                                          |
-| --- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| 1   | Where conventions are normalised | (a) at ingest, additive (canonical keys added, originals kept), from one forge table compiled to OTTL; (b) at query time in every reader; (c) only our own convention                             | (a). One mapping with golden vectors; every reader stays simple. Costs a few billed bytes a span.                                         | Slice 1, every later reader.                                    |
-| 2   | Langfuse compatibility depth     | (a) OTLP path alias, Basic → token at that path, `langfuse.*` attributes; (b) (a) plus emulating their REST API (prompts, scores, datasets); (c) none                                             | (a), plus a migration guide and dual-run. (b) emulates a moving third-party API.                                                          | Slice 1, the migration pitch.                                   |
-| 3   | Content capture shape            | (a) off by default, per env in the release/env document, gateway-enforced, separate table and retention, tool I/O a second switch, org kill switch; (b) one org-wide switch; (c) client-side only | (a). Server-side enforcement means a client bug cannot leak; the separate table gives retention, grant and erasure.                       | Slice 4, transcripts, datasets from traces, judges, playground. |
-| 4   | Who reads content                | (a) a new scope `obs:content:read`, per env, not implied by `obs:read`, every read audited, agents only with a person's grant; (b) anyone with `obs:read`                                         | (a). Adding a scope to forge's closed set is a forge PR, a control-plane `CHECK` migration and `EnvScopes`, as changes.md decision 5 was. | Slice 4, autopilot reading transcripts.                         |
-| 5   | Where online evaluators run      | (a) a control-plane evaluator worker; (b) a Reliant workflow per batch; (c) customer code only                                                                                                    | (a) for LLM judges, (c) for code evaluators, (b) later for agentic trace review.                                                          | Slice 8.                                                        |
-| 6   | Where evaluators are declared    | (a) shape in the repo (`evals.yaml` or a `forge.yaml` section), live state (on, sample, budget) in the control plane, like Changes; (b) control plane only                                        | (a). Rubrics are code: reviewed, versioned, and every score names the version.                                                            | Slice 8.                                                        |
-| 7   | Prompt storage                   | (a) prompt files in the release, a Change picks among them; (b) a control-plane prompt store with live edits; (c) (a) plus console edits that open a PR                                           | (a) now, (c) as the edit path; (b) only for a design partner who needs it.                                                                | Slice 9, the playground.                                        |
-| 8   | Price table                      | (a) LiteLLM's map vendored into forge, query-time dictionary, overrides shared with the ML price sheet; (b) our own curated table; (c) reported cost only                                         | (a): the same rates the gateway bills with.                                                                                               | Slice 2, `ai_cost`.                                             |
-| 9   | Quality gates on promotion       | (a) new findings warn; offline eval gates displayed first, blocking per env on opt-in; (b) block from day one; (c) display only                                                                   | (a), matching ml-workloads decision 22.                                                                                                   | Slices 7 and 10.                                                |
-| 10  | One evals model with ML          | (a) the ML spec's §3 model, subject widened to a release and a Change variant; (b) a separate LLM-app model                                                                                       | (a). Needs the ML track's agreement; the ML spec is itself a draft.                                                                       | Slice 10.                                                       |
-| 11  | SDK packaging                    | (a) one Python package shared with forge#2888 (a `genai` module) and a TS subpath export; (b) separate AI packages                                                                                | (a). Names are yours.                                                                                                                     | Slice 6.                                                        |
-| 12  | Self-host story                  | (a) open instrumentation and data, hosted loop, BYOC later for enterprise; (b) open-source a single-binary obs server; (c) say nothing                                                            | (a).                                                                                                                                      | Positioning, the compare skill.                                 |
-| 13  | Pricing                          | (a) AI data on the flat GiB meter, no seats or per-span unit, judge calls at gateway passthrough; (b) a separate AI SKU                                                                           | (a), after measuring bytes per span on the dogfood.                                                                                       | Pitch numbers.                                                  |
-| 14  | Autopilot stopping a prompt arm  | (a) opt-in per change; (b) on by default for experiments; (c) never, propose only                                                                                                                 | (a). Policy already allows it; a default stop could end experiments on noise.                                                             | Slice 12.                                                       |
+| #   | Decision                         | Chosen                                                                                                                                           | Not chosen                                                               | Unblocks                                                        |
+| --- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ | --------------------------------------------------------------- |
+| 1   | Where conventions are normalised | At ingest, additive (canonical keys added, originals kept), from one forge table compiled to OTTL                                                | At query time in every reader; only our own convention                   | Slice 1, every later reader.                                    |
+| 2   | Langfuse compatibility depth     | OTLP path alias, Basic → token at that path, `langfuse.*` attributes, plus a migration guide and dual-run                                        | Also emulating their REST API (prompts, scores, datasets); none          | Slice 1, the migration pitch.                                   |
+| 3   | Content capture shape            | Off by default, per env in the release/env document, gateway-enforced, separate table and retention, tool I/O a second switch, org kill switch   | One org-wide switch; client-side only                                    | Slice 4, transcripts, datasets from traces, judges, playground. |
+| 4   | Who reads content                | A new scope `obs:content:read`, per env, not implied by `obs:read`, every read audited, agents only with a person's grant                        | Anyone with `obs:read`                                                   | Slice 4, autopilot reading transcripts.                         |
+| 5   | Where online evaluators run      | A control-plane evaluator worker for LLM judges; customer code for code evaluators; a Reliant workflow per batch later, for agentic trace review | Any one of the three alone                                               | Slice 8.                                                        |
+| 6   | Where evaluators are declared    | Shape in the repo (`evals.yaml` or a `forge.yaml` section), live state (on, sample, budget) in the control plane, like Changes                   | Control plane only                                                       | Slice 8.                                                        |
+| 7   | Prompt storage                   | Prompt files in the release, a Change picks among them; console edits that open a PR as the edit path                                            | A control-plane prompt store with live edits (only for a design partner) | Slice 9, the playground.                                        |
+| 8   | Price table                      | LiteLLM's map vendored into forge, query-time dictionary, overrides shared with the ML price sheet                                               | Our own curated table; reported cost only                                | Slice 2, `ai_cost`.                                             |
+| 9   | Quality gates on promotion       | New findings warn; offline eval gates displayed first, blocking per env on opt-in                                                                | Block from day one; display only                                         | Slices 7 and 10.                                                |
+| 10  | One evals model with ML          | The ML spec's §3 model, subject widened to a release and a Change variant                                                                        | A separate LLM-app model                                                 | Slice 10.                                                       |
+| 11  | SDK packaging                    | One Python package shared with forge#2888 (a `genai` module) and a TS subpath export                                                             | Separate AI packages                                                     | Slice 6.                                                        |
+| 12  | Self-host story                  | Open instrumentation and data, hosted loop, BYOC later for enterprise                                                                            | Open-sourcing a single-binary obs server; saying nothing                 | Positioning, the compare skill.                                 |
+| 13  | Pricing                          | AI data on the flat GiB meter, no seats or per-span unit, judge calls at gateway passthrough, after measuring bytes per span on the dogfood      | A separate AI SKU                                                        | Pitch numbers.                                                  |
+| 14  | Autopilot stopping a prompt arm  | Opt-in per change                                                                                                                                | On by default for experiments; never, propose only                       | Slice 12.                                                       |
 
 ## 16. Alternatives considered
 

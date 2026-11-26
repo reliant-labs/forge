@@ -189,7 +189,7 @@ func extractImportedServices(projectDir, protoRoot string) ([]codegen.ServiceDef
 		return nil, err
 	}
 	fmt.Printf("🔨 Running protoc-gen-forge (mode=descriptor) over %s (imported proto module, for frontend hooks)...\n", protoRoot)
-	work, err := stageDescriptorFragments(bufDir, projectDir, nil, true, os.Stdout)
+	work, err := stageDescriptorFragments(bufDir, projectDir, nil, true, os.Stdout, os.Stderr)
 	if err != nil {
 		return nil, err
 	}

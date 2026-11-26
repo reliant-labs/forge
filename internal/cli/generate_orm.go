@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -19,12 +20,13 @@ import (
 // into the descriptor directory, gen/forge_descriptor/ (one file per proto;
 // codegen.WriteDescriptor). Progress goes to out: stdout under `forge
 // generate`, stderr when a reader extracts on demand (buildDescriptorOnDemand),
-// so a command's own stdout (`--json`) stays clean.
+// so a command's own stdout (`--json`) stays clean. buf's own diagnostics go to
+// errOut.
 //
 // Every run stages in a private temporary directory, with a private buf
 // template, so concurrent extractions — two on-demand readers, or a reader
 // beside `forge generate` — never see each other's fragments.
-func runDescriptorGenerate(projectDir string, out io.Writer) error {
+func runDescriptorGenerate(projectDir string, out, errOut io.Writer) error {
 	// Collect every proto/<sub>/ that contains .proto files. This includes
 	// the canonical {services,api,db,config} dirs plus any scaffolded
 	// proto trees (e.g. proto/audit/). Without
@@ -42,7 +44,7 @@ func runDescriptorGenerate(projectDir string, out io.Writer) error {
 	// options, fieldConstraintsFromDescriptor). This is the first buf run of
 	// a generate, so it is where an adopted project's first config proto
 	// gets its forge.proto.
-	if err := ensureVendoredProtos(projectDir); err != nil {
+	if err := ensureVendoredProtosTo(projectDir, out); err != nil {
 		return fmt.Errorf("vendor annotation protos: %w", err)
 	}
 
@@ -51,7 +53,7 @@ func runDescriptorGenerate(projectDir string, out io.Writer) error {
 
 	_, _ = fmt.Fprintln(out, "🔨 Running protoc-gen-forge (mode=descriptor) to extract proto metadata...")
 
-	work, err := stageDescriptorFragments(projectDir, projectDir, protoPaths, false, out)
+	work, err := stageDescriptorFragments(projectDir, projectDir, protoPaths, false, out, errOut)
 	if err != nil {
 		return err
 	}
@@ -85,7 +87,7 @@ func runDescriptorGenerate(projectDir string, out io.Writer) error {
 // gen/forge_descriptor/, and extractImportedServices (the hooks of an
 // imported proto module) reads them in memory, so another repository's
 // services never reach the project's own descriptor.
-func stageDescriptorFragments(bufDir, projectDir string, paths []string, foreign bool, out io.Writer) (string, error) {
+func stageDescriptorFragments(bufDir, projectDir string, paths []string, foreign bool, out, errOut io.Writer) (string, error) {
 	forgeCmd, err := forgeExecCommand()
 	if err != nil {
 		return "", fmt.Errorf("resolve forge binary: %w", err)
@@ -126,7 +128,7 @@ func stageDescriptorFragments(bufDir, projectDir string, paths []string, foreign
 		return fail(err)
 	}
 	cmd.Stdout = out
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = errOut
 
 	if err := cmd.Run(); err != nil {
 		return fail(fmt.Errorf("descriptor generation failed: %w", err))
@@ -173,7 +175,26 @@ const foreignGoPackageManaged = `managed:
 // buildDescriptorOnDemand is the extractor codegen.LoadDescriptor runs when a
 // reader finds the descriptor missing or stale (registered by Execute).
 func buildDescriptorOnDemand(projectDir string) error {
-	return runDescriptorGenerate(projectDir, os.Stderr)
+	return refreshDescriptor(projectDir, os.Stderr, runDescriptorGenerate)
+}
+
+// refreshDescriptor runs an on-demand extraction, reporting on stderr. A
+// command that promises only what failed (`forge lint --quiet`) holds the
+// refresh's output (codegen.QuietDescriptorRefresh): the progress lines and
+// buf's diagnostics are buffered, and reach stderr only when the extraction
+// fails, where they explain the error.
+func refreshDescriptor(projectDir string, stderr io.Writer, extractDescriptor func(string, io.Writer, io.Writer) error) error {
+	if !codegen.DescriptorRefreshQuiet() {
+		return extractDescriptor(projectDir, stderr, stderr)
+	}
+	// One writer for both streams: exec.Cmd then calls Write from one
+	// goroutine at a time, so the buffer needs no lock.
+	var held bytes.Buffer
+	err := extractDescriptor(projectDir, &held, &held)
+	if err != nil {
+		_, _ = stderr.Write(held.Bytes())
+	}
+	return err
 }
 
 func hasProtoFilesInDir(root string) (bool, error) {

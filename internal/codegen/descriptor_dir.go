@@ -37,6 +37,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -65,6 +67,26 @@ func DescriptorBuilderRegistered() bool { return descriptorBuilder != nil }
 func RegisterDescriptorBuilder(build func(projectDir string) error) {
 	descriptorBuilder = build
 }
+
+// descriptorRefreshQuiet counts the callers holding the extractor's output
+// (QuietDescriptorRefresh); while it is positive the extractor prints only on
+// failure.
+var descriptorRefreshQuiet atomic.Int32
+
+// QuietDescriptorRefresh asks the registered extractor to hold its progress
+// output until restore is called: a command that promises to print only what
+// failed (`forge lint --quiet`) reads the descriptor without the refresh's
+// "running protoc-gen-forge" lines, which then reach stderr only when the
+// extraction fails. restore is idempotent.
+func QuietDescriptorRefresh() (restore func()) {
+	descriptorRefreshQuiet.Add(1)
+	var once sync.Once
+	return func() { once.Do(func() { descriptorRefreshQuiet.Add(-1) }) }
+}
+
+// DescriptorRefreshQuiet reports whether a caller holds the extractor's output
+// (QuietDescriptorRefresh). The extractor reads it.
+func DescriptorRefreshQuiet() bool { return descriptorRefreshQuiet.Load() > 0 }
 
 // WriteGeneratedFrom stamps the protos gen/ was just generated from. Only the
 // generate pipeline calls it.

@@ -67,6 +67,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/projectstore"
 )
@@ -592,10 +593,13 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 	}
 
 	// A human run says where it is as each lane starts; --quiet promises
-	// one line for a clean run, so it does not.
+	// one line for a clean run, so it does not, and a lane that refreshes
+	// the proto descriptor on demand reports that only if it fails.
 	var progress io.Writer
 	if !flags.quiet {
 		progress = os.Stderr
+	} else {
+		defer codegen.QuietDescriptorRefresh()()
 	}
 	realStdout := os.Stdout
 	os.Stdout = os.Stderr

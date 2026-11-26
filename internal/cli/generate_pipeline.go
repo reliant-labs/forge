@@ -1758,7 +1758,7 @@ func stepBufGenerateGo(ctx *pipelineContext) error {
 // none of that code. A generate without a descriptor must error, never
 // quietly emit nothing.
 func stepDescriptorGenerate(ctx *pipelineContext) error {
-	if err := runDescriptorGenerate(ctx.ProjectDir, os.Stdout); err != nil {
+	if err := runDescriptorGenerate(ctx.ProjectDir, os.Stdout, os.Stderr); err != nil {
 		return fmt.Errorf("descriptor generation failed — the proto descriptor drives handler/CRUD/mock codegen, so continuing would silently generate nothing: %w", err)
 	}
 	// The descriptor is derived on demand and never committed: make sure a

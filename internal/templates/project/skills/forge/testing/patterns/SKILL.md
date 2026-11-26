@@ -214,6 +214,7 @@ The `pkg/tdd` library exports:
 | `tdd.WithTimeout(d)` | deadlined `context.Context` for `Case.Ctx` |
 | `app.AuthedContext(t, opts...)` | claims-bearing `Case.Ctx` (generated re-export of `testkit.AuthedContext`) |
 | `app.NewMigratedTestDB(t)` / `testkit.NewMigratedPostgresDB(t, fs)` | real postgres with embedded `db/migrations` applied — `NewTest<X>`'s default database once the project has a migration; call it yourself and pass `app.WithDB(db)` when the test seeds rows on the same database (migrations apply verbatim; a migration postgres rejects fails loudly) |
+| `testkit.NewMigratedPostgresURL(t, forgedb.Source())` | the same migrated, isolated database, as a DSN, for code that connects by URL: the whole server booted in process (below), a second pool, a subprocess. Applied by `migratekit`, so a server booting on it with AUTO_MIGRATE finds the schema current |
 | `<pkg>.WithConfig(cfg)` | the config `NewTest<X>` hands the component, typed as its `Deps.Config`: the root `*config.Config` (default `config.Defaults()`) or its own block or per-process config `*config.<Block>` (default `config.Defaults<Block>()`), each the config Load yields with nothing set |
 | `tdd.SetupMockDB(t)` | real-postgres `*sql.DB` (pkg/pgtest; no driver import needed) |
 | `seedplan.SeedGraph(t, db, "<table>")` | populate a migrated DB: seeds the table + its FK ancestors as one connected spine, every value already satisfying the schema's CHECK/enum/length constraints (`testing/flow`) |
@@ -236,6 +237,37 @@ constraint, then returns `g.PK("<parent>")` for the ids your RPC needs. Reach
 for it before writing a `CreateX` chain. Hand-written rows are still right when
 the test turns on a SPECIFIC value (an accepted estimate, an overdue invoice)
 — then name every enum explicitly, e.g. `Status: "ESTIMATE_STATUS_ACCEPTED"`.
+
+### The whole server in one test
+
+To test the real composition graph — every service behind forge's auth chain,
+the workers, the probes — boot the server root in process. `cmd.ServerConfig`
+(scaffolded into `cmd/<bin>/cmd/serve.go`) is the projection every process runs
+under, so the test builds the `app.Graph` the way `<bin> server` does. The test
+imports the cmd package, so it is an external test package (`package app_test`):
+
+```go
+port, _ := pgtest.ReserveLoopbackPort()
+cfg := config.Defaults()
+cfg.DatabaseUrl = testkit.NewMigratedPostgresURL(t, forgedb.Source())
+cfg.Port = int32(port)
+skCfg, err := cmd.ServerConfig(cfg)
+if err != nil {
+	t.Fatal(err)
+}
+drainer := serverkit.NewDrainer(skCfg)
+ctx, cancel := context.WithCancel(context.WithoutCancel(t.Context()))
+g := &app.Graph{Ctx: ctx, Cfg: cfg, Log: testkit.DiscardLogger(), ServerCfg: skCfg,
+	Probes: &serverkit.Probes{Drainer: drainer, Logger: testkit.DiscardLogger()}}
+done := make(chan error, 1)
+go func() { done <- g.RunServer(ctx, lifecyclekit.Policy{Drainer: drainer, Logger: testkit.DiscardLogger()}) }()
+t.Cleanup(func() { cancel(); _ = testkit.Receive(t, "server shutdown", done) })
+testkit.Eventually(t, "server ready", func() bool { /* GET http://127.0.0.1:<port>/readyz == 200 */ })
+```
+
+Call `testkit.Slow(t, "boots the whole server")` first when it runs over ~2s.
+A project whose serve.go predates `ServerConfig` adds it beside
+`serverkitConfig`: `func ServerConfig(cfg *config.Config) (serverkit.Config, error) { return serverkitConfig(cfg) }`.
 
 Forge's scaffolders emit Pattern 1 (unit; plus CRUD integration when entities exist) and Pattern 2 (contract) automatically. Hand-write Pattern 3 / Pattern 4 — those don't fit a generic helper.
 

@@ -102,8 +102,10 @@ func TestRunWorker_WritesTheWorkerAndWiresItsSubcommand(t *testing.T) {
 		"Adding worker 'reaper'...",
 		"--no-generate: skipping post-scaffold `forge generate` run",
 		"Worker 'reaper' scaffold-only mode complete",
-		"scaffolded " + filepath.Join("cmd", "testproj", "cmd", "workers", "reaper.go") + " (owned)",
-		"wired workers.NewReaperCmd into " + filepath.Join("cmd", "testproj", "main.go"),
+		// The verbs print these with a literal "/" on every OS (they are
+		// display strings, not filesystem paths).
+		"scaffolded cmd/testproj/cmd/workers/reaper.go (owned)",
+		"wired workers.NewReaperCmd into cmd/testproj/main.go",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
@@ -180,7 +182,7 @@ func TestRunOperator_FlagGuardAndScaffold(t *testing.T) {
 		"Adding operator 'mgr' (group=testproj.io, version=v1alpha1)...", // group defaults from the project name
 		"Operator 'mgr' added successfully!",
 		"Next: 'forge scaffold crd <Name> --operator mgr' to scaffold a CRD.",
-		"wired operators.NewMgrCmd into " + filepath.Join("cmd", "testproj", "main.go"),
+		"wired operators.NewMgrCmd into cmd/testproj/main.go",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)

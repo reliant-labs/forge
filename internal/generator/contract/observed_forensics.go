@@ -395,6 +395,9 @@ func parseNoCapture(groups ...*ast.CommentGroup) noCapture {
 type implScan struct {
 	files     map[string]string // method → absolute file
 	noCapture map[string]noCapture
+	// impl is the implementing type's name, "" when no single type is
+	// (observed_logger.go binds the chain to its Deps.Logger).
+	impl string
 }
 
 type methodDecl struct {
@@ -465,6 +468,7 @@ func scanImplementation(dir string, iface InterfaceDef) implScan {
 	}
 
 	impl := pickImplementation(byType, len(want), returned)
+	out.impl = impl
 	for _, m := range iface.Methods {
 		decl, ok := byType[impl][m.Name]
 		if !ok && len(byMethod[m.Name]) == 1 {

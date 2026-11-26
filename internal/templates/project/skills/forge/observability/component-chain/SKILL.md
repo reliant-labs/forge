@@ -67,7 +67,7 @@ assembled in an OWNED, scaffold-once file next to the contract (`contract.go`, o
 // observe_chain.go — yours: scaffolded once, never overwritten by forge.
 func newObserveChain() *observe.ComponentChain {
     scope := "<module>/internal/<pkg>"
-    logger := slog.Default()
+    var logger *slog.Logger // nil: the component's Deps.Logger, else slog.Default()
     return observe.NewComponentChain(
         observe.RecoverMiddleware(logger),                      // panic -> error, logged with stack
         observe.TraceMiddleware(otel.Tracer(scope)),            // one span "<pkg>.<Method>" per call
@@ -79,7 +79,11 @@ func newObserveChain() *observe.ComponentChain {
 
 Middlewares run outer→inner in the order listed; each is nil-safe (no configured
 tracer/meter degrades to pass-through), so a decorator wired in a test harness is
-always safe. This file is THE extension point:
+always safe. A nil logger is the component's own: the decorator binds its
+`Deps.Logger` (`chain.WithLogger`), so a component built with a discarded logger
+logs nowhere else. A seam scaffolded before this passes `slog.Default()`
+explicitly, which WithLogger keeps; change that line to `var logger *slog.Logger`
+to follow the component. This file is THE extension point:
 
 - **Add a layer** — implement `observe.ComponentMiddleware`
   (`WrapComponent(ctx, method, next) error`) and append it (an in-process

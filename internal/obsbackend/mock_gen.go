@@ -132,7 +132,7 @@ func (m *MockBackend) Query(ctx context.Context, req QueryRequest) (QueryResult,
 var _ Backend = (*MockBackend)(nil)
 
 // forge:section MockIssueReader
-// forge:hash=0d6c1e83892f8e1a6fd3f6d8fa68719393699d507e6f2b2eee70eaaac5ea4e71
+// forge:hash=a106671bbd3a3a74402ec4bbba2f48ce50ba5f5a7c2ffbec9d61052bb0f08324
 
 // MockIssueReader is a test mock for the IssueReader interface.
 //
@@ -142,13 +142,15 @@ var _ Backend = (*MockBackend)(nil)
 // "MockIssueReader.<Method>Func not set" error.
 type MockIssueReader struct {
 	contractkit.Recorder
-	ListIssuesFunc        func(context.Context, ListIssuesRequest) (ListIssuesResult, error)
-	GetIssueFunc          func(context.Context, GetIssueRequest) (GetIssueResult, error)
-	ListIssueEventsFunc   func(context.Context, ListIssueEventsRequest) (ListIssueEventsResult, error)
-	UpdateIssueStatusFunc func(context.Context, UpdateIssueStatusRequest) (UpdateIssueStatusResult, error)
-	ListIssueTimelineFunc func(context.Context, ListIssueTimelineRequest) (ListIssueTimelineResult, error)
-	AddIssueCommentFunc   func(context.Context, AddIssueCommentRequest) (AddIssueCommentResult, error)
-	AssignIssueFunc       func(context.Context, AssignIssueRequest) (AssignIssueResult, error)
+	ListIssuesFunc         func(context.Context, ListIssuesRequest) (ListIssuesResult, error)
+	GetIssueFunc           func(context.Context, GetIssueRequest) (GetIssueResult, error)
+	ListIssueEventsFunc    func(context.Context, ListIssueEventsRequest) (ListIssueEventsResult, error)
+	UpdateIssueStatusFunc  func(context.Context, UpdateIssueStatusRequest) (UpdateIssueStatusResult, error)
+	ListIssueTimelineFunc  func(context.Context, ListIssueTimelineRequest) (ListIssueTimelineResult, error)
+	AddIssueCommentFunc    func(context.Context, AddIssueCommentRequest) (AddIssueCommentResult, error)
+	UpdateIssueCommentFunc func(context.Context, UpdateIssueCommentRequest) (UpdateIssueCommentResult, error)
+	DeleteIssueCommentFunc func(context.Context, DeleteIssueCommentRequest) error
+	AssignIssueFunc        func(context.Context, AssignIssueRequest) (AssignIssueResult, error)
 }
 
 // ListIssues records the call and delegates to ListIssuesFunc when set.
@@ -203,6 +205,24 @@ func (m *MockIssueReader) AddIssueComment(ctx context.Context, req AddIssueComme
 		return m.AddIssueCommentFunc(ctx, req)
 	}
 	return AddIssueCommentResult{}, contractkit.MockNotSet("MockIssueReader", "AddIssueComment")
+}
+
+// UpdateIssueComment records the call and delegates to UpdateIssueCommentFunc when set.
+func (m *MockIssueReader) UpdateIssueComment(ctx context.Context, req UpdateIssueCommentRequest) (UpdateIssueCommentResult, error) {
+	m.Recorder.Record("UpdateIssueComment", ctx, req)
+	if m.UpdateIssueCommentFunc != nil {
+		return m.UpdateIssueCommentFunc(ctx, req)
+	}
+	return UpdateIssueCommentResult{}, contractkit.MockNotSet("MockIssueReader", "UpdateIssueComment")
+}
+
+// DeleteIssueComment records the call and delegates to DeleteIssueCommentFunc when set.
+func (m *MockIssueReader) DeleteIssueComment(ctx context.Context, req DeleteIssueCommentRequest) error {
+	m.Recorder.Record("DeleteIssueComment", ctx, req)
+	if m.DeleteIssueCommentFunc != nil {
+		return m.DeleteIssueCommentFunc(ctx, req)
+	}
+	return contractkit.MockNotSet("MockIssueReader", "DeleteIssueComment")
 }
 
 // AssignIssue records the call and delegates to AssignIssueFunc when set.

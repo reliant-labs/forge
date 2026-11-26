@@ -3,9 +3,10 @@ package cli
 // `forge ml`: ML training and inference in your own clusters. Today one verb,
 // `forge ml discover` (docs/proposals/ml-workloads.md, §1 and §3.2): read a
 // cluster read-only through the user's own kube context, say what ML
-// components it already runs and what is missing, list the recommendations,
-// and propose the env's ml.k — adopt what is there, install only what is
-// missing, never a duplicate.
+// components it already runs and which optional slots are empty, list the
+// recommendations, and propose the env's ml.k — adopt what is there, opt in
+// to the rest piece by piece (an install only where a finding calls for
+// one), never a duplicate.
 //
 // The pipeline is three pure steps over one read:
 //
@@ -46,7 +47,7 @@ func newMLCmd() *cobra.Command {
 
 ` + "`forge ml discover`" + ` reads a cluster read-only through your own kube context and
 proposes the env's ml.k: the accelerators, the ML components already running
-(adopted, never reinstalled), the one or two that are missing, and the
+(adopted, never reinstalled), the optional slots still empty, and the
 recommendations, worst first. It needs no control plane and no forge project.`,
 	}
 	cmd.AddCommand(newMLDiscoverCmd())
@@ -117,15 +118,16 @@ func newMLDiscoverCmd() *cobra.Command {
 	o := mlDiscoverOptions{}
 	cmd := &cobra.Command{
 		Use:   "discover",
-		Short: "Read a cluster read-only and propose its ml.k: accelerators, what to adopt, what is missing, findings",
+		Short: "Read a cluster read-only and propose its ml.k: accelerators, what to adopt, what is optional, findings",
 		Long: `Read a Kubernetes cluster read-only, through your own kube context, and report
 what it runs for ML: its accelerators, the components already there (GPU
-Operator, DCGM exporter, Kueue, KServe, ...), what is missing, and the
-recommendations, worst first. Then propose the env's ml.k: one forge.MLStack
-that ADOPTS every component found, suggests an install only for what is
-missing (commented out), and lists what it found under ` + "`observed`" + `, so the
-KCL refuses installing a second copy (two DCGM exporters on one node break each
-other's profiling counters).
+Operator, DCGM exporter, Kueue, KServe, ...), which optional slots are
+empty, and the recommendations, worst first. Every slot is opt-in, piece by
+piece: nothing is all or nothing. Then propose the env's ml.k: one
+forge.MLStack that ADOPTS every component found, suggests an install
+(commented out) only where a finding calls for one, and lists what it found
+under ` + "`observed`" + `, so the KCL refuses installing a second copy (two DCGM
+exporters on one node break each other's profiling counters).
 
 It needs no control plane and no forge project ("start anywhere"), so it works
 on a private cluster your laptop can reach. It never writes to the cluster, and

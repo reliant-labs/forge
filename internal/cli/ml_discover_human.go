@@ -1,9 +1,10 @@
 package cli
 
 // The human form of `forge ml discover`: the inventory as a table of
-// sections (FOUND / MISSING lines with what to adopt and what to install),
-// then the findings worst first, then the proposal. The section labels and
-// their order are the proposal's §1 sample.
+// sections (FOUND lines with what to adopt; "none found — optional" lines
+// for an empty slot, with what forge would suggest), then the findings
+// worst first, then the proposal. The section labels and their order are
+// the proposal's §1 sample.
 
 import (
 	"fmt"
@@ -23,34 +24,49 @@ const mlLabelWidth = 15
 type mlSection struct {
 	label      string
 	categories []string
-	// missing is the line printed when nothing of these categories is
-	// present; "" omits the section when it is empty.
-	missing func(inv *mldiscover.Inventory) string
+	// absent is the line printed when nothing of these categories is
+	// present; nil omits the section when it is empty.
+	absent func(inv *mldiscover.Inventory, findings []mlrecs.Finding) string
 }
 
-// mlSections is the inventory table, in print order. A MISSING line names
-// forge's default for that slot, by the components policy: install only
-// what is missing, never a duplicate, adopt-only for Ray and KServe.
+// mlSections is the inventory table, in print order. Every slot is
+// optional (piecemeal opt-in: nothing is all or nothing), so an empty one
+// reads "none found — optional", names what forge would suggest for it,
+// and points at the finding that suggests it when one fired. forge
+// suggests an install only where a finding calls for one, never a
+// duplicate, and adopt-only for Ray and KServe.
 var mlSections = []mlSection{
 	{label: "accelerators", categories: []string{mldiscover.CategoryOperator, mldiscover.CategoryDevicePlugin}},
-	{label: "gpu metrics", categories: []string{mldiscover.CategoryAccelMetrics}, missing: mlMissingMetrics},
-	{label: "node health", categories: []string{mldiscover.CategoryNodeHealth, mldiscover.CategoryLifecycle}, missing: mlMissingNodeHealth},
-	{label: "queueing", categories: []string{mldiscover.CategoryQueue}, missing: func(*mldiscover.Inventory) string {
-		return "MISSING kueue — install (forge's default queue, with jobset)"
+	{label: "gpu metrics", categories: []string{mldiscover.CategoryAccelMetrics}, absent: mlAbsentMetrics},
+	{label: "node health", categories: []string{mldiscover.CategoryNodeHealth, mldiscover.CategoryLifecycle}, absent: mlAbsentNodeHealth},
+	{label: "queueing", categories: []string{mldiscover.CategoryQueue}, absent: func(_ *mldiscover.Inventory, fs []mlrecs.Finding) string {
+		return "none found — optional; kueue (with jobset) only if you need queueing" + mlSeeFinding(fs, "", "gpu-jobs-bypass-queue")
 	}},
-	{label: "training", categories: []string{mldiscover.CategoryTraining}, missing: func(*mldiscover.Inventory) string {
-		return "MISSING kubeflow-trainer — install (forge's default); kuberay is adopt-only, never installed by default"
+	{label: "training", categories: []string{mldiscover.CategoryTraining}, absent: func(*mldiscover.Inventory, []mlrecs.Finding) string {
+		return "none found — optional; kubeflow-trainer only if you need a training operator; kuberay is adopt-only, never installed by default"
 	}},
-	{label: "serving", categories: []string{mldiscover.CategoryServing}, missing: func(*mldiscover.Inventory) string {
-		return "none found (kserve is adopted when present, never installed by default)"
+	{label: "serving", categories: []string{mldiscover.CategoryServing}, absent: func(*mldiscover.Inventory, []mlrecs.Finding) string {
+		return "none found — optional; kserve is adopted when present, never installed by default"
 	}},
 	{label: "autoscaling", categories: []string{mldiscover.CategoryAutoscaling}},
-	{label: "monitoring", categories: []string{mldiscover.CategoryMonitoring}, missing: func(*mldiscover.Inventory) string {
-		return "none found (no Prometheus Operator, GMP, kube-state-metrics or OTel collector)"
+	{label: "monitoring", categories: []string{mldiscover.CategoryMonitoring}, absent: func(*mldiscover.Inventory, []mlrecs.Finding) string {
+		return "none found — optional (no Prometheus Operator, GMP, kube-state-metrics or OTel collector)"
 	}},
-	{label: "image pulls", categories: []string{mldiscover.CategoryPullCache}, missing: func(*mldiscover.Inventory) string {
-		return "none found (no spegel or dragonfly pull cache)"
+	{label: "image pulls", categories: []string{mldiscover.CategoryPullCache}, absent: func(_ *mldiscover.Inventory, fs []mlrecs.Finding) string {
+		return "none found — optional (no spegel or dragonfly pull cache)" + mlSeeFinding(fs, "", "no-p2p-cache")
 	}},
+}
+
+// mlSeeFinding is " (see finding <id>)" for the first active finding with
+// one of ids (and, when vendor is set, that vendor), "" when none fired.
+func mlSeeFinding(findings []mlrecs.Finding, vendor string, ids ...string) string {
+	for _, f := range findings {
+		if f.Dismissed != nil || !slices.Contains(ids, f.ID) || (vendor != "" && f.Vendor != "" && f.Vendor != vendor) {
+			continue
+		}
+		return " (see finding " + f.ID + ")"
+	}
+	return ""
 }
 
 // mlDefaultExporter is each vendor's metrics exporter.
@@ -61,8 +77,8 @@ var mlDefaultExporter = map[string]string{
 	mldiscover.VendorGaudi:  mldiscover.KindGaudiExporter,
 }
 
-func mlMissingNodeHealth(inv *mldiscover.Inventory) string {
-	line := "MISSING node-problem-detector — install (forge's default)"
+func mlAbsentNodeHealth(inv *mldiscover.Inventory, findings []mlrecs.Finding) string {
+	line := "none found — optional; node-problem-detector if you want bad nodes detected"
 	switch inv.Cloud {
 	case mldiscover.CloudGKE:
 		line += "; GKE auto-repair is a node-pool setting the API cannot see: check it"
@@ -71,10 +87,10 @@ func mlMissingNodeHealth(inv *mldiscover.Inventory) string {
 	case mldiscover.CloudAKS:
 		line += "; AKS auto-repair is a cluster setting the API cannot see: check it"
 	}
-	return line
+	return line + mlSeeFinding(findings, "", "no-node-health")
 }
 
-func mlMissingMetrics(inv *mldiscover.Inventory) string {
+func mlAbsentMetrics(inv *mldiscover.Inventory, findings []mlrecs.Finding) string {
 	if len(inv.Accelerators) == 0 {
 		return "none found (and no accelerators to report on)"
 	}
@@ -86,13 +102,14 @@ func mlMissingMetrics(inv *mldiscover.Inventory) string {
 		}
 		seen[g.Vendor] = true
 		kind := mlDefaultExporter[g.Vendor]
+		see := mlSeeFinding(findings, g.Vendor, "accel-telemetry-missing")
 		switch {
 		case kind == "":
-			lines = append(lines, fmt.Sprintf("MISSING a %s utilisation source (no exporter forge knows for %s)", g.Vendor, g.Resource))
+			lines = append(lines, fmt.Sprintf("none found for %s — optional; forge knows no utilisation exporter for %s", g.Vendor, g.Resource)+see)
 		case g.Vendor == mldiscover.VendorNVIDIA && inv.Has(mldiscover.KindGPUOperator):
-			lines = append(lines, "MISSING dcgm-exporter — the GPU Operator runs: enable spec.dcgmExporter in its ClusterPolicy rather than installing a second")
+			lines = append(lines, "none found for nvidia — optional; the GPU Operator runs: enable spec.dcgmExporter in its ClusterPolicy rather than installing a second dcgm-exporter"+see)
 		default:
-			lines = append(lines, fmt.Sprintf("MISSING %s — install", kind))
+			lines = append(lines, fmt.Sprintf("none found for %s — optional; %s if you want utilisation metrics", g.Vendor, kind)+see)
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -134,8 +151,8 @@ func writeMLDiscoverHuman(w io.Writer, doc MLDiscoverDocument, o mlDiscoverOptio
 				lines = append(lines, "    "+cfg)
 			}
 		}
-		if !present && sec.missing != nil {
-			lines = append(lines, strings.Split(sec.missing(inv), "\n")...)
+		if !present && sec.absent != nil {
+			lines = append(lines, strings.Split(sec.absent(inv, doc.Findings), "\n")...)
 		}
 		if len(lines) == 0 {
 			continue

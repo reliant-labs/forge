@@ -11,8 +11,10 @@
 // matching, unexpired forge.RecommendationDecision marks a finding
 // dismissed and sorts it last; it is still reported.
 //
-// The policy the rules and the proposal hold: discover, adopt, install only
-// what is missing, from a pinned upstream chart ([Charts]). Never a second
+// The policy the rules and the proposal hold: discover, adopt, and opt in
+// to the rest piece by piece. Every slot is optional; an install is
+// suggested only where a finding calls for one, from a pinned upstream
+// chart ([Charts]). Never a second
 // DCGM exporter beside one that runs (two break each other's profiling
 // counters); never an upgrade or reconfiguration of what forge did not
 // install; never KubeRay.

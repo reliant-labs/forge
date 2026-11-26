@@ -4,12 +4,12 @@ accelerators   8 × NVIDIA-H100-80GB-HBM3 (nvidia.com/gpu) on 1 node (pool h100;
                FOUND gpu-operator v24.9.0 (Deployment/gpu-operator/gpu-operator, 1 pod, 1 object) — adopt
 gpu metrics    FOUND dcgm-exporter 3.3.9-3.6.1-ubuntu22.04 via gpu-operator (DaemonSet/gpu-operator/nvidia-dcgm-exporter :9400, 1 pod) — adopt
                    config (version-default: dcgm-exporter 3.3.9-3.6.1 etc/dcp-metrics-included.csv (default of 3.3.9-3.6.1-ubuntu22.04)): 25 fields; settings kubernetes-attribution.determined-by=version-default, kubernetes-attribution=true
-node health    MISSING node-problem-detector — install (forge's default); GKE auto-repair is a node-pool setting the API cannot see: check it
+node health    none found — optional; node-problem-detector if you want bad nodes detected; GKE auto-repair is a node-pool setting the API cannot see: check it (see finding no-node-health)
 queueing       FOUND kueue v0.10.1 (Deployment/kueue-system/kueue-controller-manager, 1 pod, 5 objects) — adopt
-training       MISSING kubeflow-trainer — install (forge's default); kuberay is adopt-only, never installed by default
-serving        none found (kserve is adopted when present, never installed by default)
-monitoring     none found (no Prometheus Operator, GMP, kube-state-metrics or OTel collector)
-image pulls    none found (no spegel or dragonfly pull cache)
+training       none found — optional; kubeflow-trainer only if you need a training operator; kuberay is adopt-only, never installed by default
+serving        none found — optional; kserve is adopted when present, never installed by default
+monitoring     none found — optional (no Prometheus Operator, GMP, kube-state-metrics or OTel collector)
+image pulls    none found — optional (no spegel or dragonfly pull cache)
 
 coverage       26 signals: 6 collected, 3 partial, 11 missing, 3 unknown, 3 not-applicable
   accelerator (nvidia)

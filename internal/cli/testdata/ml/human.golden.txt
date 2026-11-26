@@ -7,10 +7,10 @@ gpu metrics    FOUND dcgm-exporter 3.3.9-3.6.1-ubuntu22.04 via gpu-operator (Dae
 node health    FOUND node-problem-detector v0.8.20 (DaemonSet/forge-ml/node-problem-detector, 4 pods) — installed by forge
 queueing       FOUND kueue v0.10.1 (Deployment/kueue-system/kueue-controller-manager, 2 objects) — adopt
 training       CRD ONLY kuberay (its CRDs are installed but no controller runs; 1 object)
-               MISSING kubeflow-trainer — install (forge's default); kuberay is adopt-only, never installed by default
-serving        none found (kserve is adopted when present, never installed by default)
-monitoring     none found (no Prometheus Operator, GMP, kube-state-metrics or OTel collector)
-image pulls    none found (no spegel or dragonfly pull cache)
+               none found — optional; kubeflow-trainer only if you need a training operator; kuberay is adopt-only, never installed by default
+serving        none found — optional; kserve is adopted when present, never installed by default
+monitoring     none found — optional (no Prometheus Operator, GMP, kube-state-metrics or OTel collector)
+image pulls    none found — optional (no spegel or dragonfly pull cache)
 
 coverage       5 signals: 1 collected, 1 partial, 1 missing, 1 unknown, 1 not-applicable
   accelerator (nvidia)

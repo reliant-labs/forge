@@ -1,6 +1,6 @@
 ---
 name: ml/discover
-description: "`forge ml discover` — read a GPU cluster read-only through your own kube context (no control plane, no project needed) and propose the env's ml.k: the accelerators (NVIDIA first; AMD, TPU, Neuron, Gaudi at allocation level), the ML components already running (GPU Operator, DCGM exporter, Kueue, JobSet, KServe, KubeRay, ...) to ADOPT, what is missing to INSTALL, and the recommendations worst first. The exact read set (get/list only, never Secrets, pods/log or nodes/proxy), the human output, the forge.dev/ml-discover/v1 JSON document and its schema, the coverage model (one row per signal: DCGM field groups, NPD and GPU rules, kubelet/apiserver tracing, collectors, continuous profiling, workload tracing; collected/partial/missing/unknown and how it was determined), ConfigMaps read by name and redacted, the opt-in --probe and the pods/proxy grant it needs, --write and the diff over an existing ml.k, `observed` and why the KCL refuses a duplicate install, Ray as adopt-only, dismissing a finding with forge.RecommendationDecision, wiring ml.k into main.k, snapshots, and testing without GPUs (run-ai/fake-gpu-operator on k3d). Use before declaring an MLStack, when a finding needs explaining, or to grant a team the read-only identity discovery needs."
+description: "`forge ml discover` — read a GPU cluster read-only through your own kube context (no control plane, no project needed) and propose the env's ml.k: the accelerators (NVIDIA first; AMD, TPU, Neuron, Gaudi at allocation level), the ML components already running (GPU Operator, DCGM exporter, Kueue, JobSet, KServe, KubeRay, ...) to ADOPT, what is absent (every slot optional: an install is suggested only where a finding calls for one), and the recommendations worst first. The exact read set (get/list only, never Secrets, pods/log or nodes/proxy), the human output, the forge.dev/ml-discover/v1 JSON document and its schema, the coverage model (one row per signal: DCGM field groups, NPD and GPU rules, kubelet/apiserver tracing, collectors, continuous profiling, workload tracing; collected/partial/missing/unknown and how it was determined), ConfigMaps read by name and redacted, the opt-in --probe and the pods/proxy grant it needs, --write and the diff over an existing ml.k, `observed` and why the KCL refuses a duplicate install, Ray as adopt-only, dismissing a finding with forge.RecommendationDecision, wiring ml.k into main.k, snapshots, and testing without GPUs (run-ai/fake-gpu-operator on k3d). Use before declaring an MLStack, when a finding needs explaining, or to grant a team the read-only identity discovery needs."
 ---
 
 # Discover a GPU cluster: `forge ml discover`
@@ -128,12 +128,12 @@ cluster        gke_acme_us-central1_gpu (v1.31.2-gke.1000, gke)
 accelerators   8 × NVIDIA-H100-80GB-HBM3 (nvidia.com/gpu) on 1 node (pool h100; driver 550.127.05; 2 allocated)
                FOUND gpu-operator v24.9.0 (Deployment/gpu-operator/gpu-operator, 1 pod) — adopt
 gpu metrics    FOUND dcgm-exporter 3.3.9 via gpu-operator (DaemonSet/gpu-operator/nvidia-dcgm-exporter :9400) — adopt
-node health    MISSING node-problem-detector — install (forge's default)
+node health    none found — optional; node-problem-detector if you want bad nodes detected (see finding no-node-health)
 queueing       FOUND kueue v0.10.1 (Deployment/kueue-system/kueue-controller-manager, 5 objects) — adopt
-training       MISSING kubeflow-trainer — install (forge's default); kuberay is adopt-only
-serving        none found (kserve is adopted when present, never installed by default)
-monitoring     none found
-image pulls    none found (no spegel or dragonfly pull cache)
+training       none found — optional; kubeflow-trainer only if you need a training operator; kuberay is adopt-only
+serving        none found — optional; kserve is adopted when present, never installed by default
+monitoring     none found — optional
+image pulls    none found — optional (no spegel or dragonfly pull cache)
 ```
 
 After the sections, a `coverage` block lists every signal by category, gaps in
@@ -156,7 +156,9 @@ The sections are accelerators (with the operator and device plugin), gpu metrics
 node health, queueing, training, serving, autoscaling (only when found),
 monitoring and image pulls. `FOUND … — adopt` is someone else's component;
 `— installed by forge` carries `forge.dev/component-owner`; `CRD ONLY` is CRDs
-with no controller running. Findings follow worst first: id, severity, title,
+with no controller running. An empty slot reads `none found — optional`: every
+slot is opt-in, piece by piece, so the line names what forge would suggest and,
+when a finding fired for that slot, `(see finding <id>)`. Findings follow worst first: id, severity, title,
 evidence (objects as kind/namespace/name), the fix, and dismissed findings last,
 marked with their reason and expiry.
 
@@ -171,13 +173,16 @@ Exit codes: 0 the read and the proposal succeeded (findings are not failures); 1
 bad input (a flag, a snapshot file, a kube context the kubeconfig lacks); 2 could
 not look (the cluster is unreachable).
 
-## Adopt, install, never a duplicate
+## Adopt, opt in, never a duplicate
 
-The policy the proposal follows: **discover, adopt what is there, install only what
-is missing**, from pinned upstream charts declared in KCL. forge never upgrades,
-reconfigures or removes a component it did not install. The defaults it suggests
-when a slot is empty: Kueue with JobSet (queueing), Kubeflow Trainer (training),
-node-problem-detector (node health), the vendor's exporter (gpu metrics). KServe is
+The policy the proposal follows: **discover, adopt what is there, and opt in to the
+rest piece by piece**. Nothing is all or nothing: every slot is optional, an empty
+one is not an error, and an install is suggested (commented out) only where a
+finding calls for one, from pinned upstream charts declared in KCL. forge never
+upgrades, reconfigures or removes a component it did not install. The charts it
+reaches for when you opt in to an empty slot: Kueue with JobSet (queueing),
+Kubeflow Trainer (training), node-problem-detector (node health), the vendor's
+exporter (gpu metrics). KServe is
 adopted when present and never installed by default. **KubeRay is adopt-only**: the
 KCL refuses `forge.Install {kind = "kuberay"}` unless it states a `reason`.
 

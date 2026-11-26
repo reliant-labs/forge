@@ -201,6 +201,49 @@ func TestMLDiscoverHumanForm(t *testing.T) {
 	mlGolden(t, "human.golden.txt", out.String())
 }
 
+// Every slot is optional (piecemeal opt-in), so an empty one reads "none
+// found — optional", never as a gap to install, and points at the finding
+// that suggests filling it only when that finding is active.
+func TestMLDiscoverHumanEmptySlotsAreOptional(t *testing.T) {
+	t.Parallel()
+	doc := MLDiscoverDocument{
+		Schema: MLDiscoverDocumentSchema,
+		Inventory: mldiscover.Inventory{
+			Context: "kind-gpu", Cloud: mldiscover.CloudEKS,
+			Accelerators: []mldiscover.AcceleratorGroup{
+				{Vendor: "nvidia", Resource: "nvidia.com/gpu", Nodes: 1, Capacity: 8, Allocatable: 8, DetectedBy: "extended-resource"},
+			},
+		},
+		Findings: []mlrecs.Finding{
+			{ID: "accel-telemetry-missing", Severity: "high", Vendor: "nvidia", Title: "no metrics"},
+			{ID: "gpu-jobs-bypass-queue", Severity: "medium", Title: "no queue"},
+			{ID: "no-p2p-cache", Severity: "low", Title: "no pull cache",
+				Dismissed: &mlrecs.Dismissal{Reason: "registry is local", Expires: "2027-06-01"}},
+		},
+	}
+	var out bytes.Buffer
+	if err := writeMLDiscoverHuman(&out, doc, mlDiscoverOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	sections, _, _ := strings.Cut(out.String(), "\nfindings")
+	for _, want := range []string{
+		"gpu metrics    none found for nvidia — optional; dcgm-exporter if you want utilisation metrics (see finding accel-telemetry-missing)\n",
+		"node health    none found — optional; node-problem-detector if you want bad nodes detected, or adopt the EKS node monitoring agent if you enable it\n",
+		"queueing       none found — optional; kueue (with jobset) only if you need queueing (see finding gpu-jobs-bypass-queue)\n",
+		"training       none found — optional; kubeflow-trainer only if you need a training operator",
+		"image pulls    none found — optional (no spegel or dragonfly pull cache)\n", // its finding is dismissed
+	} {
+		if !strings.Contains(sections, want) {
+			t.Errorf("sections lack %q:\n%s", want, sections)
+		}
+	}
+	for _, bad := range []string{"MISSING", "— install"} {
+		if strings.Contains(sections, bad) {
+			t.Errorf("an empty optional slot reads as a gap (%q):\n%s", bad, sections)
+		}
+	}
+}
+
 // Through the real root command: `forge ml discover --json` prints the
 // document and nothing else.
 func TestMLDiscoverThroughTheRootCommand(t *testing.T) {

@@ -223,6 +223,16 @@ type DocumentAffected struct {
 	// Modules are the nested replaced modules' tests
 	// (ci.gate.affected_modules); always a list.
 	Modules []ModuleTests `json:"modules"`
+	// Checks are the path-gated rows (`paths`, `paths_go_closure`) and
+	// whether these changes run each; only `forge ci gate --plan` sets it.
+	Checks []PlanCheck `json:"checks,omitempty"`
+}
+
+// PlanCheck is one path-gated row's decision in a plan.
+type PlanCheck struct {
+	Name string `json:"name"`
+	Runs bool   `json:"runs"`
+	Note string `json:"note,omitempty"`
 }
 
 // Document renders a for the --json document; nil for a nil a.

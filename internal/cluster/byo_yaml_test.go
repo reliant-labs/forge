@@ -144,6 +144,49 @@ func TestBundledChart_ObjectsJoinTheStream(t *testing.T) {
 	}
 }
 
+// An MLStack Install's chart carries labels (kcl/ml.k): every object it
+// renders gets them, over whatever the chart set, beside forge's own stamps.
+func TestBundledChart_LabelsStampEveryObject(t *testing.T) {
+	docs, err := decodeObjectStream(byoDeployment + "---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\n  labels:\n    forge.dev/component-owner: someone-else\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]string{"forge.dev/component-owner": "acme.prod", "forge.dev/component": "ml-node-problem-detector"}
+	for _, d := range stampLabels(placeBYO(docs, "node-problem-detector", "gke_gpu", ""), labels) {
+		meta := d.(map[string]any)["metadata"].(map[string]any)
+		got := meta["labels"].(map[string]any)
+		for k, v := range labels {
+			if got[k] != v {
+				t.Errorf("%v: label %s = %v, want %s", meta["name"], k, got[k], v)
+			}
+		}
+		if got[WorkloadLabel] != "node-problem-detector" || got[ClusterRoutingLabel] != "gke_gpu" {
+			t.Errorf("%v: forge's own stamps lost: %v", meta["name"], got)
+		}
+	}
+	if out := stampLabels(docs, nil); len(out) != len(docs) {
+		t.Errorf("no labels must leave the objects as they are")
+	}
+}
+
+func TestBundledChart_LabelsReachTheStream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a fake helm through shell subprocesses; runs in task test")
+	}
+	fakeHelm(t, byoDeployment)
+	raw := byoOutput(t, map[string]any{"bundled_charts": []any{map[string]any{
+		"name": "node-problem-detector", "chart": "node-problem-detector", "repo": "https://charts.example", "version": "2.3.14", "namespace": "forge-ml",
+		"cluster": "gke_gpu", "labels": map[string]any{"forge.dev/component-owner": "acme.prod", "forge.dev/component": "ml-node-problem-detector"},
+	}}})
+	stream, err := extract(t, "", raw)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if n := strings.Count(stream, "forge.dev/component-owner: acme.prod"); n != 2 {
+		t.Errorf("component-owner on %d objects, want both:\n%s", n, stream)
+	}
+}
+
 func TestBYO_RefusedOnAHostedEnv(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "out.yaml", byoDeployment)

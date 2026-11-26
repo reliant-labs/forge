@@ -311,12 +311,12 @@ Keep free functions for ergonomics AND expose a `Service` interface whose method
 
 A helper package that is private to a public SDK (`pkg/<sdk>/internal/<x>`) is outside `requirecontract`'s scope and needs none of these.
 
-## Greenfield: `forge package new`
+## Greenfield: `forge scaffold package`
 
 For new packages in an existing forge project:
 
 ```bash
-forge package new <name>
+forge scaffold package <name>
 ```
 
 Scaffolds `internal/<name>/`:

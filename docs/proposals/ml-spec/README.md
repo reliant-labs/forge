@@ -24,6 +24,8 @@ Related proposals:
 - [`docs/proposals/reliant-for-ml.md`](../reliant-for-ml.md): Reliant for ML, releases,
   testing, previews, observability and feedback loops for training and inference
   (forge#2888, open at the time of writing).
+- [`docs/proposals/ml-mvp.md`](../ml-mvp.md): the ML MVP, managed KServe, Kueue and
+  KubeRay, model releases and training runs, which re-orders the build.
 
 ## Owner input log
 
@@ -68,3 +70,20 @@ Related proposals:
     - 12: open instrumentation and data, a hosted loop, BYOC later.
     - 13: AI data is billed on the flat GiB meter. Judge calls are billed at gateway passthrough.
     - 14: autopilot stopping a prompt arm is opt-in per change.
+- 2026-11-26 15:45Z owner (VERBATIM, overrides research): "I'd start with KServe + vLLM for serving, Add Kueue when teams or batch jobs compete for GPUs. Add KubeRay when you want to write distributed Python applications or independently scale stages of an inference pipeline. Kueue and Ray can coexist because they make different decisions. Then these things should be similar to how we host standard parts of a user's app (hosted zitadel, hosted otel, hosted CNPG, soon to be doing hosted ValKey, and CronJobs) -- similar we can do hosted Kueue, Ray, KServe. Other notes from chatgpt that you can take/choose as you see fit (in the pasted-text's). as always let's start simpler, but with a great product that we can expand upon. ie: maybe we skip datasets if that's overly complicated?"
+  - Answered by [`docs/proposals/ml-mvp.md`](../ml-mvp.md): managed KServe, Kueue and KubeRay; model releases; training runs; the golden-path demo as the acceptance test. Its decisions 45–57 are open.
+  - TAKEN from the shared notes:
+    - Two first-class objects: a **training run** ("what produced these weights?": trainer image, base model, dataset ref, config, attempts, checkpoints, artifacts; identity survives a move to another cluster) and a **model release** ("what is serving this request?": weights, tokenizer/preprocessing, serving image, input/output contract; staging and prod promote the same release; retraining is a new candidate even at the same commit).
+    - The model release rides the existing release ledger: an immutable release, approval bound to a digest, `DeliveryPolicy.required_gates`, the promotion ledger, Flux to the cluster. The Flux bundle stays small: serving resources carry immutable references to weights (OCI modelcar, or object storage with a verified digest). Checkpoints go to object storage; a release is cut when a checkpoint becomes a candidate.
+    - The release verdict for models is the flagship: candidate against current prod on the same versioned eval set, including important segments (aggregate accuracy flat but recall on a key segment 91% → 78% holds the promotion, shows examples and the baseline, and hands an agent the run, code and data refs).
+    - Serving with KServe InferenceService and the vLLM runtime first; then Kueue (with Kubeflow Trainer TrainJob) when GPUs are contended; then KubeRay for distributed Python and independently scaled inference stages. Kueue and Ray coexist.
+    - These are managed add-ons, as forge already manages Zitadel, the OTel pipeline, CNPG, (soon) Valkey and CronJobs: lifecycle, upgrades, telemetry and adopt-if-present.
+    - The PR fast path: a tiny model and tiny data, a few steps, save and restore a checkpoint, export, boot the real inference container, call it through the app's API; normal coverage for training and serving code.
+    - Attempt identity and write fencing: a stale (partitioned) attempt cannot publish over its successor; a checkpoint is published only when all shards are durable.
+    - Request traces carry the model release digest (prediction → rollout → eval → run).
+    - Multi-cluster: TrainJob and Kueue per worker cluster, MultiKueue in the management cluster, our open-source placement controller as MultiKueue's external dispatcher; scoring on expected completion time plus total cost; explained decisions; predicted against actual; a serving capacity floor; one synchronous run stays in one cluster and fabric. Taken into forge#2994.
+    - The golden-path demo as the MVP milestone: change a training recipe in a worktree → a small e2e → dispatch the full run to one of two clusters → recover from an injected interruption → publish an immutable candidate → staging evaluates against prod → a pass promotes through Flux, a fail leaves examples, traces and evidence.
+  - SKIPPED for v1 (the owner: "maybe we skip datasets"):
+    - A dataset catalog, labeling (Label Studio), validation (Great Expectations), Ray Data prep, Feast, Fluid caching, lakeFS and Iceberg integrations, split management. v1 records only a dataset reference, a digest or snapshot id, and a region on the run, for lineage and placement locality.
+    - Sweeps (Katib, Ray Tune) and Kubeflow Pipelines, for later.
+    - Embedding model and index promoted as a compatible pair through rollback floors: noted for later.

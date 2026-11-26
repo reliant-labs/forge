@@ -256,7 +256,7 @@ func defaultRecordLedger(ctx context.Context, projectDir, project, env, token st
 // stored before the cut (recordReleaseIn), so the upload finds their bytes.
 func recordHostedLedger(client cloudCaller, endpoint, projectDir, project string, kind deploytarget.HostedEnvKind) envLedger {
 	l := attachCodeSource(hostedLedger(client, endpoint, project, kind), projectDir, os.Getenv)
-	return attachSBOMStore(l, func() (sbomBytesReader, error) { return openRecordSBOMStore(projectDir, project) })
+	return attachSBOMStore(l, func() (sbomLedger, error) { return openRecordSBOMStore(projectDir, project) })
 }
 
 // reasonRecordOnlyRelease is the control plane's refusal of a record-only

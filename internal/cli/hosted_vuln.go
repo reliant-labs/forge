@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/internal/vulnscan"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -196,24 +197,32 @@ func renderPlanVulns(out io.Writer, v *promotePlanVulns) {
 
 // ─── The upload ──────────────────────────────────────────────────────────────
 
-// sbomBytesReader reads an SBOM from the machine ledger by digest
-// (ledgerfile.Store.GetSBOM).
-type sbomBytesReader interface {
-	GetSBOM(digest string) ([]byte, error)
-}
+// sbomDrainMax bounds the releases a cut re-sends before its own (the
+// releases an older control plane refused), and sbomDrainMaxAttempts the
+// cuts that retry one release before giving up on it. A cut never waits
+// long on what earlier cuts left behind.
+const (
+	sbomDrainMax         = 5
+	sbomDrainMaxAttempts = 10
+)
 
 // recordReleaseSBOMs uploads the SBOM of every artifact of r that has one to
 // the control plane, after r was cut there (or re-cut: the server is
 // idempotent on (release, artifact, digest), and records an SBOM for a
 // release cut before it had one, which is the hosted half of the re-cut
-// backfill).
+// backfill). It is pushReleaseSBOMs (sbom_push.go), the code `forge vuln
+// sbom push` runs too.
 //
 // NEVER FAILS THE CUT. The release is recorded; the SBOMs are evidence about
-// it, and the machine ledger keeps its copy whatever happens here. A control
-// plane that does not advertise "vuln-sbom-upload" (or "vuln-findings") is
-// skipped silently (it would discard what it was sent); one that advertises
-// it and then answers Unimplemented gets one note; any other failure is a
-// warning per artifact.
+// it, and the machine ledger keeps its copy whatever happens here. Every cut
+// records which SBOM describes each artifact in the machine ledger's index of
+// the release. A control plane that does not take SBOMs (no
+// "vuln-sbom-upload" or "vuln-findings" capability, or RecordReleaseSBOM
+// Unimplemented), or that could not be asked, gets one note naming the
+// release and how they will be re-sent, and the release is recorded pending
+// in that index; the next cut to a control plane that takes them re-sends
+// the pending releases first (sbomDrainMax of them, a warning per failure).
+// Any other failure is a warning per artifact.
 //
 // A version-only record's source SBOM (Release.SourceSBOM) describes no
 // artifact, and RecordReleaseSBOM files every SBOM under one: it stays in
@@ -226,11 +235,8 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 			names = append(names, name)
 		}
 	}
-	source := r.SourceSBOM.HasSBOM()
-	if len(names) == 0 && !source {
-		return
-	}
 	sort.Strings(names)
+	source := r.SourceSBOM.HasSBOM()
 	warn := s.warn
 	if warn == nil {
 		warn = os.Stderr
@@ -240,13 +246,53 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 		// (generateReleaseSBOMs keeps the same silence).
 		warn = io.Discard
 	}
+	var store sbomLedger
+	var storeErr error
+	if s.sboms != nil {
+		store, storeErr = s.sboms()
+	}
+	var pending []ledgerfile.ReleaseSBOMIndex
+	if store != nil {
+		if err := recordSBOMIndex(store, r); err != nil {
+			fmt.Fprintf(warn, "[ledger] warning: release %s: could not record which SBOM describes each artifact in this machine's ledger: %v\n", r.Version, err)
+		}
+		all, _, _ := store.PendingSBOMUploads(s.endpoint)
+		for _, p := range all {
+			if p.Version != r.Version {
+				pending = append(pending, p)
+			}
+		}
+	}
+	if len(names) == 0 && !source && len(pending) == 0 {
+		return
+	}
+	run := sbomPushRun{Version: r.Version, Project: r.Project, CutAt: r.CreatedAt, Artifacts: r.Artifacts}
+	markPending := func(reason string) {
+		if store != nil && len(names) > 0 {
+			setSBOMUploadState(store, s.endpoint, run, nil, ledgerfile.SBOMUploadPending, reason)
+		}
+	}
 	f, err := s.vulnFeatures(ctx)
 	if err != nil {
-		fmt.Fprintf(warn, "[ledger] warning: could not ask %s whether it keeps SBOMs (GetCapabilities): %v; release %s's SBOMs stay in this machine's ledger\n", s.endpoint, err, r.Version)
+		switch {
+		case len(names) > 0:
+			fmt.Fprintf(warn, "[ledger] warning: could not ask %s whether it keeps SBOMs (GetCapabilities): %v; release %s's SBOMs stay in this machine's ledger, and are re-sent on the next cut to it or with `%s`\n", s.endpoint, err, r.Version, sbomResendHint(r.Version))
+		case source:
+			fmt.Fprintf(warn, "[ledger] warning: could not ask %s whether it keeps SBOMs (GetCapabilities): %v; release %s's SBOMs stay in this machine's ledger\n", s.endpoint, err, r.Version)
+		}
+		markPending("could not ask the control plane whether it keeps SBOMs: " + err.Error())
 		return
 	}
 	if !f.acceptsUploads() {
+		if len(names) > 0 {
+			fmt.Fprintf(warn, "[ledger] note: %s does not take SBOMs yet (it advertises no %s capability): release %s's SBOMs stay in this machine's ledger, and are re-sent on the next cut to it or with `%s`\n", s.endpoint, hostedVulnFeatureSBOMUpload, r.Version, sbomResendHint(r.Version))
+		}
+		markPending("the control plane advertised no " + hostedVulnFeatureSBOMUpload + " capability")
 		return
+	}
+	up := sbomUploader{client: s.client, endpoint: s.endpoint, project: s.project}
+	if len(pending) > 0 {
+		s.drainPendingSBOMs(ctx, up, store, pending, warn)
 	}
 	if source {
 		fmt.Fprintf(warn, "[ledger] note: release %s's source SBOM (%s) stays in this machine's ledger: %s keeps SBOMs per artifact, and it describes none\n", r.Version, r.SourceSBOM.Digest, s.endpoint)
@@ -254,70 +300,79 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 	if len(names) == 0 {
 		return
 	}
-	if s.sboms == nil {
-		fmt.Fprintf(warn, "[ledger] warning: release %s's SBOMs were not uploaded to %s: this ledger has no machine ledger to read them from\n", r.Version, s.endpoint)
+	if store == nil {
+		why := "this ledger has no machine ledger to read them from"
+		if storeErr != nil {
+			why = "open this machine's ledger: " + storeErr.Error()
+		}
+		fmt.Fprintf(warn, "[ledger] warning: release %s's SBOMs were not uploaded to %s: %s\n", r.Version, s.endpoint, why)
 		return
 	}
-	store, err := s.sboms()
-	if err != nil {
-		fmt.Fprintf(warn, "[ledger] warning: release %s's SBOMs were not uploaded to %s: open this machine's ledger: %v\n", r.Version, s.endpoint, err)
+	out := pushReleaseSBOMs(ctx, up, store, run)
+	s.reportSBOMPush(warn, r.Version, out)
+}
+
+// reportSBOMPush prints a cut's (or a drain's) upload outcome: nothing for
+// what the control plane took or already held, one note when it does not
+// store SBOMs, and a warning per artifact otherwise.
+func (s *hostedStore) reportSBOMPush(warn io.Writer, version string, out sbomPushOutcome) {
+	if out.Unimplemented {
+		// One note for the whole release: every other artifact would be
+		// answered the same way.
+		fmt.Fprintf(warn, "[ledger] note: this control plane does not store SBOMs yet (%s); release %s's SBOMs stay in this machine's ledger, and are re-sent on the next cut to it or with `%s`\n", s.endpoint, version, sbomResendHint(version))
 		return
 	}
-	project := r.Project
-	if project == "" {
-		project = s.project
+	if out.Refused != nil {
+		fmt.Fprintf(warn, "[ledger] warning: %s refused release %s's SBOMs (%v); they stay in this machine's ledger, and are re-sent on the next cut to it or with `%s`\n", s.endpoint, version, out.Refused, sbomResendHint(version))
+		return
 	}
-	for _, name := range names {
-		ref := r.Artifacts[name].SBOM
-		data, err := store.GetSBOM(ref.Digest)
-		if err != nil {
-			fmt.Fprintf(warn, "[ledger] warning: the SBOM of %s in release %s was not uploaded to %s: %v\n", name, r.Version, s.endpoint, err)
-			continue
-		}
-		gz, err := gzipBytes(data)
-		if err != nil {
-			fmt.Fprintf(warn, "[ledger] warning: the SBOM of %s in release %s was not uploaded to %s: compress it: %v\n", name, r.Version, s.endpoint, err)
-			continue
-		}
-		req := map[string]any{
-			"version":      r.Version,
-			"artifactName": name,
-			"sbom":         gz, // []byte: proto3 JSON's base64
-			"encoding":     sbomEncodingGzip,
-			"format":       ref.Format,
-		}
-		// The org is the credential's (and Forge-Project-ID's), exactly as
-		// on every DeployService call: org_id is left unset.
-		if project != "" {
-			req["project"] = project
-		}
-		for k, v := range map[string]string{"generator": ref.Generator, "source": ref.Source, "referrer": ref.Referrer} {
-			if v != "" {
-				req[k] = v
+	for _, a := range out.Artifacts {
+		switch a.Status {
+		case sbomPushDiffers:
+			if a.RecordedDigest != "" {
+				fmt.Fprintf(warn, "[ledger] warning: %s recorded the SBOM of %s in release %s as %s, but the release records %s: the two copies differ\n", s.endpoint, a.Artifact, version, a.RecordedDigest, a.SBOMDigest)
+			} else {
+				fmt.Fprintf(warn, "[ledger] warning: %s already records a different SBOM for %s in release %s and keeps it; this machine's copy is %s\n", s.endpoint, a.Artifact, version, a.SBOMDigest)
 			}
-		}
-		var resp struct {
-			Digest         string `json:"digest"`
-			Created        bool   `json:"created"`
-			ScanState      string `json:"scanState"`
-			ComponentCount int32  `json:"componentCount"`
-		}
-		if err := s.client.Call(cloud.WithRequestTimeout(ctx, sbomUploadTimeout(len(gz))), procRecordReleaseSBOM, req, &resp); err != nil {
-			switch {
-			case hostedUnimplemented(err):
-				// One note for the whole cut: every other artifact
-				// would be answered the same way.
-				fmt.Fprintf(warn, "[ledger] note: this control plane does not store SBOMs yet (%s); release %s's SBOMs stay in this machine's ledger\n", s.endpoint, r.Version)
-				return
-			case hostedErrorHasCode(err, cloud.CodeAlreadyExists):
-				fmt.Fprintf(warn, "[ledger] warning: %s already records a different SBOM for %s in release %s and keeps it; this machine's copy is %s\n", s.endpoint, name, r.Version, ref.Digest)
-			default:
-				fmt.Fprintf(warn, "[ledger] warning: the SBOM of %s in release %s was not uploaded to %s: %v\n", name, r.Version, s.endpoint, err)
+		case sbomPushMissing, sbomPushFailed:
+			if a.SBOMDigest == "" && a.Status == sbomPushMissing {
+				// No SBOM was recorded for it: the cut already said so.
+				continue
 			}
+			fmt.Fprintf(warn, "[ledger] warning: the SBOM of %s in release %s was not uploaded to %s: %s\n", a.Artifact, version, s.endpoint, a.Reason)
+		}
+	}
+}
+
+// drainPendingSBOMs re-sends the releases whose SBOMs this control plane
+// refused or missed on earlier cuts, oldest first, at most sbomDrainMax of
+// them, from the machine ledger's index. Never fails the cut: a failure is a
+// warning, and the release stays pending for the next cut (up to
+// sbomDrainMaxAttempts, then `forge vuln sbom push` is the way).
+func (s *hostedStore) drainPendingSBOMs(ctx context.Context, up sbomUploader, store sbomLedger, pending []ledgerfile.ReleaseSBOMIndex, warn io.Writer) {
+	sent := 0
+	for _, p := range pending {
+		if sent >= sbomDrainMax {
+			fmt.Fprintf(warn, "[ledger] note: %d more release(s) wait to re-send their SBOMs to %s; the next cut continues\n", len(pending)-sent, s.endpoint)
+			return
+		}
+		run := sbomPushRun{Version: p.Version, Project: p.Project, CutAt: p.CutAt}
+		if p.Uploads[s.endpoint].Attempts >= sbomDrainMaxAttempts {
+			setSBOMUploadState(store, s.endpoint, run, nil, ledgerfile.SBOMUploadAbandoned,
+				fmt.Sprintf("gave up after %d attempts", p.Uploads[s.endpoint].Attempts))
+			fmt.Fprintf(warn, "[ledger] warning: release %s's SBOMs were not re-sent to %s after %d attempts; forge stops retrying them at each cut: `%s` re-sends them\n", p.Version, s.endpoint, p.Uploads[s.endpoint].Attempts, sbomResendHint(p.Version))
 			continue
 		}
-		if resp.Digest != ref.Digest {
-			fmt.Fprintf(warn, "[ledger] warning: %s recorded the SBOM of %s in release %s as %s, but the release records %s: the two copies differ\n", s.endpoint, name, r.Version, resp.Digest, ref.Digest)
+		sent++
+		out := pushReleaseSBOMs(ctx, up, store, run)
+		switch {
+		case out.NotFound:
+			fmt.Fprintf(warn, "[ledger] warning: release %s's SBOMs were not re-sent: %s does not know the release; forge stops retrying them\n", p.Version, s.endpoint)
+		case out.Unimplemented || out.Refused != nil:
+			s.reportSBOMPush(warn, p.Version, out)
+			return // every later release would be answered the same way
+		default:
+			s.reportSBOMPush(warn, p.Version, out)
 		}
 	}
 }

@@ -2088,6 +2088,10 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 		ProjectDir: projectDir, Env: env, Version: version, OutputDir: outputDir,
 		Entities: entities, Built: built, NoSBOM: opts.noSBOM, CreatedAt: rel.CreatedAt,
 	}, rel.Artifacts, os.Stderr)
+	// Which SBOM describes each artifact, in this machine's ledger whatever
+	// ledger the env records in: what `forge vuln sbom push` re-sends when a
+	// control plane refused them (sbom_push.go).
+	writeReleaseSBOMIndex(projectDir, rel, os.Stderr)
 	// The commit's test report, on a ledger forge fills it on (the machine
 	// ledger; a control plane binds its own). Never fails the cut
 	// (release_tests_evidence.go).

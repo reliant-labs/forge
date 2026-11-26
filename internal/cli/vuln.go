@@ -8,6 +8,7 @@ package cli
 //	forge vuln show <env> <advisory-id | package> [--json]
 //	forge vuln sbom <env> [--release v] [--artifact name] [--format cyclonedx|spdx]
 //	forge vuln sbom --file <path> [--artifact name] [--release v] [--format cyclonedx|spdx]
+//	forge vuln sbom push --release <v> [--env <env>] [--sbom <artifact>=<digest>]... [--json]
 //	forge vuln db status|pull|import <file>
 //	forge vuln exempt <env> <advisory-id> --reason "<why>" --expires YYYY-MM-DD
 //
@@ -76,6 +77,9 @@ type vulnDeps struct {
 	// sbomCache is the SBOM cache's directory for `vuln sbom --file`; nil
 	// or "" caches nothing.
 	sbomCache func() string
+	// listEnvs lists the project's envs (`vuln sbom push` picks the one
+	// whose ledger is a control plane); nil is ListEnvs.
+	listEnvs func(projectDir string) ([]string, error)
 }
 
 func defaultVulnDeps() vulnDeps {
@@ -89,6 +93,7 @@ func defaultVulnDeps() vulnDeps {
 		now:           time.Now,
 		hostedClient:  hostedVulnClient,
 		sbomCache:     sbomCacheDir,
+		listEnvs:      ListEnvs,
 	}
 }
 

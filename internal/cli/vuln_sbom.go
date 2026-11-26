@@ -49,7 +49,11 @@ and the same invocation a release cut uses for a host binary, and prints it.
 Nothing is recorded. The document names the artifact --artifact (default: the
 file's name), never the path on this machine, and carries --release as its
 version. Use it for binaries your own pipeline publishes; forge's own releases
-attach one per archive this way. A file syft cannot describe exits 2.`,
+attach one per archive this way. A file syft cannot describe exits 2.
+
+` + "`forge vuln sbom push --release <v>`" + ` re-sends a release's SBOMs from this
+machine's ledger to the env's control plane (its own --help). It takes the
+word push: an env named push is read with ` + "`forge vuln sbom -- push`" + `.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if opts.file != "" {
 				if len(args) != 0 {
@@ -70,6 +74,7 @@ attach one per archive this way. A file syft cannot describe exits 2.`,
 	cmd.Flags().StringVar(&opts.artifact, "artifact", "", "the artifact whose SBOM to print (with --file: the name the SBOM records)")
 	cmd.Flags().StringVar(&opts.format, "format", "cyclonedx", "cyclonedx (as stored) or spdx (converted with syft)")
 	cmd.Flags().StringVar(&opts.file, "file", "", "generate the SBOM of this binary or lockfile with forge's pinned syft, instead of reading a release")
+	cmd.AddCommand(newVulnSBOMPushCmd(deps))
 	return cmd
 }
 

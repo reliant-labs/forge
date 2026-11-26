@@ -494,7 +494,7 @@ func attachSBOMSource(l envLedger, projectDir string) envLedger {
 	if projectDir == "" {
 		return l
 	}
-	return attachSBOMStore(l, func() (sbomBytesReader, error) { return openMachineLedger(projectDir) })
+	return attachSBOMStore(l, func() (sbomLedger, error) { return openMachineLedger(projectDir) })
 }
 
 // attachSBOMStore is attachSBOMSource with the store named: a ledger whose
@@ -502,7 +502,7 @@ func attachSBOMSource(l envLedger, projectDir string) envLedger {
 // ledger (`forge release record`, which files them under the record's
 // project, openRecordSBOMStore) reads them from there. A ledger that already
 // has a source keeps it.
-func attachSBOMStore(l envLedger, open func() (sbomBytesReader, error)) envLedger {
+func attachSBOMStore(l envLedger, open func() (sbomLedger, error)) envLedger {
 	if hs, ok := l.Bindings.(*hostedStore); ok && hs.sboms == nil && open != nil {
 		hs.sboms = open
 	}

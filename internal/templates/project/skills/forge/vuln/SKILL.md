@@ -1,6 +1,6 @@
 ---
 name: vuln
-description: SBOMs and vulnerabilities in forge — what every release cut records by default (a CycloneDX SBOM per artifact, stored in the release, the machine ledger and beside the image as an OCI referrer, then scanned with grype), every `forge vuln` verb (scan, list, show, sbom, db status|pull|import, exempt, patch) with exit codes and the `forge.dev/vuln-list/v1` JSON, the shared 3.3 GiB grype database (location, CI cache key, mirror, offline import, the 5-day freshness rule), pinned syft/grype installs, mirrors, `pkg/toolpins` and the tool cache's trust check, SBOM sources per artifact kind (static sites are "from lockfile"), `--no-sbom`, `provenance_sbom = off`, `vuln.attach_sbom`, registry referrer support and the GAR cleanup-policy caveat, `vuln_gate` audit/enforce and its warn-first rollout, `forge vuln exempt`, `--override-vuln-gate`, `forge vuln patch` and `vuln.patch.verify`, recording an SBOM for a deploy your own CI did, the `vuln-sbom` gate step, and control-plane envs. Use when a cut says "not scanned", when a finding needs a dependency bump, before turning `vuln_gate` to enforce, or when a promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` or `sbom_missing`.
+description: SBOMs and vulnerabilities in forge — what every release cut records by default (a CycloneDX SBOM per artifact, stored in the release, the machine ledger and beside the image as an OCI referrer, then scanned with grype), every `forge vuln` verb (scan, list, show, sbom, sbom push, db status|pull|import, exempt, patch) with exit codes and the `forge.dev/vuln-list/v1` JSON, the shared 3.3 GiB grype database (location, CI cache key, mirror, offline import, the 5-day freshness rule), pinned syft/grype installs, mirrors, `pkg/toolpins` and the tool cache's trust check, SBOM sources per artifact kind (static sites are "from lockfile"), `--no-sbom`, `provenance_sbom = off`, `vuln.attach_sbom`, registry referrer support and the GAR cleanup-policy caveat, `vuln_gate` audit/enforce and its warn-first rollout, `forge vuln exempt`, `--override-vuln-gate`, `forge vuln patch` and `vuln.patch.verify`, recording an SBOM for a deploy your own CI did, the `vuln-sbom` gate step, and control-plane envs. Use when a cut says "not scanned", when a finding needs a dependency bump, before turning `vuln_gate` to enforce, or when a promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` or `sbom_missing`.
 ---
 
 # SBOMs and vulnerabilities
@@ -97,6 +97,7 @@ forge vuln show prod CVE-2026-1234           # one advisory (a CVE finds its GHS
 forge vuln sbom prod --artifact api > api.cdx.json
 forge vuln sbom prod --artifact api --format spdx   # converted with syft
 forge vuln sbom --file dist/mycli --artifact mycli_linux_amd64.tar.gz --release v1.2.0 > mycli_linux_amd64.tar.gz.cdx.json
+forge vuln sbom push --release v1.7.0         # re-send a release's SBOMs to the env's control plane (see "Control-plane envs")
 forge vuln scan                              # a directory (default .): a source tree or build output
 forge vuln scan --image ghcr.io/acme/api@sha256:…   # an image, by digest only
 forge vuln scan sbom.json                    # an SBOM another tool made (CycloneDX or SPDX JSON)
@@ -294,7 +295,47 @@ with the `vuln:read` scope, which `deploy:read` does not imply.
 
 **Upload.** After a cut, forge uploads each SBOM to the control plane when it
 advertises the `vuln-sbom-upload` capability (or `vuln-findings`, which implies it);
-the machine ledger keeps its own copy whatever the control plane does with it.
+the machine ledger keeps its own copy whatever the control plane does with it, and
+an index of which SBOM describes each artifact of the release
+(`<ledger>/<project>/sbom-index/<release>.json`, written by every cut whichever
+ledger the env uses). A control plane that does not take SBOMs yet (no such
+capability, or `RecordReleaseSBOM` Unimplemented), or that could not be asked, gets
+one line from the cut naming the release and how they will be re-sent, and the
+release is recorded **pending** in that index. The next cut to a control plane that
+takes them re-sends the pending releases first (at most 5 per cut, oldest first; a
+warning per failure, never a failed cut; a release is given up on after 10 cuts).
+An anonymous (`--claimable`) deploy prints none of this.
+
+**Re-sending a release: `forge vuln sbom push --release <v>`.** It sends the
+release's SBOMs from this machine's ledger to the env's control plane now
+(`--env`, default the one env whose ledger is a control plane). The control plane
+keeps one SBOM per artifact of a release, so running it again is safe. Per artifact:
+
+| Status | Means |
+|---|---|
+| `sent` | uploaded now |
+| `already_recorded` | the control plane holds this SBOM (it named it, or answered so) |
+| `differs` | it holds a different SBOM for the artifact, and keeps it |
+| `missing` | no SBOM this ledger can prove describes it (`needs_override` when one must be named) |
+| `failed` | the upload failed |
+| `not_applicable` | a git source pin or source maps: no SBOM describes them |
+
+Which SBOM describes an artifact: `--sbom <artifact>=<sha256:digest>`; the one the
+control plane already names; the index above; and, for a release cut before the
+index existed, the SBOM files by their CycloneDX metadata (`metadata.component.name`
+is the artifact, `.version` its image digest). A static site's SBOM records its
+lockfile's digest, not the bundle's, so metadata cannot prove it: the output lists
+the SBOMs that name the site as `candidates`, and `--sbom` names the one to send (its
+bytes are verified against the digest, and it must name the artifact). Exit 0 every
+applicable artifact's SBOM is on the control plane (`differs` included); 2 one is
+missing or failed; 4 refused (no sign-in or scope, or a control plane that does not
+take SBOMs). `--json` prints `forge.dev/vuln-sbom-push/v1`
+(`forge project schema vuln-sbom-push`).
+
+```bash
+forge vuln sbom push --release v1.7.0 --env prod
+forge vuln sbom push --release v1.7.0 --sbom registry.example.com/acme/web/static.v1=sha256:… --json
+```
 
 **Reads.** `forge vuln list`, `show`, `sbom`, `scan --deployed` and `patch` for such an
 env read the control plane's findings when it advertises `vuln-findings`, mapped into

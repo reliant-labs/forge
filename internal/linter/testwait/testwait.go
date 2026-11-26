@@ -870,14 +870,65 @@ func (c *checker) countedLoop(loop *ast.ForStmt) (int64, bool) {
 // endsEarly reports whether a for loop can end before the clock it is
 // bounded by runs out: its condition holds a term that is not a clock check
 // (`time.Now().Before(dl) && !done()`), or its body can leave it (a break
-// or return) other than from inside an if whose condition is only a clock
-// check — `if time.Now().After(dl) { break }` is the deadline itself, not
-// an early end.
+// or return) other than from the body of an if whose condition holds only
+// once the deadline has PASSED — `if time.Now().After(dl) { break }` is the
+// deadline itself, not an early end. An exit under any other clock check
+// (`if time.Now().Before(dl) { break }` leaves at once) counts as early.
 func (c *checker) endsEarly(loop *ast.ForStmt, sc *scope) bool {
 	if loop.Cond != nil && !c.clockOnly(loop.Cond, sc) {
 		return true
 	}
-	return exitsSkipping(loop.Body, func(s *ast.IfStmt) bool { return c.clockOnly(s.Cond, sc) })
+	return exitsSkipping(loop.Body, func(s *ast.IfStmt) bool { return c.deadlinePassed(s.Cond, sc) })
+}
+
+// deadlinePassed reports a condition that is true only once a clock bound has
+// run out: time.Now().After(D) / D.Before(time.Now()) for a time.Now().Add(d)
+// deadline D, their negated opposites (!time.Now().Before(D),
+// !D.After(time.Now())), `elapsed > d` / `elapsed >= d` (either way round),
+// and an || of such terms. Anything else — including a term whose polarity it
+// cannot read — is not.
+func (c *checker) deadlinePassed(cond ast.Expr, sc *scope) bool {
+	switch x := ast.Unparen(cond).(type) {
+	case *ast.BinaryExpr:
+		switch x.Op {
+		case token.LOR:
+			return c.deadlinePassed(x.X, sc) && c.deadlinePassed(x.Y, sc)
+		case token.GTR, token.GEQ:
+			return c.isElapsed(x.X, sc)
+		case token.LSS, token.LEQ:
+			return c.isElapsed(x.Y, sc)
+		}
+	case *ast.UnaryExpr:
+		if x.Op == token.NOT {
+			if call, ok := ast.Unparen(x.X).(*ast.CallExpr); ok {
+				return c.nowVersusDeadline(call, sc) == "before"
+			}
+		}
+	case *ast.CallExpr:
+		return c.nowVersusDeadline(x, sc) == "after"
+	}
+	return false
+}
+
+// nowVersusDeadline reads a comparison of the clock with a deadline as what it
+// asserts about now: "after" for time.Now().After(D) / D.Before(time.Now()),
+// "before" for time.Now().Before(D) / D.After(time.Now()), "" otherwise.
+func (c *checker) nowVersusDeadline(call *ast.CallExpr, sc *scope) string {
+	if _, ok := c.deadlineCheck(call, sc); !ok {
+		return ""
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return "" // time.Until(D): its polarity is in the comparison around it
+	}
+	nowFirst := c.isNow(sel.X)
+	switch {
+	case sel.Sel.Name == "After" && nowFirst, sel.Sel.Name == "Before" && !nowFirst:
+		return "after"
+	case sel.Sel.Name == "Before" && nowFirst, sel.Sel.Name == "After" && !nowFirst:
+		return "before"
+	}
+	return ""
 }
 
 // clockOnly reports a condition made only of clock checks: comparisons of

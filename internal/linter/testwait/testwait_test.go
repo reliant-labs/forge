@@ -443,6 +443,43 @@ func TestX(t *testing.T) {
 	}
 	check(t)
 }`, []string{"tight-deadline@2"}},
+		// A clock check whose branch runs BEFORE the deadline is an early
+		// exit, not the deadline's own: these leave on their first round.
+		{"an exit under a not-yet-expired clock check is early", `func TestX(t *testing.T) {
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if time.Now().Before(deadline) { break }
+		time.Sleep(10 * time.Millisecond)
+	}
+}`, []string{"tight-deadline@2"}},
+		{"an exit under a negated expiry check is early", `func TestX(t *testing.T) {
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if !time.Now().After(deadline) { return }
+		time.Sleep(10 * time.Millisecond)
+	}
+}`, []string{"tight-deadline@2"}},
+		{"an exit under elapsed below a bound is early", `func TestX(t *testing.T) {
+	start := time.Now()
+	for time.Since(start) < 2*time.Second {
+		if time.Since(start) < time.Second { break }
+		send()
+	}
+}`, []string{"tight-deadline@3"}},
+		{"a workload leaving on an expired elapsed bound", `func TestX(t *testing.T) {
+	start := time.Now()
+	for {
+		if time.Since(start) >= 2*time.Second { break }
+		send()
+	}
+}`, nil},
+		{"a workload leaving on deadline.Before(now)", `func TestX(t *testing.T) {
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if deadline.Before(time.Now()) || !time.Now().Before(deadline) { return }
+		send()
+	}
+}`, nil},
 		{"a poll that breaks out of the deadline check's else", `func TestX(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {

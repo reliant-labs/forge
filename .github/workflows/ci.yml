@@ -44,8 +44,10 @@ permissions:
 # docker and no view of the machine's agent workspaces or credentials, a
 # root-owned job-started hook that refuses any job that is not a merge group
 # or a push to main of this repository, and HOME, /tmp, the tool cache and the
-# workspace emptied before and after every job. To roll back, set those four
-# `runs-on` lines back to ubuntu-latest.
+# workspace emptied before and after every job. internal/ciguard's
+# TestSelfHostedRunnersServeOnlyTheMergeQueue holds every workflow's runs-on
+# to this. To roll back, set those four `runs-on` lines back to ubuntu-latest
+# (and empty selfHostedMergeTier there).
 
 # ── REVIEW FIRST ───────────────────────────────────────────────────────────
 #

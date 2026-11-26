@@ -3,6 +3,7 @@ package testkit_test
 import (
 	"context"
 	"errors"
+	"flag"
 	"net/http"
 	"os"
 	"os/exec"
@@ -20,7 +21,7 @@ import (
 // The children below are run by TestLogger_ShowsTheServerSideOfAFailedTest,
 // in a re-exec of this test binary: a test cannot observe its own output, and
 // the behaviour under test is what `go test` prints for a failing test.
-const loggerChildEnv = "TESTKIT_LOGGER_CHILD"
+var loggerChild = flag.Bool("testkit-logger-child", false, "run the logger subprocess fixture")
 
 // driverText is what a repository's driver error says, and exactly what the
 // client must not read.
@@ -61,7 +62,7 @@ func callRedacted(t *testing.T) {
 }
 
 func TestLoggerChild_FailingV1(t *testing.T) {
-	if os.Getenv(loggerChildEnv) == "" {
+	if !*loggerChild {
 		t.Skip("run by TestLogger_ShowsTheServerSideOfAFailedTest")
 	}
 	callRedacted(t)
@@ -69,7 +70,7 @@ func TestLoggerChild_FailingV1(t *testing.T) {
 }
 
 func TestLoggerChild_PassingV1(t *testing.T) {
-	if os.Getenv(loggerChildEnv) == "" {
+	if !*loggerChild {
 		t.Skip("run by TestLogger_ShowsTheServerSideOfAFailedTest")
 	}
 	callRedacted(t)
@@ -78,7 +79,7 @@ func TestLoggerChild_PassingV1(t *testing.T) {
 var failSpecV2 = connectv2.Spec{Procedure: failProcedure, StreamType: connectv2.StreamTypeUnary}
 
 func TestLoggerChild_FailingV2(t *testing.T) {
-	if os.Getenv(loggerChildEnv) == "" {
+	if !*loggerChild {
 		t.Skip("run by TestLogger_ShowsTheServerSideOfAFailedTest")
 	}
 	_, client := testkit.NewConnectClientV2(t, func(server *connectv2.Server) {
@@ -103,19 +104,28 @@ func TestLoggerChild_FailingV2(t *testing.T) {
 // server's side — the cause svcerr withheld, and the handler's own records —
 // when the test fails, and stay silent when it passes, even under -v.
 func TestLogger_ShowsTheServerSideOfAFailedTest(t *testing.T) {
-	if os.Getenv(loggerChildEnv) != "" {
+	if *loggerChild {
 		t.Skip("a child run")
 	}
-	run := func(name string) string {
+	run := func(name string, wantExit int) string {
 		t.Helper()
-		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run", "^"+name+"$", "-test.v", "-test.count=1")
-		cmd.Env = append(os.Environ(), loggerChildEnv+"=1")
-		out, _ := cmd.CombinedOutput()
+		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run", "^"+name+"$", "-test.v", "-test.count=1", "-testkit-logger-child")
+		out, err := cmd.CombinedOutput()
+		if wantExit == 0 {
+			if err != nil {
+				t.Fatalf("%s: unexpected child failure: %v\n%s", name, err, out)
+			}
+		} else {
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != wantExit {
+				t.Fatalf("%s: child error %v, want exit %d\n%s", name, err, wantExit, out)
+			}
+		}
 		return string(out)
 	}
 
 	for _, name := range []string{"TestLoggerChild_FailingV1", "TestLoggerChild_FailingV2"} {
-		out := run(name)
+		out := run(name, 1)
 		if !strings.Contains(out, "--- FAIL: "+name) || !strings.Contains(out, "the test author's assertion failed") {
 			t.Fatalf("%s did not fail as planned:\n%s", name, out)
 		}
@@ -129,7 +139,7 @@ func TestLogger_ShowsTheServerSideOfAFailedTest(t *testing.T) {
 		}
 	}
 
-	out := run("TestLoggerChild_PassingV1")
+	out := run("TestLoggerChild_PassingV1", 0)
 	if !strings.Contains(out, "--- PASS: TestLoggerChild_PassingV1") {
 		t.Fatalf("TestLoggerChild_PassingV1 did not pass:\n%s", out)
 	}

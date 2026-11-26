@@ -324,7 +324,11 @@ func (o lintStepOutcome) failedBeyondGap() bool {
 // The lint.rules check leads: a dial the run cannot honour is reported with
 // every verdict it would have changed.
 func collectLintOutcomes(rc *lintRunCtx) []lintStepOutcome {
-	return append(lintRulesOutcomes(rc.cfg), collectLintOutcomesFrom(rc, lintPipeline())...)
+	lead := lintRulesOutcomes(rc.cfg)
+	for _, o := range lead {
+		rc.emitOutcome(o)
+	}
+	return append(lead, collectLintOutcomesFrom(rc, lintPipeline())...)
 }
 
 // lintRulesOutcomes is the lint.rules check as zero or one outcome: none when
@@ -340,17 +344,21 @@ func lintRulesOutcomes(cfg *config.ProjectConfig) []lintStepOutcome {
 // so the scope semantics can be tested against steps whose behaviour the
 // test controls.
 func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOutcome {
-	outcomes := make([]lintStepOutcome, 0, len(pipeline))
+	collected := make([]lintStepOutcome, 0, len(pipeline))
+	// Each outcome is handed to rc.emit the moment its lane is done, so a
+	// human or agent watching the run sees a lane's findings while the next
+	// lane works, not after the last one.
+	outcomes := emittingOutcomes{rc: rc, list: &collected}
 	for _, step := range pipeline {
 		if rc.lanesOff[step.name] {
-			outcomes = append(outcomes, offOutcome(step.name, step.gates))
+			outcomes.add(offOutcome(step.name, step.gates))
 			continue
 		}
 		o := lintStepOutcome{name: step.name, gates: step.gates}
 		run, skipMsg := step.shouldRun(rc)
 		if !run {
 			o.skipMsg = skipMsg
-			outcomes = append(outcomes, o)
+			outcomes.add(o)
 			continue
 		}
 		if rc.progress != nil && !(rc.scope != nil && step.scope == scopeWholeProject) {
@@ -361,13 +369,13 @@ func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOu
 			switch step.scope {
 			case scopeWholeProject:
 				o.unscoped = true
-				outcomes = append(outcomes, o)
+				outcomes.add(o)
 				continue
 			case scopeByPackages:
 				pkgs := rc.scope.goPackages()
 				if len(pkgs) == 0 {
 					o.skipMsg = rc.scope.scopeSkipMsg(step.name)
-					outcomes = append(outcomes, o)
+					outcomes.add(o)
 					continue
 				}
 				scoped := *rc
@@ -407,9 +415,21 @@ func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOu
 		o.ran = true
 		o.findings, o.gated = scopeOutcome(rc.scope, fs, gated)
 		applyGapPolicy(&o, laneGates(step, rc), rc)
-		outcomes = append(outcomes, o)
+		outcomes.add(o)
 	}
-	return outcomes
+	return collected
+}
+
+// emittingOutcomes collects a run's outcomes in pipeline order and hands
+// each to the run's emit hook as it is added.
+type emittingOutcomes struct {
+	rc   *lintRunCtx
+	list *[]lintStepOutcome
+}
+
+func (e emittingOutcomes) add(o lintStepOutcome) {
+	*e.list = append(*e.list, o)
+	e.rc.emitOutcome(o)
 }
 
 // scopeOutcome filters a lane's findings to the scope and re-derives its
@@ -467,12 +487,19 @@ func collectTargetedOutcomes(
 	cfg *config.ProjectConfig,
 	scope *lintScope,
 	progress io.Writer,
+	emit func(lintStepOutcome),
 ) ([]lintStepOutcome, bool, error) {
 	lanes := selectedLanes(flags)
 	if len(lanes) == 0 {
 		return nil, false, nil
 	}
+	if emit == nil {
+		emit = func(lintStepOutcome) {}
+	}
 	outcomes := lintRulesOutcomes(cfg)
+	for _, o := range outcomes {
+		emit(o)
+	}
 	for _, lane := range lanes {
 		if progress != nil {
 			fmt.Fprintf(progress, "▸ --%s\n", lane)
@@ -488,6 +515,7 @@ func collectTargetedOutcomes(
 			return nil, true, err
 		}
 		outcomes = append(outcomes, o)
+		emit(o)
 	}
 	return outcomes, true, nil
 }
@@ -574,8 +602,10 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 	}
 	realStdout := os.Stdout
 	os.Stdout = os.Stderr
-	outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope, progress)
-	fixed := 0
+	// Each lane's block is printed to the real stdout as the lane finishes;
+	// the verdict, over all of them, is printed last.
+	render := newLintRenderer(realStdout, flags.quiet, scope)
+	outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope, progress, render.add)
 	switch {
 	case targeted:
 		// A targeted lane never auto-fixes, in text mode or here.
@@ -584,7 +614,9 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 		// A frontend whose lint lane is off is not forge's to format either.
 		runSkip, skipFrontends := frontendSkips(flags.skipFrontends, off)
 		if fix && !off[formatLaneName] {
-			fixed = structuredFixPrePass(ctx, cwd, cfg, scope, paths, skipFrontends)
+			if fixed := structuredFixPrePass(ctx, cwd, cfg, scope, paths, skipFrontends); fixed > 0 {
+				fmt.Fprintf(realStdout, "🔧 auto-fixed %d file(s) before gating (formatting)\n", fixed)
+			}
 		}
 		outcomes = collectLintOutcomes(&lintRunCtx{
 			ctx:           ctx,
@@ -600,13 +632,19 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 			allowSkip:     allow,
 			lanesOff:      off,
 			progress:      progress,
+			emit:          render.add,
 			golangciMemo:  newGolangciMemo(productionGolangciToolchain()),
 		})
+		var last lintStepOutcome
 		switch {
 		case off[formatLaneName]:
-			outcomes = append(outcomes, offOutcome(formatLaneName, true))
+			last = offOutcome(formatLaneName, true)
 		case !fix:
-			outcomes = append(outcomes, formatOutcome(ctx, cwd, cfg, scope, paths, skipFrontends))
+			last = formatOutcome(ctx, cwd, cfg, scope, paths, skipFrontends)
+		}
+		if last.name != "" {
+			outcomes = append(outcomes, last)
+			render.add(last)
 		}
 	}
 	os.Stdout = realStdout
@@ -614,10 +652,7 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 		return err
 	}
 
-	if fixed > 0 {
-		fmt.Fprintf(os.Stdout, "🔧 auto-fixed %d file(s) before gating (formatting)\n", fixed)
-	}
-	verdictErr := renderLintOutcomes(os.Stdout, outcomes, flags.quiet, scope)
+	verdictErr := render.finish()
 	if flags.gateJSON != "" {
 		return resolveGateRunResult(verdictErr, emitLintGate(flags.gateJSON, tallyFromOutcomes(outcomes), startedAt))
 	}
@@ -657,89 +692,118 @@ func structuredFixPrePass(ctx context.Context, cwd string, cfg *config.ProjectCo
 // lane with an error or warning is shown. Info findings (skip notes) are
 // never printed here — a skipped lane is named in the verdict instead.
 func renderLintOutcomes(w io.Writer, outcomes []lintStepOutcome, quiet bool, scope *lintScope) error {
-	v := lintVerdict{scope: scope.summary(), graced: gracedFindings(outcomes)}
+	r := newLintRenderer(w, quiet, scope)
 	for _, o := range outcomes {
-		switch {
-		case o.off:
-			v.off = append(v.off, o.name)
-			if !quiet {
-				fmt.Fprintf(w, "○ %s — %s\n", o.name, laneOffNote)
-			}
-			continue
-		case o.unscoped:
-			v.unscoped = append(v.unscoped, o.name)
-			continue
-		case !o.ran:
-			if o.skipMsg != "" && o.gates {
-				v.skipped = append(v.skipped, o.name)
-			}
-			continue
-		}
+		r.add(o)
+	}
+	return r.finish()
+}
 
-		var errs, warns []lintJSONFinding
-		for _, f := range o.findings {
-			switch f.Severity {
-			case lintSevError:
-				errs = append(errs, f)
-			case lintSevWarning:
-				warns = append(warns, f)
-			}
-		}
+// lintRenderer is renderLintOutcomes one outcome at a time: add prints a
+// lane's block as soon as the lane is done (runLintStructured hands it each
+// outcome from the engine's emit hook), and finish prints the verdict over
+// everything added. The output is byte-for-byte what rendering the whole
+// list at the end printed; only its timing differs.
+type lintRenderer struct {
+	w        io.Writer
+	quiet    bool
+	v        lintVerdict
+	outcomes []lintStepOutcome
+}
 
-		switch {
-		case o.gap == nil:
-			if o.gates {
-				v.ran = append(v.ran, o.name)
-			}
-		case o.gap.verdict == gapFails:
-			v.unavailable = append(v.unavailable, *o.gap)
-		case o.gap.verdict == gapAllowed:
-			v.allowed = append(v.allowed, *o.gap)
-		default:
-			v.advisoryUnavailable = append(v.advisoryUnavailable, o.name)
-		}
-		if o.failedBeyondGap() {
-			v.failed = append(v.failed, o.name)
-		}
+func newLintRenderer(w io.Writer, quiet bool, scope *lintScope) *lintRenderer {
+	return &lintRenderer{w: w, quiet: quiet, v: lintVerdict{scope: scope.summary()}}
+}
 
-		switch {
-		case !quiet && !o.gated && len(errs)+len(warns) == 0 && o.gap == nil:
-			// A clean lane says it ran, and what it checked: the line that
-			// tells a clean run from a vacuous one.
-			fmt.Fprintf(w, "✓ %s\n", o.name)
-			for _, f := range o.findings {
-				if f.Rule == ruleRanNote {
-					fmt.Fprintf(w, "   · %s\n", f.Message)
-				}
-			}
-		case o.gated:
-			shown := errs
-			if !quiet {
-				shown = append(append([]lintJSONFinding{}, errs...), warns...)
-			} else {
-				v.hiddenWarnings += issueCount(warns)
-			}
-			if len(shown) == 0 {
-				// A lane that failed without an error finding still has to
-				// say why; show whatever it reported.
-				shown = o.findings
-			}
-			fmt.Fprintf(w, "❌ %s — %s\n", o.name, countPhrase(issueCount(errs), issueCount(warns)))
-			writeStructuredFindings(w, shown)
-			if len(shown) == 0 {
-				fmt.Fprintf(w, "   (the lane failed without a finding — run `forge lint` for its full output)\n")
-			}
-			if o.gap != nil && o.gap.verdict == gapFails {
-				fmt.Fprintf(w, "      → %s\n", acceptSkipHint([]laneGap{*o.gap}))
-			}
-		case quiet:
-			v.hiddenWarnings += issueCount(warns) + issueCount(errs)
-		case len(errs)+len(warns) > 0:
-			fmt.Fprintf(w, "⚠️  %s — %s\n", o.name, countPhrase(issueCount(errs), issueCount(warns)))
-			writeStructuredFindings(w, append(append([]lintJSONFinding{}, errs...), warns...))
+// finish prints the verdict and returns it (see renderLintOutcomes).
+func (r *lintRenderer) finish() error {
+	r.v.graced = gracedFindings(r.outcomes)
+	return r.v.render(r.w)
+}
+
+// add prints one lane's block and records it for the verdict.
+func (r *lintRenderer) add(o lintStepOutcome) {
+	r.outcomes = append(r.outcomes, o)
+	w, quiet, v := r.w, r.quiet, &r.v
+	switch {
+	case o.off:
+		v.off = append(v.off, o.name)
+		if !quiet {
+			fmt.Fprintf(w, "○ %s — %s\n", o.name, laneOffNote)
+		}
+		return
+	case o.unscoped:
+		v.unscoped = append(v.unscoped, o.name)
+		return
+	case !o.ran:
+		if o.skipMsg != "" && o.gates {
+			v.skipped = append(v.skipped, o.name)
+		}
+		return
+	}
+
+	var errs, warns []lintJSONFinding
+	for _, f := range o.findings {
+		switch f.Severity {
+		case lintSevError:
+			errs = append(errs, f)
+		case lintSevWarning:
+			warns = append(warns, f)
 		}
 	}
-	return v.render(w)
+
+	switch {
+	case o.gap == nil:
+		if o.gates {
+			v.ran = append(v.ran, o.name)
+		}
+	case o.gap.verdict == gapFails:
+		v.unavailable = append(v.unavailable, *o.gap)
+	case o.gap.verdict == gapAllowed:
+		v.allowed = append(v.allowed, *o.gap)
+	default:
+		v.advisoryUnavailable = append(v.advisoryUnavailable, o.name)
+	}
+	if o.failedBeyondGap() {
+		v.failed = append(v.failed, o.name)
+	}
+
+	switch {
+	case !quiet && !o.gated && len(errs)+len(warns) == 0 && o.gap == nil:
+		// A clean lane says it ran, and what it checked: the line that
+		// tells a clean run from a vacuous one.
+		fmt.Fprintf(w, "✓ %s\n", o.name)
+		for _, f := range o.findings {
+			if f.Rule == ruleRanNote {
+				fmt.Fprintf(w, "   · %s\n", f.Message)
+			}
+		}
+	case o.gated:
+		shown := errs
+		if !quiet {
+			shown = append(append([]lintJSONFinding{}, errs...), warns...)
+		} else {
+			v.hide(warns)
+		}
+		if len(shown) == 0 {
+			// A lane that failed without an error finding still has to
+			// say why; show whatever it reported.
+			shown = o.findings
+		}
+		fmt.Fprintf(w, "❌ %s — %s\n", o.name, countPhrase(issueCount(errs), issueCount(warns)))
+		writeStructuredFindings(w, shown)
+		if len(shown) == 0 {
+			fmt.Fprintf(w, "   (the lane failed without a finding — run `forge lint` for its full output)\n")
+		}
+		if o.gap != nil && o.gap.verdict == gapFails {
+			fmt.Fprintf(w, "      → %s\n", acceptSkipHint([]laneGap{*o.gap}))
+		}
+	case quiet:
+		v.hide(append(append([]lintJSONFinding{}, warns...), errs...))
+	case len(errs)+len(warns) > 0:
+		fmt.Fprintf(w, "⚠️  %s — %s\n", o.name, countPhrase(issueCount(errs), issueCount(warns)))
+		writeStructuredFindings(w, append(append([]lintJSONFinding{}, errs...), warns...))
+	}
 }
 
 // ruleRanNote marks an info finding a lane adds to say what it checked

@@ -286,10 +286,33 @@ func TestRenderLintOutcomesQuiet(t *testing.T) {
 	}
 	// The verdict — returned, so main prints it as the LAST line — names
 	// what failed and admits what --quiet hid.
-	for _, want := range []string{"1 gating linter(s) failed: read-only-fields lint", "2 advisory findings not shown (--quiet)"} {
+	for _, want := range []string{"1 gating linter(s) failed: read-only-fields lint", "2 advisory findings not shown (--quiet: ", "run without --quiet to see them"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("verdict %q missing %q", err, want)
 		}
+	}
+}
+
+// --quiet names the rules it hid, most findings first, and how to see them:
+// it used to say only "3 advisory findings not shown (--quiet)" (Ranger
+// build, friction #10).
+func TestQuietVerdictNamesHiddenRules(t *testing.T) {
+	warn := func(rule string) lintJSONFinding {
+		return lintJSONFinding{File: "a.go", Severity: lintSevWarning, Rule: rule, Message: "m"}
+	}
+	outcomes := []lintStepOutcome{
+		{name: "golangci-lint", gates: true, ran: true},
+		{name: "idempotency lint", gates: true, ran: true, findings: []lintJSONFinding{
+			warn("forge-idempotency-read-undeclared"), warn("forge-idempotency-read-undeclared"), warn("forge-idempotency-read-undeclared")}},
+		{name: "config-deps lint", ran: true, findings: []lintJSONFinding{warn("forge-config-deps"), warn("b-rule"), warn("a-rule")}},
+	}
+	var buf bytes.Buffer
+	if err := renderLintOutcomes(&buf, outcomes, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	want := "6 advisory findings not shown (--quiet: forge-idempotency-read-undeclared ×3, a-rule, b-rule, and 1 more; run without --quiet to see them)"
+	if got := buf.String(); !strings.Contains(got, want) {
+		t.Errorf("verdict %q does not contain %q", got, want)
 	}
 }
 
@@ -338,7 +361,7 @@ func TestRenderLintOutcomesQuietCleanRunIsOneLine(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("a clean --quiet run must be ONE line (the verdict); got %d:\n%s", len(lines), buf.String())
 	}
-	if want := "✅ All 2 gating linters passed; 1 advisory finding not shown (--quiet)."; lines[0] != want {
+	if want := "✅ All 2 gating linters passed; 1 advisory finding not shown (--quiet: scaffold-not-customized; run without --quiet to see them)."; lines[0] != want {
 		t.Errorf("verdict = %q, want %q", lines[0], want)
 	}
 }
@@ -488,7 +511,7 @@ func TestCollectTargetedOutcomeHonoursScope(t *testing.T) {
 // collectTargetedOutcomes and returns that lane's outcome.
 func collectOneTargetedOutcome(t *testing.T, flags lintFlags, root string, scope *lintScope) lintStepOutcome {
 	t.Helper()
-	outcomes, targeted, err := collectTargetedOutcomes(t.Context(), flags, nil, root, nil, nil, scope, nil)
+	outcomes, targeted, err := collectTargetedOutcomes(t.Context(), flags, nil, root, nil, nil, scope, nil, nil)
 	if err != nil || !targeted || len(outcomes) != 1 {
 		t.Fatalf("one lane named: targeted=%v outcomes=%d err=%v", targeted, len(outcomes), err)
 	}
@@ -519,7 +542,7 @@ func TestCollectTargetedOutcomes_EveryNamedLaneRuns(t *testing.T) {
 	}
 
 	outcomes, targeted, err := collectTargetedOutcomes(t.Context(),
-		lintFlags{readOnlyFields: true, computedFields: true}, nil, root, nil, nil, nil, nil)
+		lintFlags{readOnlyFields: true, computedFields: true}, nil, root, nil, nil, nil, nil, nil)
 	if err != nil || !targeted {
 		t.Fatalf("targeted=%v err=%v", targeted, err)
 	}

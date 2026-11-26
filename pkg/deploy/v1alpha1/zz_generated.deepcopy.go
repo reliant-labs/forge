@@ -1080,6 +1080,11 @@ func (in *WorkloadSpec) DeepCopyInto(out *WorkloadSpec) {
 		*out = new(Probes)
 		**out = **in
 	}
+	if in.StartingDeadlineSeconds != nil {
+		in, out := &in.StartingDeadlineSeconds, &out.StartingDeadlineSeconds
+		*out = new(int64)
+		**out = **in
+	}
 	if in.Before != nil {
 		in, out := &in.Before, &out.Before
 		*out = make([]string, len(*in))
@@ -1204,6 +1209,14 @@ func (in *WorkloadStatus) DeepCopyInto(out *WorkloadStatus) {
 	in.TierStatus.DeepCopyInto(&out.TierStatus)
 	if in.LastReadyAt != nil {
 		in, out := &in.LastReadyAt, &out.LastReadyAt
+		*out = (*in).DeepCopy()
+	}
+	if in.LastScheduleTime != nil {
+		in, out := &in.LastScheduleTime, &out.LastScheduleTime
+		*out = (*in).DeepCopy()
+	}
+	if in.LastSuccessfulTime != nil {
+		in, out := &in.LastSuccessfulTime, &out.LastSuccessfulTime
 		*out = (*in).DeepCopy()
 	}
 }

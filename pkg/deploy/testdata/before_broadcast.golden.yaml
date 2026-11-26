@@ -297,6 +297,13 @@ metadata:
   namespace: demo-prod
 spec:
   jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: forge
+        app.kubernetes.io/name: nightly
+        app.kubernetes.io/part-of: demo
+        forge.dev/env: prod
+        forge.dev/kind: cron
     spec:
       template:
         metadata:

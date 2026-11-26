@@ -783,6 +783,15 @@ schema Workload:
     successfulJobsHistoryLimit?: int
     failedJobsHistoryLimit?: int
     ttlSecondsAfterFinished?: int
+    # How a cron's ticks fire: concurrencyPolicy ("Allow" | "Forbid" |
+    # "Replace", what happens when a run is still going at the next tick),
+    # startingDeadlineSeconds (10-86400, how late a tick may still start) and
+    # timeZone (an IANA name such as "Europe/Berlin" the schedule is read in).
+    # Each renders only when set; unset keeps Kubernetes' defaults (Allow, no
+    # deadline, the controller's zone). Cron only.
+    concurrencyPolicy?: str
+    startingDeadlineSeconds?: int
+    timeZone?: str
 
     check:
         not delivery_unit or regex.match(delivery_unit, r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$"), \
@@ -850,6 +859,8 @@ schema Workload:
             "Workload.activeDeadlineSeconds bounds a run to completion — only kind='job' or 'cron' completes; '${name}' is a '${kind}'"
         (successfulJobsHistoryLimit == Undefined and failedJobsHistoryLimit == Undefined and ttlSecondsAfterFinished == Undefined) or kind == "cron", \
             "Workload.successfulJobsHistoryLimit, failedJobsHistoryLimit and ttlSecondsAfterFinished keep or expire a cron's finished Jobs — only kind='cron' has a Job history; '${name}' is a '${kind}'"
+        (concurrencyPolicy == Undefined and startingDeadlineSeconds == Undefined and timeZone == Undefined) or kind == "cron", \
+            "Workload.concurrencyPolicy, startingDeadlineSeconds and timeZone say how a cron's schedule fires — only kind='cron' has a schedule; '${name}' is a '${kind}'"
         not ports or caps.supports(kind, caps.CAP_PORTS), \
             "Workload.ports is not supported for kind='${kind}' — a tool is never scheduled and a batch kind (cron/job) runs to completion, so there is no pod anything can dial. Use kind='service'."
         replicas == 1 or caps.supports(kind, caps.CAP_REPLICAS), \

@@ -2,6 +2,7 @@ package cigate
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -74,6 +75,34 @@ func TestComputeAffected_GoSourceRuleSeesNestedModules(t *testing.T) {
 	}
 	if !slices.Contains(a.Packages, "ex.com/m/other") {
 		t.Errorf("packages = %v, want ex.com/m/other (the go-source walker)", a.Packages)
+	}
+}
+
+// The root graph has no nested test binaries. Explicit walker selections
+// must reach the nested row, including packages unrelated to the change.
+func TestComputeAffected_GoSourceRuleSelectsNestedTests(t *testing.T) {
+	for _, pattern := range []string{"./sdk/go/util", "./sdk/go/...", "ex.com/sdk/util", "ex.com/sdk/..."} {
+		for _, except := range []bool{false, true} {
+			t.Run(pattern+"/except="+fmt.Sprint(except), func(t *testing.T) {
+				root, list := modulesFixture(t)
+				rule := config.CIGateAffectedRule{On: config.CIGateOnGoSource, Packages: []string{pattern}}
+				if except {
+					rule.Except = []string{"sdk/go/client/**"}
+				}
+				a := ComputeAffected(context.Background(), AffectedInput{Root: root, Modules: AffectedModulesAuto, GoList: list,
+					Git:   fakeGit{branch: "f", changed: []string{"sdk/go/client/c_test.go"}}.run,
+					Rules: []config.CIGateAffectedRule{rule}})
+				if a.Full || len(a.Modules) != 1 || a.Modules[0].Full {
+					t.Fatalf("want narrowed nested tests: %+v", a)
+				}
+				if got := slices.Contains(a.Modules[0].Packages, "ex.com/sdk/util"); got == except {
+					t.Errorf("nested packages = %v, want util selected = %v", a.Modules[0].Packages, !except)
+				}
+				if !slices.Contains(a.Modules[0].Packages, "ex.com/sdk/client") {
+					t.Errorf("lost changed package's tests: %v", a.Modules[0].Packages)
+				}
+			})
+		}
 	}
 }
 

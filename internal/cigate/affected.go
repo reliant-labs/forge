@@ -295,6 +295,12 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 			if rule.On != config.CIGateOnGoSource {
 				continue
 			}
+			if matched, _ := ruleMatch(f, rule); !matched {
+				continue
+			}
+			if rule.Full {
+				return fullAfterDiff(fmt.Sprintf("%s changed — %s (ci.gate.affected_rules[%d])", f, rule.Reason, i))
+			}
 			sel.hits[i]++
 			for _, pkg := range g.rulePackages(f, rule) {
 				sel.rulePkgs[pkg] = true

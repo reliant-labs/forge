@@ -4892,8 +4892,9 @@ benefits:
       have all shipped. Shipped: the evaluation SDK (a Go store and
       OpenFeature provider, a browser loader and OpenFeature provider,
       assignment events recorded as product events), changes declared in the
-      project (changes.yaml) and shipped in the release, and the readout's
-      query and verdict. Not shipped yet: delivery of each environment's
+      project (changes.yaml) and shipped in the release, including a
+      frontend built from another repository's own changes.yaml, and the
+      readout's query and verdict. Not shipped yet: delivery of each environment's
       policy to every hosted app, and the Experiments screen that shows the
       readout. Evaluation is local in the app,
       from a versioned policy, without a network call on each request or
@@ -4908,9 +4909,17 @@ benefits:
       - path: web-runtime/src/changes-provider.ts
       - path: web-runtime/src/exposure.ts
       - path: internal/changesdecl/changesdecl.go
+      - path: internal/cli/env_shape_changes_sources.go
       - path: docs/changes.md
       - skill: observability/changes
       - skill: observability/product-analytics
+    rules:
+      - id: changes-source-conflict
+        lane: forge env shape
+        bug_class: >-
+          One change key declared differently by the project's changes.yaml and
+          a pinned source frontend's (or by two sources), so the release would
+          serve one repository's variants to the other's code.
 
   - id: builtin-ai-hub
     category: run

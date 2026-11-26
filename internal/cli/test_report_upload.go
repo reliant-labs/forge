@@ -6,7 +6,8 @@ package cli
 // (where it runs) and §1.7 (exit codes).
 //
 // NEVER BLOCKS. An upload that cannot happen, or fails, is one line on stderr
-// and the document's `upload` field; it never changes the tests' verdict.
+// (and, in GitHub Actions, a warning on the run's summary) and the document's
+// `upload` field; it never changes the tests' verdict.
 // Only --upload=required makes it count, as exit 4, and even then a failed
 // test still exits 1.
 //
@@ -48,6 +49,11 @@ const (
 // testUploadInCI says whether this process runs in CI, where an upload is on
 // by default. A seam: tests decide it.
 var testUploadInCI = buildinfo.IsCI
+
+// testUploadInGitHubActions says whether this process runs as a GitHub
+// Actions step, where a workflow command on its output becomes an annotation
+// on the run's summary. A seam: tests decide it.
+var testUploadInGitHubActions = func() bool { return os.Getenv("GITHUB_ACTIONS") == "true" }
 
 // testUploadControlPlane is the control plane test runs are recorded on. A
 // seam: tests point it at a fake.
@@ -102,10 +108,12 @@ func applyTestUpload(ctx context.Context, errOut io.Writer, rep *testreport.Repo
 			fmt.Fprintf(errOut, "forge test report: warning: lane %s of run %s was uploaded without its %s: %s\n", o.Lane, o.Run, o.Part, o.Reason)
 		}
 		fmt.Fprintln(errOut, testUploadNote(up))
+		testUploadAnnotate(errOut, up)
 	case why != "":
 		up := &testUpload{Upload: testreport.Upload{Status: testUploadSkipped, Error: why}}
 		rep.Upload = &up.Upload
 		fmt.Fprintln(errOut, testUploadNote(up))
+		testUploadAnnotate(errOut, up)
 	default:
 		return nil
 	}
@@ -620,4 +628,30 @@ func testUploadNote(up *testUpload) string {
 		return line
 	}
 	return fmt.Sprintf("forge test report: upload %s: %s; the report stays in .forge/tests/", up.Status, up.Error)
+}
+
+// testUploadAnnotate repeats a wanted upload that did not fully happen as a
+// GitHub Actions warning, so the run's summary says the results never reached
+// the control plane rather than one line deep in a step's log (a missing
+// `permissions: id-token: write` looks green otherwise). It goes to errOut,
+// beside the note, because stdout may be the --json document; the runner
+// reads workflow commands on both. It never changes the exit code.
+func testUploadAnnotate(errOut io.Writer, up *testUpload) {
+	if up.Status == testUploadOK || !testUploadInGitHubActions() {
+		return
+	}
+	title := "Test results not uploaded"
+	if up.Status == testUploadPartial {
+		title = "Test results only partly uploaded"
+	}
+	fmt.Fprintln(errOut, githubWarning(title, testUploadNote(up)))
+}
+
+// githubWarning is a GitHub Actions `::warning` workflow command, its title
+// and message escaped as the runner unescapes them: a message's %, CR and LF,
+// and a property's , and : besides.
+func githubWarning(title, message string) string {
+	data := strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A")
+	prop := strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A", ":", "%3A", ",", "%2C")
+	return "::warning title=" + prop.Replace(title) + "::" + data.Replace(message)
 }

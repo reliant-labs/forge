@@ -100,7 +100,7 @@ var upgradeLastRelease = buildinfo.PublishedFloor
 func runCodemodChain(projectDir, from, to string, write bool) (CodemodReport, error) {
 	var merged CodemodReport
 	for _, c := range upgradeCodemods(from, to) {
-		rep, err := c.Run(projectDir, codemod.Options{Write: write})
+		rep, err := c.Run(projectDir, codemod.Options{Write: write, LeavePristineTemplates: true})
 		if err != nil {
 			return merged, fmt.Errorf("codemod %s (%s): %w", c.Name, c.Version, err)
 		}
@@ -116,7 +116,7 @@ func runCodemodChain(projectDir, from, to string, write bool) (CodemodReport, er
 func runCodemodSteps(projectDir, from, to string, write bool) ([]upgradeCodemodRun, error) {
 	out := []upgradeCodemodRun{}
 	for _, c := range upgradeCodemods(from, to) {
-		rep, err := c.Run(projectDir, codemod.Options{Write: write})
+		rep, err := c.Run(projectDir, codemod.Options{Write: write, LeavePristineTemplates: true})
 		if err != nil {
 			return out, fmt.Errorf("codemod %s (%s): %w", c.Name, c.Version, err)
 		}

@@ -187,7 +187,7 @@ func pinHopNeedsUpgrade(projectDir, from, to string) string {
 func pendingUpgradeCodemods(projectDir, from, to string) []string {
 	var out []string
 	for _, c := range upgradeCodemods(from, to) {
-		rep, err := c.Run(projectDir, codemod.Options{})
+		rep, err := c.Run(projectDir, codemod.Options{LeavePristineTemplates: true})
 		if err != nil || rep.Changed() {
 			out = append(out, c.Name)
 		}

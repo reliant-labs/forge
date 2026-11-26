@@ -17,7 +17,7 @@ import (
 // ships as an Advise codemod (internal/codemod/templatefix.go). `forge
 // project upgrade` applies it on the crossing, but a project can move its pin
 // past the release without one (--skip codemods, a hand edit), and then
-// nothing would ever mention the old shape again. So every generate dry-runs
+// nothing would ever mention the old shape again. So each uncached generate dry-runs
 // the Advise codemods — each reads a handful of named files — and prints one
 // note per fix still pending, with the command that applies it. It writes
 // nothing and never fails the run.

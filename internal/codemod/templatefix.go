@@ -10,6 +10,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // templatefix.go — the codemods that carry a fix to a template whose output
@@ -28,7 +29,7 @@ import (
 //
 //   - `forge project upgrade` runs it on the crossing (Upgrade), and `forge
 //     generate` holds the pin back until it has (pinHopNeedsUpgrade);
-//   - `forge generate` dry-runs it on every run, whatever the pin, and names
+//   - `forge generate` dry-runs it on every uncached run, whatever the pin, and names
 //     the files that still have the old shape (Advise), so a project that
 //     moved its pin some other way still hears about it;
 //   - `forge fix <name>` applies it on request.
@@ -47,6 +48,11 @@ type templateFix struct {
 	// candidates lists the project-relative files that may carry the old
 	// shape, in lexical order.
 	candidates func(dir string) ([]string, error)
+	// ready ties the codemod to the template feature it carries. A fix
+	// registered before its scaffold change is merged cannot yet advise or
+	// rewrite a project's starter, and a future template can retire a fix
+	// by removing the feature. Nil means the fix is always available.
+	ready func() bool
 	// tier2 marks a forge-managed starter `forge project upgrade` replaces
 	// whole while it is an unedited render (a verifying forge:hash marker).
 	tier2 bool
@@ -68,6 +74,9 @@ func registerTemplateFix(f templateFix) {
 		Advise:  true,
 		Scoped:  true,
 		Run: func(dir string, opts Options) (Report, error) {
+			if f.ready != nil && !f.ready() {
+				return Report{}, nil
+			}
 			return runTemplateFix(dir, opts, f)
 		},
 	})
@@ -79,6 +88,9 @@ func runTemplateFix(dir string, opts Options, f templateFix) (Report, error) {
 	if err != nil {
 		return rep, err
 	}
+	if len(files) == 0 {
+		return rep, nil
+	}
 	cs, err := checksums.Load(dir)
 	if err != nil {
 		return rep, fmt.Errorf("read forge's ownership state: %w", err)
@@ -88,6 +100,17 @@ func runTemplateFix(dir string, opts Options, f templateFix) (Report, error) {
 			continue
 		}
 		abs := filepath.Join(dir, filepath.FromSlash(rel))
+		info, err := os.Lstat(abs)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return rep, err
+		}
+		// A symlink may resolve outside the project. Never rewrite it.
+		if !info.Mode().IsRegular() {
+			continue
+		}
 		src, err := os.ReadFile(abs)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -95,7 +118,7 @@ func runTemplateFix(dir string, opts Options, f templateFix) (Report, error) {
 			}
 			return rep, err
 		}
-		if f.tier2 && checksums.Verify(src) == checksums.Pristine {
+		if strings.HasSuffix(rel, ".go") && isGenerated(src) || f.tier2 && opts.LeavePristineTemplates && checksums.Verify(src) == checksums.Pristine {
 			continue
 		}
 		out, note, next := f.rewrite(rel, src)
@@ -107,10 +130,6 @@ func runTemplateFix(dir string, opts Options, f templateFix) (Report, error) {
 		}
 		rep.Rewrites = append(rep.Rewrites, rel+": "+note)
 		if opts.Write {
-			info, err := os.Stat(abs)
-			if err != nil {
-				return rep, err
-			}
 			if err := atomicfile.WriteFile(abs, out, info.Mode().Perm()); err != nil {
 				return rep, err
 			}
@@ -151,7 +170,7 @@ func globCandidates(patterns ...string) func(dir string) ([]string, error) {
 func ownedGoFilesNamed(name string) func(dir string) ([]string, error) {
 	return func(dir string) ([]string, error) {
 		var out []string
-		err := ownedGoFiles(dir, func(rel string, _ []byte) error {
+		err := walkOwnedGo(dir, func(rel string) error {
 			if filepath.Base(rel) == name {
 				out = append(out, rel)
 			}
@@ -161,12 +180,10 @@ func ownedGoFilesNamed(name string) func(dir string) ([]string, error) {
 	}
 }
 
-// replaceOnce replaces the single occurrence of old in src with repl. ok is
-// false when old occurs zero times or more than once: the old shape is then
-// not the template's, and the caller does not guess.
-func replaceOnce(src []byte, old, repl string) (out []byte, ok bool) {
-	if strings.Count(string(src), old) != 1 {
-		return nil, false
+// templateContains enables a patch only in a binary that ships the capability.
+func templateContains(category templates.TemplateCategory, name, fragment string) func() bool {
+	return func() bool {
+		src, err := category.Get(name)
+		return err == nil && bytes.Contains(src, []byte(fragment))
 	}
-	return []byte(strings.Replace(string(src), old, repl, 1)), true
 }

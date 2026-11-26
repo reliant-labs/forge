@@ -73,7 +73,7 @@ type Codemod struct {
 	// restructuring is run on request, after the person running it has read
 	// what it does.
 	Upgrade bool
-	// Advise marks a codemod `forge generate` dry-runs on every run,
+	// Advise marks a codemod `forge generate` dry-runs on an uncached run,
 	// whatever the pin, and names when it would rewrite something: the fix
 	// to a template whose output the project owns (templatefix.go), which
 	// no other path would tell a project that moved its pin past the
@@ -104,6 +104,10 @@ type Codemod struct {
 type Options struct {
 	// Write false changes nothing: the run reports what it would rewrite.
 	Write bool
+	// LeavePristineTemplates leaves unedited Tier-2 starters to the
+	// template replacement phase of upgrade, avoiding invalidating their
+	// render certificates. Explicit `forge fix` can patch them in place.
+	LeavePristineTemplates bool
 	// Scope restricts the files the run may rewrite (and reports on) to
 	// those under its paths. Nil is the whole project. Only a Scoped
 	// codemod is handed one.

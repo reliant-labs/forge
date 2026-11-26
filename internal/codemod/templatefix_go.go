@@ -7,6 +7,8 @@ import (
 	"path"
 	"strconv"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // templatefix_go.go — the template fixes to owned Go files.
@@ -33,6 +35,7 @@ This rewrites exactly that line inside newObserveChain. A seam that calls a
 method on logger itself (logger.Info, ...) is listed, not rewritten: a nil
 *slog.Logger would panic there.`,
 		candidates: ownedGoFilesNamed("observe_chain.go"),
+		ready:      templateContains(templates.InternalPkgTemplates(), "observe_chain.go.tmpl", "var logger *slog.Logger"),
 		rewrite:    rewriteObserveChainLogger,
 	})
 	registerTemplateFix(templateFix{

@@ -182,7 +182,7 @@ is the project's from birth, and an edited Tier-2 starter (`Taskfile.yml`,
 after the change. So a template change existing projects need ships, in the same
 PR or right after it, a template-fix codemod (`internal/codemod/templatefix.go`:
 `registerTemplateFix`, keyed to `NEXT_VERSION`) that turns the old output into the
-new. `forge project upgrade` applies it on the crossing, and every `forge generate`
+new. `forge project upgrade` applies it on the crossing, and an uncached `forge generate`
 names the files still in the old shape (`Advise`). Its test renders today's
 template, reverts the fix, and requires the codemod to restore the render byte for
 byte, so the two cannot drift. A cosmetic change (a comment) needs none.

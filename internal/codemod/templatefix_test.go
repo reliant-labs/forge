@@ -13,11 +13,10 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// Each template fix is pinned to its template the same way: render the
-// template as forge writes it today, revert the fixed fragment to the shape
-// the template wrote before the fix, and the codemod must turn that back into
-// today's render, byte for byte. A template edit that moves the fragment
-// fails here, so the codemod cannot drift from the template it carries.
+// Once each template has its fix, render it, revert the fixed fragment to
+// the old shape, and require the codemod to restore it. While the upstream
+// template PR is in flight, fixtures exercise the same changes and verify
+// that dependent codemods stay inactive.
 
 // runFix runs the named codemod over dir.
 func runFix(t *testing.T, dir, name string, write bool) Report {
@@ -98,17 +97,26 @@ func TestTemplateFix_ObserveChainLogger(t *testing.T) {
 		t.Fatal(err)
 	}
 	render := string(out)
-	old := oldify(t, render, observeChainNewLogger, observeChainOldLogger)
-	assertConverges(t, "observe-chain-logger", "internal/store/observe_chain.go", old, render)
+	old := render
+	if strings.Contains(render, "var logger *slog.Logger") {
+		old = oldify(t, render, observeChainNewLogger, observeChainOldLogger)
+		assertConverges(t, "observe-chain-logger", "internal/store/observe_chain.go", old, render)
+	} else {
+		assertDependantFixInactive(t, "observe-chain-logger", "internal/store/observe_chain.go", old)
+		out, _, _ := rewriteObserveChainLogger("observe_chain.go", []byte(old))
+		if got, want := string(out), oldify(t, old, observeChainOldLogger, observeChainNewLogger); got != want {
+			t.Fatalf("unexpected patch: %s", firstDiff(got, want))
+		}
+	}
 
 	// A seam that calls a method on logger is listed, never made nil.
 	dir := t.TempDir()
 	tfWrite(t, dir, "go.mod", "module example.com/fx\n\ngo 1.24\n")
 	edited := strings.Replace(old, "\treturn observe.NewComponentChain(", "\tlogger.Info(\"chain built\")\n\treturn observe.NewComponentChain(", 1)
 	tfWrite(t, dir, "internal/store/observe_chain.go", edited)
-	rep := runFix(t, dir, "observe-chain-logger", true)
-	if rep.Changed() || len(rep.Next) != 1 || tfRead(t, dir, "internal/store/observe_chain.go") != edited {
-		t.Fatalf("a seam that uses logger must be listed and left alone, got %+v", rep)
+	out, _, next := rewriteObserveChainLogger("observe_chain.go", []byte(edited))
+	if out != nil || next == "" {
+		t.Fatalf("a seam that uses logger must be listed and left alone, got %s", out)
 	}
 }
 
@@ -184,7 +192,12 @@ func TestTemplateFix_GolangciAppendAssign(t *testing.T) {
 			t.Fatal(err)
 		}
 		render := string(out)
-		old := oldify(t, render, golangciAppendAssignRule, "")
+		old := render
+		if strings.Contains(render, `text: "appendAssign"`) {
+			old = oldify(t, render, golangciAppendAssignRule, "")
+		} else {
+			render = oldify(t, old, "          - gocognit\n", "          - gocognit\n"+golangciAppendAssignRule)
+		}
 		assertConverges(t, "golangci-append-assign", ".golangci.yml", old, render)
 	}
 }
@@ -196,8 +209,17 @@ func TestTemplateFix_TaskfileShortSkipSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	render := string(golden)
-	old := oldify(t, render, taskfileShortNew, taskfileShortOld)
-	assertConverges(t, "taskfile-short-skip-summary", "Taskfile.yml", old, render)
+	old := render
+	if strings.Contains(render, taskfileShortNew) {
+		old = oldify(t, render, taskfileShortNew, taskfileShortOld)
+		assertConverges(t, "taskfile-short-skip-summary", "Taskfile.yml", old, render)
+	} else {
+		assertDependantFixInactive(t, "taskfile-short-skip-summary", "Taskfile.yml", old)
+		out, _, _ := rewriteTaskfileShortSkipSummary("Taskfile.yml", []byte(old))
+		if got, want := string(out), oldify(t, old, taskfileShortOld, taskfileShortNew); got != want {
+			t.Fatalf("unexpected patch: %s", firstDiff(got, want))
+		}
+	}
 
 	// An edited test:short command is not the template's: left alone.
 	dir := t.TempDir()
@@ -213,37 +235,48 @@ func TestTemplateFix_TaskfileShortSkipSummary(t *testing.T) {
 // decision. Neither is rewritten.
 func TestTemplateFix_SkipsPristineAndDisownedFiles(t *testing.T) {
 	t.Parallel()
-	golden, err := os.ReadFile(filepath.Join("..", "templates", "testdata", "golden", "Taskfile.yml.golden"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := strings.Replace(string(golden), taskfileShortNew, taskfileShortOld, 1)
+	const path = ".golangci.yml"
+	const fix = "golangci-append-assign"
+	const old = `linters:
+  enable:
+    - gocritic
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gocritic
+`
 
 	t.Run("pristine", func(t *testing.T) {
 		t.Parallel()
-		stamped, ok := checksums.Stamp("Taskfile.yml", []byte(old))
+		stamped, ok := checksums.Stamp(path, []byte(old))
 		if !ok || checksums.Verify(stamped) != checksums.Pristine {
-			t.Fatal("could not stamp a pristine Taskfile.yml")
+			t.Fatal("could not stamp a pristine .golangci.yml")
 		}
 		dir := t.TempDir()
-		tfWrite(t, dir, "Taskfile.yml", string(stamped))
-		if rep := runFix(t, dir, "taskfile-short-skip-summary", true); rep.Changed() {
-			t.Fatalf("an unedited render belongs to upgrade's template phase, got %+v", rep)
+		tfWrite(t, dir, path, string(stamped))
+		c, _ := Lookup(fix)
+		rep, err := c.Run(dir, Options{Write: true, LeavePristineTemplates: true})
+		if err != nil || rep.Changed() {
+			t.Fatalf("an unedited render belongs to upgrade's template phase, got %+v, %v", rep, err)
+		}
+		if rep := runFix(t, dir, fix, true); !rep.Changed() {
+			t.Fatalf("an explicit fix may patch a pristine template, got %+v", rep)
 		}
 	})
 	t.Run("disowned", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		tfWrite(t, dir, "Taskfile.yml", old)
+		tfWrite(t, dir, path, old)
 		cs, err := checksums.Load(dir)
 		if err != nil {
 			t.Fatal(err)
 		}
-		cs.Disowned["Taskfile.yml"] = checksums.DisownedEntry{Reason: "ours"}
+		cs.Disowned[path] = checksums.DisownedEntry{Reason: "ours"}
 		if err := checksums.Save(dir, cs); err != nil {
 			t.Fatal(err)
 		}
-		if rep := runFix(t, dir, "taskfile-short-skip-summary", true); rep.Changed() {
+		if rep := runFix(t, dir, fix, true); rep.Changed() {
 			t.Fatalf("a disowned file must be left alone, got %+v", rep)
 		}
 	})
@@ -267,4 +300,13 @@ func firstDiff(got, want string) string {
 		}
 	}
 	return "equal"
+}
+
+func assertDependantFixInactive(t *testing.T, fix, path, old string) {
+	t.Helper()
+	dir := t.TempDir()
+	tfWrite(t, dir, path, old)
+	if rep := runFix(t, dir, fix, true); rep.Changed() || len(rep.Next) != 0 || tfRead(t, dir, path) != old {
+		t.Fatalf("%s should be inactive in a binary that lacks the scaffold change: %+v", fix, rep)
+	}
 }

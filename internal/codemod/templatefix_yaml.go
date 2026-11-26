@@ -3,6 +3,8 @@ package codemod
 import (
 	"regexp"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // templatefix_yaml.go — the template fixes to the Tier-2 YAML starters
@@ -45,6 +47,7 @@ This replaces test:short's command when it is still the template's
 Taskfile with no top-level FORGE var (one older than the pinned-forge
 Taskfile), or whose test:short command was edited, is listed, not rewritten.`,
 		candidates: globCandidates("Taskfile.yml"),
+		ready:      templateContains(templates.ProjectTemplates(), "Taskfile.yml.tmpl", "test capture --no-record"),
 		tier2:      true,
 		rewrite:    rewriteTaskfileShortSkipSummary,
 	})

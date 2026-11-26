@@ -270,6 +270,69 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestValidateURL(t *testing.T) {
+	for _, raw := range []string{
+		"https://acme.test",
+		"https://acme.test/",
+		"http://acme.test:8080/status",
+		"https://status.acme.test:443/a/b?x=1&y=two#frag",
+		"https://acme.test.",
+		"https://a-b.c-d.test/path",
+		"http://192.0.2.10/",
+		"http://192.0.2.10:65535/",
+		"https://[2001:db8::1]/",
+		"https://[2001:db8::1]:8443/x?y=z",
+		"https://acme.test/search?q=a%20b",
+	} {
+		if err := ValidateURL(raw, false); err != nil {
+			t.Errorf("ValidateURL(%q) = %v, want nil", raw, err)
+		}
+	}
+	for raw, want := range map[string]string{
+		"https://acme.test:99999/":                      "port",
+		"https://acme.test:65536/":                      "port",
+		"https://acme.test:0/":                          "port",
+		"https://acme.test:abc/":                        "acme.test:abc",
+		"https://acme.test:/":                           "empty port",
+		"https://acme.test:-1/":                         "acme.test:-1",
+		"https://acme.test:080/":                        "port",
+		"https://acme_test/":                            "host",
+		"https://-acme.test/":                           "host",
+		"https://acme-.test/":                           "host",
+		"https://acme..test/":                           "host",
+		"https://a%2Fb.test/":                           "invalid URL escape",
+		"https://999.1.1.1/":                            "host",
+		"https://[192.0.2.10]/":                         "invalid IP-literal",
+		"https://[2001:db8::zz]/":                       "2001:db8::zz",
+		"https://[2001:db8::1/":                         "2001:db8::1",
+		"https://:443/":                                 "no host",
+		"https:///path":                                 "no host",
+		"https:acme.test":                               "absolute",
+		" https://acme.test":                            "whitespace",
+		"https://acme.test ":                            "whitespace",
+		"https://acme .test/":                           "whitespace",
+		"https://acme.test/a b":                         "whitespace",
+		"https://acme.test/\u00a0":                      "whitespace",
+		"https://acme.test/\t":                          "whitespace",
+		"https://acme.test/\n":                          "whitespace",
+		"https://acme.test/\x00":                        "control",
+		"https://acme.test/\x7f":                        "control",
+		"https://acme.test/\u0085":                      "control",
+		"https://acme.test/\xff":                        "UTF-8",
+		"https://u@acme.test/":                          "credential",
+		"ftp://acme.test/":                              "http or https",
+		"//acme.test/":                                  "http or https",
+		"https://" + strings.Repeat("a", 64) + ".test/": "host",
+	} {
+		if err := ValidateURL(raw, false); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("ValidateURL(%q) = %v, want an error naming %q", raw, err, want)
+		}
+	}
+	if err := ValidateURL("http://acme.test/logo.png", true); err == nil || !strings.Contains(err.Error(), "must be https") {
+		t.Errorf("an http logo is refused when https is required, got %v", err)
+	}
+}
+
 // TestHTMLIsSelfContained: no script, nothing loaded from elsewhere but the
 // declared logo, and the CSP's style hash is the style the page carries.
 func TestHTMLIsSelfContained(t *testing.T) {

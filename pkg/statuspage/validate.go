@@ -4,11 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -117,26 +120,98 @@ func (p Page) Validate() error {
 
 // ValidateURL checks a URL a page shows or links to: absolute, http or
 // https (https only when httpsOnly: an image an https page loads must be
-// https too), with a host, no credential and at most [MaxURL] bytes.
+// https too), at most [MaxURL] bytes of UTF-8 with no whitespace or control
+// character, no credential, a host that is a DNS name or an IP literal
+// (IPv6 in brackets), and, when it names a port, a port from 1 to 65535.
 func ValidateURL(raw string, httpsOnly bool) error {
-	if len(raw) > MaxURL {
+	switch {
+	case len(raw) > MaxURL:
 		return fmt.Errorf("url is longer than %d bytes", MaxURL)
+	case !utf8.ValidString(raw):
+		return fmt.Errorf("url %q is not UTF-8", raw)
+	case strings.ContainsFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }):
+		return fmt.Errorf("url %q contains whitespace or a control character", raw)
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("url %q: %v", raw, err)
 	}
-	switch {
-	case httpsOnly && u.Scheme != "https":
-		return fmt.Errorf("url %q must be https", raw)
-	case u.Scheme != "http" && u.Scheme != "https":
-		return fmt.Errorf("url %q must be http or https", raw)
-	case u.User != nil:
-		return fmt.Errorf("url %q carries a credential", raw)
-	case u.Host == "":
-		return fmt.Errorf("url %q has no host", raw)
+	if err := checkURL(u, httpsOnly); err != nil {
+		return fmt.Errorf("url %q %v", raw, err)
+	}
+	// What the page writes is the URL as it re-serializes; it must pass
+	// the same checks.
+	again, err := url.Parse(u.String())
+	if err != nil {
+		return fmt.Errorf("url %q does not re-serialize: %v", raw, err)
+	}
+	if err := checkURL(again, httpsOnly); err != nil || again.Host != u.Host || again.Scheme != u.Scheme {
+		return fmt.Errorf("url %q does not re-serialize to the same http(s) URL", raw)
 	}
 	return nil
+}
+
+// checkURL holds the parsed half of [ValidateURL]; its errors read after
+// the URL they describe.
+func checkURL(u *url.URL, httpsOnly bool) error {
+	switch {
+	case httpsOnly && u.Scheme != "https":
+		return errors.New("must be https")
+	case u.Scheme != "http" && u.Scheme != "https":
+		return errors.New("must be http or https")
+	case u.Opaque != "":
+		return errors.New("is not an absolute http(s) URL")
+	case u.User != nil:
+		return errors.New("carries a credential")
+	case u.Host == "":
+		return errors.New("has no host")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return errors.New("has no host")
+	}
+	if strings.HasPrefix(u.Host, "[") {
+		if ip := net.ParseIP(host); ip == nil || !strings.Contains(host, ":") {
+			return fmt.Errorf("host %q is not an IPv6 address", host)
+		}
+	} else if net.ParseIP(host) == nil && !validDNSName(host) {
+		return fmt.Errorf("host %q is not a valid host name or IP address", host)
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return errors.New("has an empty port")
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 || p[0] == '0' {
+			return fmt.Errorf("port %q is not a number from 1 to 65535", p)
+		}
+	}
+	return nil
+}
+
+// validDNSName reports whether host is a DNS name: dot-separated labels of
+// 1-63 letters, digits and hyphens, no label starting or ending with a
+// hyphen, at most 253 bytes (an optional trailing dot aside), and a last
+// label that is not all digits (that would be a malformed IPv4 address).
+func validDNSName(host string) bool {
+	host = strings.TrimSuffix(host, ".")
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	for _, l := range labels {
+		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(l); i++ {
+			c := l[i]
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	last := labels[len(labels)-1]
+	return strings.Trim(last, "0123456789") != ""
 }
 
 // ValidateComponentName checks a component's display name.

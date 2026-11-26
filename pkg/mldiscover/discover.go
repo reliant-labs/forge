@@ -46,6 +46,18 @@ const (
 	KindSpegel                 = "spegel"
 	KindDragonfly              = "dragonfly"
 	KindNodeTerminationHandler = "aws-node-termination-handler"
+
+	// Continuous profilers, eBPF tracers and agents (Appendix B's profiling
+	// row; image names verified against their registries 2026-11-26).
+	KindParcaAgent       = "parca-agent"             // ghcr.io/parca-dev/parca-agent
+	KindPyroscope        = "pyroscope"               // grafana/pyroscope (the server)
+	KindAlloy            = "grafana-alloy"           // grafana/alloy
+	KindOTelEBPFProfiler = "otel-ebpf-profiler"      // otel/opentelemetry-collector-ebpf-profiler
+	KindElasticProfiling = "elastic-profiling-agent" // docker.elastic.co/observability/profiling-agent
+	KindDatadogAgent     = "datadog-agent"           // gcr.io/datadoghq/agent, datadog/agent
+	KindCorootNodeAgent  = "coroot-node-agent"       // ghcr.io/coroot/coroot-node-agent
+	KindPixie            = "pixie"                   // gcr.io/pixie-oss/pixie-prod/vizier-pem_image
+	KindBeyla            = "beyla"                   // grafana/beyla
 )
 
 // Discover turns a snapshot into an inventory. It is pure: no I/O, no clock
@@ -61,8 +73,11 @@ func Discover(s *Snapshot) *Inventory {
 	d.matchPods()
 	d.matchClusterPolicy()
 	d.matchNodeFacts()
+	d.matchCollectorCRs()
 	d.matchCRDs()
+	d.attachConfigs()
 	d.finish()
+	inv.Coverage = computeCoverage(s, inv)
 	return inv
 }
 
@@ -313,12 +328,13 @@ func ownership(l ...map[string]string) (owner string, platform bool) {
 func (d *discoverer) matchWorkloads() {
 	for _, w := range d.workloads() {
 		owner, platform := ownership(w.meta.Labels, w.template.Labels)
-		if platform {
-			continue
-		}
 		for si := range signatures {
 			sig := &signatures[si]
 			if !sig.allowsWorkload(w.kind) {
+				continue
+			}
+			// forge's own platform (its node agent) counts only as telemetry.
+			if platform && sig.category != CategoryMonitoring && sig.category != CategoryProfiling && sig.category != CategoryTracing {
 				continue
 			}
 			if len(w.template.Spec.Containers) == 0 {
@@ -350,6 +366,9 @@ func (d *discoverer) matchWorkloads() {
 				Version: ImageTag(c.Image), Namespace: w.meta.Namespace, Workload: w.kind + "/" + w.meta.Name,
 				Via: viaOf(w.meta), Pods: int(w.ready), MatchedBy: matched,
 				ChartVersion: chartVersion(w.meta.Labels[LabelHelmChart]),
+			}
+			if platform {
+				comp.Owner, comp.Via = OwnerForge, ViaForgePlatform
 			}
 			if w.selector != nil && len(w.selector.MatchLabels) > 0 {
 				comp.Selector = copyMap(w.selector.MatchLabels)
@@ -571,7 +590,7 @@ func (d *discoverer) matchNodeFacts() {
 		case IsCoreCondition(t):
 		case IsEKSAgentCondition(t):
 			eks = append(eks, "condition:"+t)
-		default:
+		case IsNPDDefaultCondition(t):
 			npd = append(npd, "condition:"+t)
 		}
 	}

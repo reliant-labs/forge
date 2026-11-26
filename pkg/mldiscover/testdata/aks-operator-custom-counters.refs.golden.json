@@ -1,0 +1,24 @@
+{
+  "config_refs": [
+    {
+      "namespace": "gpu-operator",
+      "name": "custom-dcgm-metrics",
+      "why": "dcgm-exporter DaemonSet/gpu-operator/nvidia-dcgm-exporter mounts it"
+    },
+    {
+      "namespace": "kube-system",
+      "name": "node-problem-detector-custom-config",
+      "why": "node-problem-detector DaemonSet/kube-system/node-problem-detector mounts it"
+    }
+  ],
+  "probe_targets": [
+    {
+      "kind": "dcgm-exporter",
+      "namespace": "gpu-operator",
+      "pod": "nvidia-dcgm-exporter-aa1",
+      "node": "aks-gpupool-12345678-vmss000000",
+      "port": 9400,
+      "path": "/metrics"
+    }
+  ]
+}

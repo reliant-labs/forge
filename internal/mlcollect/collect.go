@@ -7,17 +7,28 @@
 // RBAC grant narrower than the read set yields a smaller snapshot that says
 // what it could not see. Only an unreachable API server is an error.
 //
+// The read has two phases. The first lists (ReadSet). The second GETs, by
+// exact name, the ConfigMaps mldiscover.ConfigRefs names from what the first
+// found (an exporter's counters CSV, NPD's monitor JSON, a collector's
+// config, kube-system's kubeadm-config and kubelet-config): ConfigMaps are
+// never listed.
+//
 // Before an object is stored the collector strips its managedFields and every
 // annotation, and blanks the literal value of every container env var (the
-// name and any valueFrom reference stay). A snapshot is written to
-// .forge/state and may be shared as a fixture or with a bug report, and a
-// pod spec's env is where a credential pasted inline would sit.
+// name and any valueFrom reference stay; EnvAllowlist keeps three DCGM
+// settings). ConfigMap data and custom object specs are redacted (redact.go).
+// A snapshot is written to .forge/state and may be shared as a fixture or
+// with a bug report, so it must not carry a credential.
+//
+// Probe (probe.go) is separate and opt-in: it reads exporters' /metrics
+// through the API server's pod proxy.
 package mlcollect
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +37,7 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
@@ -114,6 +126,9 @@ type Options struct {
 	Now func() time.Time
 	// PageSize overrides PageSize (tests).
 	PageSize int64
+	// ConfigRefs names the ConfigMaps the second phase GETs, from the first
+	// phase's snapshot; nil is mldiscover.ConfigRefs.
+	ConfigRefs func(*mldiscover.Snapshot) []mldiscover.ObjectRef
 }
 
 // Collect reads the cluster into a Snapshot. It errors only when the API
@@ -136,19 +151,45 @@ func Collect(ctx context.Context, c Clients, opts Options) (*mldiscover.Snapshot
 	}
 	s.ServerVersion = v.GitVersion
 
-	// Served groups, with each group's preferred version: what a CRD's
-	// objects are counted through.
+	// Served groups and the versions each serves a resource at: what a CRD's
+	// objects are read through. One aggregated-discovery request on a
+	// current API server. A resource is read at its group's preferred
+	// version when served there, else at the first version that serves it
+	// (opentelemetry.io prefers v1beta1, where instrumentations is not).
 	preferred := map[string]string{}
-	if groups, err := c.Kube.Discovery().ServerGroups(); err != nil {
+	servedAt := map[string][]string{} // "plural.group" → versions
+	groups, lists, err := c.Kube.Discovery().ServerGroupsAndResources()
+	if err != nil {
 		r.fail(s, "/apis", err)
-	} else {
-		for _, g := range groups.Groups {
-			if g.Name != "" {
-				s.APIGroups = append(s.APIGroups, g.Name)
-				preferred[g.Name] = g.PreferredVersion.Version
+	}
+	for _, g := range groups {
+		if g != nil && g.Name != "" {
+			s.APIGroups = append(s.APIGroups, g.Name)
+			preferred[g.Name] = g.PreferredVersion.Version
+		}
+	}
+	sort.Strings(s.APIGroups)
+	for _, l := range lists {
+		if l == nil {
+			continue
+		}
+		gv, perr := schema.ParseGroupVersion(l.GroupVersion)
+		if perr != nil {
+			continue
+		}
+		for _, res := range l.APIResources {
+			if !strings.Contains(res.Name, "/") {
+				key := res.Name + "." + gv.Group
+				servedAt[key] = append(servedAt[key], gv.Version)
 			}
 		}
-		sort.Strings(s.APIGroups)
+	}
+	versionOf := func(group, resource string) string {
+		versions := servedAt[resource+"."+group]
+		if len(versions) == 0 || slices.Contains(versions, preferred[group]) {
+			return preferred[group]
+		}
+		return versions[0]
 	}
 
 	crds := map[string]bool{}
@@ -249,7 +290,7 @@ func Collect(ctx context.Context, c Clients, opts Options) (*mldiscover.Snapshot
 	// Counts: DRA's ResourceSlices when the group is served, then each ML
 	// CRD that is installed, through the metadata API.
 	count := func(key, group, resource string) {
-		version := preferred[group]
+		version := versionOf(group, resource)
 		if version == "" {
 			r.fail(s, key, fmt.Errorf("the CRD is installed but API group %s is not served", group))
 			return
@@ -281,7 +322,7 @@ func Collect(ctx context.Context, c Clients, opts Options) (*mldiscover.Snapshot
 			continue
 		}
 		plural, group, _ := strings.Cut(name, ".")
-		version := preferred[group]
+		version := versionOf(group, plural)
 		if version == "" {
 			continue // already reported by count
 		}
@@ -296,7 +337,42 @@ func Collect(ctx context.Context, c Clients, opts Options) (*mldiscover.Snapshot
 		s.CustomObjects[name] = objs
 	}
 
-	sort.Slice(s.ReadErrors, func(i, j int) bool { return s.ReadErrors[i].Resource < s.ReadErrors[j].Resource })
+	// Phase two: the ConfigMaps the found components reference, by name.
+	refs := opts.ConfigRefs
+	if refs == nil {
+		refs = mldiscover.ConfigRefs
+	}
+	seen := map[string]bool{}
+	for _, ref := range refs(s) {
+		id := ref.Namespace + "/" + ref.Name
+		if ref.Name == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		cm, err := core.ConfigMaps(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			// Absent is an answer, not a refused read: a ConfigMap named
+			// by convention (kubeadm-config on a cluster kubeadm did not
+			// build) simply is not there, and discovery says so from
+			// its absence in Snapshot.ConfigMaps.
+			continue
+		}
+		if err != nil {
+			r.fail(s, "configmaps", fmt.Errorf("%s (%s): %w", id, ref.Why, err))
+			continue
+		}
+		RedactConfigMap(cm)
+		s.ConfigMaps = append(s.ConfigMaps, *cm)
+	}
+	sort.Slice(s.ConfigMaps, func(i, j int) bool {
+		a, b := s.ConfigMaps[i], s.ConfigMaps[j]
+		if a.Namespace != b.Namespace {
+			return a.Namespace < b.Namespace
+		}
+		return a.Name < b.Name
+	})
+
+	sort.SliceStable(s.ReadErrors, func(i, j int) bool { return s.ReadErrors[i].Resource < s.ReadErrors[j].Resource })
 	s.CollectedAt = now().UTC().Truncate(time.Second)
 	return s, nil
 }
@@ -348,7 +424,7 @@ func (r *reader) dynamicList(ctx context.Context, gvr schema.GroupVersionResourc
 			u := l.Items[i]
 			u.SetManagedFields(nil)
 			u.SetAnnotations(nil)
-			out = append(out, u.Object)
+			out = append(out, RedactObject(u.Object))
 		}
 		next := l.GetContinue()
 		if next == "" {
@@ -369,20 +445,24 @@ func stripTemplate(t *corev1.PodTemplateSpec) {
 	stripPodSpec(&t.Spec)
 }
 
-// stripPodSpec blanks every literal env value. The name stays (a rule may
-// ask whether NCCL_* is set), and so does valueFrom, which only names a
-// Secret or ConfigMap key and holds no data.
+// stripPodSpec blanks every literal env value outside EnvAllowlist. The name
+// stays (a rule asks whether OTEL_EXPORTER_OTLP_* or NCCL_* is set), and so
+// does valueFrom, which only names a Secret or ConfigMap key and holds no
+// data.
 func stripPodSpec(p *corev1.PodSpec) {
-	for _, cs := range [][]corev1.Container{p.InitContainers, p.Containers} {
-		for i := range cs {
-			for j := range cs[i].Env {
-				cs[i].Env[j].Value = ""
+	blank := func(env []corev1.EnvVar) {
+		for j := range env {
+			if !EnvAllowlist[env[j].Name] {
+				env[j].Value = ""
 			}
 		}
 	}
-	for i := range p.EphemeralContainers {
-		for j := range p.EphemeralContainers[i].Env {
-			p.EphemeralContainers[i].Env[j].Value = ""
+	for _, cs := range [][]corev1.Container{p.InitContainers, p.Containers} {
+		for i := range cs {
+			blank(cs[i].Env)
 		}
+	}
+	for i := range p.EphemeralContainers {
+		blank(p.EphemeralContainers[i].Env)
 	}
 }

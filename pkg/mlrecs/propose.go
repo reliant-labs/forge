@@ -97,6 +97,9 @@ type suggestion struct {
 	slot      string
 	vendor    string // for slotMetrics
 	kind      string
+	// reconfigure: the finding changes the values of a component forge
+	// already installed instead of adding one.
+	reconfigure bool
 }
 
 // suggestionsFor derives a finding's installs from its id, vendor and fix
@@ -108,18 +111,22 @@ func suggestionsFor(f Finding, inv *mldiscover.Inventory) []suggestion {
 	switch f.ID {
 	case "accel-telemetry-missing":
 		if f.Vendor == mldiscover.VendorNVIDIA {
-			return []suggestion{{f.ID, slotMetrics, mldiscover.VendorNVIDIA, mldiscover.KindDCGMExporter}}
+			return []suggestion{{f.ID, slotMetrics, mldiscover.VendorNVIDIA, mldiscover.KindDCGMExporter, false}}
 		}
 	case "no-node-health":
-		return []suggestion{{f.ID, slotNodeHealth, "", mldiscover.KindNodeProblemDetector}}
+		return []suggestion{{f.ID, slotNodeHealth, "", mldiscover.KindNodeProblemDetector, false}}
 	case "gpu-jobs-bypass-queue":
-		out := []suggestion{{f.ID, slotQueue, "", mldiscover.KindKueue}}
+		out := []suggestion{{f.ID, slotQueue, "", mldiscover.KindKueue, false}}
 		if !inv.Has(mldiscover.KindJobSet) {
-			out = append(out, suggestion{f.ID, slotTraining, "", mldiscover.KindJobSet})
+			out = append(out, suggestion{f.ID, slotTraining, "", mldiscover.KindJobSet, false})
 		}
 		return out
 	case "no-p2p-cache":
-		return []suggestion{{f.ID, slotPullCache, "", mldiscover.KindSpegel}}
+		return []suggestion{{f.ID, slotPullCache, "", mldiscover.KindSpegel, false}}
+	case "dcgm-profiling-off", "accel-error-counters-off", "dcgm-nvlink-off", "dcgm-pod-attribution-off":
+		return []suggestion{{f.ID, slotMetrics, mldiscover.VendorNVIDIA, mldiscover.KindDCGMExporter, true}}
+	case "npd-no-gpu-rules":
+		return []suggestion{{f.ID, slotNodeHealth, "", mldiscover.KindNodeProblemDetector, true}}
 	}
 	return nil
 }
@@ -273,7 +280,8 @@ func (p *proposer) renderObserved(date string) {
 func (p *proposer) pick(kinds []string, vendor string) (mldiscover.Component, bool) {
 	var cands []mldiscover.Component
 	for _, c := range p.inv.Components {
-		if c.Status != mldiscover.StatusPresent || !contains(kinds, c.Kind) || (vendor != "" && c.Vendor != vendor) {
+		if c.Status != mldiscover.StatusPresent || !contains(kinds, c.Kind) || (vendor != "" && c.Vendor != vendor) ||
+			c.Via == mldiscover.ViaForgePlatform {
 			continue
 		}
 		cands = append(cands, c)
@@ -317,7 +325,7 @@ func (p *proposer) component(c mldiscover.Component, scrape bool) []string {
 			if ns == "" {
 				ns = p.opts.Namespace
 			}
-			return p.install(chart, ns, scrape)
+			return p.install(chart, ns, scrape, p.fullValues(c.Kind))
 		}
 	}
 	return p.adopt(c, scrape)
@@ -357,17 +365,21 @@ func (p *proposer) adopt(c mldiscover.Component, scrape bool) []string {
 		out = append(out, "    "+f[0]+" = "+f[1])
 	}
 	out = append(out, "    selector = "+kclStringMap(c.Selector), "    port = "+strconv.Itoa(int(c.MetricsPort)))
-	out = append(out, indentLines(allowLines(c.Kind), "    ")...)
+	allow, verified := metricAllow[c.Kind], !unverifiedAllow[c.Kind]
+	if c.Config != nil && c.Config.DeterminedBy != mldiscover.DeterminedByPresence && len(c.Config.Fields) > 0 {
+		allow, verified = c.Config.Fields, true
+		out = append(out, "    # The fields discovery found it exporting ("+c.Config.DeterminedBy+": "+c.Config.Source+").")
+	}
+	out = append(out, indentLines(allowLines(allow, verified), "    ")...)
 	return append(out, "}")
 }
 
-func allowLines(kind string) []string {
-	allow := metricAllow[kind]
+func allowLines(allow []string, verified bool) []string {
 	if len(allow) == 0 {
 		return nil
 	}
 	var out []string
-	if unverifiedAllow[kind] {
+	if !verified {
 		out = append(out, "# Metric names from the exporter's docs, unverified: check its /metrics.")
 	}
 	out = append(out, "allow = [")
@@ -377,8 +389,11 @@ func allowLines(kind string) []string {
 	return append(out, "]")
 }
 
-// install renders a forge.Install of a pinned chart.
-func (p *proposer) install(chart Chart, namespace string, scrape bool) []string {
+// install renders a forge.Install of a pinned chart. full writes the
+// chart values forge installs with; a found forge-owned component that a
+// reconfigure finding says lacks them is written without until the
+// finding's diff applies.
+func (p *proposer) install(chart Chart, namespace string, scrape, full bool) []string {
 	out := []string{"forge.Install {", "    kind = " + strconv.Quote(chart.Kind)}
 	if chart.Delivery == DeliveryBootstrap {
 		out = append(out, fmt.Sprintf("    # It ships CRDs, so it is a bootstrap chart: apply it with `forge env deploy <env> --target %s`.", chart.Name))
@@ -395,7 +410,7 @@ func (p *proposer) install(chart Chart, namespace string, scrape bool) []string 
 	field("version", strconv.Quote(chart.Version))
 	field("namespace", strconv.Quote(namespace))
 	field("delivery", strconv.Quote(chart.Delivery))
-	if values := p.values(chart.Kind); len(values) > 0 {
+	if values := p.values(chart.Kind, full); len(values) > 0 {
 		v := kclValue(values, "        ")
 		out = append(out, "        values = "+v[0])
 		out = append(out, v[1:]...)
@@ -404,14 +419,45 @@ func (p *proposer) install(chart Chart, namespace string, scrape bool) []string 
 	if scrape && chart.Kind == mldiscover.KindDCGMExporter {
 		out = append(out, "    selector = "+kclStringMap(map[string]string{"app.kubernetes.io/name": "dcgm-exporter"}),
 			"    port = "+strconv.Itoa(int(mldiscover.DefaultMetricsPort(mldiscover.KindDCGMExporter))))
-		out = append(out, indentLines(allowLines(chart.Kind), "    ")...)
+		var allow []string
+		for _, f := range mldiscover.ForgeDCGMFields {
+			allow = append(allow, f.Name)
+		}
+		out = append(out, indentLines(allowLines(allow, true), "    ")...)
 	}
 	return append(out, "}")
 }
 
+// reconfigureFor returns the reconfigure suggestions for a kind.
+func (p *proposer) reconfigureFor(kind string) []suggestion {
+	var out []suggestion
+	for _, s := range p.sugg {
+		if s.reconfigure && s.kind == kind {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// fullValues reports whether a found forge-owned component is written with
+// forge's full values: yes unless a reconfigure finding says it lacks them
+// and that finding is not the one being applied.
+func (p *proposer) fullValues(kind string) bool {
+	rs := p.reconfigureFor(kind)
+	if len(rs) == 0 {
+		return true
+	}
+	for _, s := range rs {
+		if p.active[s.findingID] {
+			return true
+		}
+	}
+	return false
+}
+
 // values is a chart's helm values for this cluster.
-func (p *proposer) values(kind string) map[string]any {
-	v := chartValues(kind)
+func (p *proposer) values(kind string, full bool) map[string]any {
+	v := chartValues(kind, full)
 	if kind != mldiscover.KindDCGMExporter {
 		return v
 	}
@@ -469,7 +515,7 @@ func (p *proposer) emitSuggestion(indent int, s suggestion, prefix string) {
 	if !on {
 		p.line(indent, true, fmt.Sprintf("Suggested for finding %s: uncomment to install.", s.findingID))
 	}
-	ls := p.install(chart, p.opts.Namespace, true)
+	ls := p.install(chart, p.opts.Namespace, true, true)
 	ls[0] = prefix + ls[0]
 	p.lines(indent, !on, ls)
 }
@@ -482,6 +528,9 @@ func (p *proposer) renderSingle(slot string) {
 		return
 	}
 	for _, s := range p.suggestionsIn(slot, "") {
+		if s.reconfigure {
+			continue
+		}
 		p.emitSuggestion(1, s, slot+" = ")
 		return // one component per slot
 	}
@@ -494,7 +543,12 @@ func (p *proposer) renderList(slot string) {
 			entries = append(entries, p.component(c, false))
 		}
 	}
-	sugg := p.suggestionsIn(slot, "")
+	var sugg []suggestion
+	for _, s := range p.suggestionsIn(slot, "") {
+		if !s.reconfigure {
+			sugg = append(sugg, s)
+		}
+	}
 	if len(entries) == 0 && len(sugg) == 0 {
 		return
 	}
@@ -507,7 +561,9 @@ func (p *proposer) renderList(slot string) {
 		p.lines(2, false, e)
 	}
 	for _, s := range sugg {
-		p.emitSuggestion(2, s, "")
+		if !s.reconfigure {
+			p.emitSuggestion(2, s, "")
+		}
 	}
 	p.line(1, false, "]")
 }
@@ -565,6 +621,9 @@ func (p *proposer) renderAccelerators() {
 			p.lines(3, false, ls)
 		} else {
 			for _, s := range p.suggestionsIn(slotMetrics, v) {
+				if s.reconfigure {
+					continue
+				}
 				p.emitSuggestion(3, s, "metrics = ")
 				break
 			}

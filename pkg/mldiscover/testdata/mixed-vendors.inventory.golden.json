@@ -161,6 +161,47 @@
       ]
     },
     {
+      "kind": "otel-collector",
+      "category": "monitoring",
+      "status": "present",
+      "owner": "forge",
+      "version": "0.115.0",
+      "namespace": "forge-system",
+      "workload": "DaemonSet/forge-node-agent",
+      "via": "forge-platform",
+      "selector": {
+        "app": "forge-node-agent"
+      },
+      "pods": 5,
+      "matched_by": [
+        "image:*opentelemetry-collector*"
+      ],
+      "config": {
+        "determined_by": "config",
+        "source": "ConfigMap/forge-system/forge-node-agent-config key collector.yaml",
+        "receivers": [
+          "filelog",
+          "kubeletstats",
+          "otlp"
+        ],
+        "processors": [
+          "batch",
+          "k8sattributes"
+        ],
+        "exporters": [
+          "otlphttp"
+        ],
+        "pipelines": [
+          "logs",
+          "metrics",
+          "traces"
+        ],
+        "settings": [
+          "filelog.container-logs=true"
+        ]
+      }
+    },
+    {
       "kind": "node-problem-detector",
       "category": "node-health",
       "status": "present",
@@ -176,7 +217,19 @@
         "condition:KernelDeadlock",
         "image:*node-problem-detector*"
       ],
-      "chart_version": "2.3.14"
+      "chart_version": "2.3.14",
+      "config": {
+        "determined_by": "args",
+        "source": "args",
+        "monitors": [
+          "docker-monitor",
+          "kernel-monitor"
+        ],
+        "settings": [
+          "gpu-rules=false",
+          "prometheus-port=20257"
+        ]
+      }
     },
     {
       "kind": "amd-gpu-operator",
@@ -234,6 +287,300 @@
         "image:*kueue*"
       ],
       "chart_version": "0.20.7"
+    }
+  ],
+  "coverage": [
+    {
+      "signal": "accel.utilisation",
+      "category": "accelerator",
+      "vendor": "amd,gaudi,generic,neuron,tpu",
+      "status": "partial",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/kube-amd-gpu/amd-metrics-exporter"
+      ],
+      "nodes_covered": 1,
+      "nodes_total": 4,
+      "versions": [
+        "amd-device-metrics-exporter v1.2.0"
+      ],
+      "note": "a vendor exporter's presence on the node; its metric names are not modelled; TPU nodes report to Cloud Monitoring and are not counted"
+    },
+    {
+      "signal": "accel.profiling",
+      "category": "accelerator",
+      "vendor": "amd,gaudi,generic,neuron,tpu",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "only NVIDIA's DCGM field groups are modelled; amd, gaudi, generic, neuron, tpu accelerators are inventoried at allocation level"
+    },
+    {
+      "signal": "accel.memory",
+      "category": "accelerator",
+      "vendor": "amd,gaudi,generic,neuron,tpu",
+      "status": "partial",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/kube-amd-gpu/amd-metrics-exporter"
+      ],
+      "nodes_covered": 1,
+      "nodes_total": 4,
+      "versions": [
+        "amd-device-metrics-exporter v1.2.0"
+      ],
+      "note": "a vendor exporter's presence on the node; its metric names are not modelled; TPU nodes report to Cloud Monitoring and are not counted"
+    },
+    {
+      "signal": "accel.xid",
+      "category": "accelerator",
+      "vendor": "amd,gaudi,generic,neuron,tpu",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "only NVIDIA's DCGM field groups are modelled; amd, gaudi, generic, neuron, tpu accelerators are inventoried at allocation level"
+    },
+    {
+      "signal": "accel.ecc",
+      "category": "accelerator",
+      "vendor": "amd,gaudi,generic,neuron,tpu",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "only NVIDIA's DCGM field groups are modelled; amd, gaudi, generic, neuron, tpu accelerators are inventoried at allocation level"
+    },
+    {
+      "signal": "accel.retired-pages",
+      "category": "accelerator",
+      "vendor": "amd,gaudi,generic,neuron,tpu",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "only NVIDIA's DCGM field groups are modelled; amd, gaudi, generic, neuron, tpu accelerators are inventoried at allocation level"
+    },
+    {
+      "signal": "accel.row-remap",
+      "category": "accelerator",
+      "vendor": "amd,gaudi,generic,neuron,tpu",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "only NVIDIA's DCGM field groups are modelled; amd, gaudi, generic, neuron, tpu accelerators are inventoried at allocation level"
+    },
+    {
+      "signal": "accel.nvlink",
+      "category": "accelerator",
+      "vendor": "amd,gaudi,generic,neuron,tpu",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "only NVIDIA's DCGM field groups are modelled; amd, gaudi, generic, neuron, tpu accelerators are inventoried at allocation level"
+    },
+    {
+      "signal": "accel.pcie",
+      "category": "accelerator",
+      "vendor": "amd,gaudi,generic,neuron,tpu",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "only NVIDIA's DCGM field groups are modelled; amd, gaudi, generic, neuron, tpu accelerators are inventoried at allocation level"
+    },
+    {
+      "signal": "accel.throttle",
+      "category": "accelerator",
+      "vendor": "amd,gaudi,generic,neuron,tpu",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "only NVIDIA's DCGM field groups are modelled; amd, gaudi, generic, neuron, tpu accelerators are inventoried at allocation level"
+    },
+    {
+      "signal": "accel.power-thermal",
+      "category": "accelerator",
+      "vendor": "amd,gaudi,generic,neuron,tpu",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "only NVIDIA's DCGM field groups are modelled; amd, gaudi, generic, neuron, tpu accelerators are inventoried at allocation level"
+    },
+    {
+      "signal": "accel.pod-attribution",
+      "category": "accelerator",
+      "vendor": "amd,gaudi,generic,neuron,tpu",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "only NVIDIA's DCGM field groups are modelled; amd, gaudi, generic, neuron, tpu accelerators are inventoried at allocation level"
+    },
+    {
+      "signal": "node.health",
+      "category": "node-health",
+      "status": "collected",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/kube-system/node-problem-detector"
+      ],
+      "expected": [
+        "KernelDeadlock"
+      ],
+      "present": [
+        "KernelDeadlock"
+      ],
+      "nodes_covered": 5,
+      "nodes_total": 5,
+      "versions": [
+        "node-problem-detector v0.8.19"
+      ]
+    },
+    {
+      "signal": "node.health.gpu-rules",
+      "category": "node-health",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no NVIDIA nodes (Xid is NVIDIA's error stream)"
+    },
+    {
+      "signal": "kubelet.tracing",
+      "category": "tracing",
+      "status": "unknown",
+      "determined_by": "unreadable",
+      "expected": [
+        "tracing"
+      ],
+      "note": "kube-system/kubelet-config was not read (not a kubeadm cluster, or the grant refused it); the kubelet's config file lives on each node, which discovery never reads"
+    },
+    {
+      "signal": "apiserver.tracing",
+      "category": "tracing",
+      "status": "unknown",
+      "determined_by": "unreadable",
+      "expected": [
+        "tracing-config-file"
+      ],
+      "note": "no kube-apiserver mirror pod and no kubeadm-config (an embedded control plane such as k3s, or one outside the cluster)"
+    },
+    {
+      "signal": "telemetry.collector",
+      "category": "telemetry",
+      "status": "collected",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/forge-system/forge-node-agent"
+      ],
+      "present": [
+        "otel-collector"
+      ],
+      "versions": [
+        "otel-collector 0.115.0"
+      ]
+    },
+    {
+      "signal": "telemetry.otlp",
+      "category": "telemetry",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/forge-system/forge-node-agent"
+      ],
+      "expected": [
+        "otlp"
+      ],
+      "present": [
+        "otlp"
+      ],
+      "versions": [
+        "otel-collector 0.115.0"
+      ]
+    },
+    {
+      "signal": "telemetry.k8s-events",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/forge-system/forge-node-agent"
+      ],
+      "expected": [
+        "k8s_events"
+      ],
+      "missing": [
+        "k8s_events"
+      ],
+      "note": "no collector config has a k8s_events receiver in a pipeline"
+    },
+    {
+      "signal": "telemetry.kubeletstats",
+      "category": "telemetry",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/forge-system/forge-node-agent"
+      ],
+      "expected": [
+        "kubeletstats"
+      ],
+      "present": [
+        "kubeletstats"
+      ],
+      "nodes_covered": 5,
+      "nodes_total": 5,
+      "versions": [
+        "otel-collector 0.115.0"
+      ]
+    },
+    {
+      "signal": "telemetry.container-logs",
+      "category": "telemetry",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/forge-system/forge-node-agent"
+      ],
+      "expected": [
+        "container-logs"
+      ],
+      "present": [
+        "container-logs"
+      ],
+      "nodes_covered": 5,
+      "nodes_total": 5,
+      "versions": [
+        "otel-collector 0.115.0"
+      ]
+    },
+    {
+      "signal": "profiling.continuous",
+      "category": "profiling",
+      "status": "missing",
+      "determined_by": "presence",
+      "nodes_total": 5,
+      "note": "no continuous profiler (Parca, Pyroscope via Alloy, OTel eBPF profiler, Elastic, Coroot, Pixie) runs"
+    },
+    {
+      "signal": "profiling.gpu",
+      "category": "profiling",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "CUDA, Nsight and PyTorch profiler hooks live inside workloads; discovery recognises no GPU profiling operator"
+    },
+    {
+      "signal": "tracing.training",
+      "category": "tracing",
+      "status": "missing",
+      "determined_by": "args",
+      "expected": [
+        "Job/research/gaudi-smoke",
+        "Job/research/mi300-pretrain"
+      ],
+      "missing": [
+        "Job/research/gaudi-smoke",
+        "Job/research/mi300-pretrain"
+      ],
+      "note": "OTEL_EXPORTER_OTLP_* / OTEL_TRACES_EXPORTER env names on the Job's containers; an Instrumentation injection annotation is not visible"
+    },
+    {
+      "signal": "tracing.inference",
+      "category": "tracing",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no vLLM or Triton servers"
+    },
+    {
+      "signal": "metrics.inference",
+      "category": "inference",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no vLLM or Triton servers"
     }
   ]
 }

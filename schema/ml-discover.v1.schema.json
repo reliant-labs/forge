@@ -60,6 +60,16 @@
         "$ref": "#/$defs/Component"
       }
     },
+    "coverage": {
+      "description": "Coverage is one row per observability signal an ML cluster should have (see the Signal constants): whether it is collected, by what, how that was determined, and what is missing. It is what the console's coverage-gap view reads. Every signal in Signals() has a row, so an absent signal is a row with StatusMissing, never an absent row.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/SignalCoverage"
+      }
+    },
     "warnings": {
       "description": "Warnings says what discovery could not see or apply: a refused list, a CRD whose controller is missing, an env whose decisions did not render. An absence is never overstated.",
       "type": "array",
@@ -271,6 +281,17 @@
             "string",
             "null"
           ]
+        },
+        "config": {
+          "description": "Config is what discovery learned of the component's configuration (the DCGM fields it exports, NPD's monitors and conditions, a collector's receivers), nil when it learned nothing.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ComponentConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -280,6 +301,113 @@
         "owner",
         "matched_by"
       ],
+      "additionalProperties": false
+    },
+    "ComponentConfig": {
+      "description": "ComponentConfig is what discovery read of one component's configuration. Each list is sorted; a field a component does not have stays empty.",
+      "type": "object",
+      "properties": {
+        "determined_by": {
+          "description": "DeterminedBy is one of the DeterminedBy constants.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "Source names where it was read (\"ConfigMap/gpu-operator/metrics-config key dcgm-metrics.csv\", \"args\", \"probe :9400/metrics\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fields": {
+          "description": "Fields are exported metric families (DCGM field names, or the probe's metric names).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "monitors": {
+          "description": "Monitors are NPD monitor configs (kernel-monitor, docker-monitor, custom-plugin-monitor names) or equivalent.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "conditions": {
+          "description": "Conditions are the node condition types the component sets; Reasons the problem reasons its rules report (NPD's rules).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "reasons": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "receivers": {
+          "description": "Receivers, Processors, Exporters and Pipelines describe a telemetry collector's configuration (otlp, kubeletstats, k8s_events, …; pipelines as \"traces\", \"metrics\", \"logs\", \"profiles\").",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "processors": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "exporters": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "pipelines": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "settings": {
+          "description": "Settings are other scalar facts worth showing, as key=value (\"kubernetes-attribution=true\", \"interval=30000ms\", \"tracing.endpoint=set\", \"sampling-rate=10000\").",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
       "additionalProperties": false
     },
     "Dismissal": {
@@ -353,6 +481,16 @@
               "type": "null"
             }
           ]
+        },
+        "signals": {
+          "description": "Signals are the coverage signals (mldiscover.Signal*) this finding is about; LinkCoverage reads them.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [
@@ -559,6 +697,126 @@
         "allocated",
         "ready"
       ],
+      "additionalProperties": false
+    },
+    "SignalCoverage": {
+      "description": "SignalCoverage is one signal's coverage row.",
+      "type": "object",
+      "properties": {
+        "signal": {
+          "description": "Signal is one of the Signal constants.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "category": {
+          "description": "Category groups signals for display: \"accelerator\", \"node-health\", \"tracing\", \"telemetry\", \"profiling\", \"inference\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vendor": {
+          "description": "Vendor scopes accelerator signals (\"nvidia\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "Status is one of the Coverage constants.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "determined_by": {
+          "description": "DeterminedBy is one of the DeterminedBy constants.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sources": {
+          "description": "Sources are the components that provide it, as kind/namespace/workload.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "expected": {
+          "description": "Expected and Present are the parts of the signal (metric families, receivers, condition types) discovery looked for and found; Missing is Expected minus Present. Empty when the signal has no parts.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "present": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "nodes_covered": {
+          "description": "NodesCovered / NodesTotal count the nodes a node-scoped signal applies to (accelerator nodes for accelerator signals) and those it reaches.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "nodes_total": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "versions": {
+          "description": "Versions are the source versions found (\"dcgm-exporter 3.3.9-3.6.1\").",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "note": {
+          "description": "Note says, in one sentence, why the status is what it is when that is not obvious (an unreadable kubelet config on a managed cluster).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "findings": {
+          "description": "Findings lists the ids of the findings this gap raised (mlrecs fills it; mldiscover leaves it empty).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
       "additionalProperties": false
     }
   }

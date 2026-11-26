@@ -37,7 +37,7 @@
       "status": {
         "capacity": {"cpu": "8", "memory": "16273592Ki", "nvidia.com/gpu": "8", "pods": "110"},
         "allocatable": {"cpu": "8", "memory": "16273592Ki", "nvidia.com/gpu": "8", "pods": "110"},
-        "conditions": [{"type": "MemoryPressure", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "conditions": [{"type": "MemoryPressure", "status": "False"}, {"type": "Ready", "status": "True"}, {"type": "gpu-fractioning.nvidia.com/Ready", "status": "True"}],
         "nodeInfo": {"kubeletVersion": "v1.33.1+k3s1", "containerRuntimeVersion": "containerd://1.7.23-k3s2"},
         "images": [{"names": ["docker.io/vllm/vllm-openai:v0.7.3"], "sizeBytes": 9876543210}]
       }
@@ -64,7 +64,7 @@
       "status": {
         "capacity": {"cpu": "8", "memory": "16273592Ki", "nvidia.com/gpu": "8", "pods": "110"},
         "allocatable": {"cpu": "8", "memory": "16273592Ki", "nvidia.com/gpu": "8", "pods": "110"},
-        "conditions": [{"type": "MemoryPressure", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "conditions": [{"type": "MemoryPressure", "status": "False"}, {"type": "Ready", "status": "True"}, {"type": "gpu-fractioning.nvidia.com/Ready", "status": "True"}],
         "nodeInfo": {"kubeletVersion": "v1.33.1+k3s1", "containerRuntimeVersion": "containerd://1.7.23-k3s2"},
         "images": [{"names": ["docker.io/vllm/vllm-openai:v0.7.3"], "sizeBytes": 9876543210}]
       }

@@ -19,7 +19,7 @@ type rule struct {
 // rules is the catalogue, in catalogue order (docs/proposals/ml-workloads.md
 // §5 and Appendix A).
 var rules = []rule{
-	{Rule{ID: "accel-telemetry-missing", Severity: SeverityHigh,
+	{Rule{ID: "accel-telemetry-missing", Severity: SeverityHigh, Signals: []string{mldiscover.SignalAccelUtilisation},
 		Detects: "Accelerator nodes no adopted or installed metrics source covers.",
 		Fix:     "GPU Operator with dcgmExporter disabled: enable it in your ClusterPolicy; otherwise forge.Install NVIDIA's dcgm-exporter chart (other vendors: install their exporter)."}, ruleTelemetryMissing},
 	{Rule{ID: "accel-exporter-duplicate", Severity: SeverityHigh, Vendor: mldiscover.VendorNVIDIA,
@@ -34,9 +34,24 @@ var rules = []rule{
 	{Rule{ID: "driver-skew", Severity: SeverityMedium, Vendor: mldiscover.VendorNVIDIA,
 		Detects: "NVIDIA driver versions (GFD nvidia.com/cuda.driver.*) differ across the nodes of one pool.",
 		Fix:     "Align the pool's node image."}, ruleDriverSkew},
-	{Rule{ID: "no-node-health", Severity: SeverityMedium,
+	{Rule{ID: "no-node-health", Severity: SeverityMedium, Signals: []string{mldiscover.SignalNodeHealth},
 		Detects: "Accelerator nodes and no node-problem-detector, no EKS node monitoring agent, and no non-core node conditions.",
 		Fix:     "Turn on the cloud's node auto-repair; else forge.Install node-problem-detector with a GPU Xid log rule."}, ruleNoNodeHealth},
+	{Rule{ID: "dcgm-profiling-off", Severity: SeverityMedium, Vendor: mldiscover.VendorNVIDIA, Signals: []string{mldiscover.SignalAccelProfiling},
+		Detects: "A DCGM exporter whose field set (probe, counters CSV or its release's default) lacks the DCGM_FI_PROF_* activity counters.",
+		Fix:     "Add the PROF fields to their counters CSV (GPU Operator: a ConfigMap named by ClusterPolicy spec.dcgmExporter.config); KCL when forge installed the exporter."}, ruleDCGMProfilingOff},
+	{Rule{ID: "accel-error-counters-off", Severity: SeverityMedium, Vendor: mldiscover.VendorNVIDIA, Signals: []string{mldiscover.SignalAccelXid, mldiscover.SignalAccelECC, mldiscover.SignalAccelRowRemap},
+		Detects: "A DCGM exporter whose field set lacks the Xid, ECC (SBE/DBE) or row-remap counters.",
+		Fix:     "Add the exact CSV lines to their counters file; on GKE managed DCGM, the set is fixed (auto-repair covers faults)."}, ruleErrorCountersOff},
+	{Rule{ID: "npd-no-gpu-rules", Severity: SeverityMedium, Vendor: mldiscover.VendorNVIDIA, Signals: []string{mldiscover.SignalNodeHealthGPURules},
+		Detects: "node-problem-detector runs on NVIDIA nodes and none of its monitors matches Xid / NVRM kernel lines.",
+		Fix:     "Add a kernel-log monitor for fatal Xids to their NPD config; KCL when forge installed NPD."}, ruleNPDNoGPURules},
+	{Rule{ID: "dcgm-pod-attribution-off", Severity: SeverityMedium, Vendor: mldiscover.VendorNVIDIA, Signals: []string{mldiscover.SignalAccelPodAttribution},
+		Detects: "A DCGM exporter that adds no pod/namespace/container labels (DCGM_EXPORTER_KUBERNETES off, or no pod label on a probe).",
+		Fix:     "Turn on the exporter's Kubernetes enrichment and mount the kubelet pod-resources socket."}, rulePodAttributionOff},
+	{Rule{ID: "dcgm-nvlink-off", Severity: SeverityLow, Vendor: mldiscover.VendorNVIDIA, Signals: []string{mldiscover.SignalAccelNVLink},
+		Detects: "Multi-GPU NVIDIA nodes whose DCGM exporter lacks NVLink bandwidth or error counters.",
+		Fix:     "Add the NVLink fields to their counters CSV."}, ruleNVLinkOff},
 	{Rule{ID: "gpu-jobs-bypass-queue", Severity: SeverityMedium,
 		Detects: "Unfinished Jobs request accelerators and neither Kueue nor Volcano runs.",
 		Fix:     "forge.Install Kueue as the stack's queue (and JobSet for multi-pod training)."}, ruleJobsBypassQueue},
@@ -49,7 +64,7 @@ var rules = []rule{
 	{Rule{ID: "shm-too-small", Severity: SeverityMedium,
 		Detects: "An accelerator container mounts no memory-medium emptyDir at /dev/shm, so it has the 64 MiB default.",
 		Fix:     "Mount emptyDir {medium: Memory} at /dev/shm."}, ruleShmTooSmall},
-	{Rule{ID: "llm-scales-on-cpu", Severity: SeverityMedium,
+	{Rule{ID: "llm-scales-on-cpu", Severity: SeverityMedium, Signals: []string{mldiscover.SignalInferenceMetrics},
 		Detects: "A vLLM or Triton workload whose HPA scales only on CPU, memory or GPU utilisation, or that has no autoscaler.",
 		Fix:     "Scale on queue depth: KEDA on vllm:num_requests_waiting or KV-cache usage."}, ruleLLMScalesOnCPU},
 	{Rule{ID: "model-downloaded-per-pod", Severity: SeverityMedium,
@@ -76,9 +91,27 @@ var rules = []rule{
 	{Rule{ID: "image-volumes-unavailable", Severity: SeverityInfo,
 		Detects: "The API server is below Kubernetes 1.35 (ImageVolume on by default) or an accelerator node runs containerd below 2.1.",
 		Fix:     "Upgrade; meanwhile mount weights with a modelcar sidecar or an init-container copy."}, ruleImageVolumes},
-	{Rule{ID: "kubelet-tracing-off", Severity: SeverityInfo,
-		Detects: "Self-managed accelerator nodes, where kubelet tracing may be off; discovery never reads the kubelet's config, so this is unverified.",
+	{Rule{ID: "kubelet-tracing-off", Severity: SeverityInfo, Signals: []string{mldiscover.SignalKubeletTracing},
+		Detects: "Self-managed accelerator nodes whose kubeadm KubeletConfiguration has no tracing block (certain), or whose kubelet config is not readable (unverified).",
 		Fix:     "Add `tracing` to the KubeletConfiguration and point it at your OTLP collector."}, ruleKubeletTracing},
+	{Rule{ID: "apiserver-tracing-off", Severity: SeverityInfo, Signals: []string{mldiscover.SignalAPIServerTracing},
+		Detects: "A self-managed control plane whose kube-apiserver mirror pods and kubeadm ClusterConfiguration set no --tracing-config-file.",
+		Fix:     "Pass a TracingConfiguration file with --tracing-config-file (kubeadm apiServer.extraArgs)."}, ruleAPIServerTracing},
+	{Rule{ID: "no-continuous-profiling", Severity: SeverityLow, Signals: []string{mldiscover.SignalContinuousProfiling},
+		Detects: "Accelerator nodes no continuous profiler (Parca, Alloy pyroscope.ebpf, OTel eBPF profiler, Elastic, Coroot, Pixie) reaches.",
+		Fix:     "Run one eBPF profiler DaemonSet on the accelerator nodes."}, ruleNoContinuousProfiling},
+	{Rule{ID: "no-otlp-receiver", Severity: SeverityLow, Signals: []string{mldiscover.SignalOTLPReceiver},
+		Detects: "An accelerator cluster where no collector config has an otlp receiver in a pipeline.",
+		Fix:     "Add an otlp receiver to their collector, or install one."}, ruleNoOTLPReceiver},
+	{Rule{ID: "collector-no-k8s-events", Severity: SeverityLow, Signals: []string{mldiscover.SignalK8sEvents},
+		Detects: "A collector runs and no config has a k8s_events (or k8sobjects events) receiver.",
+		Fix:     "Add a k8s_events receiver in one replica."}, ruleCollectorNoK8sEvents},
+	{Rule{ID: "inference-tracing-off", Severity: SeverityLow, Signals: []string{mldiscover.SignalInferenceTracing},
+		Detects: "vLLM or Triton servers with no --otlp-traces-endpoint / --trace-config and no OTEL_EXPORTER_OTLP_* env.",
+		Fix:     "Pass the server's OTLP tracing flags."}, ruleInferenceTracingOff},
+	{Rule{ID: "training-tracing-off", Severity: SeverityInfo, Signals: []string{mldiscover.SignalTrainingTracing},
+		Detects: "Unfinished accelerator Jobs with no OTEL_EXPORTER_OTLP_* / OTEL_TRACES_EXPORTER env names.",
+		Fix:     "Set the OTLP env on the Job, or inject an SDK with an Instrumentation resource."}, ruleTrainingTracingOff},
 }
 
 // Rules lists every rule Evaluate runs, in catalogue order.
@@ -107,6 +140,9 @@ func Evaluate(s *mldiscover.Snapshot, inv *mldiscover.Inventory, opts Options) [
 			}
 			if f.Evidence == nil {
 				f.Evidence = []string{}
+			}
+			if f.Signals == nil {
+				f.Signals = append([]string(nil), r.Signals...)
 			}
 			out = append(out, f)
 		}

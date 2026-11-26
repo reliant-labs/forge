@@ -3,6 +3,7 @@ accelerators   24 × NVIDIA-H100-80GB-HBM3 (nvidia.com/gpu) on 3 nodes (pool h10
                0 × NVIDIA-L4 (nvidia.com/gpu) on 1 node (pool l4; 0 allocated; labelled but no capacity: device plugin missing or not ready)
                FOUND gpu-operator v24.9.0 (Deployment/gpu-operator/gpu-operator) — adopt
 gpu metrics    FOUND dcgm-exporter 3.3.9-3.6.1-ubuntu22.04 via gpu-operator (DaemonSet/gpu-operator/nvidia-dcgm-exporter :9400, 3 pods) — adopt
+                   config (probe :9400/metrics): 3 fields; settings kubernetes-attribution=true
 node health    FOUND node-problem-detector v0.8.20 (DaemonSet/forge-ml/node-problem-detector, 4 pods) — installed by forge
 queueing       FOUND kueue v0.10.1 (Deployment/kueue-system/kueue-controller-manager, 2 objects) — adopt
 training       CRD ONLY kuberay (its CRDs are installed but no controller runs; 1 object)
@@ -10,6 +11,19 @@ training       CRD ONLY kuberay (its CRDs are installed but no controller runs; 
 serving        none found (kserve is adopted when present, never installed by default)
 monitoring     none found (no Prometheus Operator, GMP, kube-state-metrics or OTel collector)
 image pulls    none found (no spegel or dragonfly pull cache)
+
+coverage       5 signals: 1 collected, 1 partial, 1 missing, 1 unknown, 1 not-applicable
+  accelerator (nvidia)
+    collected accel.utilisation  probe           dcgm-exporter/gpu-operator/DaemonSet/nvidia-dcgm-exporter; 3/3 nodes; dcgm-exporter 3.3.9-3.6.1-ubuntu22.04
+    MISSING   accel.profiling    probe           0/3 nodes
+                                 missing DCGM_FI_PROF_DRAM_ACTIVE, DCGM_FI_PROF_GR_ENGINE_ACTIVE, DCGM_FI_PROF_PIPE_TENSOR_ACTIVE, DCGM_FI_PROF_SM_ACTIVE, … (+1)
+                                 finding dcgm-profiling-off
+  node-health
+    PARTIAL   node.health        config          node-problem-detector/forge-ml/DaemonSet/node-problem-detector; 3/4 nodes
+  tracing
+    unknown   kubelet.tracing    unreadable
+                                 GKE manages the kubelet config: discovery cannot read it.
+                                 finding kubelet-tracing-off
 could not see  could not read jobs.batch: forbidden
 
 findings       1, worst first (and 1 dismissed)

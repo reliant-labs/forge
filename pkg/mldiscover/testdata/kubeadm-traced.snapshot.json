@@ -1,0 +1,198 @@
+{
+  "schema": "forge.dev/ml-snapshot/v1",
+  "context": "kubernetes-admin@gpu-lab",
+  "server_version": "v1.34.2",
+  "collected_at": "2026-11-26T09:00:00Z",
+  "api_groups": ["apps", "batch", "opentelemetry.io"],
+  "crds": ["opentelemetrycollectors.opentelemetry.io", "instrumentations.opentelemetry.io"],
+  "custom_resources": {"opentelemetrycollectors.opentelemetry.io": 1, "instrumentations.opentelemetry.io": 2},
+  "custom_objects": {
+    "opentelemetrycollectors.opentelemetry.io": [
+      {
+        "apiVersion": "opentelemetry.io/v1beta1",
+        "kind": "OpenTelemetryCollector",
+        "metadata": {"name": "cluster", "namespace": "observability"},
+        "spec": {
+          "mode": "deployment",
+          "config": {
+            "receivers": {
+              "otlp": {"protocols": {"grpc": {"endpoint": "0.0.0.0:4317"}, "http": {"endpoint": "0.0.0.0:4318"}}},
+              "k8s_events": {"namespaces": []},
+              "k8sobjects": {"objects": [{"name": "events", "mode": "watch"}, {"name": "pods", "mode": "pull"}]}
+            },
+            "processors": {"batch": {}},
+            "exporters": {"otlphttp": {"endpoint": "https://otel.lab.example", "headers": {"authorization": "REDACTED"}}},
+            "service": {
+              "pipelines": {
+                "traces": {"receivers": ["otlp"], "processors": ["batch"], "exporters": ["otlphttp"]},
+                "metrics": {"receivers": ["otlp"], "processors": ["batch"], "exporters": ["otlphttp"]},
+                "logs": {"receivers": ["k8s_events", "k8sobjects"], "processors": ["batch"], "exporters": ["otlphttp"]}
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "metadata": {"name": "cp-1", "labels": {"node-role.kubernetes.io/control-plane": ""}},
+      "spec": {"taints": [{"key": "node-role.kubernetes.io/control-plane", "effect": "NoSchedule"}]},
+      "status": {
+        "capacity": {"cpu": "16", "memory": "65536000Ki", "pods": "110"},
+        "allocatable": {"cpu": "16", "memory": "65536000Ki", "pods": "110"},
+        "conditions": [{"type": "KernelDeadlock", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.34.2", "containerRuntimeVersion": "containerd://2.1.4"}
+      }
+    },
+    {
+      "metadata": {"name": "gpu-1", "labels": {"nvidia.com/gpu.present": "true", "nvidia.com/gpu.product": "NVIDIA-L40S", "nvidia.com/gpu.count": "4", "nvidia.com/cuda.driver.major": "570", "nvidia.com/cuda.driver.minor": "133", "nvidia.com/cuda.driver.rev": "20"}},
+      "spec": {},
+      "status": {
+        "capacity": {"cpu": "64", "memory": "515000000Ki", "nvidia.com/gpu": "4", "pods": "110"},
+        "allocatable": {"cpu": "64", "memory": "515000000Ki", "nvidia.com/gpu": "4", "pods": "110"},
+        "conditions": [{"type": "GPUProblem", "status": "False"}, {"type": "KernelDeadlock", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.34.2", "containerRuntimeVersion": "containerd://2.1.4"},
+        "images": [{"names": ["docker.io/vllm/vllm-openai:v0.8.5"], "sizeBytes": 8800000000}]
+      }
+    },
+    {
+      "metadata": {"name": "gpu-2", "labels": {"nvidia.com/gpu.present": "true", "nvidia.com/gpu.product": "NVIDIA-L40S", "nvidia.com/gpu.count": "4", "nvidia.com/cuda.driver.major": "570", "nvidia.com/cuda.driver.minor": "133", "nvidia.com/cuda.driver.rev": "20"}},
+      "spec": {},
+      "status": {
+        "capacity": {"cpu": "64", "memory": "515000000Ki", "nvidia.com/gpu": "4", "pods": "110"},
+        "allocatable": {"cpu": "64", "memory": "515000000Ki", "nvidia.com/gpu": "4", "pods": "110"},
+        "conditions": [{"type": "GPUProblem", "status": "False"}, {"type": "KernelDeadlock", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.34.2", "containerRuntimeVersion": "containerd://2.1.4"},
+        "images": [{"names": ["docker.io/vllm/vllm-openai:v0.8.5"], "sizeBytes": 8800000000}]
+      }
+    }
+  ],
+  "configmaps": [
+    {"metadata": {"name": "kubelet-config", "namespace": "kube-system"},
+     "data": {"kubelet": "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\ncgroupDriver: systemd\nclusterDNS:\n- 10.96.0.10\ntracing:\n  endpoint: otel-cluster-collector.observability:4317\n  samplingRatePerMillion: 10000\n"}},
+    {"metadata": {"name": "kubeadm-config", "namespace": "kube-system"},
+     "data": {"ClusterConfiguration": "apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nkubernetesVersion: v1.34.2\napiServer:\n  extraArgs:\n  - name: tracing-config-file\n    value: /etc/kubernetes/tracing/apiserver-tracing.yaml\n  extraVolumes:\n  - name: tracing\n    hostPath: /etc/kubernetes/tracing\n    mountPath: /etc/kubernetes/tracing\n"}},
+    {"metadata": {"name": "dcgm-exporter-metrics", "namespace": "monitoring"},
+     "data": {"custom.csv": "# Format\n# DCGM FIELD, Prometheus metric type, help message\nDCGM_FI_DEV_GPU_UTIL, gauge, GPU utilization (in %).\nDCGM_FI_DEV_FB_USED, gauge, Frame buffer memory used (in MB).\nDCGM_FI_DEV_FB_FREE, gauge, Frame buffer memory free (in MB).\nDCGM_FI_DEV_POWER_USAGE, gauge, Power draw (in W).\nDCGM_FI_DEV_GPU_TEMP, gauge, GPU temperature (in C).\nDCGM_FI_DEV_POWER_VIOLATION, counter, Throttling duration due to power constraints (in us).\nDCGM_FI_DEV_THERMAL_VIOLATION, counter, Throttling duration due to thermal constraints (in us).\nDCGM_FI_DEV_XID_ERRORS, gauge, Value of the last XID error encountered.\nDCGM_FI_DEV_ECC_SBE_VOL_TOTAL, counter, Total number of single-bit volatile ECC errors.\nDCGM_FI_DEV_ECC_DBE_VOL_TOTAL, counter, Total number of double-bit volatile ECC errors.\nDCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS, counter, Number of remapped rows for uncorrectable errors\nDCGM_FI_DEV_ROW_REMAP_FAILURE, gauge, Whether remapping of rows has failed\nDCGM_FI_DEV_PCIE_REPLAY_COUNTER, counter, Total number of PCIe retries.\nDCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL, counter, Total number of NVLink bandwidth counters for all lanes\nDCGM_FI_DEV_NVLINK_CRC_FLIT_ERROR_COUNT_TOTAL, counter, Total number of NVLink flow-control CRC errors.\nDCGM_FI_PROF_GR_ENGINE_ACTIVE, gauge, Ratio of time the graphics engine is active.\nDCGM_FI_PROF_SM_ACTIVE, gauge, The ratio of cycles an SM has at least 1 warp assigned.\nDCGM_FI_PROF_SM_OCCUPANCY, gauge, The ratio of number of warps resident on an SM.\nDCGM_FI_PROF_PIPE_TENSOR_ACTIVE, gauge, Ratio of cycles the tensor (HMMA) pipe is active.\nDCGM_FI_PROF_DRAM_ACTIVE, gauge, Ratio of cycles the device memory interface is active sending or receiving data.\nDCGM_EXP_CLOCK_EVENTS_COUNT, gauge, Count of clock events within the user-specified time window.\n"}},
+    {"metadata": {"name": "npd-custom-config", "namespace": "kube-system"},
+     "data": {"gpu-xid.json": "{\n  \"plugin\": \"kmsg\",\n  \"logPath\": \"/dev/kmsg\",\n  \"lookback\": \"5m\",\n  \"source\": \"gpu-xid-monitor\",\n  \"conditions\": [{\"type\": \"GPUProblem\", \"reason\": \"NoGPUXid\", \"message\": \"no fatal Xid\"}],\n  \"rules\": [{\"type\": \"permanent\", \"condition\": \"GPUProblem\", \"reason\": \"NVIDIAXid\", \"pattern\": \"NVRM: Xid [(][^)]*[)]: (48|79|94|95),.*\"}]\n}\n"}}
+  ],
+  "daemonsets": [
+    {
+      "metadata": {"name": "dcgm-exporter", "namespace": "monitoring", "labels": {"app.kubernetes.io/name": "dcgm-exporter"}},
+      "spec": {
+        "selector": {"matchLabels": {"app.kubernetes.io/name": "dcgm-exporter"}},
+        "template": {
+          "metadata": {"labels": {"app.kubernetes.io/name": "dcgm-exporter"}},
+          "spec": {
+            "nodeSelector": {"nvidia.com/gpu.present": "true"},
+            "containers": [{"name": "exporter", "image": "nvcr.io/nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04", "args": ["-f", "/etc/dcgm-exporter/custom.csv"],
+              "env": [{"name": "DCGM_EXPORTER_KUBERNETES", "value": "true"}, {"name": "DCGM_EXPORTER_INTERVAL", "value": "15000"}],
+              "ports": [{"name": "metrics", "containerPort": 9400}], "resources": {},
+              "volumeMounts": [{"name": "metrics", "mountPath": "/etc/dcgm-exporter/custom.csv", "subPath": "custom.csv"}]}],
+            "volumes": [{"name": "metrics", "configMap": {"name": "dcgm-exporter-metrics"}}]
+          }
+        }
+      },
+      "status": {"currentNumberScheduled": 2, "numberMisscheduled": 0, "desiredNumberScheduled": 2, "numberReady": 2}
+    },
+    {
+      "metadata": {"name": "node-problem-detector", "namespace": "kube-system", "labels": {"app.kubernetes.io/name": "node-problem-detector", "helm.sh/chart": "node-problem-detector-2.3.14"}},
+      "spec": {
+        "selector": {"matchLabels": {"app.kubernetes.io/name": "node-problem-detector"}},
+        "template": {
+          "metadata": {"labels": {"app.kubernetes.io/name": "node-problem-detector"}},
+          "spec": {
+            "tolerations": [{"operator": "Exists", "effect": "NoSchedule"}],
+            "containers": [{"name": "node-problem-detector", "image": "registry.k8s.io/node-problem-detector/node-problem-detector:v0.8.19",
+              "command": ["/node-problem-detector", "--logtostderr", "--config.system-log-monitor=/config/kernel-monitor.json,/custom-config/gpu-xid.json", "--prometheus-address=0.0.0.0", "--prometheus-port=20257"],
+              "ports": [{"name": "exporter", "containerPort": 20257}], "resources": {},
+              "volumeMounts": [{"name": "custom-config", "mountPath": "/custom-config", "readOnly": true}]}],
+            "volumes": [{"name": "custom-config", "configMap": {"name": "npd-custom-config"}}]
+          }
+        }
+      },
+      "status": {"currentNumberScheduled": 3, "numberMisscheduled": 0, "desiredNumberScheduled": 3, "numberReady": 3}
+    },
+    {
+      "metadata": {"name": "parca-agent", "namespace": "parca", "labels": {"app.kubernetes.io/name": "parca-agent"}},
+      "spec": {
+        "selector": {"matchLabels": {"app.kubernetes.io/name": "parca-agent"}},
+        "template": {
+          "metadata": {"labels": {"app.kubernetes.io/name": "parca-agent"}},
+          "spec": {"tolerations": [{"operator": "Exists"}], "containers": [{"name": "parca-agent", "image": "ghcr.io/parca-dev/parca-agent:v0.35.0", "args": ["--remote-store-address=parca.parca.svc:7070"], "resources": {}}]}
+        }
+      },
+      "status": {"currentNumberScheduled": 3, "numberMisscheduled": 0, "desiredNumberScheduled": 3, "numberReady": 3}
+    },
+    {
+      "metadata": {"name": "beyla", "namespace": "observability", "labels": {"app.kubernetes.io/name": "beyla"}},
+      "spec": {
+        "selector": {"matchLabels": {"app.kubernetes.io/name": "beyla"}},
+        "template": {
+          "metadata": {"labels": {"app.kubernetes.io/name": "beyla"}},
+          "spec": {"containers": [{"name": "beyla", "image": "grafana/beyla:2.1.0", "env": [{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": ""}], "resources": {}}]}
+        }
+      },
+      "status": {"currentNumberScheduled": 2, "numberMisscheduled": 0, "desiredNumberScheduled": 2, "numberReady": 2}
+    }
+  ],
+  "deployments": [
+    {
+      "metadata": {"name": "cluster-collector", "namespace": "observability", "labels": {"app.kubernetes.io/managed-by": "opentelemetry-operator", "app.kubernetes.io/name": "cluster-collector"}},
+      "spec": {
+        "selector": {"matchLabels": {"app.kubernetes.io/component": "opentelemetry-collector", "app.kubernetes.io/instance": "observability.cluster"}},
+        "template": {
+          "metadata": {"labels": {"app.kubernetes.io/component": "opentelemetry-collector", "app.kubernetes.io/instance": "observability.cluster"}},
+          "spec": {"containers": [{"name": "otc-container", "image": "otel/opentelemetry-collector-contrib:0.115.0", "args": ["--config=/conf/collector.yaml"], "resources": {},
+            "volumeMounts": [{"name": "otc-internal", "mountPath": "/conf"}]}],
+            "volumes": [{"name": "otc-internal", "configMap": {"name": "cluster-collector-1a2b3c4d", "items": [{"key": "collector.yaml", "path": "collector.yaml"}]}}]}
+        }
+      },
+      "status": {"replicas": 1, "readyReplicas": 1}
+    },
+    {
+      "metadata": {"name": "chat", "namespace": "serving", "labels": {"app": "chat"}},
+      "spec": {
+        "replicas": 2,
+        "selector": {"matchLabels": {"app": "chat"}},
+        "template": {
+          "metadata": {"labels": {"app": "chat"}},
+          "spec": {"containers": [{"name": "vllm", "image": "vllm/vllm-openai:v0.8.5", "args": ["--model", "/models/qwen", "--otlp-traces-endpoint", "grpc://otel-cluster-collector.observability:4317"],
+            "env": [{"name": "OTEL_SERVICE_NAME", "value": ""}],
+            "resources": {"limits": {"nvidia.com/gpu": "1"}}, "volumeMounts": [{"name": "shm", "mountPath": "/dev/shm"}]}],
+            "volumes": [{"name": "shm", "emptyDir": {"medium": "Memory"}}]}
+        }
+      },
+      "status": {"replicas": 2, "readyReplicas": 2}
+    }
+  ],
+  "jobs": [
+    {
+      "metadata": {"name": "finetune", "namespace": "research"},
+      "spec": {"template": {"spec": {"restartPolicy": "Never", "containers": [{"name": "train", "image": "ghcr.io/acme/train:3.1", "env": [{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": ""}, {"name": "OTEL_SERVICE_NAME", "value": ""}],
+        "resources": {"limits": {"nvidia.com/gpu": "2"}}, "volumeMounts": [{"name": "shm", "mountPath": "/dev/shm"}]}], "volumes": [{"name": "shm", "emptyDir": {"medium": "Memory"}}]}}},
+      "status": {"active": 1}
+    }
+  ],
+  "pods": [
+    {"metadata": {"name": "kube-apiserver-cp-1", "namespace": "kube-system", "labels": {"component": "kube-apiserver", "tier": "control-plane"}},
+     "spec": {"nodeName": "cp-1", "containers": [{"name": "kube-apiserver", "image": "registry.k8s.io/kube-apiserver:v1.34.2",
+       "command": ["kube-apiserver", "--advertise-address=10.0.0.10", "--authorization-mode=Node,RBAC", "--tracing-config-file=/etc/kubernetes/tracing/apiserver-tracing.yaml"], "resources": {}}]},
+     "status": {"phase": "Running"}},
+    {"metadata": {"name": "dcgm-exporter-g1", "namespace": "monitoring", "labels": {"app.kubernetes.io/name": "dcgm-exporter"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "DaemonSet", "name": "dcgm-exporter", "uid": "7a000000-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "gpu-1", "containers": [{"name": "exporter", "image": "nvcr.io/nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04", "resources": {}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "dcgm-exporter-g2", "namespace": "monitoring", "labels": {"app.kubernetes.io/name": "dcgm-exporter"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "DaemonSet", "name": "dcgm-exporter", "uid": "7a000000-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "gpu-2", "containers": [{"name": "exporter", "image": "nvcr.io/nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04", "resources": {}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "chat-5d6f7a8b9-a1", "namespace": "serving", "labels": {"app": "chat", "pod-template-hash": "5d6f7a8b9"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "chat-5d6f7a8b9", "uid": "7b000000-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "gpu-1", "containers": [{"name": "vllm", "image": "vllm/vllm-openai:v0.8.5", "args": ["--model", "/models/qwen", "--otlp-traces-endpoint", "grpc://otel-cluster-collector.observability:4317"], "resources": {"limits": {"nvidia.com/gpu": "1"}}, "volumeMounts": [{"name": "shm", "mountPath": "/dev/shm"}]}], "volumes": [{"name": "shm", "emptyDir": {"medium": "Memory"}}]},
+     "status": {"phase": "Running"}},
+    {"metadata": {"name": "chat-5d6f7a8b9-a2", "namespace": "serving", "labels": {"app": "chat", "pod-template-hash": "5d6f7a8b9"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "chat-5d6f7a8b9", "uid": "7b000000-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "gpu-2", "containers": [{"name": "vllm", "image": "vllm/vllm-openai:v0.8.5", "args": ["--model", "/models/qwen", "--otlp-traces-endpoint", "grpc://otel-cluster-collector.observability:4317"], "resources": {"limits": {"nvidia.com/gpu": "1"}}, "volumeMounts": [{"name": "shm", "mountPath": "/dev/shm"}]}], "volumes": [{"name": "shm", "emptyDir": {"medium": "Memory"}}]},
+     "status": {"phase": "Running"}},
+    {"metadata": {"name": "finetune-x1", "namespace": "research", "labels": {"job-name": "finetune"}, "ownerReferences": [{"apiVersion": "batch/v1", "kind": "Job", "name": "finetune", "uid": "7c000000-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "gpu-1", "containers": [{"name": "train", "image": "ghcr.io/acme/train:3.1", "env": [{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": ""}, {"name": "OTEL_SERVICE_NAME", "value": ""}], "resources": {"limits": {"nvidia.com/gpu": "2"}}, "volumeMounts": [{"name": "shm", "mountPath": "/dev/shm"}]}], "volumes": [{"name": "shm", "emptyDir": {"medium": "Memory"}}]},
+     "status": {"phase": "Running"}}
+  ]
+}

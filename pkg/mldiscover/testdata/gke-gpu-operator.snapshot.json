@@ -151,7 +151,8 @@
           "spec": {
             "nodeSelector": {"nvidia.com/gpu.present": "true"},
             "tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}],
-            "containers": [{"name": "nvidia-dcgm-exporter", "image": "nvcr.io/nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04", "ports": [{"name": "metrics", "containerPort": 9400}], "resources": {}}]
+            "containers": [{"name": "nvidia-dcgm-exporter", "image": "nvcr.io/nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04", "ports": [{"name": "metrics", "containerPort": 9400}], "resources": {},
+              "env": [{"name": "DCGM_EXPORTER_LISTEN", "value": ""}, {"name": "DCGM_EXPORTER_KUBERNETES", "value": "true"}, {"name": "DCGM_EXPORTER_COLLECTORS", "value": "/etc/dcgm-exporter/dcp-metrics-included.csv"}]}]
           }
         }
       },

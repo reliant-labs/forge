@@ -42,7 +42,10 @@
       "kind": "manual",
       "summary": "Scale on queue depth, not CPU: a KEDA ScaledObject with a Prometheus trigger on vllm:num_requests_waiting (or KV-cache usage; Triton: nv_inference_queue_duration_us).",
       "docs": "https://keda.sh/docs/latest/scalers/prometheus/"
-    }
+    },
+    "signals": [
+      "metrics.inference"
+    ]
   },
   {
     "id": "no-node-health",
@@ -50,14 +53,17 @@
     "confidence": "likely",
     "title": "2 accelerator nodes have no node health detection: bad nodes keep getting work",
     "evidence": [
-      "no node-problem-detector, no EKS node monitoring agent, and every node condition is one of the kubelet's five"
+      "no node-problem-detector, no EKS node monitoring agent, and no node condition a health source sets"
     ],
     "fix": {
       "kind": "kcl",
       "summary": "Otherwise install node-problem-detector as the stack's node_health, with a kernel-log rule that sets GPUProblem on a fatal NVIDIA Xid.",
       "kcl_diff": "--- a/ml.k\n+++ b/ml.k\n@@ -57,43 +57,42 @@\n             }\n         }\n     ]\n-    # Suggested for finding no-node-health: uncomment to install.\n-    # node_health = forge.Install {\n-    #     kind = \"node-problem-detector\"\n-    #     chart = forge.HelmChart {\n-    #         name = \"node-problem-detector\"\n-    #         repo = \"https://charts.deliveryhero.io/\"\n-    #         chart = \"node-problem-detector\"\n-    #         version = \"2.3.14\"\n-    #         namespace = \"forge-ml\"\n-    #         delivery = \"bundle\"\n-    #         values = {\n-    #             \"settings\": {\n-    #                 \"custom_monitor_definitions\": {\n-    #                     \"gpu-xid-monitor.json\": \"\"\"{\n-    #   \"plugin\": \"kmsg\",\n-    #   \"logPath\": \"/dev/kmsg\",\n-    #   \"lookback\": \"5m\",\n-    #   \"bufferSize\": 10,\n-    #   \"source\": \"gpu-xid-monitor\",\n-    #   \"conditions\": [\n-    #     {\"type\": \"GPUProblem\", \"reason\": \"NoGPUXid\", \"message\": \"no fatal NVIDIA Xid in the kernel log\"}\n-    #   ],\n-    #   \"rules\": [\n-    #     {\"type\": \"permanent\", \"condition\": \"GPUProblem\", \"reason\": \"NVIDIAXid\", \"pattern\": \"NVRM: Xid [(][^)]*[)]: (48|64|74|79|94|95|119|120|140),.*\"}\n-    #   ]\n-    # }\n-    # \"\"\"\n-    #                 }\n-    #                 \"log_monitors\": [\n-    #                     \"/config/kernel-monitor.json\"\n-    #                     \"/config/docker-monitor.json\"\n-    #                     \"/custom-config/gpu-xid-monitor.json\"\n-    #                 ]\n-    #             }\n-    #         }\n-    #     }\n-    # }\n+    node_health = forge.Install {\n+        kind = \"node-problem-detector\"\n+        chart = forge.HelmChart {\n+            name = \"node-problem-detector\"\n+            repo = \"https://charts.deliveryhero.io/\"\n+            chart = \"node-problem-detector\"\n+            version = \"2.3.14\"\n+            namespace = \"forge-ml\"\n+            delivery = \"bundle\"\n+            values = {\n+                \"settings\": {\n+                    \"custom_monitor_definitions\": {\n+                        \"gpu-xid-monitor.json\": \"\"\"{\n+      \"plugin\": \"kmsg\",\n+      \"logPath\": \"/dev/kmsg\",\n+      \"lookback\": \"5m\",\n+      \"bufferSize\": 10,\n+      \"source\": \"gpu-xid-monitor\",\n+      \"conditions\": [\n+        {\"type\": \"GPUProblem\", \"reason\": \"NoGPUXid\", \"message\": \"no fatal NVIDIA Xid in the kernel log\"}\n+      ],\n+      \"rules\": [\n+        {\"type\": \"permanent\", \"condition\": \"GPUProblem\", \"reason\": \"NVIDIAXid\", \"pattern\": \"NVRM: Xid [(][^)]*[)]: (48|64|74|79|94|95|119|120|140),.*\"}\n+      ]\n+    }\n+    \"\"\"\n+                    }\n+                    \"log_monitors\": [\n+                        \"/config/kernel-monitor.json\"\n+                        \"/config/docker-monitor.json\"\n+                        \"/custom-config/gpu-xid-monitor.json\"\n+                    ]\n+                }\n+            }\n+        }\n+    }\n     # Suggested for finding gpu-jobs-bypass-queue: uncomment to install.\n     # queue = forge.Install {\n     #     kind = \"kueue\"\n",
       "docs": "https://github.com/kubernetes/node-problem-detector"
-    }
+    },
+    "signals": [
+      "node.health"
+    ]
   },
   {
     "id": "no-p2p-cache",
@@ -102,6 +108,57 @@
     }
   },
   {
+    "id": "inference-tracing-off",
+    "severity": "low",
+    "confidence": "likely",
+    "title": "1 inference server exports no traces",
+    "evidence": [
+      "Deployment/serving/chat"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "vLLM: pass --otlp-traces-endpoint \u003ccollector\u003e:4317 (and OTEL_SERVICE_NAME). Triton: --trace-config mode=opentelemetry --trace-config opentelemetry,url=\u003ccollector\u003e:4318/v1/traces. Per-request spans show queueing, prefill and decode time.",
+      "docs": "https://docs.vllm.ai/en/latest/examples/online_serving/opentelemetry.html"
+    },
+    "signals": [
+      "tracing.inference"
+    ]
+  },
+  {
+    "id": "no-continuous-profiling",
+    "severity": "low",
+    "confidence": "unverified",
+    "title": "No continuous profiling on the accelerator nodes",
+    "evidence": [
+      "profilers reach 0 of 2 accelerator nodes"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Run one continuous eBPF profiler as a DaemonSet on the accelerator nodes: Parca agent, Grafana Alloy with pyroscope.ebpf, or the OpenTelemetry eBPF profiler (otel/opentelemetry-collector-ebpf-profiler). It shows where CPU time goes in data loaders and serving code with no code change.",
+      "docs": "https://www.parca.dev/docs/parca-agent"
+    },
+    "signals": [
+      "profiling.continuous"
+    ]
+  },
+  {
+    "id": "no-otlp-receiver",
+    "severity": "low",
+    "confidence": "unverified",
+    "title": "Nothing accepts OTLP from workloads",
+    "evidence": [
+      "no collector runs"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Install an OpenTelemetry Collector with an otlp receiver (grpc :4317, http :4318) so vLLM, Triton and training jobs can export traces and metrics.",
+      "docs": "https://github.com/open-telemetry/opentelemetry-collector/tree/main/receiver/otlpreceiver"
+    },
+    "signals": [
+      "telemetry.otlp"
+    ]
+  },
+  {
     "id": "image-volumes-unavailable",
     "severity": "info",
     "confidence": "certain",
@@ -124,12 +181,32 @@
     "title": "Kubelet tracing may be off on 2 self-managed accelerator nodes (unverified)",
     "evidence": [
       "Node/k3d-fake-gpu-agent-0: kubelet v1.33.1+k3s1",
-      "Node/k3d-fake-gpu-agent-1: kubelet v1.33.1+k3s1"
+      "Node/k3d-fake-gpu-agent-1: kubelet v1.33.1+k3s1",
+      "kube-system/kubelet-config was not read (not a kubeadm cluster, or the grant refused it); the kubelet's config file lives on each node, which discovery never reads"
     ],
     "fix": {
       "kind": "manual",
       "summary": "Discovery cannot read the kubelet's config (it never requests nodes/proxy), so check it: if KubeletConfiguration has no `tracing` block, add one (GA in Kubernetes 1.34) pointing at your OTLP collector, to see image pull and container start spans. Dismiss this finding once it is on.",
       "docs": "https://kubernetes.io/docs/concepts/cluster-administration/system-traces/"
-    }
+    },
+    "signals": [
+      "kubelet.tracing"
+    ]
+  },
+  {
+    "id": "training-tracing-off",
+    "severity": "info",
+    "confidence": "likely",
+    "title": "1 accelerator Job exports no OTLP traces",
+    "evidence": [
+      "Job/serving/bench"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Set OTEL_EXPORTER_OTLP_ENDPOINT (and OTEL_SERVICE_NAME) on the Job's containers, or inject an SDK with an OpenTelemetry Instrumentation resource, so steps and data-loading spans reach your collector."
+    },
+    "signals": [
+      "tracing.training"
+    ]
   }
 ]

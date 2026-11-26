@@ -1,0 +1,164 @@
+{
+  "schema": "forge.dev/ml-snapshot/v1",
+  "context": "lab-p4d",
+  "server_version": "v1.35.1",
+  "collected_at": "2026-11-26T09:00:00Z",
+  "api_groups": ["apps", "batch"],
+  "nodes": [
+    {
+      "metadata": {"name": "ip-10-1-0-11", "labels": {"node.kubernetes.io/instance-type": "p4d.24xlarge", "topology.kubernetes.io/region": "us-east-1", "nvidia.com/gpu.present": "true", "nvidia.com/gpu.product": "NVIDIA-A100-SXM4-40GB", "nvidia.com/cuda.driver.major": "570", "nvidia.com/cuda.driver.minor": "133", "nvidia.com/cuda.driver.rev": "20"}},
+      "spec": {"providerID": "aws:///us-east-1a/i-0p4d00000000000011"},
+      "status": {
+        "capacity": {"cpu": "96", "memory": "1180000000Ki", "nvidia.com/gpu": "8", "pods": "110"},
+        "allocatable": {"cpu": "96", "memory": "1180000000Ki", "nvidia.com/gpu": "8", "pods": "110"},
+        "conditions": [{"type": "KernelDeadlock", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.35.1", "containerRuntimeVersion": "containerd://2.1.4"}
+      }
+    },
+    {
+      "metadata": {"name": "ip-10-1-0-12", "labels": {"node.kubernetes.io/instance-type": "p4d.24xlarge", "topology.kubernetes.io/region": "us-east-1", "nvidia.com/gpu.present": "true", "nvidia.com/gpu.product": "NVIDIA-A100-SXM4-40GB", "nvidia.com/cuda.driver.major": "570", "nvidia.com/cuda.driver.minor": "133", "nvidia.com/cuda.driver.rev": "20"}},
+      "spec": {"providerID": "aws:///us-east-1a/i-0p4d00000000000012"},
+      "status": {
+        "capacity": {"cpu": "96", "memory": "1180000000Ki", "nvidia.com/gpu": "8", "pods": "110"},
+        "allocatable": {"cpu": "96", "memory": "1180000000Ki", "nvidia.com/gpu": "8", "pods": "110"},
+        "conditions": [{"type": "KernelDeadlock", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.35.1", "containerRuntimeVersion": "containerd://2.1.4"}
+      }
+    }
+  ],
+  "configmaps": [
+    {"metadata": {"name": "alloy-config", "namespace": "monitoring"},
+     "data": {"config.alloy": "discovery.kubernetes \"pods\" {\n  role = \"pod\"\n}\n\npyroscope.ebpf \"default\" {\n  targets    = discovery.kubernetes.pods.targets\n  forward_to = [pyroscope.write.backend.receiver]\n}\n\npyroscope.write \"backend\" {\n  endpoint {\n    url = \"https://profiles.lab.example\"\n    basic_auth {\n      password = \"REDACTED\"\n    }\n  }\n}\n\nloki.source.kubernetes \"pods\" {\n  targets    = discovery.kubernetes.pods.targets\n  forward_to = [loki.write.default.receiver]\n}\n\nloki.write \"default\" {\n  endpoint {\n    url = \"https://logs.lab.example/loki/api/v1/push\"\n  }\n}\n"}},
+    {"metadata": {"name": "otel-agent-config", "namespace": "monitoring"},
+     "data": {"relay.yaml": "receivers:\n  otlp:\n    protocols:\n      grpc:\n        endpoint: ${env:MY_POD_IP}:4317\n  kubeletstats:\n    collection_interval: 30s\n    auth_type: serviceAccount\n  filelog:\n    include: [/var/log/pods/*/*/*.log]\n  prometheus:\n    config:\n      scrape_configs:\n      - job_name: triton\n        kubernetes_sd_configs:\n        - role: pod\nprocessors:\n  batch: {}\nexporters:\n  otlphttp:\n    endpoint: https://otel.lab.example\n    headers:\n      x-api-key: REDACTED\nservice:\n  pipelines:\n    metrics:\n      receivers: [otlp, kubeletstats, prometheus]\n      processors: [batch]\n      exporters: [otlphttp]\n    logs:\n      receivers: [filelog]\n      processors: [batch]\n      exporters: [otlphttp]\n    traces:\n      receivers: [otlp]\n      processors: [batch]\n      exporters: [otlphttp]\n"}}
+  ],
+  "probes": [
+    {"kind": "dcgm-exporter", "namespace": "forge-ml", "pod": "dcgm-exporter-p1", "node": "ip-10-1-0-11", "port": 9400, "path": "/metrics",
+     "families": ["DCGM_EXP_XID_ERRORS_TOTAL", "DCGM_FI_DEV_BOARD_POWER_WATTS", "DCGM_FI_DEV_DEC_UTIL_RATIO", "DCGM_FI_DEV_ENC_UTIL_RATIO", "DCGM_FI_DEV_FB_FREE_BYTES", "DCGM_FI_DEV_FB_USED_BYTES", "DCGM_FI_DEV_GPU_TEMP_CELSIUS", "DCGM_FI_DEV_GPU_UTIL_RATIO", "DCGM_FI_DEV_MEMORY_TEMP_CELSIUS", "DCGM_FI_DEV_NVLINK_THROUGHPUT_BYTES_PER_SECOND", "DCGM_FI_DEV_PCIE_REPLAY_TOTAL", "DCGM_FI_DEV_ROW_REMAP_FAILED", "DCGM_FI_DEV_ROW_REMAP_UNCORRECTABLE_TOTAL", "DCGM_FI_DEV_XID_ERROR", "DCGM_FI_PROF_DRAM_UTIL_RATIO", "DCGM_FI_PROF_GR_ENGINE_UTIL_RATIO", "DCGM_FI_PROF_PCIE_RX_BYTES", "DCGM_FI_PROF_PCIE_TX_BYTES", "DCGM_FI_PROF_TENSOR_UTIL_RATIO", "go_goroutines", "process_cpu_seconds_total"],
+     "label_keys": ["DCGM_FI_DRIVER_VERSION", "Hostname", "UUID", "container", "device", "gpu", "modelName", "namespace", "pci_bus_id", "pod"]},
+    {"kind": "node-problem-detector", "namespace": "forge-ml", "pod": "node-problem-detector-n1", "node": "ip-10-1-0-11", "port": 20257, "path": "/metrics",
+     "families": ["problem_counter", "problem_gauge"], "label_keys": ["reason", "type"]}
+  ],
+  "daemonsets": [
+    {
+      "metadata": {"name": "dcgm-exporter", "namespace": "forge-ml", "labels": {"app.kubernetes.io/name": "dcgm-exporter", "helm.sh/chart": "dcgm-exporter-4.9.0", "forge.dev/component-owner": "lab.prod", "forge.dev/workload": "dcgm-exporter"}},
+      "spec": {
+        "selector": {"matchLabels": {"app.kubernetes.io/name": "dcgm-exporter", "app.kubernetes.io/instance": "dcgm-exporter"}},
+        "template": {
+          "metadata": {"labels": {"app.kubernetes.io/name": "dcgm-exporter", "app.kubernetes.io/instance": "dcgm-exporter"}},
+          "spec": {
+            "tolerations": [{"operator": "Exists"}],
+            "containers": [{"name": "exporter", "image": "nvcr.io/nvidia/k8s/dcgm-exporter:4.9.0",
+              "env": [{"name": "DCGM_EXPORTER_CONFIG_FILE", "value": ""}],
+              "ports": [{"name": "metrics", "containerPort": 9400}], "resources": {},
+              "volumeMounts": [{"name": "config", "mountPath": "/etc/dcgm-exporter/chart/config"}]}],
+            "volumes": [{"name": "config", "configMap": {"name": "dcgm-exporter-config"}}]
+          }
+        }
+      },
+      "status": {"currentNumberScheduled": 2, "numberMisscheduled": 0, "desiredNumberScheduled": 2, "numberReady": 2}
+    },
+    {
+      "metadata": {"name": "node-problem-detector", "namespace": "forge-ml", "labels": {"app.kubernetes.io/name": "node-problem-detector", "helm.sh/chart": "node-problem-detector-2.3.14", "forge.dev/component-owner": "lab.prod", "forge.dev/workload": "node-problem-detector"}},
+      "spec": {
+        "selector": {"matchLabels": {"app.kubernetes.io/name": "node-problem-detector"}},
+        "template": {
+          "metadata": {"labels": {"app.kubernetes.io/name": "node-problem-detector"}},
+          "spec": {
+            "tolerations": [{"operator": "Exists", "effect": "NoSchedule"}],
+            "containers": [{"name": "node-problem-detector", "image": "registry.k8s.io/node-problem-detector/node-problem-detector:v0.8.19",
+              "command": ["/bin/sh", "-c", "exec /node-problem-detector --logtostderr --config.system-log-monitor=/config/kernel-monitor.json,/config/docker-monitor.json --prometheus-address=0.0.0.0 --prometheus-port=20257"],
+              "ports": [{"name": "exporter", "containerPort": 20257}], "resources": {}}]
+          }
+        }
+      },
+      "status": {"currentNumberScheduled": 2, "numberMisscheduled": 0, "desiredNumberScheduled": 2, "numberReady": 2}
+    },
+    {
+      "metadata": {"name": "alloy", "namespace": "monitoring", "labels": {"app.kubernetes.io/name": "alloy", "helm.sh/chart": "alloy-0.10.1"}},
+      "spec": {
+        "selector": {"matchLabels": {"app.kubernetes.io/name": "alloy"}},
+        "template": {
+          "metadata": {"labels": {"app.kubernetes.io/name": "alloy"}},
+          "spec": {
+            "tolerations": [{"operator": "Exists"}],
+            "containers": [{"name": "alloy", "image": "grafana/alloy:v1.5.1", "args": ["run", "/etc/alloy/config.alloy", "--storage.path=/tmp/alloy"], "resources": {},
+              "volumeMounts": [{"name": "config", "mountPath": "/etc/alloy"}]}],
+            "volumes": [{"name": "config", "configMap": {"name": "alloy-config"}}]
+          }
+        }
+      },
+      "status": {"currentNumberScheduled": 2, "numberMisscheduled": 0, "desiredNumberScheduled": 2, "numberReady": 2}
+    },
+    {
+      "metadata": {"name": "otel-agent", "namespace": "monitoring", "labels": {"app.kubernetes.io/name": "opentelemetry-collector", "helm.sh/chart": "opentelemetry-collector-0.111.0"}},
+      "spec": {
+        "selector": {"matchLabels": {"app.kubernetes.io/name": "opentelemetry-collector"}},
+        "template": {
+          "metadata": {"labels": {"app.kubernetes.io/name": "opentelemetry-collector"}},
+          "spec": {
+            "tolerations": [{"operator": "Exists"}],
+            "containers": [{"name": "opentelemetry-collector", "image": "otel/opentelemetry-collector-contrib:0.115.0", "args": ["--config=/conf/relay.yaml"],
+              "env": [{"name": "MY_POD_IP", "valueFrom": {"fieldRef": {"fieldPath": "status.podIP"}}}], "resources": {},
+              "volumeMounts": [{"name": "opentelemetry-collector-configmap", "mountPath": "/conf"}]}],
+            "volumes": [{"name": "opentelemetry-collector-configmap", "configMap": {"name": "otel-agent-config", "items": [{"key": "relay.yaml", "path": "relay.yaml"}]}}]
+          }
+        }
+      },
+      "status": {"currentNumberScheduled": 2, "numberMisscheduled": 0, "desiredNumberScheduled": 2, "numberReady": 2}
+    },
+    {
+      "metadata": {"name": "ebpf-profiler", "namespace": "monitoring", "labels": {"app.kubernetes.io/name": "ebpf-profiler"}},
+      "spec": {
+        "selector": {"matchLabels": {"app.kubernetes.io/name": "ebpf-profiler"}},
+        "template": {
+          "metadata": {"labels": {"app.kubernetes.io/name": "ebpf-profiler"}},
+          "spec": {"hostPID": true, "tolerations": [{"operator": "Exists"}], "containers": [{"name": "profiler", "image": "otel/opentelemetry-collector-ebpf-profiler:0.166.0", "args": ["--feature-gates=+service.profilesSupport"], "resources": {}}]}
+        }
+      },
+      "status": {"currentNumberScheduled": 2, "numberMisscheduled": 0, "desiredNumberScheduled": 2, "numberReady": 2}
+    }
+  ],
+  "deployments": [
+    {
+      "metadata": {"name": "triton", "namespace": "serving", "labels": {"app": "triton"}},
+      "spec": {
+        "replicas": 2,
+        "selector": {"matchLabels": {"app": "triton"}},
+        "template": {
+          "metadata": {"labels": {"app": "triton"}},
+          "spec": {"containers": [{"name": "triton", "image": "nvcr.io/nvidia/tritonserver:24.10-py3", "args": ["tritonserver", "--model-repository=/models", "--trace-config", "mode=opentelemetry", "--trace-config", "opentelemetry,url=otel-agent.monitoring:4318/v1/traces"],
+            "resources": {"limits": {"nvidia.com/gpu": "1"}}, "volumeMounts": [{"name": "shm", "mountPath": "/dev/shm"}]}],
+            "volumes": [{"name": "shm", "emptyDir": {"medium": "Memory"}}]}
+        }
+      },
+      "status": {"replicas": 2, "readyReplicas": 2}
+    }
+  ],
+  "hpas": [
+    {
+      "metadata": {"name": "triton", "namespace": "serving"},
+      "spec": {
+        "scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "triton"},
+        "minReplicas": 2, "maxReplicas": 8,
+        "metrics": [{"type": "Pods", "pods": {"metric": {"name": "nv_inference_queue_duration_us"}, "target": {"type": "AverageValue", "averageValue": "50000"}}}]
+      }
+    }
+  ],
+  "pods": [
+    {"metadata": {"name": "dcgm-exporter-p1", "namespace": "forge-ml", "labels": {"app.kubernetes.io/name": "dcgm-exporter", "app.kubernetes.io/instance": "dcgm-exporter"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "DaemonSet", "name": "dcgm-exporter", "uid": "9a000000-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "ip-10-1-0-11", "containers": [{"name": "exporter", "image": "nvcr.io/nvidia/k8s/dcgm-exporter:4.9.0", "resources": {}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "dcgm-exporter-p2", "namespace": "forge-ml", "labels": {"app.kubernetes.io/name": "dcgm-exporter", "app.kubernetes.io/instance": "dcgm-exporter"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "DaemonSet", "name": "dcgm-exporter", "uid": "9a000000-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "ip-10-1-0-12", "containers": [{"name": "exporter", "image": "nvcr.io/nvidia/k8s/dcgm-exporter:4.9.0", "resources": {}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "node-problem-detector-n1", "namespace": "forge-ml", "labels": {"app.kubernetes.io/name": "node-problem-detector"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "DaemonSet", "name": "node-problem-detector", "uid": "9b000000-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "ip-10-1-0-11", "containers": [{"name": "node-problem-detector", "image": "registry.k8s.io/node-problem-detector/node-problem-detector:v0.8.19", "resources": {}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "node-problem-detector-n2", "namespace": "forge-ml", "labels": {"app.kubernetes.io/name": "node-problem-detector"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "DaemonSet", "name": "node-problem-detector", "uid": "9b000000-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "ip-10-1-0-12", "containers": [{"name": "node-problem-detector", "image": "registry.k8s.io/node-problem-detector/node-problem-detector:v0.8.19", "resources": {}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "triton-7c8d9e0f1-t1", "namespace": "serving", "labels": {"app": "triton", "pod-template-hash": "7c8d9e0f1"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "triton-7c8d9e0f1", "uid": "9c000000-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "ip-10-1-0-11", "containers": [{"name": "triton", "image": "nvcr.io/nvidia/tritonserver:24.10-py3", "args": ["tritonserver", "--model-repository=/models", "--trace-config", "mode=opentelemetry", "--trace-config", "opentelemetry,url=otel-agent.monitoring:4318/v1/traces"], "resources": {"limits": {"nvidia.com/gpu": "1"}}, "volumeMounts": [{"name": "shm", "mountPath": "/dev/shm"}]}], "volumes": [{"name": "shm", "emptyDir": {"medium": "Memory"}}]},
+     "status": {"phase": "Running"}},
+    {"metadata": {"name": "triton-7c8d9e0f1-t2", "namespace": "serving", "labels": {"app": "triton", "pod-template-hash": "7c8d9e0f1"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "triton-7c8d9e0f1", "uid": "9c000000-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "ip-10-1-0-12", "containers": [{"name": "triton", "image": "nvcr.io/nvidia/tritonserver:24.10-py3", "args": ["tritonserver", "--model-repository=/models", "--trace-config", "mode=opentelemetry", "--trace-config", "opentelemetry,url=otel-agent.monitoring:4318/v1/traces"], "resources": {"limits": {"nvidia.com/gpu": "1"}}, "volumeMounts": [{"name": "shm", "mountPath": "/dev/shm"}]}], "volumes": [{"name": "shm", "emptyDir": {"medium": "Memory"}}]},
+     "status": {"phase": "Running"}}
+  ]
+}

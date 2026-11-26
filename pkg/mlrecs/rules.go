@@ -452,12 +452,11 @@ func ruleNoNodeHealth(c *evalCtx) []Finding {
 	if len(c.inv.Machines) == 0 || len(c.present(mldiscover.KindNodeProblemDetector)) > 0 || len(c.present(mldiscover.KindEKSNodeMonitoring)) > 0 {
 		return nil
 	}
-	for _, n := range c.s.Nodes {
-		for _, cond := range n.Status.Conditions {
-			if !mldiscover.IsCoreCondition(string(cond.Type)) {
-				return nil
-			}
-		}
+	// Only conditions a health source sets count (a controller's own
+	// condition, such as fake-gpu-operator's gpu-fractioning.nvidia.com/Ready,
+	// does not): the inventory's node.health row decides.
+	if r, ok := c.coverage(mldiscover.SignalNodeHealth); ok && r.Status != mldiscover.CoverageMissing {
+		return nil
 	}
 	first := ""
 	switch c.inv.Cloud {
@@ -471,7 +470,7 @@ func ruleNoNodeHealth(c *evalCtx) []Finding {
 	return []Finding{{
 		Confidence: ConfidenceLikely,
 		Title:      fmt.Sprintf("%s no node health detection: bad nodes keep getting work", pv(len(c.inv.Machines), "accelerator node", "accelerator nodes", "has", "have")),
-		Evidence:   []string{"no node-problem-detector, no EKS node monitoring agent, and every node condition is one of the kubelet's five"},
+		Evidence:   []string{"no node-problem-detector, no EKS node monitoring agent, and no node condition a health source sets"},
 		Fix: Fix{Kind: FixKCL,
 			Summary: first + "Otherwise install node-problem-detector as the stack's node_health, with a kernel-log rule that sets GPUProblem on a fatal NVIDIA Xid.",
 			Docs:    "https://github.com/kubernetes/node-problem-detector"},
@@ -1214,25 +1213,5 @@ func ruleImageVolumes(c *evalCtx) []Finding {
 		Fix: Fix{Kind: FixManual,
 			Summary: fmt.Sprintf("Upgrade to Kubernetes 1.%d+ with containerd 2.1+ to mount weights as an image volume. Until then, KServe's modelcar sidecar or an init-container copy is the fallback.", ImageVolumeDefaultOnMinor),
 			Docs:    "https://kubernetes.io/docs/concepts/storage/volumes/#image"},
-	}}
-}
-
-// --- kubelet-tracing-off -----------------------------------------------
-
-func ruleKubeletTracing(c *evalCtx) []Finding {
-	if c.inv.Cloud != mldiscover.CloudOther || len(c.inv.Machines) == 0 {
-		return nil
-	}
-	var ev []string
-	for _, m := range c.inv.Machines {
-		ev = append(ev, fmt.Sprintf("Node/%s: kubelet %s", m.Name, m.KubeletVersion))
-	}
-	return []Finding{{
-		Confidence: ConfidenceUnverified,
-		Title:      fmt.Sprintf("Kubelet tracing may be off on %s (unverified)", plural(len(ev), "self-managed accelerator node", "self-managed accelerator nodes")),
-		Evidence:   capEvidence(ev),
-		Fix: Fix{Kind: FixManual,
-			Summary: "Discovery cannot read the kubelet's config (it never requests nodes/proxy), so check it: if KubeletConfiguration has no `tracing` block, add one (GA in Kubernetes 1.34) pointing at your OTLP collector, to see image pull and container start spans. Dismiss this finding once it is on.",
-			Docs:    "https://kubernetes.io/docs/concepts/cluster-administration/system-traces/"},
 	}}
 }

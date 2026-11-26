@@ -1,0 +1,123 @@
+{
+  "schema": "forge.dev/ml-snapshot/v1",
+  "context": "aks-ml-prod",
+  "server_version": "v1.31.3",
+  "collected_at": "2026-11-26T09:00:00Z",
+  "api_groups": ["apps", "batch", "nvidia.com"],
+  "crds": ["clusterpolicies.nvidia.com", "nvidiadrivers.nvidia.com"],
+  "custom_resources": {"clusterpolicies.nvidia.com": 1},
+  "custom_objects": {
+    "clusterpolicies.nvidia.com": [
+      {
+        "apiVersion": "nvidia.com/v1",
+        "kind": "ClusterPolicy",
+        "metadata": {"name": "cluster-policy"},
+        "spec": {
+          "dcgm": {"enabled": false},
+          "dcgmExporter": {"enabled": true, "version": "4.1.1-4.0.4-ubuntu22.04", "config": {"name": "custom-dcgm-metrics"}},
+          "devicePlugin": {"enabled": true}
+        }
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "metadata": {"name": "aks-gpupool-12345678-vmss000000", "labels": {"kubernetes.azure.com/agentpool": "gpupool", "agentpool": "gpupool", "kubernetes.azure.com/cluster": "MC_ml_prod_eastus", "node.kubernetes.io/instance-type": "Standard_NC24ads_A100_v4", "topology.kubernetes.io/region": "eastus", "nvidia.com/gpu.present": "true", "nvidia.com/gpu.product": "NVIDIA-A100-80GB-PCIe", "nvidia.com/cuda.driver.major": "550", "nvidia.com/cuda.driver.minor": "127", "nvidia.com/cuda.driver.rev": "05"}},
+      "spec": {"providerID": "azure:///subscriptions/0000/resourceGroups/mc_ml_prod_eastus/providers/Microsoft.Compute/virtualMachineScaleSets/aks-gpupool-12345678-vmss/virtualMachines/0", "taints": [{"key": "sku", "value": "gpu", "effect": "NoSchedule"}]},
+      "status": {
+        "capacity": {"cpu": "24", "memory": "226000000Ki", "nvidia.com/gpu": "1", "pods": "110"},
+        "allocatable": {"cpu": "23", "memory": "210000000Ki", "nvidia.com/gpu": "1", "pods": "110"},
+        "conditions": [{"type": "KernelDeadlock", "status": "False"}, {"type": "ReadonlyFilesystem", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.31.3", "containerRuntimeVersion": "containerd://1.7.25-1"}
+      }
+    },
+    {
+      "metadata": {"name": "aks-gpupool-12345678-vmss000001", "labels": {"kubernetes.azure.com/agentpool": "gpupool", "agentpool": "gpupool", "kubernetes.azure.com/cluster": "MC_ml_prod_eastus", "node.kubernetes.io/instance-type": "Standard_NC24ads_A100_v4", "topology.kubernetes.io/region": "eastus", "nvidia.com/gpu.present": "true", "nvidia.com/gpu.product": "NVIDIA-A100-80GB-PCIe", "nvidia.com/cuda.driver.major": "550", "nvidia.com/cuda.driver.minor": "127", "nvidia.com/cuda.driver.rev": "05"}},
+      "spec": {"providerID": "azure:///subscriptions/0000/resourceGroups/mc_ml_prod_eastus/providers/Microsoft.Compute/virtualMachineScaleSets/aks-gpupool-12345678-vmss/virtualMachines/1", "taints": [{"key": "sku", "value": "gpu", "effect": "NoSchedule"}]},
+      "status": {
+        "capacity": {"cpu": "24", "memory": "226000000Ki", "nvidia.com/gpu": "1", "pods": "110"},
+        "allocatable": {"cpu": "23", "memory": "210000000Ki", "nvidia.com/gpu": "1", "pods": "110"},
+        "conditions": [{"type": "KernelDeadlock", "status": "False"}, {"type": "ReadonlyFilesystem", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.31.3", "containerRuntimeVersion": "containerd://1.7.25-1"}
+      }
+    }
+  ],
+  "configmaps": [
+    {"metadata": {"name": "custom-dcgm-metrics", "namespace": "gpu-operator"},
+     "data": {"dcgm-metrics.csv": "# Trimmed by the platform team to cut cardinality.\n# DCGM FIELD, Prometheus metric type, help message\nDCGM_FI_DEV_GPU_UTIL, gauge, GPU utilization (in %).\nDCGM_FI_DEV_FB_USED, gauge, Frame buffer memory used (in MB).\nDCGM_FI_DEV_FB_FREE, gauge, Frame buffer memory free (in MB).\nDCGM_FI_DEV_POWER_USAGE, gauge, Power draw (in W).\nDCGM_FI_DEV_GPU_TEMP, gauge, GPU temperature (in C).\n# DCGM_FI_DEV_XID_ERRORS, gauge, Value of the last XID error encountered.\n"}},
+    {"metadata": {"name": "node-problem-detector-custom-config", "namespace": "kube-system"},
+     "data": {"disk-monitor.json": "{\n  \"plugin\": \"journald\",\n  \"pluginConfig\": {\"source\": \"kernel\"},\n  \"logPath\": \"/var/log/journal\",\n  \"lookback\": \"5m\",\n  \"source\": \"disk-monitor\",\n  \"conditions\": [{\"type\": \"DiskIOError\", \"reason\": \"NoDiskIOError\", \"message\": \"no disk IO errors\"}],\n  \"rules\": [{\"type\": \"permanent\", \"condition\": \"DiskIOError\", \"reason\": \"BlkUpdateRequestIOError\", \"pattern\": \"blk_update_request: I/O error.*\"}]\n}\n"}}
+  ],
+  "daemonsets": [
+    {
+      "metadata": {
+        "name": "nvidia-dcgm-exporter", "namespace": "gpu-operator",
+        "labels": {"app": "nvidia-dcgm-exporter", "app.kubernetes.io/managed-by": "gpu-operator"},
+        "ownerReferences": [{"apiVersion": "nvidia.com/v1", "kind": "ClusterPolicy", "name": "cluster-policy", "uid": "8a000000-0000-4000-8000-000000000001", "controller": true}]
+      },
+      "spec": {
+        "selector": {"matchLabels": {"app": "nvidia-dcgm-exporter"}},
+        "template": {
+          "metadata": {"labels": {"app": "nvidia-dcgm-exporter"}},
+          "spec": {
+            "nodeSelector": {"nvidia.com/gpu.deploy.dcgm-exporter": "true"},
+            "tolerations": [{"operator": "Exists"}],
+            "containers": [{"name": "nvidia-dcgm-exporter", "image": "nvcr.io/nvidia/k8s/dcgm-exporter:4.1.1-4.0.4-ubuntu22.04",
+              "env": [{"name": "DCGM_EXPORTER_LISTEN", "value": ""}, {"name": "DCGM_EXPORTER_KUBERNETES", "value": "true"}, {"name": "DCGM_EXPORTER_COLLECTORS", "value": "/etc/dcgm-exporter/dcgm-metrics.csv"}],
+              "ports": [{"name": "metrics", "containerPort": 9400}], "resources": {},
+              "volumeMounts": [{"name": "metrics-config", "mountPath": "/etc/dcgm-exporter/dcgm-metrics.csv", "subPath": "dcgm-metrics.csv", "readOnly": true}]}],
+            "volumes": [{"name": "metrics-config", "configMap": {"name": "custom-dcgm-metrics", "items": [{"key": "dcgm-metrics.csv", "path": "dcgm-metrics.csv"}]}}]
+          }
+        }
+      },
+      "status": {"currentNumberScheduled": 2, "numberMisscheduled": 0, "desiredNumberScheduled": 2, "numberReady": 2}
+    },
+    {
+      "metadata": {"name": "node-problem-detector", "namespace": "kube-system", "labels": {"app.kubernetes.io/name": "node-problem-detector", "helm.sh/chart": "node-problem-detector-2.3.14"}},
+      "spec": {
+        "selector": {"matchLabels": {"app.kubernetes.io/name": "node-problem-detector"}},
+        "template": {
+          "metadata": {"labels": {"app.kubernetes.io/name": "node-problem-detector"}},
+          "spec": {
+            "tolerations": [{"operator": "Exists", "effect": "NoSchedule"}],
+            "containers": [{"name": "node-problem-detector", "image": "registry.k8s.io/node-problem-detector/node-problem-detector:v0.8.19",
+              "command": ["/bin/sh", "-c", "exec /node-problem-detector --logtostderr --config.system-log-monitor=/config/kernel-monitor.json,/config/docker-monitor.json,/custom-config/disk-monitor.json --prometheus-address=0.0.0.0 --prometheus-port=20257 --k8s-exporter-heartbeat-period=5m0s"],
+              "ports": [{"name": "exporter", "containerPort": 20257}], "resources": {},
+              "volumeMounts": [{"name": "custom-config", "mountPath": "/custom-config", "readOnly": true}]}],
+            "volumes": [{"name": "custom-config", "configMap": {"name": "node-problem-detector-custom-config"}}]
+          }
+        }
+      },
+      "status": {"currentNumberScheduled": 2, "numberMisscheduled": 0, "desiredNumberScheduled": 2, "numberReady": 2}
+    },
+    {
+      "metadata": {"name": "datadog-agent", "namespace": "datadog", "labels": {"app": "datadog-agent"}},
+      "spec": {
+        "selector": {"matchLabels": {"app": "datadog-agent"}},
+        "template": {
+          "metadata": {"labels": {"app": "datadog-agent"}},
+          "spec": {
+            "tolerations": [{"operator": "Exists"}],
+            "containers": [{"name": "agent", "image": "gcr.io/datadoghq/agent:7.60.0",
+              "env": [{"name": "DD_API_KEY", "valueFrom": {"secretKeyRef": {"name": "datadog-secret", "key": "api-key"}}}, {"name": "DD_SITE", "value": ""}, {"name": "DD_LOGS_ENABLED", "value": ""}, {"name": "DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL", "value": ""}, {"name": "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT", "value": ""}],
+              "resources": {}}]
+          }
+        }
+      },
+      "status": {"currentNumberScheduled": 3, "numberMisscheduled": 0, "desiredNumberScheduled": 3, "numberReady": 3}
+    }
+  ],
+  "deployments": [
+    {
+      "metadata": {"name": "gpu-operator", "namespace": "gpu-operator", "labels": {"app": "gpu-operator", "helm.sh/chart": "gpu-operator-v25.3.0"}},
+      "spec": {"selector": {"matchLabels": {"app": "gpu-operator"}}, "template": {"metadata": {"labels": {"app": "gpu-operator"}}, "spec": {"containers": [{"name": "gpu-operator", "image": "nvcr.io/nvidia/gpu-operator:v25.3.0", "resources": {}}]}}},
+      "status": {"replicas": 1, "readyReplicas": 1}
+    }
+  ],
+  "pods": [
+    {"metadata": {"name": "nvidia-dcgm-exporter-aa1", "namespace": "gpu-operator", "labels": {"app": "nvidia-dcgm-exporter"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "DaemonSet", "name": "nvidia-dcgm-exporter", "uid": "8b000000-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "aks-gpupool-12345678-vmss000000", "containers": [{"name": "nvidia-dcgm-exporter", "image": "nvcr.io/nvidia/k8s/dcgm-exporter:4.1.1-4.0.4-ubuntu22.04", "resources": {}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "nvidia-dcgm-exporter-aa2", "namespace": "gpu-operator", "labels": {"app": "nvidia-dcgm-exporter"}, "ownerReferences": [{"apiVersion": "apps/v1", "kind": "DaemonSet", "name": "nvidia-dcgm-exporter", "uid": "8b000000-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "aks-gpupool-12345678-vmss000001", "containers": [{"name": "nvidia-dcgm-exporter", "image": "nvcr.io/nvidia/k8s/dcgm-exporter:4.1.1-4.0.4-ubuntu22.04", "resources": {}}]}, "status": {"phase": "Running"}}
+  ]
+}

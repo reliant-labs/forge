@@ -1,0 +1,39 @@
+{
+  "config_refs": [
+    {
+      "namespace": "kube-system",
+      "name": "kubeadm-config",
+      "why": "kubeadm's ClusterConfiguration (API server tracing flags)"
+    },
+    {
+      "namespace": "kube-system",
+      "name": "kubelet-config",
+      "why": "kubeadm's KubeletConfiguration (kubelet tracing)"
+    },
+    {
+      "namespace": "kube-system",
+      "name": "npd-custom-config",
+      "why": "node-problem-detector DaemonSet/kube-system/node-problem-detector mounts it"
+    },
+    {
+      "namespace": "monitoring",
+      "name": "dcgm-exporter-metrics",
+      "why": "dcgm-exporter DaemonSet/monitoring/dcgm-exporter mounts it"
+    },
+    {
+      "namespace": "observability",
+      "name": "cluster-collector-1a2b3c4d",
+      "why": "otel-collector Deployment/observability/cluster-collector mounts it"
+    }
+  ],
+  "probe_targets": [
+    {
+      "kind": "dcgm-exporter",
+      "namespace": "monitoring",
+      "pod": "dcgm-exporter-g1",
+      "node": "gpu-1",
+      "port": 9400,
+      "path": "/metrics"
+    }
+  ]
+}

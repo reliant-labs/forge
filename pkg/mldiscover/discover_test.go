@@ -29,6 +29,9 @@ var fixtures = []string{
 	"bare-fake-gpu",
 	"mixed-vendors",
 	"no-accelerators",
+	"kubeadm-traced",
+	"aks-operator-custom-counters",
+	"probed-forge-stack",
 }
 
 func loadSnapshot(t *testing.T, name string) *Snapshot {
@@ -56,6 +59,48 @@ func marshal(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return append(b, '\n')
+}
+
+// refsDoc is what the two-phase read and the probe would ask for.
+type refsDoc struct {
+	ConfigRefs   []ObjectRef   `json:"config_refs"`
+	ProbeTargets []ProbeTarget `json:"probe_targets"`
+}
+
+func TestGoldenRefs(t *testing.T) {
+	for _, name := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			s := loadSnapshot(t, name)
+			inv := Discover(s)
+			first := *s
+			first.ConfigMaps, first.Probes = nil, nil
+			doc := refsDoc{ConfigRefs: ConfigRefs(&first), ProbeTargets: ProbeTargets(s, inv)}
+			if doc.ConfigRefs == nil {
+				doc.ConfigRefs = []ObjectRef{}
+			}
+			if doc.ProbeTargets == nil {
+				doc.ProbeTargets = []ProbeTarget{}
+			}
+			compareGolden(t, filepath.Join("testdata", name+".refs.golden.json"), marshal(t, doc))
+		})
+	}
+}
+
+func compareGolden(t *testing.T, path string, got []byte) {
+	t.Helper()
+	if *update {
+		if err := os.WriteFile(path, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s (run with -update to create it): %v", path, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("%s differs; run `go test ./pkg/mldiscover -run TestGolden -update` and review the diff.\n--- got ---\n%s", path, got)
+	}
 }
 
 func TestGolden(t *testing.T) {
@@ -95,6 +140,8 @@ func shuffle(s *Snapshot, seed int64) {
 	sh(len(s.CRDs), func(i, j int) { s.CRDs[i], s.CRDs[j] = s.CRDs[j], s.CRDs[i] })
 	sh(len(s.APIGroups), func(i, j int) { s.APIGroups[i], s.APIGroups[j] = s.APIGroups[j], s.APIGroups[i] })
 	sh(len(s.ReadErrors), func(i, j int) { s.ReadErrors[i], s.ReadErrors[j] = s.ReadErrors[j], s.ReadErrors[i] })
+	sh(len(s.ConfigMaps), func(i, j int) { s.ConfigMaps[i], s.ConfigMaps[j] = s.ConfigMaps[j], s.ConfigMaps[i] })
+	sh(len(s.Probes), func(i, j int) { s.Probes[i], s.Probes[j] = s.Probes[j], s.Probes[i] })
 	for i := range s.Nodes {
 		c := s.Nodes[i].Status.Conditions
 		sh(len(c), func(a, b int) { c[a], c[b] = c[b], c[a] })

@@ -109,10 +109,19 @@ const gpuXidMonitor = `{
 
 // chartValues are the helm values each install writes, as data in the
 // user's ml.k (theirs to edit). Values that depend on the cluster are added
-// in Propose.
-func chartValues(kind string) map[string]any {
+// in Propose. full adds what forge's recommendations need beyond the
+// chart's defaults (NPD's GPU Xid monitor, DCGM's profiling, ECC, NVLink
+// and throttle fields with Kubernetes enrichment); without it the values
+// are the chart's own monitors and counters.
+func chartValues(kind string, full bool) map[string]any {
 	switch kind {
 	case mldiscover.KindNodeProblemDetector:
+		if !full {
+			return map[string]any{"settings": map[string]any{"log_monitors": []any{
+				"/config/kernel-monitor.json",
+				"/config/docker-monitor.json",
+			}}}
+		}
 		return map[string]any{
 			"settings": map[string]any{
 				"custom_monitor_definitions": map[string]any{"gpu-xid-monitor.json": gpuXidMonitor},
@@ -124,13 +133,28 @@ func chartValues(kind string) map[string]any {
 			},
 		}
 	case mldiscover.KindDCGMExporter:
-		return map[string]any{
+		v := map[string]any{
 			// forge scrapes the exporter itself; the chart's ServiceMonitor
 			// needs the Prometheus Operator's CRDs.
 			"serviceMonitor": map[string]any{"enabled": false},
 			// GPU nodes are usually tainted (GKE taints nvidia.com/gpu).
 			"tolerations": []any{map[string]any{"operator": "Exists"}},
 		}
+		if full {
+			// Chart 4.9.0's config.metrics entry, repeated whole (helm
+			// replaces lists), listing fields instead of a file.
+			fields := make([]any, 0, len(mldiscover.ForgeDCGMFields))
+			for _, f := range mldiscover.ForgeDCGMFields {
+				fields = append(fields, map[string]any{"name": f.Name, "prometheus_type": f.Type, "help": f.Help})
+			}
+			v["config"] = map[string]any{"metrics": []any{map[string]any{
+				"name":       "default",
+				"every":      "30s",
+				"enrichment": map[string]any{"kubernetes": "auto", "container": false, "dra": false, "hpc_jobs": false},
+				"fields":     fields,
+			}}}
+		}
+		return v
 	}
 	return nil
 }

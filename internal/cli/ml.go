@@ -64,6 +64,7 @@ type mlDiscoverOptions struct {
 	saveSnapshot string
 	namespace    string
 	rules        bool
+	probe        bool
 	// projectDir is the forge project, "" outside one.
 	projectDir string
 	stdout     io.Writer
@@ -75,6 +76,9 @@ type mlDiscoverOptions struct {
 	render   func(ctx context.Context, projectDir, env string) ([]byte, error)
 	evaluate func(*mldiscover.Snapshot, *mldiscover.Inventory, mlrecs.Options) []mlrecs.Finding
 	propose  func(*mldiscover.Inventory, []mlrecs.Finding, mlrecs.ProposeOptions) string
+	// probeTargets and runProbe are the opt-in probe's steps.
+	probeTargets func(*mldiscover.Snapshot, *mldiscover.Inventory) []mldiscover.ProbeTarget
+	runProbe     func(ctx context.Context, kubeContext string, targets []mldiscover.ProbeTarget) ([]mldiscover.MetricsProbe, error)
 }
 
 // The real steps.
@@ -89,6 +93,20 @@ var (
 			return nil, err
 		}
 		return mlcollect.Collect(ctx, clients, mlcollect.Options{Context: name})
+	}
+	mlProbe = func(ctx context.Context, kubeContext string, targets []mldiscover.ProbeTarget) ([]mldiscover.MetricsProbe, error) {
+		if len(targets) == 0 {
+			return nil, nil
+		}
+		cfg, _, err := mlcollect.RESTConfig(kubeContext)
+		if err != nil {
+			return nil, err
+		}
+		clients, err := mlcollect.NewClients(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return mlcollect.Probe(ctx, mlcollect.ProxyFetch(clients.Kube), targets, mlcollect.ProbeOptions{}), nil
 	}
 	mlEnvRender = func(ctx context.Context, projectDir, env string) ([]byte, error) {
 		return renderKCLRawHook(ctx, projectDir, env)
@@ -122,13 +140,28 @@ never writes a file unless you pass --write.
                git. Without --write the proposal (or its diff) is only printed.
   --json       print the forge.dev/ml-discover/v1 document on stdout and nothing
                else (` + "`forge project schema ml-discover`" + `)
+  --probe      also GET each exporter's /metrics through the API server's pod
+               proxy (at most one pod per component and node pool, 10s and
+               8 MiB each), keeping metric names and label keys, never values:
+               the strongest evidence of which DCGM fields are exported. It
+               WIDENS THE GRANT: it needs get on pods/proxy, which reaches any
+               port of any pod. Off unless asked.
 
 Inside a project, each live read is saved to
 .forge/state/ml-inventory-<context>.json; --save-snapshot writes it anywhere, and
 --from-snapshot runs discovery on a saved read instead of a cluster.
 
+Coverage: one row per observability signal an ML cluster should have (GPU
+utilisation, profiling counters, Xid, ECC, NVLink, node health and GPU rules,
+kubelet and API server tracing, the telemetry pipeline, continuous profiling,
+workload tracing), each collected, partial, missing or unknown, with how it was
+determined (probe, config, args, version-default, presence, unreadable), its
+sources and versions, and the parts missing.
+
 What it reads (get/list only; managedFields, annotations and container env
-values are stripped before anything is kept):
+values are stripped, and ConfigMap data and custom object specs redacted:
+values under keys like token, password, secret, key, auth, header become
+REDACTED, and data that is not JSON, YAML or a DCGM counters CSV is dropped):
 
 ` + mlcollect.ReadSetTable() + `
 It never reads: ` + strings.Join(mlcollect.Excluded, "; ") + `.
@@ -142,6 +175,7 @@ Examples:
   forge ml discover --context gke_acme_us-central1_gpu --env prod
   forge ml discover --env prod --write
   forge ml discover --json > inventory.json
+  forge ml discover --probe
   forge ml discover --from-snapshot .forge/state/ml-inventory-k3d-dev.json
   forge ml discover --rules`,
 		Args: cobra.NoArgs,
@@ -164,6 +198,7 @@ Examples:
 	f.StringVar(&o.fromSnapshot, "from-snapshot", "", "run discovery on a saved snapshot (forge.dev/ml-snapshot/v1) instead of reading a cluster")
 	f.StringVar(&o.saveSnapshot, "save-snapshot", "", "also write the snapshot read to this file")
 	f.StringVar(&o.namespace, "namespace", "forge-ml", "namespace the proposal's forge.Install charts render into")
+	f.BoolVar(&o.probe, "probe", false, "also read each exporter's /metrics through the API server pod proxy (needs get pods/proxy: widens the grant)")
 	f.BoolVar(&o.rules, "rules", false, "list every recommendation rule (id, severity, what it detects, the fix) and exit")
 	return cmd
 }
@@ -203,11 +238,20 @@ func runMLDiscover(ctx context.Context, o mlDiscoverOptions) error {
 	if o.propose == nil {
 		o.propose = mlrecs.Propose
 	}
+	if o.probeTargets == nil {
+		o.probeTargets = mldiscover.ProbeTargets
+	}
+	if o.runProbe == nil {
+		o.runProbe = mlProbe
+	}
 	if o.stderr == nil {
 		o.stderr = io.Discard
 	}
 	if o.rules {
 		return writeMLRules(o.stdout, o.jsonOut)
+	}
+	if o.probe && o.fromSnapshot != "" {
+		return errors.New("--probe reads a live cluster: it cannot run on --from-snapshot (a snapshot saved with --probe already holds its probes)")
 	}
 	if o.fromSnapshot != "" && o.kubeContext != "" {
 		return errors.New("--from-snapshot and --context are exclusive: a snapshot records the context it was read through")
@@ -245,13 +289,30 @@ func runMLDiscover(ctx context.Context, o mlDiscoverOptions) error {
 			return fmt.Errorf("forge ml discover: %w", err)
 		}
 		snap = s
-		if o.projectDir != "" {
-			state := mlStateFile(o.projectDir, snap.Context)
-			if err := writeMLSnapshot(state, snap); err != nil {
-				doc.Warnings = append(doc.Warnings, fmt.Sprintf("could not save the snapshot to %s: %v", state, err))
-			} else {
-				doc.Snapshot = displayMLPath(state)
-			}
+	}
+
+	// The first pass names the probe targets; the probe's families refine
+	// the second.
+	inv := mldiscover.Discover(snap)
+	if o.probe {
+		targets := o.probeTargets(snap, inv)
+		probes, err := o.runProbe(ctx, snap.Context, targets)
+		if err != nil {
+			doc.Warnings = append(doc.Warnings, fmt.Sprintf("--probe: %v", err))
+		}
+		snap.Probes = probes
+		if len(targets) == 0 {
+			doc.Warnings = append(doc.Warnings, "--probe: no metrics endpoint to probe (no exporter with a running pod and a metrics port was found)")
+		}
+		inv = mldiscover.Discover(snap)
+	}
+
+	if o.fromSnapshot == "" && o.projectDir != "" {
+		state := mlStateFile(o.projectDir, snap.Context)
+		if err := writeMLSnapshot(state, snap); err != nil {
+			doc.Warnings = append(doc.Warnings, fmt.Sprintf("could not save the snapshot to %s: %v", state, err))
+		} else {
+			doc.Snapshot = displayMLPath(state)
 		}
 	}
 	if o.saveSnapshot != "" {
@@ -274,8 +335,8 @@ func runMLDiscover(ctx context.Context, o mlDiscoverOptions) error {
 		}
 	}
 
-	inv := mldiscover.Discover(snap)
 	findings := o.evaluate(snap, inv, mlrecs.Options{Decisions: decisions})
+	inv.Coverage = mlrecs.LinkCoverage(inv.Coverage, findings)
 	mlk := o.propose(inv, findings, mlrecs.ProposeOptions{Namespace: o.namespace, ConnectedCluster: connected})
 
 	doc.Inventory = *inv

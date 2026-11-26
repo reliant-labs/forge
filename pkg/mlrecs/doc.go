@@ -20,21 +20,28 @@
 // # Rules evaluated from a snapshot alone
 //
 // accel-telemetry-missing, accel-exporter-duplicate, bad-accelerator,
-// mig-config-failed, driver-skew, no-node-health, gpu-jobs-bypass-queue,
-// job-not-queued, spot-no-termination-handling, shm-too-small,
-// llm-scales-on-cpu, model-downloaded-per-pod, weights-in-image,
-// no-p2p-cache, image-streaming-off (GKE), accel-unallocated,
-// image-not-warm, hf-transfer-off, image-volumes-unavailable and
-// kubelet-tracing-off (unverified by construction: discovery never reads
-// the kubelet's config).
+// mig-config-failed, driver-skew, no-node-health, dcgm-profiling-off,
+// accel-error-counters-off, npd-no-gpu-rules, dcgm-pod-attribution-off,
+// dcgm-nvlink-off, gpu-jobs-bypass-queue, job-not-queued,
+// spot-no-termination-handling, shm-too-small, llm-scales-on-cpu,
+// model-downloaded-per-pod, weights-in-image, no-p2p-cache,
+// image-streaming-off (GKE), accel-unallocated, image-not-warm,
+// hf-transfer-off, image-volumes-unavailable, kubelet-tracing-off,
+// apiserver-tracing-off, no-continuous-profiling, no-otlp-receiver,
+// collector-no-k8s-events, inference-tracing-off and training-tracing-off.
+//
+// The coverage rules read mldiscover's Inventory.Coverage rows. Their
+// confidence follows the row's DeterminedBy: probe or config is certain,
+// args or a version default likely, anything else unverified. Each rule
+// names its signals ([Rule.Signals]); [LinkCoverage] copies the coverage
+// rows with the ids of the findings about each.
 //
 // # Not here
 //
-// These need telemetry and arrive with the collector in a later slice:
-// accel-idle (utilisation over time), dcgm-profiling-off and
-// accel-error-counters-off (which series the exporter emits),
-// bad-accelerator's Xid/ECC/row-remap half, pod-start-slow and the cold
-// start rows it routes to (GPU node provisioning, slow loader),
+// These need telemetry over time and arrive with the collector in a later
+// slice: accel-idle (utilisation over time), bad-accelerator's
+// Xid/ECC/row-remap half (the counters' values), pod-start-slow and the
+// cold start rows it routes to (GPU node provisioning, slow loader),
 // no-checkpointing and nccl-failures (logs), and registry-cross-cloud /
 // registry region (the model's registry).
 //

@@ -1,6 +1,6 @@
 ---
 name: ml/discover
-description: "`forge ml discover` — read a GPU cluster read-only through your own kube context (no control plane, no project needed) and propose the env's ml.k: the accelerators (NVIDIA first; AMD, TPU, Neuron, Gaudi at allocation level), the ML components already running (GPU Operator, DCGM exporter, Kueue, JobSet, KServe, KubeRay, ...) to ADOPT, what is missing to INSTALL, and the recommendations worst first. The exact read set (get/list only, never Secrets, pods/log or nodes/proxy), the human output, the forge.dev/ml-discover/v1 JSON document and its schema, --write and the diff over an existing ml.k, `observed` and why the KCL refuses a duplicate install, Ray as adopt-only, dismissing a finding with forge.RecommendationDecision, wiring ml.k into main.k, snapshots, and testing without GPUs (run-ai/fake-gpu-operator on k3d). Use before declaring an MLStack, when a finding needs explaining, or to grant a team the read-only identity discovery needs."
+description: "`forge ml discover` — read a GPU cluster read-only through your own kube context (no control plane, no project needed) and propose the env's ml.k: the accelerators (NVIDIA first; AMD, TPU, Neuron, Gaudi at allocation level), the ML components already running (GPU Operator, DCGM exporter, Kueue, JobSet, KServe, KubeRay, ...) to ADOPT, what is missing to INSTALL, and the recommendations worst first. The exact read set (get/list only, never Secrets, pods/log or nodes/proxy), the human output, the forge.dev/ml-discover/v1 JSON document and its schema, the coverage model (one row per signal: DCGM field groups, NPD and GPU rules, kubelet/apiserver tracing, collectors, continuous profiling, workload tracing; collected/partial/missing/unknown and how it was determined), ConfigMaps read by name and redacted, the opt-in --probe and the pods/proxy grant it needs, --write and the diff over an existing ml.k, `observed` and why the KCL refuses a duplicate install, Ray as adopt-only, dismissing a finding with forge.RecommendationDecision, wiring ml.k into main.k, snapshots, and testing without GPUs (run-ai/fake-gpu-operator on k3d). Use before declaring an MLStack, when a finding needs explaining, or to grant a team the read-only identity discovery needs."
 ---
 
 # Discover a GPU cluster: `forge ml discover`
@@ -18,34 +18,89 @@ no forge project. It never writes to the cluster, and it writes a file only with
 
 ## What it reads
 
-Every read is a `list` (or a discovery `get`), paged 500 objects at a time. This
-table is printed by `forge ml discover --help` from the one place the collector
-reads it (`internal/mlcollect`), and a test fails any read outside it:
+The read has two phases. The first lists, paged 500 objects at a time; the
+second GETs, **by exact name**, the ConfigMaps the found components reference.
+This table is printed by `forge ml discover --help` from the one place the
+collector reads it (`internal/mlcollect`), and a test fails any read outside it,
+or any read with another verb:
 
-| Read | Kept | For |
-|---|---|---|
-| `/version`, `/api`, `/apis` | full | server version, served API groups (DRA's `resource.k8s.io`) |
-| `customresourcedefinitions.apiextensions.k8s.io` | names only (metadata API) | which CRDs are installed; CRD schemas are never fetched |
-| `nodes` | full | accelerator capacity/allocatable, labels, conditions, images, nodeInfo |
-| `pods` (all namespaces) | full | exporters and serving pods by image, accelerator requests |
-| `daemonsets`, `deployments`, `statefulsets` (apps) | full | device plugins, exporters, operators, controllers |
-| `jobs` (batch), `horizontalpodautoscalers` (autoscaling/v2) | full | training jobs, how serving scales |
-| `resourceslices.resource.k8s.io` | count | whether a DRA driver publishes devices |
-| each installed ML CRD (Kueue, JobSet, Trainer, KubeRay, KServe, Inference Extension, KEDA, Karpenter, Prometheus Operator, GMP, ...) | count (metadata API) | a CRD with objects vs a leftover |
-| `clusterpolicies.nvidia.com`, `deviceconfigs.amd.com` | full | whether the GPU Operator runs its DCGM exporter |
+| Read | Verb | Kept | For |
+|---|---|---|---|
+| `/version`, `/api`, `/apis` | get | full | server version, served API groups and versions (DRA's `resource.k8s.io`) |
+| `customresourcedefinitions.apiextensions.k8s.io` | list | names only (metadata API) | which CRDs are installed; CRD schemas are never fetched |
+| `nodes` | list | full | accelerator capacity/allocatable, labels, conditions (NPD's included), images, nodeInfo |
+| `pods` (all namespaces) | list | full | exporters, profilers, serving pods by image; args and env names (tracing hooks); accelerator requests |
+| `daemonsets`, `deployments`, `statefulsets` (apps) | list | full | device plugins, exporters, NPD and its monitor args, operators, collectors |
+| `jobs` (batch), `horizontalpodautoscalers` (autoscaling/v2) | list | full | training jobs, how serving scales |
+| `resourceslices.resource.k8s.io` | list | count | whether a DRA driver publishes devices |
+| each installed ML CRD (Kueue, JobSet, Trainer, KubeRay, KServe, Inference Extension, KEDA, Karpenter, Prometheus Operator, GMP, OTel Instrumentation, ...) | list | count (metadata API) | a CRD with objects vs a leftover |
+| `clusterpolicies.nvidia.com`, `deviceconfigs.amd.com`, `opentelemetrycollectors.opentelemetry.io` | list | redacted | whether the GPU Operator runs its DCGM exporter and which counters ConfigMap it names; a collector's receivers and pipelines |
+| `configmaps` | **get by name, never list** | redacted | a DCGM counters CSV, NPD monitor JSON, a collector's config, `kube-system/kubeadm-config` and `kube-system/kubelet-config` (tracing) |
+| `pods/proxy` | get, **only with `--probe`** | names | an exporter's `/metrics`: metric names and label keys, never values |
 
-Before anything is kept, every object loses its `managedFields`, every
-annotation, and the literal value of every container env var (the name and any
-`valueFrom` reference stay). It **never** reads Secrets, `pods/log`,
-`pods/exec`, `nodes/proxy` (effectively exec on the node), and it uses no write
-verb. A refused list is reported under "could not see" and in `warnings`, never
+What is kept, and what never is:
+
+- every object loses its `managedFields` and every annotation;
+- container env **values** are blanked (names and `valueFrom` stay), except
+  `DCGM_EXPORTER_COLLECTORS`, `DCGM_EXPORTER_KUBERNETES` and `DCGM_EXPORTER_INTERVAL`;
+- **redaction** of ConfigMap data and custom object specs: JSON or YAML is kept
+  with every value under a key matching
+  `token|password|passwd|secret|key|auth|authorization|header|credential|bearer|cookie`
+  (any case, any depth, nested YAML strings included) replaced by `REDACTED`; a
+  DCGM counters CSV is kept minus its comments; anything else (a script, a PEM
+  block, binary data) is dropped, its key kept with a `DROPPED` marker; a data key
+  that itself matches is replaced whole;
+- it **never** reads Secrets, `pods/log`, `pods/exec`, `nodes/proxy` (effectively
+  exec on the node), never lists ConfigMaps, and uses no write verb.
+
+A refused read is reported under "could not see" and in `warnings`, never
 fatal: discovery says what it could not see rather than claim a component is
 absent. Only an unreachable API server fails the run (exit 2).
 
 To run it under a dedicated identity, grant exactly the read set: list on the
-resources above, get on `/version`, `/api`, `/apis` and their children. Nothing
-more is needed (the k3d e2e runs discovery as such a ServiceAccount and requires
-zero refused reads).
+resources above, get on `configmaps` and on `/version`, `/api`, `/apis` and their
+children. RBAC cannot pin ConfigMap names (they depend on what discovery finds),
+so the grant is `get` on configmaps cluster-wide; the collector never lists them.
+The k3d e2e runs discovery as such a ServiceAccount and requires zero refused
+reads.
+
+### `--probe` widens the grant
+
+`--probe` additionally GETs each exporter's `/metrics` through the API server's
+pod proxy (`/api/v1/namespaces/<ns>/pods/<pod>:<port>/proxy/metrics`): at most one
+running pod per component and node pool, 10 s and 8 MiB each, keeping only metric
+family names and label keys. It is the strongest evidence of which DCGM fields an
+exporter really exports, and whether its samples carry `pod`/`namespace` labels.
+It needs `get pods/proxy`, which reaches **any port of any pod**, so it is off
+unless asked and kept out of the base grant. A failed probe (forbidden, timeout,
+not the Prometheus text format) is recorded on that probe and the coverage falls
+back to the next source.
+
+## Coverage
+
+`coverage[]` has one row per observability signal an ML cluster should have,
+always (a gap is a row, never an absence), for a console's coverage-gap view:
+
+| Category | Signals |
+|---|---|
+| accelerator | `accel.utilisation`, `accel.profiling` (DCGM_FI_PROF_*), `accel.memory`, `accel.xid`, `accel.ecc`, `accel.retired-pages`, `accel.row-remap`, `accel.nvlink`, `accel.pcie`, `accel.throttle`, `accel.power-thermal`, `accel.pod-attribution` |
+| node-health | `node.health`, `node.health.gpu-rules` (a monitor that turns Xid/NVRM kernel lines into a condition) |
+| tracing | `kubelet.tracing`, `apiserver.tracing`, `tracing.training`, `tracing.inference` |
+| telemetry | `telemetry.collector`, `telemetry.otlp`, `telemetry.k8s-events`, `telemetry.kubeletstats`, `telemetry.container-logs` |
+| profiling | `profiling.continuous` (Parca, Pyroscope/Alloy, OTel eBPF profiler, Elastic, Datadog, ...), `profiling.gpu` |
+| inference | `metrics.inference` |
+
+Each row: `status` (`collected`, `partial`, `missing`, `unknown`,
+`not-applicable`), `determined_by` (strongest first: `probe`, `config`, `args`,
+`version-default`, `presence`, `unreadable`), `sources`, `expected` / `present` /
+`missing` parts (DCGM fields, receivers, condition types), `nodes_covered` /
+`nodes_total`, `versions`, a `note` when the status needs one (a managed control
+plane's tracing config is unreadable, so `unknown`), and the `findings` the gap
+raised. For DCGM the field set comes from the probe, else the counters CSV the
+exporter mounts, else the default CSV of the exporter version found, else
+presence alone. `components[].config` carries what discovery read of each
+component's configuration: DCGM fields, NPD monitors, conditions and reasons, a
+collector's receivers, processors, exporters and pipelines, and settings.
 
 ## What it prints
 
@@ -64,6 +119,22 @@ monitoring     none found
 image pulls    none found (no spegel or dragonfly pull cache)
 ```
 
+After the sections, a `coverage` block lists every signal by category, gaps in
+upper case, with how each was determined and the parts missing:
+
+```
+coverage       26 signals: 6 collected, 3 partial, 11 missing, 3 unknown, 3 not-applicable
+  accelerator (nvidia)
+    collected accel.utilisation         version-default DaemonSet/gpu-operator/nvidia-dcgm-exporter; 1/1 nodes; dcgm-exporter 3.3.9-3.6.1-ubuntu22.04
+                                        the field set is the found release's default counters file; a custom file would change it
+    PARTIAL   accel.profiling           version-default DaemonSet/gpu-operator/nvidia-dcgm-exporter; 1/1 nodes; dcgm-exporter 3.3.9-3.6.1-ubuntu22.04
+                                        missing PROF_SM_ACTIVE, PROF_SM_OCCUPANCY
+                                        finding dcgm-profiling-off
+  tracing
+    unknown   kubelet.tracing           unreadable
+                                        GKE manages the kubelet configuration; it is not readable from the Kubernetes API
+```
+
 The sections are accelerators (with the operator and device plugin), gpu metrics,
 node health, queueing, training, serving, autoscaling (only when found),
 monitoring and image pulls. `FOUND … — adopt` is someone else's component;
@@ -74,7 +145,8 @@ marked with their reason and expiry.
 
 `--json` prints the **forge.dev/ml-discover/v1** document on stdout and nothing
 else: `schema`, `context`, `server_version`, `collected_at`, `cloud`,
-`accelerators[]`, `machines[]`, `components[]`, `findings[]`,
+`accelerators[]`, `machines[]`, `components[]` (each with `config`),
+`coverage[]`, `findings[]`,
 `proposal {path, written, exists, ml_k, diff}`, `snapshot`, `warnings[]`. Its
 JSON Schema is `forge project schema ml-discover`. Fields are only ever added.
 
@@ -173,8 +245,11 @@ helm upgrade -i gpu-operator oci://ghcr.io/run-ai/fake-gpu-operator/fake-gpu-ope
 forge ml discover --context k3d-<cluster>
 ```
 
-forge's own e2e (`TestE2EMLDiscoverAgainstFakeGPUs`) does exactly this, then
-plants a second exporter on the same nodes and expects `accel-exporter-duplicate`.
+Its exporter serves `DCGM_FI_DEV_GPU_UTIL`, `DCGM_FI_DEV_FB_USED` and
+`DCGM_FI_DEV_FB_FREE` on `:9400`, so `forge ml discover --probe` shows
+`accel.utilisation` collected (by probe) and `accel.profiling` missing. forge's own
+e2e (`TestE2EMLDiscoverAgainstFakeGPUs`) asserts exactly that, then plants a
+second exporter on the same nodes and expects `accel-exporter-duplicate`.
 What only real hardware proves (profiling counters, real Xid and ECC events, MIG
 reconfiguration) is out of reach of any fake.
 

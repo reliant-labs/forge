@@ -31,6 +31,45 @@
     }
   },
   {
+    "id": "accel-error-counters-off",
+    "severity": "medium",
+    "confidence": "likely",
+    "title": "Xid, ECC or row-remap counters are not collected: failing GPUs go unnoticed",
+    "vendor": "nvidia",
+    "evidence": [
+      "DaemonSet/gke-managed-system/dcgm-exporter (3.3.5-3.4.0-gke.3): no XID_ERRORS, ECC_SBE, ECC_DBE, UNCORRECTABLE_REMAPPED_ROWS, ROW_REMAP_FAILURE; field set from GKE managed DCGM metric set (cloud.google.com/kubernetes-engine/docs/how-to/dcgm-metrics, 2026-11-26)",
+      "DaemonSet/monitoring/dcgm-exporter (4.2.3-4.1.3-ubuntu22.04): no ECC_SBE, ECC_DBE; field set from dcgm-exporter 4.2.3-4.1.3 etc/dcp-metrics-included.csv (default of 4.2.3-4.1.3-ubuntu22.04)"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "DaemonSet/gke-managed-system/dcgm-exporter: GKE's managed DCGM metric set is fixed and cannot export Xid, ECC or row-remap counters. GKE node auto-repair acts on GPU faults; to collect these fields, run NVIDIA's dcgm-exporter instead of (never beside) the managed collection.\n\nDaemonSet/monitoring/dcgm-exporter uses its image's built-in counters file (dcgm-exporter 4.2.3-4.1.3 etc/dcp-metrics-included.csv (default of 4.2.3-4.1.3-ubuntu22.04)). Mount a counters CSV with these lines added and point the exporter at it (-f \u003cpath\u003e, or DCGM_EXPORTER_COLLECTORS):\nDCGM_FI_DEV_ECC_SBE_VOL_TOTAL, counter, Total number of single-bit volatile ECC errors.\nDCGM_FI_DEV_ECC_DBE_VOL_TOTAL, counter, Total number of double-bit volatile ECC errors.\nforge never edits an exporter it did not install.",
+      "docs": "https://github.com/NVIDIA/dcgm-exporter"
+    },
+    "signals": [
+      "accel.ecc",
+      "accel.row-remap",
+      "accel.xid"
+    ]
+  },
+  {
+    "id": "dcgm-profiling-off",
+    "severity": "medium",
+    "confidence": "likely",
+    "title": "The DCGM exporter exports only coarse utilisation: profiling counters (SM, tensor, DRAM activity) are off",
+    "vendor": "nvidia",
+    "evidence": [
+      "DaemonSet/monitoring/dcgm-exporter (4.2.3-4.1.3-ubuntu22.04): no PROF_SM_ACTIVE, PROF_SM_OCCUPANCY; field set from dcgm-exporter 4.2.3-4.1.3 etc/dcp-metrics-included.csv (default of 4.2.3-4.1.3-ubuntu22.04)"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "DaemonSet/monitoring/dcgm-exporter uses its image's built-in counters file (dcgm-exporter 4.2.3-4.1.3 etc/dcp-metrics-included.csv (default of 4.2.3-4.1.3-ubuntu22.04)). Mount a counters CSV with these lines added and point the exporter at it (-f \u003cpath\u003e, or DCGM_EXPORTER_COLLECTORS):\nDCGM_FI_PROF_SM_ACTIVE, gauge, The ratio of cycles an SM has at least 1 warp assigned.\nDCGM_FI_PROF_SM_OCCUPANCY, gauge, The ratio of number of warps resident on an SM.\nforge never edits an exporter it did not install.",
+      "docs": "https://github.com/NVIDIA/dcgm-exporter"
+    },
+    "signals": [
+      "accel.profiling"
+    ]
+  },
+  {
     "id": "shm-too-small",
     "severity": "medium",
     "confidence": "certain",
@@ -57,6 +96,40 @@
       "summary": "Pre-pull the image on the pool (a pre-pull DaemonSet, kube-fledged), or bake it into the node image (GKE: a secondary boot disk), so a new pod does not wait for the pull.",
       "docs": "https://github.com/senthilrch/kube-fledged"
     }
+  },
+  {
+    "id": "no-continuous-profiling",
+    "severity": "low",
+    "confidence": "unverified",
+    "title": "No continuous profiling on the accelerator nodes",
+    "evidence": [
+      "profilers reach 0 of 2 accelerator nodes"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Run one continuous eBPF profiler as a DaemonSet on the accelerator nodes: Parca agent, Grafana Alloy with pyroscope.ebpf, or the OpenTelemetry eBPF profiler (otel/opentelemetry-collector-ebpf-profiler). It shows where CPU time goes in data loaders and serving code with no code change.",
+      "docs": "https://www.parca.dev/docs/parca-agent"
+    },
+    "signals": [
+      "profiling.continuous"
+    ]
+  },
+  {
+    "id": "no-otlp-receiver",
+    "severity": "low",
+    "confidence": "unverified",
+    "title": "Nothing accepts OTLP from workloads",
+    "evidence": [
+      "no collector runs"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Install an OpenTelemetry Collector with an otlp receiver (grpc :4317, http :4318) so vLLM, Triton and training jobs can export traces and metrics.",
+      "docs": "https://github.com/open-telemetry/opentelemetry-collector/tree/main/receiver/otlpreceiver"
+    },
+    "signals": [
+      "telemetry.otlp"
+    ]
   },
   {
     "id": "image-volumes-unavailable",

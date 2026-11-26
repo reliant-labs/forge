@@ -1,0 +1,47 @@
+{
+  "config_refs": [
+    {
+      "namespace": "forge-ml",
+      "name": "dcgm-exporter-config",
+      "why": "dcgm-exporter DaemonSet/forge-ml/dcgm-exporter mounts it"
+    },
+    {
+      "namespace": "kube-system",
+      "name": "kubeadm-config",
+      "why": "kubeadm's ClusterConfiguration (API server tracing flags)"
+    },
+    {
+      "namespace": "kube-system",
+      "name": "kubelet-config",
+      "why": "kubeadm's KubeletConfiguration (kubelet tracing)"
+    },
+    {
+      "namespace": "monitoring",
+      "name": "alloy-config",
+      "why": "grafana-alloy DaemonSet/monitoring/alloy mounts it"
+    },
+    {
+      "namespace": "monitoring",
+      "name": "otel-agent-config",
+      "why": "otel-collector DaemonSet/monitoring/otel-agent mounts it"
+    }
+  ],
+  "probe_targets": [
+    {
+      "kind": "dcgm-exporter",
+      "namespace": "forge-ml",
+      "pod": "dcgm-exporter-p1",
+      "node": "ip-10-1-0-11",
+      "port": 9400,
+      "path": "/metrics"
+    },
+    {
+      "kind": "node-problem-detector",
+      "namespace": "forge-ml",
+      "pod": "node-problem-detector-n1",
+      "node": "ip-10-1-0-11",
+      "port": 20257,
+      "path": "/metrics"
+    }
+  ]
+}

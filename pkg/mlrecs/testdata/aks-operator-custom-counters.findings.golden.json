@@ -1,0 +1,122 @@
+[
+  {
+    "id": "accel-error-counters-off",
+    "severity": "medium",
+    "confidence": "certain",
+    "title": "Xid, ECC or row-remap counters are not collected: failing GPUs go unnoticed",
+    "vendor": "nvidia",
+    "evidence": [
+      "DaemonSet/gpu-operator/nvidia-dcgm-exporter (4.1.1-4.0.4-ubuntu22.04): no XID_ERRORS, ECC_SBE, ECC_DBE, UNCORRECTABLE_REMAPPED_ROWS, ROW_REMAP_FAILURE; field set from ConfigMap/gpu-operator/custom-dcgm-metrics key dcgm-metrics.csv"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "DaemonSet/gpu-operator/nvidia-dcgm-exporter reads ConfigMap/gpu-operator/custom-dcgm-metrics key dcgm-metrics.csv. Add these lines to it, then restart the exporter pods:\nDCGM_FI_DEV_XID_ERRORS, gauge, Value of the last XID error encountered.\nDCGM_FI_DEV_ECC_SBE_VOL_TOTAL, counter, Total number of single-bit volatile ECC errors.\nDCGM_FI_DEV_ECC_DBE_VOL_TOTAL, counter, Total number of double-bit volatile ECC errors.\nDCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS, counter, Number of remapped rows for uncorrectable errors\nDCGM_FI_DEV_ROW_REMAP_FAILURE, gauge, Whether remapping of rows has failed\nforge never edits an exporter it did not install.",
+      "docs": "https://github.com/NVIDIA/dcgm-exporter"
+    },
+    "signals": [
+      "accel.ecc",
+      "accel.row-remap",
+      "accel.xid"
+    ]
+  },
+  {
+    "id": "dcgm-profiling-off",
+    "severity": "medium",
+    "confidence": "certain",
+    "title": "The DCGM exporter exports only coarse utilisation: profiling counters (SM, tensor, DRAM activity) are off",
+    "vendor": "nvidia",
+    "evidence": [
+      "DaemonSet/gpu-operator/nvidia-dcgm-exporter (4.1.1-4.0.4-ubuntu22.04): no PROF_GR_ENGINE_ACTIVE, PROF_SM_ACTIVE, PROF_SM_OCCUPANCY, PROF_PIPE_TENSOR_ACTIVE, PROF_DRAM_ACTIVE; field set from ConfigMap/gpu-operator/custom-dcgm-metrics key dcgm-metrics.csv"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "DaemonSet/gpu-operator/nvidia-dcgm-exporter reads ConfigMap/gpu-operator/custom-dcgm-metrics key dcgm-metrics.csv. Add these lines to it, then restart the exporter pods:\nDCGM_FI_PROF_GR_ENGINE_ACTIVE, gauge, Ratio of time the graphics engine is active.\nDCGM_FI_PROF_SM_ACTIVE, gauge, The ratio of cycles an SM has at least 1 warp assigned.\nDCGM_FI_PROF_SM_OCCUPANCY, gauge, The ratio of number of warps resident on an SM.\nDCGM_FI_PROF_PIPE_TENSOR_ACTIVE, gauge, Ratio of cycles the tensor (HMMA) pipe is active.\nDCGM_FI_PROF_DRAM_ACTIVE, gauge, Ratio of cycles the device memory interface is active sending or receiving data.\nforge never edits an exporter it did not install.",
+      "docs": "https://github.com/NVIDIA/dcgm-exporter"
+    },
+    "signals": [
+      "accel.profiling"
+    ]
+  },
+  {
+    "id": "npd-no-gpu-rules",
+    "severity": "medium",
+    "confidence": "certain",
+    "title": "node-problem-detector has no GPU rule: Xid errors never mark a node unhealthy",
+    "vendor": "nvidia",
+    "evidence": [
+      "DaemonSet/kube-system/node-problem-detector: monitors disk-monitor, docker-monitor, kernel-monitor (from ConfigMap/kube-system/node-problem-detector-custom-config key disk-monitor.json), none matches NVIDIA Xid / NVRM kernel lines"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "DaemonSet/kube-system/node-problem-detector: add this monitor to its custom config ConfigMap as gpu-xid-monitor.json and append its path to --config.system-log-monitor (deliveryhero chart: settings.custom_monitor_definitions and settings.log_monitors):\n{\n  \"plugin\": \"kmsg\",\n  \"logPath\": \"/dev/kmsg\",\n  \"lookback\": \"5m\",\n  \"bufferSize\": 10,\n  \"source\": \"gpu-xid-monitor\",\n  \"conditions\": [\n    {\"type\": \"GPUProblem\", \"reason\": \"NoGPUXid\", \"message\": \"no fatal NVIDIA Xid in the kernel log\"}\n  ],\n  \"rules\": [\n    {\"type\": \"permanent\", \"condition\": \"GPUProblem\", \"reason\": \"NVIDIAXid\", \"pattern\": \"NVRM: Xid [(][^)]*[)]: (48|64|74|79|94|95|119|120|140),.*\"}\n  ]\n}\nforge never edits a node-problem-detector it did not install.",
+      "docs": "https://github.com/kubernetes/node-problem-detector"
+    },
+    "signals": [
+      "node.health.gpu-rules"
+    ]
+  },
+  {
+    "id": "accel-unallocated",
+    "severity": "low",
+    "confidence": "likely",
+    "title": "2 nodes had idle, unrequested accelerators at snapshot time",
+    "evidence": [
+      "pool gpupool: Node/aks-gpupool-12345678-vmss000000: 1 × nvidia.com/gpu allocatable, none requested",
+      "pool gpupool: Node/aks-gpupool-12345678-vmss000001: 1 × nvidia.com/gpu allocatable, none requested"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "One snapshot is not a trend. If these nodes stay unrequested, lower the pool's minimum size in its autoscaler (cluster autoscaler, Karpenter, the cloud's node pool) so it scales down."
+    }
+  },
+  {
+    "id": "collector-no-k8s-events",
+    "severity": "low",
+    "confidence": "likely",
+    "title": "The collector does not keep Kubernetes events: scheduling, pull and eviction history is lost",
+    "evidence": [
+      "collectors: DaemonSet/datadog/datadog-agent"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Add a k8s_events receiver (or k8sobjects with `objects: [{name: events, mode: watch}]`) to DaemonSet/datadog/datadog-agent in a logs pipeline; run it in one replica so events are not duplicated.",
+      "docs": "https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/k8seventsreceiver"
+    },
+    "signals": [
+      "telemetry.k8s-events"
+    ]
+  },
+  {
+    "id": "no-continuous-profiling",
+    "severity": "low",
+    "confidence": "unverified",
+    "title": "No continuous profiling on the accelerator nodes",
+    "evidence": [
+      "profilers reach 0 of 2 accelerator nodes"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Run one continuous eBPF profiler as a DaemonSet on the accelerator nodes: Parca agent, Grafana Alloy with pyroscope.ebpf, or the OpenTelemetry eBPF profiler (otel/opentelemetry-collector-ebpf-profiler). It shows where CPU time goes in data loaders and serving code with no code change.",
+      "docs": "https://www.parca.dev/docs/parca-agent"
+    },
+    "signals": [
+      "profiling.continuous"
+    ]
+  },
+  {
+    "id": "image-volumes-unavailable",
+    "severity": "info",
+    "confidence": "certain",
+    "title": "Image volumes are unavailable: weights cannot be mounted from an OCI artifact without a sidecar",
+    "evidence": [
+      "API server v1.31.3: the ImageVolume feature gate is on by default from Kubernetes 1.35",
+      "Node/aks-gpupool-12345678-vmss000000: containerd 1.7.25-1, image volumes need 2.1+",
+      "Node/aks-gpupool-12345678-vmss000001: containerd 1.7.25-1, image volumes need 2.1+"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Upgrade to Kubernetes 1.35+ with containerd 2.1+ to mount weights as an image volume. Until then, KServe's modelcar sidecar or an init-container copy is the fallback.",
+      "docs": "https://kubernetes.io/docs/concepts/storage/volumes/#image"
+    }
+  }
+]

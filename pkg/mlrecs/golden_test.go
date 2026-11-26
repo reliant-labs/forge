@@ -25,6 +25,9 @@ var fixtures = []string{
 	"bare-fake-gpu",
 	"mixed-vendors",
 	"no-accelerators",
+	"kubeadm-traced",
+	"aks-operator-custom-counters",
+	"probed-forge-stack",
 }
 
 func loadSnapshot(t testing.TB, name string) *mldiscover.Snapshot {
@@ -109,6 +112,8 @@ func shuffle(s *mldiscover.Snapshot, seed int64) {
 	r.Shuffle(len(s.Jobs), func(i, j int) { s.Jobs[i], s.Jobs[j] = s.Jobs[j], s.Jobs[i] })
 	r.Shuffle(len(s.HPAs), func(i, j int) { s.HPAs[i], s.HPAs[j] = s.HPAs[j], s.HPAs[i] })
 	r.Shuffle(len(s.CRDs), func(i, j int) { s.CRDs[i], s.CRDs[j] = s.CRDs[j], s.CRDs[i] })
+	r.Shuffle(len(s.ConfigMaps), func(i, j int) { s.ConfigMaps[i], s.ConfigMaps[j] = s.ConfigMaps[j], s.ConfigMaps[i] })
+	r.Shuffle(len(s.Probes), func(i, j int) { s.Probes[i], s.Probes[j] = s.Probes[j], s.Probes[i] })
 	for i := range s.Nodes {
 		img := s.Nodes[i].Status.Images
 		r.Shuffle(len(img), func(a, b int) { img[a], img[b] = img[b], img[a] })

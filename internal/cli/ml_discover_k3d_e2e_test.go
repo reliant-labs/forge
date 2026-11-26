@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -42,6 +43,10 @@ const (
 //   - the read set is sufficient AND is the whole story: run as a
 //     ServiceAccount granted exactly mlcollect.ClusterRole() (list only, no
 //     Secrets), discovery reads everything with no refused list;
+//   - --probe reads the fake exporter's families through the pod proxy, so
+//     accel.utilisation is collected (by probe) and accel.profiling missing;
+//     the base read-set identity, which lacks pods/proxy, has its probe
+//     refused and recorded, not fatal;
 //   - a second DCGM exporter on the same nodes raises accel-exporter-duplicate.
 //
 // THE e2e TIER: it needs docker, k3d, kubectl and helm, and pulls the
@@ -191,6 +196,46 @@ func TestE2EMLDiscoverAgainstFakeGPUs(t *testing.T) {
 	if err := tryCluster(ctx, "kubectl", "--context", roCtx, "get", "secrets", "-A"); err == nil {
 		t.Error("the read-set ClusterRole lets its identity read Secrets")
 	}
+	// The base grant does not cover --probe: its probe is refused, recorded,
+	// and not fatal.
+	_, roSnap := mlDiscoverProbed(ctx, t, roCtx)
+	for _, p := range roSnap.Probes {
+		if p.Error == "" {
+			t.Errorf("a probe as the base read-set identity (no pods/proxy) succeeded: %+v", p)
+		}
+	}
+
+	// ── --probe, as the developer: the fake exporter's families ──
+	pdoc, psnap := mlDiscoverProbed(ctx, t, kctx)
+	var probed *mldiscover.MetricsProbe
+	for i, p := range psnap.Probes {
+		if p.Kind == mldiscover.KindDCGMExporter && p.Error == "" {
+			probed = &psnap.Probes[i]
+		}
+	}
+	if probed == nil {
+		t.Errorf("--probe read no dcgm-exporter endpoint: %+v", psnap.Probes)
+	} else {
+		t.Logf("probe %s/%s:%d%s: families %v, label keys %v", probed.Namespace, probed.Pod, probed.Port, probed.Path, probed.Families, probed.LabelKeys)
+		for _, fam := range []string{"DCGM_FI_DEV_GPU_UTIL", "DCGM_FI_DEV_FB_USED", "DCGM_FI_DEV_FB_FREE"} {
+			if !slices.Contains(probed.Families, fam) {
+				t.Errorf("the probe did not record %s: %v", fam, probed.Families)
+			}
+		}
+	}
+	cov := map[string]mldiscover.SignalCoverage{}
+	for _, c := range pdoc.Coverage {
+		cov[c.Signal] = c
+	}
+	if c := cov[mldiscover.SignalAccelUtilisation]; c.Status != mldiscover.CoverageCollected || c.DeterminedBy != mldiscover.DeterminedByProbe {
+		t.Errorf("accel.utilisation = %+v, want collected by probe", c)
+	}
+	if c := cov[mldiscover.SignalAccelProfiling]; c.Status != mldiscover.CoverageMissing {
+		t.Errorf("accel.profiling = %+v, want missing", c)
+	}
+	for _, c := range pdoc.Coverage {
+		t.Logf("coverage %-26s %-14s %-15s missing=%v", c.Signal, c.Status, c.DeterminedBy, c.Missing)
+	}
 
 	// ── a second DCGM exporter on the same nodes ──
 	plantSecondDCGMExporter(ctx, t, name, kctx)
@@ -221,6 +266,26 @@ func mlDiscoverLive(ctx context.Context, t *testing.T, kctx string) MLDiscoverDo
 		t.Fatalf("not a document: %v\n%s", err, out.String())
 	}
 	return doc
+}
+
+// mlDiscoverProbed runs `forge ml discover --context kctx --probe --json` and
+// returns the document and the snapshot it saved.
+func mlDiscoverProbed(ctx context.Context, t *testing.T, kctx string) (MLDiscoverDocument, *mldiscover.Snapshot) {
+	t.Helper()
+	var out bytes.Buffer
+	save := filepath.Join(t.TempDir(), "snap.json")
+	if err := runMLDiscover(ctx, mlDiscoverOptions{kubeContext: kctx, jsonOut: true, probe: true, saveSnapshot: save, namespace: "forge-ml", stdout: &out}); err != nil {
+		t.Fatalf("forge ml discover --probe --context %s: %v", kctx, err)
+	}
+	var doc MLDiscoverDocument
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("not a document: %v\n%s", err, out.String())
+	}
+	snap, err := readMLSnapshot(save)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc, snap
 }
 
 func mlDiscoverSnapshot(ctx context.Context, t *testing.T, kctx string) *mldiscover.Snapshot {

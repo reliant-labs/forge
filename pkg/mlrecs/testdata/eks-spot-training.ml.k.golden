@@ -56,6 +56,237 @@ ml_stacks = [forge.MLStack {
             #                     }
             #                 }
             #             }
+            #             "config": {
+            #                 "metrics": [
+            #                     {
+            #                         "enrichment": {
+            #                             "container": False
+            #                             "dra": False
+            #                             "hpc_jobs": False
+            #                             "kubernetes": "auto"
+            #                         }
+            #                         "every": "30s"
+            #                         "fields": [
+            #                             {
+            #                                 "help": "SM clock frequency in hertz."
+            #                                 "name": "DCGM_FI_DEV_SM_CLOCK_HERTZ"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Memory clock frequency in hertz."
+            #                                 "name": "DCGM_FI_DEV_MEMORY_CLOCK_HERTZ"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Memory temperature (in C)."
+            #                                 "name": "DCGM_FI_DEV_MEMORY_TEMP_CELSIUS"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "GPU temperature (in C)."
+            #                                 "name": "DCGM_FI_DEV_GPU_TEMP_CELSIUS"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Power draw (in W)."
+            #                                 "name": "DCGM_FI_DEV_BOARD_POWER_WATTS"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "GPU energy consumed since the driver was reloaded in joules."
+            #                                 "name": "DCGM_FI_DEV_GPU_ENERGY_JOULES_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "Time below application clocks due to power policy in seconds."
+            #                                 "name": "DCGM_FI_DEV_GPU_POWER_THROTTLE_SECONDS_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "Time below application clocks due to thermal policy in seconds."
+            #                                 "name": "DCGM_FI_DEV_GPU_THERMAL_THROTTLE_SECONDS_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "Total number of PCIe retries."
+            #                                 "name": "DCGM_FI_DEV_PCIE_REPLAY_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "GPU utilization as a ratio."
+            #                                 "name": "DCGM_FI_DEV_GPU_UTIL_RATIO"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Memory utilization as a ratio."
+            #                                 "name": "DCGM_FI_DEV_MEMORY_UTIL_RATIO"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Encoder utilization as a ratio."
+            #                                 "name": "DCGM_FI_DEV_ENC_UTIL_RATIO"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Decoder utilization as a ratio."
+            #                                 "name": "DCGM_FI_DEV_DEC_UTIL_RATIO"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Value of the last XID error encountered."
+            #                                 "name": "DCGM_FI_DEV_XID_ERROR"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Total clock events observed since the counter was last reset (edge-counted)."
+            #                                 "name": "DCGM_EXP_CLOCK_EVENTS_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "Total XID errors observed since the counter was last reset."
+            #                                 "name": "DCGM_EXP_XID_ERRORS_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "Total framebuffer capacity in bytes."
+            #                                 "name": "DCGM_FI_DEV_FB_CAPACITY_BYTES"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Free framebuffer memory in bytes."
+            #                                 "name": "DCGM_FI_DEV_FB_FREE_BYTES"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Used framebuffer memory in bytes."
+            #                                 "name": "DCGM_FI_DEV_FB_USED_BYTES"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Reserved framebuffer memory in bytes."
+            #                                 "name": "DCGM_FI_DEV_FB_RESERVED_BYTES"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Total number of single-bit volatile ECC errors."
+            #                                 "name": "DCGM_FI_DEV_ECC_SBE_VOL_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "Total number of double-bit volatile ECC errors."
+            #                                 "name": "DCGM_FI_DEV_ECC_DBE_VOL_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "Total number of retired pages due to single-bit errors."
+            #                                 "name": "DCGM_FI_DEV_PAGE_RETIRED_SBE_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "Total number of retired pages due to double-bit errors."
+            #                                 "name": "DCGM_FI_DEV_PAGE_RETIRED_DBE_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "Whether pages are pending retirement (1 means pending and 0 means not pending)."
+            #                                 "name": "DCGM_FI_DEV_PAGE_RETIRED_PENDING"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Total number of NVLink data-link CRC errors."
+            #                                 "name": "DCGM_FI_DEV_NVLINK_CRC_ERROR_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "Total number of NVLink data-link recovery errors."
+            #                                 "name": "DCGM_FI_DEV_NVLINK_RECOVERY_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "Total number of NVLink data-link replay errors."
+            #                                 "name": "DCGM_FI_DEV_NVLINK_REPLAY_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "Total NVLink throughput across all lanes in bytes per second."
+            #                                 "name": "DCGM_FI_DEV_NVLINK_THROUGHPUT_BYTES_PER_SECOND"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "vGPU License status"
+            #                                 "name": "DCGM_FI_DEV_VGPU_LICENSE_STATUS"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Number of remapped rows for uncorrectable errors"
+            #                                 "name": "DCGM_FI_DEV_ROW_REMAP_UNCORRECTABLE_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "Number of remapped rows for correctable errors"
+            #                                 "name": "DCGM_FI_DEV_ROW_REMAP_CORRECTABLE_TOTAL"
+            #                                 "prometheus_type": "counter"
+            #                             }
+            #                             {
+            #                                 "help": "Whether remapping of rows has failed"
+            #                                 "name": "DCGM_FI_DEV_ROW_REMAP_FAILED"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Driver Version"
+            #                                 "name": "DCGM_FI_SYSTEM_DRIVER_VERSION"
+            #                                 "prometheus_type": "label"
+            #                             }
+            #                             {
+            #                                 "help": "Ratio of time the graphics engine is active."
+            #                                 "name": "DCGM_FI_PROF_GR_ENGINE_UTIL_RATIO"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "The ratio of cycles an SM has at least 1 warp assigned."
+            #                                 "name": "DCGM_FI_PROF_SM_UTIL_RATIO"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "The ratio of number of warps resident on an SM."
+            #                                 "name": "DCGM_FI_PROF_SM_OCCUPANCY_RATIO"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Ratio of cycles the tensor (HMMA) pipe is active."
+            #                                 "name": "DCGM_FI_PROF_TENSOR_UTIL_RATIO"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "Ratio of cycles the device memory interface is active sending or receiving data."
+            #                                 "name": "DCGM_FI_PROF_DRAM_UTIL_RATIO"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "The rate of data transmitted over the PCIe bus - including both protocol headers and data payloads - in bytes per second."
+            #                                 "name": "DCGM_FI_PROF_PCIE_TX_BYTES"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "The rate of data received over the PCIe bus - including both protocol headers and data payloads - in bytes per second."
+            #                                 "name": "DCGM_FI_PROF_PCIE_RX_BYTES"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "The rate of data transmitted over NVLink in bytes per second."
+            #                                 "name": "DCGM_FI_PROF_NVLINK_TX_BYTES"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                             {
+            #                                 "help": "The rate of data received over NVLink in bytes per second."
+            #                                 "name": "DCGM_FI_PROF_NVLINK_RX_BYTES"
+            #                                 "prometheus_type": "gauge"
+            #                             }
+            #                         ]
+            #                         "name": "default"
+            #                     }
+            #                 ]
+            #             }
             #             "serviceMonitor": {
             #                 "enabled": False
             #             }
@@ -69,24 +300,49 @@ ml_stacks = [forge.MLStack {
             #     selector = {"app.kubernetes.io/name": "dcgm-exporter"}
             #     port = 9400
             #     allow = [
-            #         "DCGM_FI_DEV_GPU_UTIL"
-            #         "DCGM_FI_PROF_GR_ENGINE_ACTIVE"
-            #         "DCGM_FI_PROF_SM_ACTIVE"
-            #         "DCGM_FI_PROF_SM_OCCUPANCY"
-            #         "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE"
-            #         "DCGM_FI_PROF_DRAM_ACTIVE"
-            #         "DCGM_FI_DEV_FB_USED"
-            #         "DCGM_FI_DEV_FB_FREE"
-            #         "DCGM_FI_DEV_GPU_TEMP"
-            #         "DCGM_FI_DEV_POWER_USAGE"
-            #         "DCGM_FI_DEV_XID_ERRORS"
+            #         "DCGM_FI_DEV_SM_CLOCK_HERTZ"
+            #         "DCGM_FI_DEV_MEMORY_CLOCK_HERTZ"
+            #         "DCGM_FI_DEV_MEMORY_TEMP_CELSIUS"
+            #         "DCGM_FI_DEV_GPU_TEMP_CELSIUS"
+            #         "DCGM_FI_DEV_BOARD_POWER_WATTS"
+            #         "DCGM_FI_DEV_GPU_ENERGY_JOULES_TOTAL"
+            #         "DCGM_FI_DEV_GPU_POWER_THROTTLE_SECONDS_TOTAL"
+            #         "DCGM_FI_DEV_GPU_THERMAL_THROTTLE_SECONDS_TOTAL"
+            #         "DCGM_FI_DEV_PCIE_REPLAY_TOTAL"
+            #         "DCGM_FI_DEV_GPU_UTIL_RATIO"
+            #         "DCGM_FI_DEV_MEMORY_UTIL_RATIO"
+            #         "DCGM_FI_DEV_ENC_UTIL_RATIO"
+            #         "DCGM_FI_DEV_DEC_UTIL_RATIO"
+            #         "DCGM_FI_DEV_XID_ERROR"
+            #         "DCGM_EXP_CLOCK_EVENTS_TOTAL"
+            #         "DCGM_EXP_XID_ERRORS_TOTAL"
+            #         "DCGM_FI_DEV_FB_CAPACITY_BYTES"
+            #         "DCGM_FI_DEV_FB_FREE_BYTES"
+            #         "DCGM_FI_DEV_FB_USED_BYTES"
+            #         "DCGM_FI_DEV_FB_RESERVED_BYTES"
+            #         "DCGM_FI_DEV_ECC_SBE_VOL_TOTAL"
             #         "DCGM_FI_DEV_ECC_DBE_VOL_TOTAL"
-            #         "DCGM_FI_DEV_ROW_REMAP_FAILURE"
-            #         "DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS"
-            #         "DCGM_FI_DEV_PCIE_REPLAY_COUNTER"
-            #         "DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL"
-            #         "DCGM_FI_DEV_CLOCK_THROTTLE_REASONS"
-            #         "DCGM_FI_DEV_CLOCKS_EVENT_REASONS"
+            #         "DCGM_FI_DEV_PAGE_RETIRED_SBE_TOTAL"
+            #         "DCGM_FI_DEV_PAGE_RETIRED_DBE_TOTAL"
+            #         "DCGM_FI_DEV_PAGE_RETIRED_PENDING"
+            #         "DCGM_FI_DEV_NVLINK_CRC_ERROR_TOTAL"
+            #         "DCGM_FI_DEV_NVLINK_RECOVERY_TOTAL"
+            #         "DCGM_FI_DEV_NVLINK_REPLAY_TOTAL"
+            #         "DCGM_FI_DEV_NVLINK_THROUGHPUT_BYTES_PER_SECOND"
+            #         "DCGM_FI_DEV_VGPU_LICENSE_STATUS"
+            #         "DCGM_FI_DEV_ROW_REMAP_UNCORRECTABLE_TOTAL"
+            #         "DCGM_FI_DEV_ROW_REMAP_CORRECTABLE_TOTAL"
+            #         "DCGM_FI_DEV_ROW_REMAP_FAILED"
+            #         "DCGM_FI_SYSTEM_DRIVER_VERSION"
+            #         "DCGM_FI_PROF_GR_ENGINE_UTIL_RATIO"
+            #         "DCGM_FI_PROF_SM_UTIL_RATIO"
+            #         "DCGM_FI_PROF_SM_OCCUPANCY_RATIO"
+            #         "DCGM_FI_PROF_TENSOR_UTIL_RATIO"
+            #         "DCGM_FI_PROF_DRAM_UTIL_RATIO"
+            #         "DCGM_FI_PROF_PCIE_TX_BYTES"
+            #         "DCGM_FI_PROF_PCIE_RX_BYTES"
+            #         "DCGM_FI_PROF_NVLINK_TX_BYTES"
+            #         "DCGM_FI_PROF_NVLINK_RX_BYTES"
             #     ]
             # }
         }

@@ -41,7 +41,239 @@
       "via": "gke-managed",
       "matched_by": [
         "condition:KernelDeadlock"
-      ]
+      ],
+      "config": {
+        "determined_by": "presence",
+        "source": "node conditions",
+        "conditions": [
+          "KernelDeadlock"
+        ]
+      }
+    }
+  ],
+  "coverage": [
+    {
+      "signal": "accel.utilisation",
+      "category": "accelerator",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no accelerator nodes"
+    },
+    {
+      "signal": "accel.profiling",
+      "category": "accelerator",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no accelerator nodes"
+    },
+    {
+      "signal": "accel.memory",
+      "category": "accelerator",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no accelerator nodes"
+    },
+    {
+      "signal": "accel.xid",
+      "category": "accelerator",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no accelerator nodes"
+    },
+    {
+      "signal": "accel.ecc",
+      "category": "accelerator",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no accelerator nodes"
+    },
+    {
+      "signal": "accel.retired-pages",
+      "category": "accelerator",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no accelerator nodes"
+    },
+    {
+      "signal": "accel.row-remap",
+      "category": "accelerator",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no accelerator nodes"
+    },
+    {
+      "signal": "accel.nvlink",
+      "category": "accelerator",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no accelerator nodes"
+    },
+    {
+      "signal": "accel.pcie",
+      "category": "accelerator",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no accelerator nodes"
+    },
+    {
+      "signal": "accel.throttle",
+      "category": "accelerator",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no accelerator nodes"
+    },
+    {
+      "signal": "accel.power-thermal",
+      "category": "accelerator",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no accelerator nodes"
+    },
+    {
+      "signal": "accel.pod-attribution",
+      "category": "accelerator",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no accelerator nodes"
+    },
+    {
+      "signal": "node.health",
+      "category": "node-health",
+      "status": "collected",
+      "determined_by": "presence",
+      "sources": [
+        "node-problem-detector (via gke-managed)"
+      ],
+      "expected": [
+        "KernelDeadlock"
+      ],
+      "present": [
+        "KernelDeadlock"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2
+    },
+    {
+      "signal": "node.health.gpu-rules",
+      "category": "node-health",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no NVIDIA nodes (Xid is NVIDIA's error stream)"
+    },
+    {
+      "signal": "kubelet.tracing",
+      "category": "tracing",
+      "status": "unknown",
+      "determined_by": "unreadable",
+      "expected": [
+        "tracing"
+      ],
+      "note": "GKE manages the kubelet configuration; it is not readable from the Kubernetes API"
+    },
+    {
+      "signal": "apiserver.tracing",
+      "category": "tracing",
+      "status": "unknown",
+      "determined_by": "unreadable",
+      "expected": [
+        "tracing-config-file"
+      ],
+      "note": "GKE runs the control plane; its API server flags are not readable"
+    },
+    {
+      "signal": "telemetry.collector",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "note": "no OpenTelemetry Collector, Grafana Alloy or Datadog agent runs"
+    },
+    {
+      "signal": "telemetry.otlp",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "otlp"
+      ],
+      "missing": [
+        "otlp"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "telemetry.k8s-events",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "k8s_events"
+      ],
+      "missing": [
+        "k8s_events"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "telemetry.kubeletstats",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "kubeletstats"
+      ],
+      "missing": [
+        "kubeletstats"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "telemetry.container-logs",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "container-logs"
+      ],
+      "missing": [
+        "container-logs"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "profiling.continuous",
+      "category": "profiling",
+      "status": "missing",
+      "determined_by": "presence",
+      "nodes_total": 2,
+      "note": "no continuous profiler (Parca, Pyroscope via Alloy, OTel eBPF profiler, Elastic, Coroot, Pixie) runs"
+    },
+    {
+      "signal": "profiling.gpu",
+      "category": "profiling",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no accelerator nodes"
+    },
+    {
+      "signal": "tracing.training",
+      "category": "tracing",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no unfinished accelerator Jobs"
+    },
+    {
+      "signal": "tracing.inference",
+      "category": "tracing",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no vLLM or Triton servers"
+    },
+    {
+      "signal": "metrics.inference",
+      "category": "inference",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no vLLM or Triton servers"
     }
   ],
   "warnings": [

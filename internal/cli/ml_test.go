@@ -152,10 +152,23 @@ func TestMLDiscoverHumanForm(t *testing.T) {
 			},
 			Components: []mldiscover.Component{
 				{Kind: "gpu-operator", Category: "operator", Vendor: "nvidia", Status: "present", Owner: "theirs", Version: "v24.9.0", Namespace: "gpu-operator", Workload: "Deployment/gpu-operator", MatchedBy: []string{"image:*gpu-operator*"}},
-				{Kind: "dcgm-exporter", Category: "accel-metrics", Vendor: "nvidia", Status: "present", Owner: "theirs", Version: "3.3.9-3.6.1-ubuntu22.04", Namespace: "gpu-operator", Workload: "DaemonSet/nvidia-dcgm-exporter", Via: "gpu-operator", MetricsPort: 9400, Pods: 3, MatchedBy: []string{"image:*dcgm-exporter*"}},
+				{Kind: "dcgm-exporter", Category: "accel-metrics", Vendor: "nvidia", Status: "present", Owner: "theirs", Version: "3.3.9-3.6.1-ubuntu22.04", Namespace: "gpu-operator", Workload: "DaemonSet/nvidia-dcgm-exporter", Via: "gpu-operator", MetricsPort: 9400, Pods: 3, MatchedBy: []string{"image:*dcgm-exporter*"},
+					Config: &mldiscover.ComponentConfig{DeterminedBy: "probe", Source: "probe :9400/metrics", Fields: []string{"DCGM_FI_DEV_FB_FREE", "DCGM_FI_DEV_FB_USED", "DCGM_FI_DEV_GPU_UTIL"}, Settings: []string{"kubernetes-attribution=true"}}},
 				{Kind: "node-problem-detector", Category: "node-health", Status: "present", Owner: "forge", Version: "v0.8.20", Namespace: "forge-ml", Workload: "DaemonSet/node-problem-detector", Pods: 4, MatchedBy: []string{"image:*node-problem-detector*"}},
 				{Kind: "kueue", Category: "queue", Status: "present", Owner: "theirs", Version: "v0.10.1", Namespace: "kueue-system", Workload: "Deployment/kueue-controller-manager", Resources: 2, MatchedBy: []string{"crd:clusterqueues.kueue.x-k8s.io"}},
 				{Kind: "kuberay", Category: "training", Status: "crd-only", Owner: "theirs", Resources: 1, MatchedBy: []string{"crd:rayclusters.ray.io"}},
+			},
+			Coverage: []mldiscover.SignalCoverage{
+				{Signal: "accel.utilisation", Category: "accelerator", Vendor: "nvidia", Status: "collected", DeterminedBy: "probe",
+					Sources: []string{"dcgm-exporter/gpu-operator/DaemonSet/nvidia-dcgm-exporter"}, Expected: []string{"DCGM_FI_DEV_GPU_UTIL"}, Present: []string{"DCGM_FI_DEV_GPU_UTIL"},
+					NodesCovered: 3, NodesTotal: 3, Versions: []string{"dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"}},
+				{Signal: "accel.profiling", Category: "accelerator", Vendor: "nvidia", Status: "missing", DeterminedBy: "probe",
+					Expected:   []string{"DCGM_FI_PROF_DRAM_ACTIVE", "DCGM_FI_PROF_GR_ENGINE_ACTIVE", "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE", "DCGM_FI_PROF_SM_ACTIVE", "DCGM_FI_PROF_SM_OCCUPANCY"},
+					Missing:    []string{"DCGM_FI_PROF_DRAM_ACTIVE", "DCGM_FI_PROF_GR_ENGINE_ACTIVE", "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE", "DCGM_FI_PROF_SM_ACTIVE", "DCGM_FI_PROF_SM_OCCUPANCY"},
+					NodesTotal: 3, Findings: []string{"dcgm-profiling-off"}},
+				{Signal: "node.health", Category: "node-health", Status: "partial", DeterminedBy: "config", Sources: []string{"node-problem-detector/forge-ml/DaemonSet/node-problem-detector"}, NodesCovered: 3, NodesTotal: 4},
+				{Signal: "kubelet.tracing", Category: "tracing", Status: "unknown", DeterminedBy: "unreadable", Note: "GKE manages the kubelet config: discovery cannot read it.", Findings: []string{"kubelet-tracing-off"}},
+				{Signal: "metrics.inference", Category: "inference", Status: "not-applicable", DeterminedBy: "presence"},
 			},
 		},
 		Findings: []mlrecs.Finding{
@@ -342,6 +355,64 @@ func TestMLDiscoverSavesTheSnapshotInsideAProject(t *testing.T) {
 	// Outside a project a live read is saved only where --save-snapshot says.
 	if _, err := mlRun(t, mlDiscoverOptions{collect: mlFixedSnapshot("c")}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// --probe: the first inventory names the targets, the probe's results land
+// in the snapshot, and discovery runs again over them. It needs a live read.
+func TestMLDiscoverProbe(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	var gotTargets []mldiscover.ProbeTarget
+	target := mldiscover.ProbeTarget{Kind: "dcgm-exporter", Namespace: "gpu-operator", Pod: "nvidia-dcgm-exporter-x", Port: 9400, Path: "/metrics"}
+	out, err := mlRun(t, mlDiscoverOptions{projectDir: dir, jsonOut: true, probe: true, collect: mlFixedSnapshot("k3d-gpu"),
+		probeTargets: func(s *mldiscover.Snapshot, inv *mldiscover.Inventory) []mldiscover.ProbeTarget {
+			if s.Context != "k3d-gpu" || inv == nil {
+				t.Errorf("probe targets got %q %v", s.Context, inv)
+			}
+			return []mldiscover.ProbeTarget{target}
+		},
+		runProbe: func(_ context.Context, kctx string, ts []mldiscover.ProbeTarget) ([]mldiscover.MetricsProbe, error) {
+			if kctx != "k3d-gpu" {
+				t.Errorf("probe context %q", kctx)
+			}
+			gotTargets = ts
+			return []mldiscover.MetricsProbe{{Kind: target.Kind, Namespace: target.Namespace, Pod: target.Pod, Port: 9400, Path: "/metrics",
+				Families: []string{"DCGM_FI_DEV_GPU_UTIL"}, LabelKeys: []string{"gpu", "pod"}}}, nil
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotTargets) != 1 || gotTargets[0] != target {
+		t.Errorf("probed %v", gotTargets)
+	}
+	saved, err := readMLSnapshot(filepath.Join(dir, ".forge", "state", "ml-inventory-k3d-gpu.json"))
+	if err != nil || len(saved.Probes) != 1 || saved.Probes[0].Families[0] != "DCGM_FI_DEV_GPU_UTIL" {
+		t.Errorf("the saved snapshot does not hold the probe: %v %+v", err, saved)
+	}
+	var doc MLDiscoverDocument
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	// Without --probe nothing is probed.
+	if _, err := mlRun(t, mlDiscoverOptions{collect: mlFixedSnapshot("c"),
+		runProbe: func(context.Context, string, []mldiscover.ProbeTarget) ([]mldiscover.MetricsProbe, error) {
+			t.Error("probed without --probe")
+			return nil, nil
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	// No targets: a warning, not an error.
+	out, err = mlRun(t, mlDiscoverOptions{jsonOut: true, probe: true, collect: mlFixedSnapshot("c"),
+		probeTargets: func(*mldiscover.Snapshot, *mldiscover.Inventory) []mldiscover.ProbeTarget { return nil },
+		runProbe: func(context.Context, string, []mldiscover.ProbeTarget) ([]mldiscover.MetricsProbe, error) {
+			return nil, nil
+		}})
+	if err != nil || !strings.Contains(out, "no metrics endpoint to probe") {
+		t.Errorf("no targets: %v\n%s", err, out)
+	}
+	if _, err := mlRun(t, mlDiscoverOptions{probe: true, fromSnapshot: mlSnapshotFixture}); err == nil || !strings.Contains(err.Error(), "--probe reads a live cluster") {
+		t.Errorf("--probe --from-snapshot: %v", err)
 	}
 }
 

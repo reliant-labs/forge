@@ -85,5 +85,361 @@
         "image:*k8s-device-plugin"
       ]
     }
+  ],
+  "coverage": [
+    {
+      "signal": "accel.utilisation",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "GPU_UTIL"
+      ],
+      "missing": [
+        "GPU_UTIL"
+      ],
+      "nodes_total": 3,
+      "note": "no DCGM exporter runs on the NVIDIA nodes"
+    },
+    {
+      "signal": "accel.profiling",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "PROF_GR_ENGINE_ACTIVE",
+        "PROF_SM_ACTIVE",
+        "PROF_SM_OCCUPANCY",
+        "PROF_PIPE_TENSOR_ACTIVE",
+        "PROF_DRAM_ACTIVE"
+      ],
+      "missing": [
+        "PROF_GR_ENGINE_ACTIVE",
+        "PROF_SM_ACTIVE",
+        "PROF_SM_OCCUPANCY",
+        "PROF_PIPE_TENSOR_ACTIVE",
+        "PROF_DRAM_ACTIVE"
+      ],
+      "nodes_total": 3,
+      "note": "no DCGM exporter runs on the NVIDIA nodes"
+    },
+    {
+      "signal": "accel.memory",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "FB_USED",
+        "FB_FREE"
+      ],
+      "missing": [
+        "FB_USED",
+        "FB_FREE"
+      ],
+      "nodes_total": 3,
+      "note": "no DCGM exporter runs on the NVIDIA nodes"
+    },
+    {
+      "signal": "accel.xid",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "XID_ERRORS"
+      ],
+      "missing": [
+        "XID_ERRORS"
+      ],
+      "nodes_total": 3,
+      "note": "no DCGM exporter runs on the NVIDIA nodes"
+    },
+    {
+      "signal": "accel.ecc",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "ECC_SBE",
+        "ECC_DBE"
+      ],
+      "missing": [
+        "ECC_SBE",
+        "ECC_DBE"
+      ],
+      "nodes_total": 3,
+      "note": "no DCGM exporter runs on the NVIDIA nodes"
+    },
+    {
+      "signal": "accel.retired-pages",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "RETIRED_SBE",
+        "RETIRED_DBE",
+        "RETIRED_PENDING"
+      ],
+      "missing": [
+        "RETIRED_SBE",
+        "RETIRED_DBE",
+        "RETIRED_PENDING"
+      ],
+      "nodes_total": 3,
+      "note": "no DCGM exporter runs on the NVIDIA nodes"
+    },
+    {
+      "signal": "accel.row-remap",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "UNCORRECTABLE_REMAPPED_ROWS",
+        "ROW_REMAP_FAILURE"
+      ],
+      "missing": [
+        "UNCORRECTABLE_REMAPPED_ROWS",
+        "ROW_REMAP_FAILURE"
+      ],
+      "nodes_total": 3,
+      "note": "no DCGM exporter runs on the NVIDIA nodes"
+    },
+    {
+      "signal": "accel.nvlink",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "NVLINK_BANDWIDTH",
+        "NVLINK_ERRORS"
+      ],
+      "missing": [
+        "NVLINK_BANDWIDTH",
+        "NVLINK_ERRORS"
+      ],
+      "nodes_total": 3,
+      "note": "no DCGM exporter runs on the NVIDIA nodes"
+    },
+    {
+      "signal": "accel.pcie",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "PCIE_REPLAY",
+        "PCIE_BYTES"
+      ],
+      "missing": [
+        "PCIE_REPLAY",
+        "PCIE_BYTES"
+      ],
+      "nodes_total": 3,
+      "note": "no DCGM exporter runs on the NVIDIA nodes"
+    },
+    {
+      "signal": "accel.throttle",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "CLOCK_EVENT_REASONS"
+      ],
+      "missing": [
+        "CLOCK_EVENT_REASONS"
+      ],
+      "nodes_total": 3,
+      "note": "no DCGM exporter runs on the NVIDIA nodes"
+    },
+    {
+      "signal": "accel.power-thermal",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "POWER_USAGE",
+        "GPU_TEMP",
+        "POWER_VIOLATION",
+        "THERMAL_VIOLATION"
+      ],
+      "missing": [
+        "POWER_USAGE",
+        "GPU_TEMP",
+        "POWER_VIOLATION",
+        "THERMAL_VIOLATION"
+      ],
+      "nodes_total": 3,
+      "note": "no DCGM exporter runs on the NVIDIA nodes"
+    },
+    {
+      "signal": "accel.pod-attribution",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "pod-labels"
+      ],
+      "missing": [
+        "pod-labels"
+      ],
+      "nodes_total": 3,
+      "note": "no DCGM exporter runs on the NVIDIA nodes"
+    },
+    {
+      "signal": "node.health",
+      "category": "node-health",
+      "status": "missing",
+      "determined_by": "presence",
+      "nodes_total": 3,
+      "note": "no node-problem-detector, no EKS node monitoring agent, and no node condition a health source sets"
+    },
+    {
+      "signal": "node.health.gpu-rules",
+      "category": "node-health",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "xid-rule"
+      ],
+      "missing": [
+        "xid-rule"
+      ],
+      "nodes_total": 3,
+      "note": "no node health source turns GPU (Xid) errors into a node condition"
+    },
+    {
+      "signal": "kubelet.tracing",
+      "category": "tracing",
+      "status": "unknown",
+      "determined_by": "unreadable",
+      "expected": [
+        "tracing"
+      ],
+      "note": "EKS manages the kubelet configuration; it is not readable from the Kubernetes API"
+    },
+    {
+      "signal": "apiserver.tracing",
+      "category": "tracing",
+      "status": "unknown",
+      "determined_by": "unreadable",
+      "expected": [
+        "tracing-config-file"
+      ],
+      "note": "EKS runs the control plane; its API server flags are not readable"
+    },
+    {
+      "signal": "telemetry.collector",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "note": "no OpenTelemetry Collector, Grafana Alloy or Datadog agent runs"
+    },
+    {
+      "signal": "telemetry.otlp",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "otlp"
+      ],
+      "missing": [
+        "otlp"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "telemetry.k8s-events",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "k8s_events"
+      ],
+      "missing": [
+        "k8s_events"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "telemetry.kubeletstats",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "kubeletstats"
+      ],
+      "missing": [
+        "kubeletstats"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "telemetry.container-logs",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "container-logs"
+      ],
+      "missing": [
+        "container-logs"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "profiling.continuous",
+      "category": "profiling",
+      "status": "missing",
+      "determined_by": "presence",
+      "nodes_total": 3,
+      "note": "no continuous profiler (Parca, Pyroscope via Alloy, OTel eBPF profiler, Elastic, Coroot, Pixie) runs"
+    },
+    {
+      "signal": "profiling.gpu",
+      "category": "profiling",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "CUDA, Nsight and PyTorch profiler hooks live inside workloads; discovery recognises no GPU profiling operator"
+    },
+    {
+      "signal": "tracing.training",
+      "category": "tracing",
+      "status": "missing",
+      "determined_by": "args",
+      "expected": [
+        "Job/ml/hparam-sweep",
+        "Job/ml/train-llama-ft"
+      ],
+      "missing": [
+        "Job/ml/hparam-sweep",
+        "Job/ml/train-llama-ft"
+      ],
+      "note": "OTEL_EXPORTER_OTLP_* / OTEL_TRACES_EXPORTER env names on the Job's containers; an Instrumentation injection annotation is not visible"
+    },
+    {
+      "signal": "tracing.inference",
+      "category": "tracing",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no vLLM or Triton servers"
+    },
+    {
+      "signal": "metrics.inference",
+      "category": "inference",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no vLLM or Triton servers"
+    }
   ]
 }

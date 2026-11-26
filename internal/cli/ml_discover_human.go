@@ -130,6 +130,9 @@ func writeMLDiscoverHuman(w io.Writer, doc MLDiscoverDocument, o mlDiscoverOptio
 			}
 			present = present || c.Status == mldiscover.StatusPresent
 			lines = append(lines, mlComponentLine(c))
+			if cfg := mlConfigLine(c.Config); cfg != "" {
+				lines = append(lines, "    "+cfg)
+			}
 		}
 		if !present && sec.missing != nil {
 			lines = append(lines, strings.Split(sec.missing(inv), "\n")...)
@@ -139,6 +142,7 @@ func writeMLDiscoverHuman(w io.Writer, doc MLDiscoverDocument, o mlDiscoverOptio
 		}
 		p.row(sec.label, lines...)
 	}
+	mlCoverageLines(p, doc.Coverage)
 	if len(doc.Warnings) > 0 {
 		p.row("could not see", doc.Warnings...)
 	}
@@ -254,6 +258,123 @@ func mlComponentLine(c mldiscover.Component) string {
 		b.WriteString(" — adopt")
 	}
 	return b.String()
+}
+
+// mlConfigLine summarises what discovery read of a component's
+// configuration, "" when it read nothing.
+func mlConfigLine(cfg *mldiscover.ComponentConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	var parts []string
+	add := func(label string, items []string, max int) {
+		if len(items) > 0 {
+			parts = append(parts, label+" "+mlList(items, max))
+		}
+	}
+	if n := len(cfg.Fields); n > 0 {
+		parts = append(parts, mlCount(n, "field"))
+	}
+	add("monitors", cfg.Monitors, 4)
+	add("conditions", cfg.Conditions, 4)
+	add("receivers", cfg.Receivers, 5)
+	add("exporters", cfg.Exporters, 4)
+	add("pipelines", cfg.Pipelines, 4)
+	add("settings", cfg.Settings, 4)
+	if len(parts) == 0 {
+		return ""
+	}
+	from := cfg.DeterminedBy
+	switch {
+	case strings.HasPrefix(cfg.Source, cfg.DeterminedBy):
+		from = cfg.Source
+	case cfg.Source != "":
+		from += ": " + cfg.Source
+	}
+	return "config (" + from + "): " + strings.Join(parts, "; ")
+}
+
+// mlCoverageStatus is how each status prints; a gap is upper case.
+var mlCoverageStatus = map[string]string{
+	mldiscover.CoverageCollected: "collected",
+	mldiscover.CoveragePartial:   "PARTIAL",
+	mldiscover.CoverageMissing:   "MISSING",
+	mldiscover.CoverageUnknown:   "unknown",
+}
+
+// mlCoverageLines prints one line per signal, grouped by category in the
+// inventory's order, with what is missing, the nodes reached, the note and
+// the findings the gap raised. Not-applicable signals are only counted.
+func mlCoverageLines(p *mlPrinter, cov []mldiscover.SignalCoverage) {
+	if len(cov) == 0 {
+		return
+	}
+	counts := map[string]int{}
+	for _, c := range cov {
+		counts[c.Status]++
+	}
+	var head []string
+	for _, st := range []string{mldiscover.CoverageCollected, mldiscover.CoveragePartial, mldiscover.CoverageMissing, mldiscover.CoverageUnknown, mldiscover.CoverageNotApplicable} {
+		if counts[st] > 0 {
+			head = append(head, fmt.Sprintf("%d %s", counts[st], st))
+		}
+	}
+	p.blank()
+	p.row("coverage", fmt.Sprintf("%d signals: %s", len(cov), strings.Join(head, ", ")))
+	width := 0
+	for _, c := range cov {
+		width = max(width, len(c.Signal))
+	}
+	category, lastNote := "", ""
+	for _, c := range cov {
+		if c.Status == mldiscover.CoverageNotApplicable {
+			continue
+		}
+		if c.Category != category {
+			category, lastNote = c.Category, ""
+			title := category
+			if c.Vendor != "" {
+				title += " (" + c.Vendor + ")"
+			}
+			p.line("  " + title)
+		}
+		status := mlCoverageStatus[c.Status]
+		if status == "" {
+			status = c.Status
+		}
+		var detail []string
+		if len(c.Sources) > 0 {
+			detail = append(detail, mlList(c.Sources, 2))
+		}
+		if c.NodesTotal > 0 {
+			detail = append(detail, fmt.Sprintf("%d/%d nodes", c.NodesCovered, c.NodesTotal))
+		}
+		if len(c.Versions) > 0 {
+			detail = append(detail, mlList(c.Versions, 2))
+		}
+		p.line(fmt.Sprintf("    %-9s %-*s  %-15s %s", status, width, c.Signal, c.DeterminedBy, strings.Join(detail, "; ")))
+		pad := strings.Repeat(" ", 4+10+width+2)
+		if len(c.Missing) > 0 {
+			p.line(pad + "missing " + mlList(c.Missing, 4))
+		}
+		// A note shared by consecutive rows (every DCGM group read from the
+		// same default counters file) prints once.
+		if c.Note != "" && c.Note != lastNote {
+			p.line(pad + c.Note)
+		}
+		lastNote = c.Note
+		if len(c.Findings) > 0 {
+			p.line(pad + "finding " + strings.Join(c.Findings, ", "))
+		}
+	}
+}
+
+// mlList joins at most n items, saying how many more there are.
+func mlList(items []string, n int) string {
+	if len(items) <= n {
+		return strings.Join(items, ", ")
+	}
+	return strings.Join(items[:n], ", ") + fmt.Sprintf(", … (+%d)", len(items)-n)
 }
 
 func mlFindingLines(p *mlPrinter, f mlrecs.Finding) {

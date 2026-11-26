@@ -11,7 +11,10 @@
     "fix": {
       "kind": "manual",
       "summary": "Install the Intel Gaudi Prometheus metric exporter as a DaemonSet on the Gaudi nodes, then re-run `forge ml discover` to adopt it."
-    }
+    },
+    "signals": [
+      "accel.utilisation"
+    ]
   },
   {
     "id": "accel-telemetry-missing",
@@ -25,7 +28,10 @@
     "fix": {
       "kind": "manual",
       "summary": "forge knows no exporter for this resource, so it shows allocation only. Install the device vendor's exporter and adopt it in ml.k with forge.Adopt (selector, port, allow)."
-    }
+    },
+    "signals": [
+      "accel.utilisation"
+    ]
   },
   {
     "id": "accel-telemetry-missing",
@@ -40,7 +46,10 @@
       "kind": "manual",
       "summary": "Run neuron-monitor with its Prometheus exporter as a DaemonSet on the Neuron nodes, then re-run `forge ml discover` to adopt it.",
       "docs": "https://awsdocs-neuron.readthedocs-hosted.com/en/latest/tools/neuron-sys-tools/neuron-monitor-user-guide.html"
-    }
+    },
+    "signals": [
+      "accel.utilisation"
+    ]
   },
   {
     "id": "job-not-queued",
@@ -72,6 +81,57 @@
     }
   },
   {
+    "id": "collector-no-k8s-events",
+    "severity": "low",
+    "confidence": "certain",
+    "title": "The collector does not keep Kubernetes events: scheduling, pull and eviction history is lost",
+    "evidence": [
+      "collectors: DaemonSet/forge-system/forge-node-agent"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Add a k8s_events receiver (or k8sobjects with `objects: [{name: events, mode: watch}]`) to DaemonSet/forge-system/forge-node-agent in a logs pipeline; run it in one replica so events are not duplicated.",
+      "docs": "https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/k8seventsreceiver"
+    },
+    "signals": [
+      "telemetry.k8s-events"
+    ]
+  },
+  {
+    "id": "no-continuous-profiling",
+    "severity": "low",
+    "confidence": "unverified",
+    "title": "No continuous profiling on the accelerator nodes",
+    "evidence": [
+      "profilers reach 0 of 5 accelerator nodes"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Run one continuous eBPF profiler as a DaemonSet on the accelerator nodes: Parca agent, Grafana Alloy with pyroscope.ebpf, or the OpenTelemetry eBPF profiler (otel/opentelemetry-collector-ebpf-profiler). It shows where CPU time goes in data loaders and serving code with no code change.",
+      "docs": "https://www.parca.dev/docs/parca-agent"
+    },
+    "signals": [
+      "profiling.continuous"
+    ]
+  },
+  {
+    "id": "training-tracing-off",
+    "severity": "info",
+    "confidence": "likely",
+    "title": "2 accelerator Jobs export no OTLP traces",
+    "evidence": [
+      "Job/research/gaudi-smoke",
+      "Job/research/mi300-pretrain"
+    ],
+    "fix": {
+      "kind": "manual",
+      "summary": "Set OTEL_EXPORTER_OTLP_ENDPOINT (and OTEL_SERVICE_NAME) on the Job's containers, or inject an SDK with an OpenTelemetry Instrumentation resource, so steps and data-loading spans reach your collector."
+    },
+    "signals": [
+      "tracing.training"
+    ]
+  },
+  {
     "id": "kubelet-tracing-off",
     "severity": "info",
     "confidence": "unverified",
@@ -81,7 +141,8 @@
       "Node/fpga-1: kubelet v1.35.0",
       "Node/gaudi-1: kubelet v1.35.0",
       "Node/tpu-v5e-1: kubelet v1.35.0",
-      "Node/trn1-1: kubelet v1.35.0"
+      "Node/trn1-1: kubelet v1.35.0",
+      "kube-system/kubelet-config was not read (not a kubeadm cluster, or the grant refused it); the kubelet's config file lives on each node, which discovery never reads"
     ],
     "fix": {
       "kind": "manual",
@@ -91,6 +152,9 @@
     "dismissed": {
       "reason": "lab nodes export kubelet traces already",
       "expires": "2027-06-01"
-    }
+    },
+    "signals": [
+      "kubelet.tracing"
+    ]
   }
 ]

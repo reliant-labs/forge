@@ -63,6 +63,9 @@ type Finding struct {
 	// dismisses this id and has not expired. A dismissed finding is still
 	// reported, marked, and sorted last.
 	Dismissed *Dismissal `json:"dismissed,omitempty"`
+	// Signals are the coverage signals (mldiscover.Signal*) this finding is
+	// about; LinkCoverage reads them.
+	Signals []string `json:"signals,omitempty"`
 }
 
 // Fix is a finding's remedy.
@@ -118,6 +121,9 @@ type Rule struct {
 	Detects string `json:"detects"`
 	// Fix is the adopt-first fix in one sentence.
 	Fix string `json:"fix"`
+	// Signals are the coverage signals (mldiscover.Signal*) the rule reads
+	// or reports a gap in.
+	Signals []string `json:"signals,omitempty"`
 }
 
 // ProposeOptions tunes Propose.

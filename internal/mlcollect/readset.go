@@ -22,12 +22,18 @@ type Read struct {
 	// Verb is "get" or "list". Never anything else.
 	Verb string `json:"verb"`
 	// Scope says how much of each object is kept: "full" (the object, minus
-	// managedFields, annotations and container env values), "metadata"
-	// (names and labels only; the collector uses the metadata API, so the
-	// server never sends the rest), or "count".
+	// managedFields, annotations and container env values), "redacted" (as
+	// full, and every value under a sensitive key replaced: see Redact),
+	// "metadata" (names and labels only; the collector uses the metadata API,
+	// so the server never sends the rest), "count", or "names" (metric names
+	// and label keys, never a sample value).
 	Scope string `json:"scope"`
-	// When is set for a read that only happens when the CRD exists.
+	// When is set for a read that only happens under a condition (the CRD
+	// exists, --probe).
 	When string `json:"when,omitempty"`
+	// Probe marks the read only `--probe` makes. It is the one read outside
+	// ClusterRole(); ProbeRules() grants it.
+	Probe bool `json:"probe,omitempty"`
 	// Why is what discovery uses it for.
 	Why string `json:"why"`
 }
@@ -59,6 +65,7 @@ var countedCRDs = []string{
 	"podmonitorings.monitoring.googleapis.com",
 	"clusterpodmonitorings.monitoring.googleapis.com",
 	"opentelemetrycollectors.opentelemetry.io",
+	"instrumentations.opentelemetry.io",
 	"clusterqueues.kueue.x-k8s.io",
 	"localqueues.kueue.x-k8s.io",
 	"resourceflavors.kueue.x-k8s.io",
@@ -89,12 +96,15 @@ func CountedCRDs() []string {
 	return out
 }
 
-// customObjectCRDs are the custom resources read in full, because a rule
-// reads their spec: whether the GPU Operator's ClusterPolicy runs its DCGM
-// exporter, and what an AMD DeviceConfig deploys.
+// customObjectCRDs are the custom resources read in full (redacted), because
+// a rule reads their spec: whether the GPU Operator's ClusterPolicy runs its
+// DCGM exporter and which counters ConfigMap it names, what an AMD
+// DeviceConfig deploys, and an OpenTelemetryCollector's receivers and
+// pipelines.
 var customObjectCRDs = []string{
 	"clusterpolicies.nvidia.com",
 	"deviceconfigs.amd.com",
+	"opentelemetrycollectors.opentelemetry.io",
 }
 
 // resourceSliceKey is DRA's ResourceSlices, counted into
@@ -124,50 +134,73 @@ func ReadSet() []Read {
 	}
 	for _, name := range customObjectCRDs {
 		plural, group, _ := strings.Cut(name, ".")
-		rows = append(rows, Read{Group: group, Resource: plural, Verb: VerbList, Scope: "full", When: "the CRD is installed", Why: "the spec a rule reads (DCGM exporter enabled, what the operator deploys)"})
+		rows = append(rows, Read{Group: group, Resource: plural, Verb: VerbList, Scope: "redacted", When: "the CRD is installed",
+			Why: "the spec a rule reads (DCGM exporter and its counters ConfigMap, a collector's receivers and pipelines)"})
 	}
+	rows = append(rows,
+		Read{Resource: "configmaps", Verb: VerbGet, Scope: "redacted", When: "a found component names it",
+			Why: "by exact name, never listed: a DCGM counters CSV, NPD monitor JSON, a collector's config, kube-system kubeadm-config and kubelet-config"},
+		Read{Resource: "pods/proxy", Verb: VerbGet, Scope: "names", When: "--probe", Probe: true,
+			Why: "GET an exporter's /metrics through the API server, at most one pod per component and pool: metric names and label keys only"},
+	)
 	return rows
 }
 
 // Excluded is what discovery never reads, whatever the grant allows.
 var Excluded = []string{
 	"secrets (any namespace, any verb)",
-	"pods/log, pods/exec, pods/portforward",
+	"pods/log, pods/exec, pods/portforward (pods/proxy only with --probe, only GET of a metrics path)",
+	"listing configmaps (each is read by exact name, from what a found component references)",
 	"nodes/proxy (effectively exec on the node)",
 	"every write verb: create, update, patch, delete, deletecollection",
 }
 
 // ClusterRole is the read set as RBAC: a ClusterRole granting exactly what
-// discovery reads, for a team that runs it under a dedicated identity
-// (`kubectl create clusterrole` from this, or the ml/discover skill's YAML).
-func ClusterRole() []rbacv1.PolicyRule {
-	byGroup := map[string]map[string]bool{}
-	var nonResource []string
+// discovery reads without --probe, for a team that runs it under a dedicated
+// identity. ConfigMaps are get only: RBAC cannot pin the names, which depend
+// on what discovery finds, but the collector never lists them.
+func ClusterRole() []rbacv1.PolicyRule { return rbacRules(false) }
+
+// ProbeRules is the extra grant `--probe` needs: get on pods/proxy. It is kept
+// apart from ClusterRole because the proxy reaches any port of any pod; grant
+// it only where the probe is wanted.
+func ProbeRules() []rbacv1.PolicyRule { return rbacRules(true) }
+
+func rbacRules(probe bool) []rbacv1.PolicyRule {
+	type key struct{ group, verb string }
+	byKey := map[key]map[string]bool{}
 	for _, r := range ReadSet() {
-		if strings.HasPrefix(r.Resource, "/") {
+		if strings.HasPrefix(r.Resource, "/") || r.Probe != probe {
 			continue
 		}
-		if byGroup[r.Group] == nil {
-			byGroup[r.Group] = map[string]bool{}
+		k := key{r.Group, r.Verb}
+		if byKey[k] == nil {
+			byKey[k] = map[string]bool{}
 		}
-		byGroup[r.Group][r.Resource] = true
+		byKey[k][r.Resource] = true
 	}
-	nonResource = []string{"/version", "/api", "/api/*", "/apis", "/apis/*"}
-	groups := make([]string, 0, len(byGroup))
-	for g := range byGroup {
-		groups = append(groups, g)
+	keys := make([]key, 0, len(byKey))
+	for k := range byKey {
+		keys = append(keys, k)
 	}
-	sort.Strings(groups)
-	rules := make([]rbacv1.PolicyRule, 0, len(groups)+1)
-	for _, g := range groups {
-		res := make([]string, 0, len(byGroup[g]))
-		for r := range byGroup[g] {
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].group != keys[j].group {
+			return keys[i].group < keys[j].group
+		}
+		return keys[i].verb < keys[j].verb
+	})
+	rules := make([]rbacv1.PolicyRule, 0, len(keys)+1)
+	for _, k := range keys {
+		res := make([]string, 0, len(byKey[k]))
+		for r := range byKey[k] {
 			res = append(res, r)
 		}
 		sort.Strings(res)
-		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: res, Verbs: []string{VerbList}})
+		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{k.group}, Resources: res, Verbs: []string{k.verb}})
 	}
-	rules = append(rules, rbacv1.PolicyRule{NonResourceURLs: nonResource, Verbs: []string{VerbGet}})
+	if !probe {
+		rules = append(rules, rbacv1.PolicyRule{NonResourceURLs: []string{"/version", "/api", "/api/*", "/apis", "/apis/*"}, Verbs: []string{VerbGet}})
+	}
 	return rules
 }
 

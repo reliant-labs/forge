@@ -1,0 +1,20 @@
+{
+  "config_refs": [
+    {
+      "namespace": "forge-system",
+      "name": "forge-node-agent-config",
+      "why": "otel-collector DaemonSet/forge-system/forge-node-agent mounts it"
+    },
+    {
+      "namespace": "kube-system",
+      "name": "kubeadm-config",
+      "why": "kubeadm's ClusterConfiguration (API server tracing flags)"
+    },
+    {
+      "namespace": "kube-system",
+      "name": "kubelet-config",
+      "why": "kubeadm's KubeletConfiguration (kubelet tracing)"
+    }
+  ],
+  "probe_targets": []
+}

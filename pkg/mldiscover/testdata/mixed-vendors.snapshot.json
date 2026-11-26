@@ -74,7 +74,7 @@
     },
     {
       "metadata": {"name": "node-problem-detector", "namespace": "kube-system", "labels": {"app.kubernetes.io/name": "node-problem-detector", "helm.sh/chart": "node-problem-detector-2.3.14"}},
-      "spec": {"selector": {"matchLabels": {"app.kubernetes.io/name": "node-problem-detector"}}, "template": {"metadata": {"labels": {"app.kubernetes.io/name": "node-problem-detector"}}, "spec": {"containers": [{"name": "node-problem-detector", "image": "registry.k8s.io/node-problem-detector/node-problem-detector:v0.8.19", "resources": {}}]}}},
+      "spec": {"selector": {"matchLabels": {"app.kubernetes.io/name": "node-problem-detector"}}, "template": {"metadata": {"labels": {"app.kubernetes.io/name": "node-problem-detector"}}, "spec": {"containers": [{"name": "node-problem-detector", "image": "registry.k8s.io/node-problem-detector/node-problem-detector:v0.8.19", "command": ["/node-problem-detector", "--logtostderr", "--config.system-log-monitor=/config/kernel-monitor.json,/config/docker-monitor.json", "--prometheus-address=0.0.0.0", "--prometheus-port=20257"], "ports": [{"name": "exporter", "containerPort": 20257}], "resources": {}}]}}},
       "status": {"currentNumberScheduled": 5, "numberMisscheduled": 0, "desiredNumberScheduled": 5, "numberReady": 5}
     },
     {
@@ -84,7 +84,7 @@
     },
     {
       "metadata": {"name": "forge-node-agent", "namespace": "forge-system", "labels": {"forge.dev/workload": "node-agent"}},
-      "spec": {"selector": {"matchLabels": {"app": "forge-node-agent"}}, "template": {"metadata": {"labels": {"app": "forge-node-agent", "forge.dev/workload": "node-agent"}}, "spec": {"containers": [{"name": "otelcol", "image": "otel/opentelemetry-collector-contrib:0.115.0", "resources": {}}]}}},
+      "spec": {"selector": {"matchLabels": {"app": "forge-node-agent"}}, "template": {"metadata": {"labels": {"app": "forge-node-agent", "forge.dev/workload": "node-agent"}}, "spec": {"containers": [{"name": "otelcol", "image": "otel/opentelemetry-collector-contrib:0.115.0", "args": ["--config=/conf/collector.yaml"], "resources": {}, "volumeMounts": [{"name": "config", "mountPath": "/conf"}]}], "volumes": [{"name": "config", "configMap": {"name": "forge-node-agent-config"}}]}}},
       "status": {"currentNumberScheduled": 5, "numberMisscheduled": 0, "desiredNumberScheduled": 5, "numberReady": 5}
     }
   ],
@@ -99,6 +99,10 @@
       "spec": {"selector": {"matchLabels": {"control-plane": "controller-manager"}}, "template": {"metadata": {"labels": {"control-plane": "controller-manager"}}, "spec": {"containers": [{"name": "manager", "image": "registry.k8s.io/kueue/kueue:v0.20.7", "resources": {}}]}}},
       "status": {"replicas": 1, "readyReplicas": 1}
     }
+  ],
+  "configmaps": [
+    {"metadata": {"name": "forge-node-agent-config", "namespace": "forge-system", "labels": {"forge.dev/workload": "node-agent"}},
+     "data": {"collector.yaml": "receivers:\n  filelog:\n    include: [/var/log/pods/*/*/*.log]\n  kubeletstats:\n    auth_type: serviceAccount\n    endpoint: https://${env:K8S_NODE_NAME}:10250\n  otlp:\n    protocols:\n      grpc:\n        endpoint: 0.0.0.0:4317\nprocessors:\n  batch: {}\n  k8sattributes: {}\nexporters:\n  otlphttp:\n    endpoint: https://otel.reliant.example\n    headers:\n      authorization: REDACTED\nservice:\n  pipelines:\n    logs:\n      receivers: [filelog]\n      processors: [k8sattributes, batch]\n      exporters: [otlphttp]\n    metrics:\n      receivers: [kubeletstats, otlp]\n      processors: [batch]\n      exporters: [otlphttp]\n    traces:\n      receivers: [otlp]\n      processors: [batch]\n      exporters: [otlphttp]\n"}}
   ],
   "jobs": [
     {

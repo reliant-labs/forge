@@ -8,6 +8,9 @@ import (
 const (
 	ViaGPUOperator = "gpu-operator"
 	ViaGKEManaged  = "gke-managed"
+	// ViaForgePlatform is forge's own platform workload (its node agent),
+	// recognised by forge.dev/ labels without a component owner.
+	ViaForgePlatform = "forge-platform"
 )
 
 // Well-known namespaces.
@@ -108,7 +111,11 @@ var signatures = []signature{
 		images: []string{"*kube-state-metrics*"}},
 	{kind: KindOTelCollector, category: CategoryMonitoring,
 		crds:   []string{"opentelemetrycollectors.opentelemetry.io"},
-		images: []string{"*opentelemetry-collector*", "*otelcol*"}},
+		images: []string{"*opentelemetry-collector*", "*otelcol*"}, exclude: []string{"*ebpf-profiler*"}},
+	{kind: KindAlloy, category: CategoryMonitoring,
+		images: []string{"*grafana/alloy"}},
+	{kind: KindDatadogAgent, category: CategoryMonitoring,
+		images: []string{"*datadoghq/agent", "*datadog/agent"}, workloads: []string{WorkloadDaemonSet}},
 	{kind: KindKueue, category: CategoryQueue,
 		groups: []string{"kueue.x-k8s.io"}, images: []string{"*kueue*"}, workloads: []string{WorkloadDeployment}},
 	{kind: KindVolcano, category: CategoryQueue,
@@ -145,6 +152,20 @@ var signatures = []signature{
 		images: []string{"*dragonfly*dfdaemon*", "*dfdaemon*"}, workloads: []string{WorkloadDaemonSet}},
 	{kind: KindNodeTerminationHandler, category: CategoryLifecycle,
 		images: []string{"*aws-node-termination-handler*"}},
+	{kind: KindParcaAgent, category: CategoryProfiling,
+		images: []string{"*parca-dev/parca-agent", "*/parca-agent"}},
+	{kind: KindPyroscope, category: CategoryProfiling,
+		images: []string{"*grafana/pyroscope", "*pyroscope/pyroscope"}, workloads: []string{WorkloadDeployment, WorkloadStatefulSet}},
+	{kind: KindOTelEBPFProfiler, category: CategoryProfiling,
+		images: []string{"*opentelemetry-collector-ebpf-profiler*", "*opentelemetry-ebpf-profiler*"}},
+	{kind: KindElasticProfiling, category: CategoryProfiling,
+		images: []string{"*/observability/profiling-agent"}},
+	{kind: KindCorootNodeAgent, category: CategoryProfiling,
+		images: []string{"*coroot/coroot-node-agent"}},
+	{kind: KindPixie, category: CategoryProfiling,
+		images: []string{"*vizier-pem*"}},
+	{kind: KindBeyla, category: CategoryTracing,
+		images: []string{"*grafana/beyla"}},
 }
 
 // matchLabels reports the label signature pod labels match, or "".
@@ -254,6 +275,23 @@ var eksAgentConditions = map[string]bool{
 	"AcceleratedHardwareReady": true, "ContainerRuntimeReady": true, "KernelReady": true,
 	"NetworkingReady": true, "StorageReady": true,
 }
+
+// npdDefaultConditions are the node condition types node-problem-detector's
+// built-in monitor configs (and GKE's managed NPD) set
+// (kubernetes/node-problem-detector config/, checked 2026-11-26). Only
+// these, or the types an NPD config discovery read declares, count as node
+// health: a controller's own condition (fake-gpu-operator's
+// gpu-fractioning.nvidia.com/Ready) is not.
+var npdDefaultConditions = map[string]bool{
+	"KernelDeadlock": true, "ReadonlyFilesystem": true, "XfsShutdown": true, "CperHardwareErrorFatal": true,
+	"FrequentKubeletRestart": true, "FrequentDockerRestart": true, "FrequentContainerdRestart": true,
+	"CorruptDockerOverlay2": true, "FrequentUnregisterNetDevice": true, "KubeletUnhealthy": true,
+	"ContainerRuntimeUnhealthy": true, "DockerHung": true,
+}
+
+// IsNPDDefaultCondition reports whether a node condition type is one
+// node-problem-detector sets out of the box.
+func IsNPDDefaultCondition(t string) bool { return npdDefaultConditions[t] }
 
 // IsCoreCondition reports whether a node condition type is one the kubelet
 // sets (Ready and the four pressure/network types).

@@ -1,5 +1,11 @@
 package mldiscover
 
+import (
+	"sort"
+
+	corev1 "k8s.io/api/core/v1"
+)
+
 // Signal ids: the stable names of the observability signals an ML cluster
 // should have. A signal is only ever added; a rename breaks the console and
 // every RecommendationDecision that refers to it by finding.
@@ -163,24 +169,135 @@ type ProbeTarget struct {
 	Path      string `json:"path"`
 }
 
-// Signals lists every signal id in display order.
-func Signals() []string {
-	// TODO(contract stub): implemented by the pkg/mldiscover task.
-	return nil
-}
+// configKinds are the component kinds whose mounted ConfigMaps discovery
+// reads (it has a parser for each).
+var configKinds = []string{KindDCGMExporter, KindNodeProblemDetector, KindOTelCollector, KindOTelEBPFProfiler, KindAlloy}
+
+// skippedConfigMaps are mounted into every pod and configure nothing.
+var skippedConfigMaps = map[string]bool{"kube-root-ca.crt": true, "openshift-service-ca.crt": true}
 
 // ConfigRefs names the ConfigMaps whose content refines the inventory, given
 // a first-phase snapshot (workloads, pods and custom objects read, no
 // ConfigMaps yet). The collector gets exactly these, by name. Pure.
 func ConfigRefs(s *Snapshot) []ObjectRef {
-	// TODO(contract stub): implemented by the pkg/mldiscover task.
-	return nil
+	inv := Discover(s)
+	byKey := map[string]ObjectRef{}
+	add := func(ns, name, why string) {
+		if ns == "" || name == "" || skippedConfigMaps[name] {
+			return
+		}
+		k := ns + "/" + name
+		if _, ok := byKey[k]; !ok {
+			byKey[k] = ObjectRef{Namespace: ns, Name: name, Why: why}
+		}
+	}
+	opNS := ""
+	for i := range inv.Components {
+		c := &inv.Components[i]
+		if c.Kind == KindGPUOperator && c.Namespace != "" && opNS == "" {
+			opNS = c.Namespace
+		}
+		if c.Status != StatusPresent || !contains(configKinds, c.Kind) || c.Workload == "" {
+			continue
+		}
+		if c.Kind == KindDCGMExporter && c.Via == ViaGPUOperator && opNS == "" {
+			opNS = c.Namespace
+		}
+		spec, _ := podTemplate(s, c)
+		if spec == nil {
+			continue
+		}
+		for _, name := range configMapVolumes(spec) {
+			add(c.Namespace, name, c.Kind+" "+ComponentRef(*c)+" mounts it")
+		}
+	}
+	if opNS == "" {
+		opNS = "gpu-operator"
+	}
+	for _, name := range clusterPolicyMetricsConfigs(s) {
+		add(opNS, name, "ClusterPolicy spec.dcgmExporter.config names the DCGM exporter's counters file")
+	}
+	if inv.Cloud == CloudOther {
+		add(NamespaceKubeSystem, ConfigMapKubeletConfig, "kubeadm's KubeletConfiguration (kubelet tracing)")
+		add(NamespaceKubeSystem, ConfigMapKubeadmConfig, "kubeadm's ClusterConfiguration (API server tracing flags)")
+	}
+	out := make([]ObjectRef, 0, len(byKey))
+	for _, k := range sortedKeysRef(byKey) {
+		out = append(out, byKey[k])
+	}
+	return out
 }
+
+func sortedKeysRef(m map[string]ObjectRef) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// probeKinds are the component kinds whose metrics endpoint a probe reads.
+var probeKinds = []string{KindDCGMExporter, KindAMDMetricsExporter, KindNeuronMonitor, KindGaudiExporter, KindNodeProblemDetector}
 
 // ProbeTargets names the metrics endpoints an opt-in probe may read: at most
 // one running pod per (component, node pool), so a probe of a large cluster
 // stays a handful of requests. Pure.
 func ProbeTargets(s *Snapshot, inv *Inventory) []ProbeTarget {
-	// TODO(contract stub): implemented by the pkg/mldiscover task.
-	return nil
+	nodes := map[string]*corev1.Node{}
+	for i := range s.Nodes {
+		nodes[s.Nodes[i].Name] = &s.Nodes[i]
+	}
+	var out []ProbeTarget
+	for i := range inv.Components {
+		c := &inv.Components[i]
+		if c.Status != StatusPresent || !contains(probeKinds, c.Kind) || c.Workload == "" {
+			continue
+		}
+		port := c.MetricsPort
+		if c.Kind == KindNodeProblemDetector {
+			spec, _ := podTemplate(s, c)
+			ctr := mainContainer(spec, "node-problem-detector")
+			if ctr == nil {
+				continue
+			}
+			p, reachable := NPDPrometheusEndpoint(containerArgs(ctr))
+			declared := false
+			for _, cp := range ctr.Ports {
+				if cp.ContainerPort == p {
+					declared = true
+				}
+			}
+			if p == 0 || (!reachable && !declared) {
+				continue
+			}
+			port = p
+		}
+		if port == 0 {
+			port = DefaultMetricsPort(c.Kind)
+		}
+		if port == 0 {
+			continue
+		}
+		pools := map[string]bool{}
+		for _, p := range componentPods(s, c) {
+			if p.Status.Phase != corev1.PodRunning || p.Spec.NodeName == "" {
+				continue
+			}
+			pool := ""
+			if n := nodes[p.Spec.NodeName]; n != nil {
+				pool = NodePool(n)
+			}
+			if pools[pool] {
+				continue
+			}
+			pools[pool] = true
+			out = append(out, ProbeTarget{Kind: c.Kind, Namespace: p.Namespace, Pod: p.Name, Node: p.Spec.NodeName, Port: port, Path: "/metrics"})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		return a.Kind+"/"+a.Namespace+"/"+a.Pod < b.Kind+"/"+b.Namespace+"/"+b.Pod
+	})
+	return out
 }

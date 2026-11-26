@@ -284,7 +284,7 @@ forge machine tools install	cmd	allow-version-skew:bool force:bool project-dir/C
 forge machine tools pins	cmd	allow-version-skew:bool archives:bool json:bool project-dir/C:string
 forge mcp	cmd	project-dir/C:string
 forge ml	group	allow-version-skew:bool project-dir/C:string
-forge ml discover	cmd	allow-version-skew:bool context:string env:string from-snapshot:string json:bool namespace:string out:string project-dir/C:string rules:bool save-snapshot:string write:bool
+forge ml discover	cmd	allow-version-skew:bool context:string env:string from-snapshot:string json:bool namespace:string out:string probe:bool project-dir/C:string rules:bool save-snapshot:string write:bool
 forge obs	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
 forge obs alerts	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
 forge obs alerts check	cmd	allow-version-skew:bool control-plane:string env:string json:bool max-rows:int project-dir/C:string project:string rule:string sql:bool timeout:duration

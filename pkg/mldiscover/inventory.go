@@ -142,6 +142,8 @@ const (
 	CategoryAutoscaling  = "autoscaling"    // KEDA, Karpenter
 	CategoryPullCache    = "pull-cache"     // Spegel, Dragonfly
 	CategoryLifecycle    = "node-lifecycle" // aws-node-termination-handler
+	CategoryProfiling    = "profiling"      // Parca, Pyroscope, OTel eBPF profiler, Elastic, Coroot, Pixie
+	CategoryTracing      = "tracing"        // Grafana Beyla (eBPF tracing)
 )
 
 // Owner values.

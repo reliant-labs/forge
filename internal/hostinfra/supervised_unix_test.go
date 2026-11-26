@@ -410,7 +410,7 @@ func TestSupervisedEngineStatusAndStopOfRecordedProcesses(t *testing.T) {
 	// never signalled.
 	other := exec.Command("sleep", "30")
 	if err := other.Start(); err != nil {
-		t.Skipf("no sleep: %v", err)
+		t.Fatalf("sleep must be on every unix host this test builds for: %v", err)
 	}
 	waited := make(chan struct{})
 	go func() { _ = other.Wait(); close(waited) }()
@@ -445,7 +445,7 @@ func TestSupervisedEngineStatusAndStopOfRecordedProcesses(t *testing.T) {
 func TestProcessSignalsAndLineageGuard(t *testing.T) {
 	child := exec.Command("sleep", "30")
 	if err := child.Start(); err != nil {
-		t.Skipf("no sleep: %v", err)
+		t.Fatalf("sleep must be on every unix host this test builds for: %v", err)
 	}
 	done := make(chan struct{})
 	go func() { _ = child.Wait(); close(done) }()

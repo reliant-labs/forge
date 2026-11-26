@@ -11,7 +11,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/version"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
@@ -32,6 +34,18 @@ func credentialPod() corev1.PodSpec {
 			Command: []string{"sh", "-c"},
 			Args:    []string{`export AWS_SECRET_ACCESS_KEY=script-var-secret; curl -H "Authorization: Bearer script-hdr-secret" https://u:script-url-secret@m.example/w; aws s3 cp s3://models/llama /models`}}},
 		Containers: []corev1.Container{{
+			// The flag ends the command; its value starts the args.
+			Name: "agent", Image: "example/agent:1",
+			Command: []string{"/bin/agent", "--api-key"},
+			Args:    []string{"split-argv-secret", "--port", "9100"},
+		}, {
+			Name: "fetch", Image: "curlimages/curl:8",
+			Command: []string{"curl", "-u", "admin:curl-user-secret", "-H", "X-Tenant: curl-hdr-secret", "https://m.example/w"},
+		}, {
+			Name: "client", Image: "busybox",
+			Command: []string{"sh", "-c"},
+			Args:    []string{"sshpass -p sshpass-secret ssh host; mysql -h db -pmysql-secret; redis-cli -a redis-secret ping"},
+		}, {
 			Name: "vllm", Image: "vllm/vllm-openai:v0.6",
 			Args: []string{"--model=meta-llama/Llama-3-8B", "--hf-token=arg-eq-secret", "--api-key", "arg-next-secret"},
 			LivenessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
@@ -47,6 +61,7 @@ func credentialPod() corev1.PodSpec {
 var credentialSecrets = []string{
 	"script-var-secret", "script-hdr-secret", "script-url-secret", "arg-eq-secret", "arg-next-secret",
 	"probe-hdr-secret", "tenant-hdr-secret", "probe-path-secret", "exec-probe-secret", "hook-hdr-secret",
+	"split-argv-secret", "curl-user-secret", "curl-hdr-secret", "sshpass-secret", "mysql-secret", "redis-secret",
 }
 
 // TestCollectRedactsArgsAndProbeHeaders: a live read keeps no credential a
@@ -71,7 +86,7 @@ func TestCollectRedactsArgsAndProbeHeaders(t *testing.T) {
 		}
 	}
 	// What discovery reads survives.
-	for _, keep := range []string{"s3://models/llama", "--model=meta-llama/Llama-3-8B", `"Authorization"`, "/drain"} {
+	for _, keep := range []string{"s3://models/llama", "--model=meta-llama/Llama-3-8B", `"Authorization"`, "/drain", `"--port"`, `"9100"`, "https://m.example/w"} {
 		if !strings.Contains(string(raw), keep) {
 			t.Errorf("the snapshot lost %s", keep)
 		}
@@ -194,4 +209,50 @@ func minimalClients(t *testing.T, kube *kubefake.Clientset) Clients {
 	}
 	return Clients{Kube: kube, Metadata: metadatafake.NewSimpleMetadataClient(scheme),
 		Dynamic: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())}
+}
+
+// TestCollectRedactsCustomObjectArgs: a custom object read through the
+// dynamic client keeps no credential its argument lists carry, whether the
+// value follows its flag in one list or crosses from command to args.
+func TestCollectRedactsCustomObjectArgs(t *testing.T) {
+	t.Parallel()
+	kube := kubefake.NewSimpleClientset()
+	c := minimalClients(t, kube)
+	disco := kube.Discovery().(*fakediscovery.FakeDiscovery)
+	disco.Resources = append(disco.Resources, &metav1.APIResourceList{GroupVersion: "nvidia.com/v1"})
+	scheme := metadatafake.NewTestScheme()
+	if err := metav1.AddMetaToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	c.Metadata = metadatafake.NewSimpleMetadataClient(scheme, pmeta("apiextensions.k8s.io/v1", "CustomResourceDefinition", "", "clusterpolicies.nvidia.com"))
+	cp := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "nvidia.com/v1", "kind": "ClusterPolicy",
+		"metadata": map[string]any{"name": "cluster-policy"},
+		"spec": map[string]any{
+			"dcgmExporter": map[string]any{"enabled": true, "args": []any{"--token", "cr-list-secret", "-f", "/etc/dcgm-exporter/dcgm-metrics.csv"}},
+			"driver":       map[string]any{"command": []any{"/bin/driver", "--password"}, "args": []any{"cr-split-secret"}},
+			"toolkit":      map[string]any{"args": []any{"curl", "-u", "u:cr-curl-secret"}},
+		},
+	}}
+	c.Dynamic = dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{{Group: "nvidia.com", Version: "v1", Resource: "clusterpolicies"}: "ClusterPolicyList"}, cp)
+	s, err := Collect(context.Background(), c, Options{Now: fixedNow, ConfigRefs: noRefs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.CustomObjects["clusterpolicies.nvidia.com"]) != 1 {
+		t.Fatalf("the ClusterPolicy was not read: %v %v", s.CustomObjects, s.ReadErrors)
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"cr-list-secret", "cr-split-secret", "cr-curl-secret"} {
+		if strings.Contains(string(raw), secret) {
+			t.Errorf("the snapshot carries %q", secret)
+		}
+	}
+	if !strings.Contains(string(raw), "/etc/dcgm-exporter/dcgm-metrics.csv") {
+		t.Error("the snapshot lost the counters path discovery reads")
+	}
 }

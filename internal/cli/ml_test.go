@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -397,7 +398,8 @@ func TestMLDiscoverSavedSnapshotHoldsNoCredentials(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if fi.Mode().Perm() != 0o600 {
+		// Windows has no POSIX modes: a writable file reports 0666 there.
+		if goruntime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 			t.Errorf("%s: mode %v, want 0600", path, fi.Mode().Perm())
 		}
 		b, err := os.ReadFile(path)

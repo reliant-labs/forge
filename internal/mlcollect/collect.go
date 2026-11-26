@@ -516,7 +516,8 @@ func stripTemplate(t *corev1.PodTemplateSpec) {
 // literal env value outside EnvAllowlist: the name stays (a rule asks whether
 // OTEL_EXPORTER_OTLP_* or NCCL_* is set), and so does valueFrom, which only
 // names a Secret or ConfigMap key and holds no data. It redacts every
-// container's command and args (RedactArgs), its exec probes and lifecycle
+// container's command and args as the one argv they form (RedactArgv), its
+// exec probes and lifecycle
 // hooks likewise, and replaces the value of every HTTP header a probe or hook
 // sends (an Authorization header is the usual one), keeping the name. A CSI
 // volume's attributes and a FlexVolume's options keep only values under
@@ -531,7 +532,7 @@ func stripPodSpec(p *corev1.PodSpec) {
 	for i := range p.EphemeralContainers {
 		c := &p.EphemeralContainers[i].EphemeralContainerCommon
 		blankEnv(c.Env)
-		c.Command, c.Args = RedactArgs(c.Command), RedactArgs(c.Args)
+		c.Command, c.Args = RedactArgv(c.Command, c.Args)
 		for _, pr := range []*corev1.Probe{c.LivenessProbe, c.ReadinessProbe, c.StartupProbe} {
 			stripHandler(probeHandler(pr))
 		}
@@ -550,7 +551,7 @@ func stripPodSpec(p *corev1.PodSpec) {
 
 func stripContainer(c *corev1.Container) {
 	blankEnv(c.Env)
-	c.Command, c.Args = RedactArgs(c.Command), RedactArgs(c.Args)
+	c.Command, c.Args = RedactArgv(c.Command, c.Args)
 	for _, pr := range []*corev1.Probe{c.LivenessProbe, c.ReadinessProbe, c.StartupProbe} {
 		stripHandler(probeHandler(pr))
 	}

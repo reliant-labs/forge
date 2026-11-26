@@ -54,11 +54,18 @@ What is kept, and what never is:
   is replaced whole;
 - container **command and args** keep their shape (model URLs, config paths and
   flags are what discovery reads) with every credential in them replaced by
-  `REDACTED`: the value of a flag or variable named like one (`--token=…`,
-  `--api-key …`, `HF_TOKEN=…` in a script, a presigned URL's signature), a
-  sensitive header written into a command (`Authorization: …`) and a URL's
-  password; HTTP probe and lifecycle hook header values are replaced, their
-  names kept;
+  `REDACTED`. Command and args are redacted together, as the one argv the
+  kubelet runs, and a shell script in one argument is split into its words and
+  commands. Replaced: the value of a flag or variable named like a credential
+  (`--token=…`, `--api-key …` even when the flag ends the command and the value
+  starts the args, `HF_TOKEN=…` in a script, a presigned URL's signature), a
+  `user:password` (`curl -u`, `--user=`), any `-H`/`--header` value, a short
+  password flag's value (`-p …` unless a port or a path, `mysql -p…`,
+  `redis-cli -a`, `openssl -k`/`-passin`), a sensitive header written into a
+  command (`Authorization: …`), a URL's password and any token of a well-known
+  vendor format (`sk-…`, `hf_…`, `ghp_…`, `AKIA…`, a JWT). A custom object's
+  string lists (an operator's `args`) are redacted by the same rules; HTTP
+  probe and lifecycle hook header values are replaced, their names kept;
 - the snapshot file is written readable by its owner only (`0600`);
 - it **never** reads Secrets, `pods/log`, `pods/exec`, `nodes/proxy` (effectively
   exec on the node), never lists ConfigMaps, and uses no write verb.

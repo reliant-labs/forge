@@ -22,8 +22,10 @@ package mlcollect
 //     EnvAllowlist, in pod specs and in custom objects' `env` lists alike;
 //   - container command and args keep their shape (discovery reads model
 //     URLs, config paths and flags from them) with every credential in them
-//     replaced (RedactArgs), and HTTP probe and lifecycle header values are
-//     replaced, their names kept.
+//     replaced, redacted together as one argv (argv.go); a custom object's
+//     string lists (an operator's `args`) are redacted as argvs too, and a
+//     `command`/`args` pair in one as one; HTTP probe and lifecycle header
+//     values are replaced, their names kept.
 
 import (
 	"encoding/json"
@@ -137,57 +139,6 @@ func alloySkeleton(v string) (string, bool) {
 	return b.String(), true
 }
 
-// sensitiveArg names what an argument must never carry a value for:
-// SensitiveKey's words plus a presigned URL's signature.
-var sensitiveArg = `(?:token|password|passwd|pwd|secret|key|auth|authorization|header|credential|bearer|cookie|signature)`
-
-// argValue is a value as a shell or a URL delimits it.
-const argValue = `("[^"]*"|'[^']*'|[^\s"'&;]+)`
-
-var (
-	// --token=v, HF_TOKEN=v, ?X-Amz-Signature=v
-	argAssign = regexp.MustCompile(`(?i)((?:^|[\s"'?&;(])-{0,2}[A-Za-z0-9_.-]*` + sensitiveArg + `[A-Za-z0-9_.-]*=)` + argValue)
-	// --token v, inside one argument (a shell script)
-	argSpaced = regexp.MustCompile(`(?i)((?:^|\s)-{1,2}[A-Za-z0-9_.-]*` + sensitiveArg + `[A-Za-z0-9_.-]*\s+)("[^"]*"|'[^']*'|[^\s"'-][^\s"']*)`)
-	// Authorization: Bearer v, X-Api-Key: v
-	argHeader = regexp.MustCompile(`(?i)([A-Za-z0-9_-]*` + sensitiveArg + `[A-Za-z0-9_-]*\s*:\s*)[^"'\n;]+`)
-	// scheme://user:password@host
-	argUserinfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@"']*:)[^/\s@"']+@`)
-	// a bare flag that takes the next argument as its value: --token, -p
-	argSensitiveFlag = regexp.MustCompile(`(?i)^-{1,2}[A-Za-z0-9_.-]*` + sensitiveArg + `[A-Za-z0-9_.-]*$`)
-)
-
-// RedactArgs is a container's command or args with every credential in them
-// replaced by Redacted: the value of a flag or variable named like a
-// credential (`--token=v`, `--token v`, `HF_TOKEN=v`, `?X-Amz-Signature=v`),
-// a sensitive HTTP header written into a command (`Authorization: Bearer
-// v`), and the password of a URL's userinfo. Everything else is kept: model
-// URLs, config paths and flags are what discovery reads.
-func RedactArgs(args []string) []string {
-	if args == nil {
-		return nil
-	}
-	out := make([]string, len(args))
-	for i, a := range args {
-		if i > 0 && argSensitiveFlag.MatchString(args[i-1]) && !strings.HasPrefix(a, "-") {
-			out[i] = Redacted
-			continue
-		}
-		out[i] = RedactArgText(a)
-	}
-	return out
-}
-
-// RedactArgText is one argument (or a shell script in one) with its
-// credentials replaced, by RedactArgs' rules.
-func RedactArgText(a string) string {
-	a = argUserinfo.ReplaceAllString(a, "${1}"+Redacted+"@")
-	a = argHeader.ReplaceAllString(a, "${1}"+Redacted)
-	a = argAssign.ReplaceAllString(a, "${1}"+Redacted)
-	a = argSpaced.ReplaceAllString(a, "${1}"+Redacted)
-	return a
-}
-
 func structured(doc any) bool {
 	switch doc.(type) {
 	case map[string]any, []any:
@@ -207,9 +158,30 @@ func redactValue(v any, sensitive bool) any {
 		for k, x := range t {
 			out[k] = redactValue(x, sensitive || SensitiveKey.MatchString(k))
 		}
+		// A container in a custom object: its command and args are one
+		// argv, as a pod's are, so `command: [..., --token]` with the value
+		// in args is caught.
+		if cmd, ok := stringList(t["command"]); ok && !sensitive {
+			if args, ok := stringList(t["args"]); ok {
+				c, a := RedactArgv(cmd, args)
+				out["command"], out["args"] = anyList(c), anyList(a)
+			}
+		}
 		redactEnvList(out)
 		return out
 	case []any:
+		if strs, ok := stringList(t); ok && !sensitive {
+			// A list of strings is redacted as an argv: `["--token", "v"]`
+			// keeps neither half of the pair apart. A string that is a
+			// document of its own is redacted as one.
+			out := anyList(RedactArgs(strs))
+			for i, x := range strs {
+				if isDocument(x) {
+					out[i] = redactValue(x, false)
+				}
+			}
+			return out
+		}
 		out := make([]any, len(t))
 		for i, x := range t {
 			out[i] = redactValue(x, sensitive)
@@ -221,16 +193,16 @@ func redactValue(v any, sensitive bool) any {
 		if sensitive {
 			return Redacted
 		}
-		if strings.Contains(t, "\n") && strings.Contains(t, ":") {
+		if isDocument(t) {
 			var doc any
-			if yaml.Unmarshal([]byte(t), &doc) == nil && structured(doc) {
+			if yaml.Unmarshal([]byte(t), &doc) == nil {
 				if b, err := yaml.Marshal(redactValue(doc, false)); err == nil {
 					return string(b)
 				}
 			}
 		}
-		// A custom object's args, a collector's endpoint URL: the same
-		// credentials a container's command can carry.
+		// A collector's endpoint URL, a script: the same credentials a
+		// container's command can carry.
 		return RedactArgText(t)
 	default:
 		if sensitive {
@@ -238,6 +210,41 @@ func redactValue(v any, sensitive bool) any {
 		}
 		return t
 	}
+}
+
+// isDocument reports whether s is a multi-line YAML/JSON document of its own
+// (an OpenTelemetryCollector's `config: |`).
+func isDocument(s string) bool {
+	if !strings.Contains(s, "\n") || !strings.Contains(s, ":") {
+		return false
+	}
+	var doc any
+	return yaml.Unmarshal([]byte(s), &doc) == nil && structured(doc)
+}
+
+// stringList is v as a non-empty list of strings.
+func stringList(v any) ([]string, bool) {
+	l, ok := v.([]any)
+	if !ok || len(l) == 0 {
+		return nil, false
+	}
+	out := make([]string, len(l))
+	for i, x := range l {
+		s, ok := x.(string)
+		if !ok {
+			return nil, false
+		}
+		out[i] = s
+	}
+	return out, true
+}
+
+func anyList(ss []string) []any {
+	out := make([]any, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+	return out
 }
 
 // redactEnvList blanks the literal values of an `env: [{name, value}]` list in

@@ -9341,16 +9341,16 @@ schema Bundle:
             "Bundle.flux_delivery configures the in-cluster Flux of an `applier = \"flux\"` env, and this env declares applier = ${applier}. Declare applier = \"flux\", or drop flux_delivery"
         applier != "flux" or not control_plane, \
             "Bundle sets applier = \"flux\" and control_plane: an env with a control plane is delivered by its hub (`hub_converges`), never by a second Flux forge installs. applier = \"flux\" is for an env with no control plane"
-        applier != "flux" or len(_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks)) == 1, \
-            "Bundle sets applier = \"flux\", which needs exactly ONE cluster: the Flux forge installs applies in the cluster it runs in. This env targets ${_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks) or 'none'}"
+        applier != "flux" or len(_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks, observability)) == 1, \
+            "Bundle sets applier = \"flux\", which needs exactly ONE cluster: the Flux forge installs applies in the cluster it runs in. This env targets ${_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks, observability) or 'none'}"
         applier != "flux" or not env or (regex.match(_flux_delivery_ns(flux_delivery, project, env), r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(_flux_delivery_ns(flux_delivery, project, env)) <= 63), \
             "Bundle sets applier = \"flux\" and its delivery namespace '${_flux_delivery_ns(flux_delivery, project, env)}' (forge-delivery-<project>-<env>) is not a namespace name of at most 63 characters. Name one: flux_delivery = forge.FluxDelivery {namespace = \"...\"}"
         applier != "flux" or len([h.name for h in helm_charts if h.oci == _FLUX_CHART_OCI]) == 0, \
             "Bundle sets applier = \"flux\" and also declares the Flux chart (${[h.name for h in helm_charts if h.oci == _FLUX_CHART_OCI]}): applier = \"flux\" installs Flux itself (target flux-delivery), and two Flux installs in one cluster fight over the same CRDs. Drop the helm_charts entry; tune the install through flux_delivery"
         not lifecycle or len(_unmanaged_contexts(clusters, workloads, databases, \
                 cluster_target, gateways, http_routes, grpc_routes, helm_charts, \
-                manifests, generated, rendered_secrets, ml_stacks)) == 0, \
-            "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks))} is not one"
+                manifests, generated, rendered_secrets, ml_stacks, observability)) == 0, \
+            "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks, observability))} is not one"
         # SEVERAL IDENTITIES (Bundle.identities): which instances exist is
         # judged before anything derived from them (their Secrets, below).
         not (identity and len(identities) > 0), \

@@ -198,7 +198,7 @@ _cloud_build_without_platform = lambda w: any -> bool {
 _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: any, \
                             gateways: [any], http_routes: [any], grpc_routes: [any], \
                             helm_charts: [any], manifests: [any], generated: [any], rendered_secrets: [any], \
-                            ml_stacks: [any] -> [str] {
+                            ml_stacks: [any], observability: any -> [str] {
     _from_workloads = [w.runtime.target.cluster for w in workloads \
         if w.runtime and w.runtime.type == "cluster" and w.runtime.target]
     _from_databases = [db.runtime.target.cluster for db in databases \
@@ -213,8 +213,12 @@ _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: 
     _from_manifests = [m.cluster for m in manifests if m.cluster]
     _from_generated = [g.cluster for g in generated if g.cluster]
     _from_secrets = [s.cluster for s in rendered_secrets if s.cluster]
-    # An MLStack's Installs are bundle charts on its cluster (kcl/ml.k).
-    _from_ml = _ml_install_contexts(ml_stacks)
+    # Installs apply charts; scraped ML-only clusters also receive an agent
+    # when forge owns collection and has a destination. Use the same placement
+    # helper as agent rendering so lifecycle and Flux validate actual targets.
+    _from_agents = [t.cluster for t in _cluster_targets(_obs_workloads([], ml_stacks, observability))] \
+        if observability and observability.enabled and observability.destination else []
+    _from_ml = _ml_install_contexts(ml_stacks) + _from_agents
     _all = _from_workloads + _from_databases + _from_primary + _from_gateways \
         + _from_http + _from_grpc + _from_charts + _from_manifests + _from_generated + _from_secrets + _from_ml
     sorted([c for c in {x: 0 for x in _all if x}])
@@ -249,9 +253,9 @@ _is_forge_managed_context = lambda ctx: str, clusters: [any] -> bool {
 _unmanaged_contexts = lambda clusters: [any], workloads: [any], databases: [any], \
                              cluster_target: any, gateways: [any], http_routes: [any], \
                              grpc_routes: [any], helm_charts: [any], manifests: [any], \
-                             generated: [any], rendered_secrets: [any], ml_stacks: [any] -> [str] {
+                             generated: [any], rendered_secrets: [any], ml_stacks: [any], observability: any -> [str] {
     [c for c in _targeted_contexts(workloads, databases, cluster_target, gateways, \
-            http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks) \
+            http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks, observability) \
         if not _is_forge_managed_context(c, clusters)]
 }
 
@@ -4420,7 +4424,7 @@ _render_flux_delivery = lambda b: Bundle -> {str: any} {
     _p = b.delivery_policy or DeliveryPolicy {}
     _sign = _delivery_signing_mode(_p, bool(b.control_plane))
     _verify = _delivery_flux_verify_mode(_p, bool(b.control_plane))
-    _ctx = _targeted_contexts(b.workloads, b.databases, b.cluster_target, b.gateways, b.http_routes, b.grpc_routes, b.helm_charts, b.manifests, b.generated, b.rendered_secrets, b.ml_stacks)
+    _ctx = _targeted_contexts(b.workloads, b.databases, b.cluster_target, b.gateways, b.http_routes, b.grpc_routes, b.helm_charts, b.manifests, b.generated, b.rendered_secrets, b.ml_stacks, b.observability)
     {
         "chart": flux_delivery_lib.FLUX_DELIVERY_CHART_NAME
         "env": b.env

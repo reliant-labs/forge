@@ -14,8 +14,9 @@ import (
 // positive is buffer reuse: ranger's balancer wrote
 // `x.reps = append(best.reps[:0], reps...)` to append into another slice's
 // backing array on purpose, and had to restructure the code to get past the
-// gate. The scaffolded config excludes exactly that shape: an append whose
-// base is a `[:0]` reslice.
+// gate. The scaffolded config excludes exactly that shape: a `[:0]` base and
+// a single spread argument — a whole slice copied into a reused buffer.
+// `a = append(b[:0], x)` is still reported.
 
 func renderGolangciTemplate(t *testing.T) string {
 	t.Helper()
@@ -41,7 +42,10 @@ func TestGolangciTemplate_AppendAssignExcludesOnlyBufferReuse(t *testing.T) {
 	for line, excluded := range map[string]bool{
 		"\tx.reps = append(best.reps[:0], reps...)": true,
 		"\tbuf = append(scratch[:0], b...)":         true,
-		"\tw.out = append( w.buf[:0] , p...)":       true,
+		"\tw.out = append( w.buf[:0] , p... )":      true,
+		"\ta = append(b[:0], 1)":                    false,
+		"\ta = append(b[:0], x, y)":                 false,
+		"\ta = append(b[:0], x, ys...)":             false,
 		"\ta = append(b, 1)":                        false,
 		"\ta = append(b[1:], 1)":                    false,
 		"\ta = append(f(b[:0]), 1)":                 false,
@@ -86,6 +90,12 @@ func Typo(a, b []int) []int {
 	a = append(b, 1)
 	return a
 }
+
+// TypoOnReslice appends one value to a reset b and keeps it as a.
+func TypoOnReslice(a, b []int) []int {
+	a = append(b[:0], 2)
+	return a
+}
 `,
 	}
 	for name, body := range files {
@@ -100,6 +110,9 @@ func Typo(a, b []int) []int {
 	report := string(out)
 	if !strings.Contains(report, "fx.go:19") || !strings.Contains(report, "appendAssign") {
 		t.Fatalf("the typo on line 19 must still be reported (or the lane never ran):\n%s", report)
+	}
+	if !strings.Contains(report, "fx.go:25") {
+		t.Errorf("a single value appended to a [:0] reslice of another slice (line 25) must still be reported:\n%s", report)
 	}
 	if strings.Contains(report, "fx.go:14") {
 		t.Errorf("the buffer reuse on line 14 is reported:\n%s", report)

@@ -221,3 +221,105 @@ func TestSiteOriginReadsTheHomePageFirst(t *testing.T) {
 		t.Errorf("SiteOrigin with nothing named = %q", got)
 	}
 }
+
+func TestPageAtPlacesTheBaseRelativePathOnce(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	write(t, dir, map[string]string{"index.html": "<html></html>", "guide/index.html": "<html></html>", "guide/install.html": "<html></html>"})
+	pages, _, err := BuiltPages(dir, "dist", PlaceholderOrigin+"/docs/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range pages {
+		got = append(got, p.At("https://acme.example/docs/").URL)
+	}
+	slices.Sort(got)
+	want := []string{"https://acme.example/docs/", "https://acme.example/docs/guide/", "https://acme.example/docs/guide/install"}
+	if !slices.Equal(got, want) {
+		t.Errorf("URLs = %v, want %v", got, want)
+	}
+}
+
+func TestSiteOriginNeverAnswersThePlaceholder(t *testing.T) {
+	t.Parallel()
+	pages := []Page{{URL: PlaceholderOrigin + "/", HTML: `<link rel="canonical" href="` + PlaceholderOrigin + `/">`}}
+	if got := SiteOrigin(pages); got != "" {
+		t.Errorf("SiteOrigin = %q, want \"\" for a canonical resolved against the placeholder", got)
+	}
+}
+
+const bareRootLayout = `export const metadata = {
+  openGraph: { title: "Acme", description: "Rockets.", type: "website", url: "https://acme.example/", images: ["https://acme.example/og.png"] },
+  twitter: { card: "summary_large_image" },
+};
+export default function L({children}) { return <html lang="en"><body>{children}</body></html>; }
+`
+
+// B2: a page whose metadata comes from generateMetadata (params, data) is
+// never reported missing what generateMetadata writes.
+func TestNextPageGenerateMetadataIsNeverJudgedMissing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	write(t, dir, map[string]string{
+		"app/layout.tsx": bareRootLayout,
+		"app/page.tsx": `export async function generateMetadata() {
+  const post = await load();
+  return { title: post.title, description: post.summary, alternates: { canonical: "/" + post.slug } };
+}
+export default function Page() { return <main/>; }`,
+	})
+	p, ok := NextLayout(dir, "web", "https://acme.example/")
+	if !ok {
+		t.Fatal("no layout found")
+	}
+	for _, c := range codes(Judge("https://acme.example/", []Page{p})) {
+		code := strings.Split(c, "@")[0]
+		if strings.HasPrefix(code, "title_") || strings.HasPrefix(code, "description_") || strings.HasPrefix(code, "canonical_") {
+			t.Errorf("reported %s although the page's generateMetadata writes it", c)
+		}
+	}
+
+	// A literal set by a later segment is known again, and judged.
+	write(t, dir, map[string]string{
+		"app/layout.tsx": "export async function generateMetadata() { return {}; }\n" + strings.Replace(bareRootLayout, "export const metadata", "const unused", 1),
+		"app/page.tsx":   `export const metadata = { title: "Hi" }; export default function P() { return null; }`,
+	})
+	p, _ = NextLayout(dir, "web", "https://acme.example/")
+	got := codes(Judge("https://acme.example/", []Page{p}))
+	if !slices.Contains(got, "title_length@/") {
+		t.Errorf("findings %v lack title_length for the page's literal title \"Hi\"", got)
+	}
+	if slices.Contains(got, "description_missing@/") {
+		t.Errorf("reported description_missing although the root layout's generateMetadata may write it: %v", got)
+	}
+}
+
+// B3: the root route's head is composed from the root layout, the route
+// groups' layouts and the root page; other segments do not count.
+func TestNextRootRouteComposesNestedSegments(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	write(t, dir, map[string]string{
+		"src/app/layout.tsx": strings.Replace(bareRootLayout, "export const metadata = {",
+			`export const metadata = {
+  metadataBase: new URL("https://acme.example"),
+  title: { default: "Acme", template: "%s | Acme Rockets" },`, 1),
+		"src/app/(marketing)/layout.tsx": `export const metadata = { description: "Acme builds small, reliable rockets for hobbyists and schools, with kits that ship in a week." };
+export default function M({children}) { return children; }`,
+		"src/app/(marketing)/page.tsx": `export const metadata = { title: "Rockets for everyone", alternates: { canonical: "/" } };
+export default function Home() { return <main/>; }`,
+		"src/app/blog/layout.tsx": `export const metadata = { title: "Blog", robots: { index: false } };`,
+	})
+	p, ok := NextLayout(dir, "web", "https://acme.example/")
+	if !ok {
+		t.Fatal("no layout found")
+	}
+	h := siteaudit.ExtractHead(p.HTML)
+	if h.Title != "Rockets for everyone | Acme Rockets" || h.Canonical != "https://acme.example/" || !strings.HasPrefix(h.Description, "Acme builds") || h.Robots != "" {
+		t.Errorf("head = %+v\n%s", h, p.HTML)
+	}
+	if fs := Judge("https://acme.example/", []Page{p}); len(fs) != 0 {
+		t.Errorf("a root route whose nested segments supply title, description and canonical: findings %v", codes(fs))
+	}
+}

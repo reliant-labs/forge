@@ -184,3 +184,75 @@ func TestRenderedSEOFrontendsReadsSiteURL(t *testing.T) {
 		t.Errorf("renderedSEOFrontends = %+v", got)
 	}
 }
+
+// B1: a built site mounted under a base path is judged at its real URLs —
+// the root and nested pages under /docs/, never /docs/docs/ — with the
+// origin from SITE_URL or, without one, from the pages' canonicals.
+func TestSEOLaneJudgesABasePathSiteAtItsRealURLs(t *testing.T) {
+	t.Parallel()
+	for name, siteURL := range map[string]string{"SITE_URL": "https://acme.example", "canonical": ""} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			writeTree(t, root, map[string]string{
+				"frontends/docs/dist/index.html":         seoPage("Acme docs — rockets explained", "/docs/"),
+				"frontends/docs/dist/guide/index.html":   seoPage("The Acme rocket guide", "/docs/guide/"),
+				"frontends/docs/dist/guide/install.html": seoPage("Installing an Acme launch kit", "/docs/guide/install"),
+				// A planted finding on a nested page, to read its route.
+				"frontends/docs/dist/guide/faq.html": strings.Replace(seoPage("Acme rocket questions", "/docs/guide/faq"), `<meta name="viewport" content="width=device-width, initial-scale=1">`, "", 1),
+			})
+			cfg := loadTestConfig(t, staticExportForgeYAML)
+			cfg.Frontends = []config.FrontendConfig{config.FrontendConfig{Name: "docs", Type: "vite-spa"}.WithDir("frontends/docs")}
+			bindings := func(context.Context, string, *config.ProjectConfig) map[string][]seoBinding {
+				return map[string][]seoBinding{"docs": {{Env: "prod", PublicDir: "dist", BasePath: "/docs", SiteURL: siteURL}}}
+			}
+			fs, err := seoFindings(context.Background(), root, cfg, bindings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, f := range fs {
+				if f.Rule == ruleRanNote {
+					continue
+				}
+				got = append(got, f.Rule+" "+f.Message)
+				if strings.Contains(f.Message, "/docs/docs") || strings.HasPrefix(f.Rule, "seo-canonical-") {
+					t.Errorf("judged at the wrong URL: %s %s", f.Rule, f.Message)
+				}
+			}
+			if len(got) != 1 || !strings.HasPrefix(got[0], "seo-viewport-missing /docs/guide/faq:") {
+				t.Errorf("findings = %v, want only the planted viewport finding at /docs/guide/faq", got)
+			}
+		})
+	}
+}
+
+// B1, source side: an unbuilt Next.js site under a base path resolves its
+// relative metadata URLs against the site's real URL, never against the
+// placeholder its pages are first read under.
+func TestSEOLaneResolvesRelativeMetadataAgainstTheRealSite(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"frontends/docs/app/layout.tsx": `export const metadata = {
+  title: "Acme docs — rockets explained",
+  description: "Everything about building, launching and recovering an Acme rocket, step by step.",
+  alternates: { canonical: "/docs/" },
+  openGraph: { title: "Acme docs", description: "Rockets explained.", type: "website", url: "/docs/", images: ["/docs/og.png"] },
+  twitter: { card: "summary_large_image" },
+};
+export default function L({children}) { return <html lang="en"><body>{children}</body></html>; }`,
+	})
+	cfg := loadTestConfig(t, staticExportForgeYAML)
+	cfg.Frontends = []config.FrontendConfig{config.FrontendConfig{Name: "docs", Type: "nextjs", Output: "static"}.WithDir("frontends/docs")}
+	bindings := func(context.Context, string, *config.ProjectConfig) map[string][]seoBinding {
+		return map[string][]seoBinding{"docs": {{Env: "prod", PublicDir: "out", BasePath: "/docs", SiteURL: "https://acme.example"}}}
+	}
+	fs, err := seoFindings(context.Background(), root, cfg, bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := seoRules(fs, ""); len(got) != 0 {
+		t.Errorf("findings = %v, want none (the canonical and og:url resolve to https://acme.example/docs/)", got)
+	}
+}

@@ -115,7 +115,21 @@ type Page struct {
 	// Dynamic names the head tags whose value the source does not state as
 	// a literal ("title", "description", "canonical", "og:image", …).
 	Dynamic map[string]bool
+	// Rel is the page's path relative to the site's base ("" for its root,
+	// "about", "docs/"): its URL is the site's base URL plus Rel, built once
+	// the site's origin is known ([Page.At]).
+	Rel string
 }
+
+// At is p served under site, the site's base URL ending in "/".
+func (p Page) At(site string) Page {
+	p.URL = site + p.Rel
+	return p
+}
+
+// PlaceholderOrigin is the origin pages are read under before their site's
+// own origin is known. [SiteOrigin] never answers it.
+const PlaceholderOrigin = "https://forge-seo-lint.invalid"
 
 // Finding is a siteaudit finding with the file it is about.
 type Finding struct {
@@ -162,7 +176,8 @@ func BuiltPages(publicDir, relDir, site string) (pages []Page, truncated bool, e
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		pages = append(pages, Page{File: path.Join(relDir, rel), URL: site + routeOfFile(rel), HTML: string(b)})
+		route := routeOfFile(rel)
+		pages = append(pages, Page{File: path.Join(relDir, rel), URL: site + route, Rel: route, HTML: string(b)})
 		return nil
 	})
 	return pages, truncated, err
@@ -240,7 +255,8 @@ func routeOf(u *url.URL) string {
 func SiteOrigin(pages []Page) string {
 	origin := func(raw string) string {
 		u, err := url.Parse(strings.TrimSpace(raw))
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.HasSuffix(u.Host, dynamicHost) {
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+			strings.HasSuffix(u.Host, dynamicHost) || u.Scheme+"://"+u.Host == PlaceholderOrigin {
 			return ""
 		}
 		return u.Scheme + "://" + u.Host
@@ -280,46 +296,181 @@ var nextLayouts = []string{
 	"app/layout.tsx", "app/layout.jsx", "app/layout.ts", "app/layout.js",
 }
 
-// NextLayout renders the head a Next.js app's root layout metadata would
-// emit, served at site. ok is false when the app has no root layout.
+// NextLayout renders the head Next.js would emit for the app's root route,
+// served at site: the metadata of the root layout, of every route-group
+// layout on the way to the root page, and of that page, merged the way
+// Next.js merges them (a later segment's top-level field replaces an
+// earlier one's; a layout's title template wraps a later segment's title).
+// ok is false when the app has no root layout.
+//
+// A segment whose metadata the reader cannot see — generateMetadata, a
+// metadata that is not an object literal, a spread — may supply or replace
+// any field, so every field it could touch is dynamic unless a later
+// segment sets it literally: the lane never reports a tag missing that a
+// segment might write.
 func NextLayout(feDir, relDir, site string) (Page, bool) {
 	for _, rel := range nextLayouts {
 		b, err := os.ReadFile(filepath.Join(feDir, filepath.FromSlash(rel)))
 		if err != nil {
 			continue
 		}
-		doc, dynamic := nextHead(string(b), site)
+		appDir := filepath.Join(feDir, filepath.FromSlash(path.Dir(rel)))
+		srcs := append([]string{string(b)}, rootRouteSegments(appDir)...)
+		doc, dynamic := nextHead(srcs, site)
 		return Page{File: path.Join(relDir, rel), URL: site, HTML: doc, Dynamic: dynamic}, true
 	}
 	return Page{}, false
+}
+
+// nextSourceExts are the extensions a Next.js segment file may have.
+var nextSourceExts = []string{".tsx", ".jsx", ".ts", ".js"}
+
+// readSegmentFile returns dir/<name>.<ext> for the first extension present.
+func readSegmentFile(dir, name string) (string, bool) {
+	for _, ext := range nextSourceExts {
+		if b, err := os.ReadFile(filepath.Join(dir, name+ext)); err == nil {
+			return string(b), true
+		}
+	}
+	return "", false
+}
+
+// rootRouteSegments are the sources, after the root layout, that make the
+// root route's head: the layouts of the route groups ("(marketing)") the
+// root page sits in, outermost first, then the page. Empty when the root
+// page is not found.
+func rootRouteSegments(appDir string) []string {
+	var walk func(dir string, depth int) ([]string, bool)
+	walk = func(dir string, depth int) ([]string, bool) {
+		var chain []string
+		if depth > 0 {
+			if l, ok := readSegmentFile(dir, "layout"); ok {
+				chain = append(chain, l)
+			}
+		}
+		if pg, ok := readSegmentFile(dir, "page"); ok {
+			return append(chain, pg), true
+		}
+		if depth == 8 {
+			return nil, false
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return nil, false
+		}
+		for _, e := range entries {
+			if n := e.Name(); e.IsDir() && strings.HasPrefix(n, "(") && strings.HasSuffix(n, ")") {
+				if rest, ok := walk(filepath.Join(dir, n), depth+1); ok {
+					return append(chain, rest...), true
+				}
+			}
+		}
+		return nil, false
+	}
+	chain, _ := walk(appDir, 0)
+	return chain
 }
 
 // dynamicHost is the host of the stand-in URL a dynamic URL value gets.
 const dynamicHost = "forge-dynamic.invalid"
 
 var (
-	metadataDecl = regexp.MustCompile(`export\s+const\s+metadata\s*(?::\s*[A-Za-z_.<>]+\s*)?=\s*\{`)
-	htmlLang     = regexp.MustCompile(`<html[^>]*\blang\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*["']([^"']*)["']\s*\})`)
-	newURLCall   = regexp.MustCompile(`^new\s+URL\(\s*(?:"([^"]*)"|'([^']*)'|` + "`([^`$]*)`" + `)\s*\)$`)
+	metadataDecl   = regexp.MustCompile(`export\s+const\s+metadata\s*(?::\s*[A-Za-z_.<>]+\s*)?=\s*\{`)
+	metadataExport = regexp.MustCompile(`export\s+(?:const|let|var)\s+metadata\b|export\s*\{[^}]*\bmetadata\b[^}]*\}`)
+	htmlLang       = regexp.MustCompile(`<html[^>]*\blang\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*["']([^"']*)["']\s*\})`)
+	newURLCall     = regexp.MustCompile(`^new\s+URL\(\s*(?:"([^"]*)"|'([^']*)'|` + "`([^`$]*)`" + `)\s*\)$`)
 )
 
-// nextHead is the document a root layout's metadata gives the page: the
-// tags Next.js writes for the fields it can read, and which of them were
-// not literals.
-func nextHead(src, site string) (string, map[string]bool) {
-	dynamic := map[string]bool{}
-	var meta map[string]jsValue
+// spreadKey marks an object literal that spreads another object into it.
+const spreadKey = "\x00spread"
+
+// metadataTags are the head tags each top-level metadata field writes.
+var metadataTags = map[string][]string{
+	"title":       {"title"},
+	"description": {"description"},
+	"alternates":  {"canonical"},
+	"robots":      {"robots"},
+	"openGraph":   {"og:title", "og:description", "og:type", "og:url", "og:image"},
+	"twitter":     {"twitter:card"},
+}
+
+// segmentMetadata reads one segment file's static metadata. known is false
+// when the segment computes or hides it (generateMetadata, a metadata that
+// is not an object literal, a spread): it may then write any field.
+func segmentMetadata(src string) (meta map[string]jsValue, known bool) {
+	if strings.Contains(src, "generateMetadata") {
+		return nil, false
+	}
 	if loc := metadataDecl.FindStringIndex(src); loc != nil {
 		p := &jsParser{s: src, i: loc[1] - 1}
-		if v, ok := p.value().(map[string]jsValue); ok {
-			meta = v
+		v, ok := p.value().(map[string]jsValue)
+		if !ok {
+			return nil, false
 		}
-	} else if strings.Contains(src, "generateMetadata") {
-		// The whole head is computed: nothing to judge but its absence.
-		for _, t := range []string{"title", "description", "canonical", "robots", "og:title", "og:description", "og:type", "og:url", "og:image", "twitter:card"} {
-			dynamic[t] = true
+		if _, spread := v[spreadKey]; spread {
+			return v, false
+		}
+		return v, true
+	}
+	if metadataExport.MatchString(src) {
+		return nil, false
+	}
+	return nil, true
+}
+
+// nextHead is the document the segments' merged metadata gives the root
+// route (srcs[0] is the root layout): the tags Next.js writes for the fields
+// it can read, and which of them are dynamic.
+// mergeSegments merges the segments' metadata the way Next.js does, and
+// names the tags a segment the reader cannot see may write.
+func mergeSegments(srcs []string) (map[string]jsValue, map[string]bool) {
+	dynamic := map[string]bool{}
+	meta := map[string]jsValue{}
+	unknownSince := false           // a segment the reader cannot see came before
+	knownAfter := map[string]bool{} // fields set literally after it
+	template := ""
+	for i, src := range srcs {
+		m, known := segmentMetadata(src)
+		if !known {
+			unknownSince = true
+			knownAfter = map[string]bool{}
+		}
+		for k, v := range m {
+			if k == spreadKey {
+				continue
+			}
+			if k == "title" && i > 0 && template != "" {
+				if t, lit := jsString(v); lit {
+					v = strings.ReplaceAll(template, "%s", t)
+				}
+			}
+			meta[k] = v
+			if known {
+				knownAfter[k] = true
+			}
+		}
+		// A layout's title template applies to the segments below it.
+		if obj, ok := m["title"].(map[string]jsValue); ok && i < len(srcs)-1 {
+			if t, lit := jsString(obj["template"]); lit {
+				template = t
+			}
 		}
 	}
+	if unknownSince {
+		for field, tags := range metadataTags {
+			if !knownAfter[field] {
+				for _, t := range tags {
+					dynamic[t] = true
+				}
+			}
+		}
+	}
+	return meta, dynamic
+}
+
+func nextHead(srcs []string, site string) (string, map[string]bool) {
+	meta, dynamic := mergeSegments(srcs)
+	src := srcs[0]
 	base, _ := url.Parse(site)
 	if mb, ok := meta["metadataBase"]; ok {
 		if s, lit := jsString(mb); lit {
@@ -543,6 +694,7 @@ func (p *jsParser) object() map[string]jsValue {
 			p.i += 3
 			p.skipExpr()
 			p.comma()
+			out[spreadKey] = jsDynamic("...")
 			continue
 		}
 		var key string

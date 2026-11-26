@@ -196,10 +196,6 @@ func pickSEOBinding(bs []seoBinding) seoBinding {
 	return bs[0]
 }
 
-// seoPlaceholderSite is the base the pages are read under before the site's
-// own origin is known.
-const seoPlaceholderSite = "https://forge-seo-lint.invalid"
-
 // seoJudgeFrontend judges one frontend's build, or its source when it is not
 // built, and says which in its note.
 func seoJudgeFrontend(projectDir, rel string, fe config.FrontendConfig, b seoBinding) ([]lintJSONFinding, string, error) {
@@ -215,10 +211,14 @@ func seoJudgeFrontend(projectDir, rel string, fe config.FrontendConfig, b seoBin
 	if base != "/" {
 		base += "/"
 	}
-	tmpSite := seoPlaceholderSite + base
+	// Pages are read under a placeholder origin until the site's own is
+	// known (it may come from their canonicals), then placed under it once
+	// from their base-relative paths (seo.Page.At).
+	tmpSite := seo.PlaceholderOrigin + base
 
 	var pages []seo.Page
 	var note string
+	nextSource := false
 	builtDir := filepath.Join(feDir, filepath.FromSlash(publicDir))
 	relBuilt := path.Join(rel, filepath.ToSlash(publicDir))
 	if _, err := os.Stat(filepath.Join(builtDir, "index.html")); err == nil {
@@ -236,6 +236,7 @@ func seoJudgeFrontend(projectDir, rel string, fe config.FrontendConfig, b seoBin
 		var found bool
 		if fe.IsNextJS() {
 			p, found = seo.NextLayout(feDir, rel, tmpSite)
+			nextSource = true
 		} else {
 			p, found = seo.ViteIndex(feDir, rel, tmpSite)
 		}
@@ -257,8 +258,13 @@ func seoJudgeFrontend(projectDir, rel string, fe config.FrontendConfig, b seoBin
 		origin = "http://localhost"
 	}
 	site := origin + base
+	if nextSource {
+		// Relative metadata URLs resolve against the site, so render the head
+		// again now that it is known.
+		pages[0], _ = seo.NextLayout(feDir, rel, site)
+	}
 	for i := range pages {
-		pages[i].URL = site + strings.TrimPrefix(pages[i].URL, tmpSite)
+		pages[i] = pages[i].At(site)
 	}
 	var out []lintJSONFinding
 	for _, f := range seo.Judge(site, pages) {

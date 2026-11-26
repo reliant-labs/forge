@@ -8,9 +8,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// A Go test that names a file runs when it changes, even when a rule claims
-// the file or affected_ignore lists it: claiming and ignoring decide only
-// whether an unplaced file forces the full suite.
+// Rules add to reader selections, but affected_ignore opts out of the scan.
 func TestAffectedReaders_SelectClaimedAndIgnoredFiles(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -29,24 +27,38 @@ func TestAffectedReaders_SelectClaimedAndIgnoredFiles(t *testing.T) {
 			if a.Full {
 				t.Fatalf("full (%s), want narrowed", a.Reason)
 			}
-			if !slices.Contains(a.Packages, "ex.com/m/c") {
-				t.Errorf("packages = %v, want ex.com/m/c (its test names config/settings.yaml)", a.Packages)
+			wantReader := len(tc.ignore) == 0
+			if slices.Contains(a.Packages, "ex.com/m/c") != wantReader {
+				t.Errorf("packages = %v, want reader selected = %v", a.Packages, wantReader)
+			}
+			if !wantReader && len(a.Selections) != 0 {
+				t.Errorf("ignored file produced selections: %v", a.Selections)
 			}
 		})
 	}
 }
 
-// A package that owns a changed file (here, embeds it) runs even when an
-// affected_ignore glob matches the file.
-func TestComputeAffected_OwnerBeatsIgnore(t *testing.T) {
-	root := t.TempDir()
-	a := ComputeAffected(context.Background(), AffectedInput{Root: root, GoList: listed(root),
-		Git: fakeGit{branch: "f", changed: []string{"a/tmpl/x.tmpl"}}.run, Ignore: []string{"*.tmpl"}})
-	if a.Full {
-		t.Fatalf("full (%s), want narrowed", a.Reason)
-	}
-	if !slices.Contains(a.Packages, "ex.com/m/a") || !slices.Contains(a.Packages, "ex.com/m/b") {
-		t.Errorf("packages = %v, want ex.com/m/a (embeds it) and ex.com/m/b (imports a)", a.Packages)
+// Ignore suppresses implicit ownership for source, embeds and testdata,
+// without overriding an explicit rule selecting a package.
+func TestComputeAffected_IgnoreOwnedFiles(t *testing.T) {
+	for _, file := range []string{"a/a.go", "a/tmpl/x.tmpl", "a/testdata/input.json"} {
+		t.Run(file, func(t *testing.T) {
+			root := t.TempDir()
+			for _, explicit := range []bool{false, true} {
+				var rules []config.CIGateAffectedRule
+				if explicit {
+					rules = []config.CIGateAffectedRule{{Paths: []string{file}, Packages: []string{"./c"}}}
+				}
+				a := ComputeAffected(context.Background(), AffectedInput{Root: root, GoList: listed(root),
+					Git: fakeGit{branch: "f", changed: []string{file}}.run, Ignore: []string{file}, Rules: rules})
+				if a.Full || len(a.Build) != 0 || slices.Contains(a.Packages, "ex.com/m/a") || slices.Contains(a.Packages, "ex.com/m/b") {
+					t.Fatalf("ignored owner selected: %+v", a)
+				}
+				if slices.Contains(a.Packages, "ex.com/m/c") != explicit {
+					t.Errorf("packages = %v, explicit rule = %v", a.Packages, explicit)
+				}
+			}
+		})
 	}
 }
 

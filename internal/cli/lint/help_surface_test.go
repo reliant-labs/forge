@@ -193,6 +193,9 @@ func TestLintHelpSurface(t *testing.T) {
 		// ESO drops, and an ExternalSecret that deletes its Secret on a prune
 		// all surface only at deploy or later.
 		"secrets",
+		// Visible: a static site's head decides its search results and link
+		// previews, and no build fails on a missing title or a stray noindex.
+		"seo",
 		// Visible: the audit every suppression mechanism's docs promise
 		// (contracts/package-markers names it). Each suppression is
 		// visible at its own site and nowhere together, which is how a

@@ -64,6 +64,7 @@ type lintFlags struct {
 	secrets           bool
 	guardedFields     bool
 	staticExport      bool
+	seo               bool
 	tracing           bool
 	vendoredProtos    bool
 	configReach       bool
@@ -229,6 +230,15 @@ Examples:
                                  # when build.outDir is not the public_dir or
                                  # base misses the base_path. Any other
                                  # frontend: a "not applicable" line
+  forge lint --seo               # For each Next.js or Vite site an env
+                                 # publishes statically: judge its built
+                                 # pages (else the head its source declares)
+                                 # with site insights' raw-HTML rules. FAIL
+                                 # on a missing title, a canonical to another
+                                 # host or a stray noindex (warn-first); WARN
+                                 # on missing descriptions, Open Graph tags,
+                                 # alt text. Any other frontend: a "not
+                                 # applicable" line
   forge lint --tracing           # Report where a request's trace is cut (a
                                  # log call that drops the ctx in scope, a
                                  # raw *http.Client or sql.Open, a contract
@@ -419,6 +429,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.readOnlyFields, "read-only-fields", false, "Flag a forge:read-only field whose column nothing populates — no non-generated Go file assigns it, no meaningful DEFAULT, not GENERATED — so every row ships as the type's zero with no error anywhere. FAILS the build, except while the service still holds forge-scaffolded unwired rpc stubs (then a warning naming them)")
 	cmd.Flags().BoolVar(&flags.secrets, "secrets", false, "Judge the platform secrets model per env, with file:line: no ClusterSecretStore/ClusterExternalSecret/PushSecret, ExternalSecret policy (Orphan or Merge, Retain, namespaced store, explicit keys), every Secret a workload reads is produced by exactly one declaration that lists the key, an immutable store name is pinned at 1, an out_of_band_reason that explains, no reasonless OpenBao wildcard read, and (warning) an OpenBao escrowed inside its own cluster. FAILS the build on an error; every message names its escape")
 	cmd.Flags().BoolVar(&flags.guardedFields, "guarded-fields", false, "Flag a scaffolded edit page whose update_mask still names a column declared 'forge:guards' — saving the form writes it raw and bypasses the rpc that owns it, and pages are scaffold-once so 'forge generate' cannot repair them (warnings only)")
+	cmd.Flags().BoolVar(&flags.seo, "seo", false, "For each Next.js or Vite frontend an env publishes as a static site (forge.OnHosted / OnBucket / OnFirebase), run site insights' raw-HTML SEO rules (pkg/siteaudit) over its built public_dir, or, when it is not built, over the head its source declares (index.html, or the Next.js root layout's metadata). FAILS on error findings (a missing title, a canonical to another host, noindex where the site should be indexed; warn-first until the next minor); WARNS on the rest, each with its fix. Every other frontend gets an explicit \"not applicable\" line. The full audit (robots.txt, sitemaps, broken links, rendered DOM, accessibility) is forge site audit")
 	cmd.Flags().BoolVar(&flags.staticExport, "static-export", false, "For each Next.js frontend that must build to a static export (forge.yaml output: static, or bound to forge.OnHosted / OnBucket / OnFirebase in any env), report with file:line what the export cannot serve. FAILS on what next build refuses (a dynamic route without generateStaticParams, server actions, next/headers, next/image without images.unoptimized, a build that is not an export); WARNS on what it silently drops (middleware, non-GET route handlers, ungated rewrites/redirects/headers, a bucket-bound export without trailingSlash). For each Vite frontend bound to a static runtime, FAILS when vite build's outDir is not the env's public_dir or base does not match its base_path, and WARNS on a relative base with a path-based client router. Every other frontend gets an explicit \"not applicable\" line")
 	cmd.Flags().BoolVar(&flags.protoOptions, "proto-options", false, "Flag (forge.v1.*) annotation fields this forge binary's descriptors do not define — a retired or misspelled option field compiles under buf and is read by nothing (warnings only)")
 	cmd.Flags().BoolVar(&flags.vendoredProtos, "vendored-protos", false, "Fail when a vendored proto (proto/forge/v1/forge.proto) differs from the copy embedded in this forge binary — forge's upgrade path does not track these copies, so drift is otherwise invisible")

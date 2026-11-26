@@ -252,6 +252,7 @@ func lintLaneFlags(f *lintFlags) []lintLaneFlag {
 		{name: "secrets", on: &f.secrets},
 		{name: "guarded-fields", on: &f.guardedFields},
 		{name: "static-export", on: &f.staticExport},
+		{name: "seo", on: &f.seo},
 		{name: "tracing", on: &f.tracing},
 		{name: "vendored-protos", on: &f.vendoredProtos},
 		{name: "config-reach", on: &f.configReach},

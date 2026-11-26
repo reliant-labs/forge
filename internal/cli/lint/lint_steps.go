@@ -1020,6 +1020,27 @@ func lintPipeline() []linterStep {
 			collect: collectStaticExportJSON,
 		},
 
+		// 13d-sexies-quinquies. SEO — a static site's head, judged by site
+		// insights' raw-HTML rules (pkg/siteaudit) over its built pages, or
+		// the head its source declares when it is not built: a missing
+		// title, a canonical to another host, a stray noindex. Nothing in a
+		// build fails on any of them, so search results are the first
+		// signal. GATES on error findings (warn-first: lint_rollout_table.go);
+		// every frontend no env publishes statically gets a not-applicable
+		// note. Scoped by file: each finding names the page it is on.
+		{
+			name:  "seo lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.skipFrontends {
+					return false, "--skip-frontends — skipping seo lint"
+				}
+				return rc.cwd != "" && hasFrontend(rc.cfg), ""
+			},
+			collect: collectSEOJSON,
+		},
+
 		// 13d-septies. Guarded-fields — the marker's blind spot. The page
 		// generator honours `forge:guards` for every page it emits, but
 		// pages are WRITE-IF-ABSENT: the natural order (scaffold CRUD,

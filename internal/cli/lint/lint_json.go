@@ -429,6 +429,8 @@ func collectSingleLinterJSON(
 		return reportUngated(collectGuardedFieldsJSON(cwd, frontendDirsForLint()))
 	case flags.staticExport:
 		return report(collectStaticExportJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd}))
+	case flags.seo:
+		return report(collectSEOJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd}))
 	case flags.tracing:
 		// `forge lint --tracing --fix` is the migration: the named lane fixes
 		// its warnings too (--json refuses --fix, so it stays detect-only).

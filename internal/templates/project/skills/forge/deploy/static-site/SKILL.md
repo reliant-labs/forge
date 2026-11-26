@@ -188,6 +188,7 @@ browser, and its dev server receives the lines. That subpath (the release after
 
 ```bash
 forge lint --static-export                 # what the export can't serve, with file:line
+forge lint --seo                           # each built page's head: title, canonical, noindex, Open Graph
 forge env render prod                      # 0 cluster objects; hosted: web (static)
 forge ci validate-kcl                      # the control plane would admit it
 forge env build prod --release v0.1.0 --plan   # what would be pushed and recorded; builds nothing

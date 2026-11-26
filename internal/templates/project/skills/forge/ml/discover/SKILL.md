@@ -192,9 +192,10 @@ each suggested `forge.Install` written but **commented out** for you to review,
 and `observed`: every component kind discovery found running. The KCL refuses an
 `Install` of a kind listed in `observed`.
 
-An adopted exporter discovery can scrape is also written as a plain
-`forge.Telemetry` in a separate `ml_telemetry` list, for the env's
-`observability.telemetry`:
+`forge.Adopt` and `forge.Install` declare what runs, nothing more. The scrape of
+an exporter the stack adopts or installs is a plain `forge.Telemetry` in a
+separate `ml_telemetry` list, for the env's `observability.telemetry` (a suggested
+install's scrape is commented out with it, to uncomment together):
 
 ```python
 ml_telemetry = [
@@ -207,8 +208,9 @@ ml_telemetry = [
 ```
 
 `allow` is the field set discovery found the exporter serving, else the
-families the Machines view and the rules read; names taken from an exporter's
-docs rather than a live node are marked unverified.
+families the Machines view and the rules read (forge's own DCGM install: the
+fields it configures); names taken from an exporter's docs rather than a live
+node are marked unverified.
 
 `observed` is the guard against the classic failure: a second DCGM exporter on
 nodes that already run one (the GPU Operator's, or GKE's managed DCGM) breaks both

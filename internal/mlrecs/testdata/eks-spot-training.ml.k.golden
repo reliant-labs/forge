@@ -297,53 +297,6 @@ ml_stacks = [forge.MLStack {
             #             ]
             #         }
             #     }
-            #     selector = {"app.kubernetes.io/name": "dcgm-exporter"}
-            #     port = 9400
-            #     allow = [
-            #         "DCGM_FI_DEV_SM_CLOCK_HERTZ"
-            #         "DCGM_FI_DEV_MEMORY_CLOCK_HERTZ"
-            #         "DCGM_FI_DEV_MEMORY_TEMP_CELSIUS"
-            #         "DCGM_FI_DEV_GPU_TEMP_CELSIUS"
-            #         "DCGM_FI_DEV_BOARD_POWER_WATTS"
-            #         "DCGM_FI_DEV_GPU_ENERGY_JOULES_TOTAL"
-            #         "DCGM_FI_DEV_GPU_POWER_THROTTLE_SECONDS_TOTAL"
-            #         "DCGM_FI_DEV_GPU_THERMAL_THROTTLE_SECONDS_TOTAL"
-            #         "DCGM_FI_DEV_PCIE_REPLAY_TOTAL"
-            #         "DCGM_FI_DEV_GPU_UTIL_RATIO"
-            #         "DCGM_FI_DEV_MEMORY_UTIL_RATIO"
-            #         "DCGM_FI_DEV_ENC_UTIL_RATIO"
-            #         "DCGM_FI_DEV_DEC_UTIL_RATIO"
-            #         "DCGM_FI_DEV_XID_ERROR"
-            #         "DCGM_EXP_CLOCK_EVENTS_TOTAL"
-            #         "DCGM_EXP_XID_ERRORS_TOTAL"
-            #         "DCGM_FI_DEV_FB_CAPACITY_BYTES"
-            #         "DCGM_FI_DEV_FB_FREE_BYTES"
-            #         "DCGM_FI_DEV_FB_USED_BYTES"
-            #         "DCGM_FI_DEV_FB_RESERVED_BYTES"
-            #         "DCGM_FI_DEV_ECC_SBE_VOL_TOTAL"
-            #         "DCGM_FI_DEV_ECC_DBE_VOL_TOTAL"
-            #         "DCGM_FI_DEV_PAGE_RETIRED_SBE_TOTAL"
-            #         "DCGM_FI_DEV_PAGE_RETIRED_DBE_TOTAL"
-            #         "DCGM_FI_DEV_PAGE_RETIRED_PENDING"
-            #         "DCGM_FI_DEV_NVLINK_CRC_ERROR_TOTAL"
-            #         "DCGM_FI_DEV_NVLINK_RECOVERY_TOTAL"
-            #         "DCGM_FI_DEV_NVLINK_REPLAY_TOTAL"
-            #         "DCGM_FI_DEV_NVLINK_THROUGHPUT_BYTES_PER_SECOND"
-            #         "DCGM_FI_DEV_VGPU_LICENSE_STATUS"
-            #         "DCGM_FI_DEV_ROW_REMAP_UNCORRECTABLE_TOTAL"
-            #         "DCGM_FI_DEV_ROW_REMAP_CORRECTABLE_TOTAL"
-            #         "DCGM_FI_DEV_ROW_REMAP_FAILED"
-            #         "DCGM_FI_SYSTEM_DRIVER_VERSION"
-            #         "DCGM_FI_PROF_GR_ENGINE_UTIL_RATIO"
-            #         "DCGM_FI_PROF_SM_UTIL_RATIO"
-            #         "DCGM_FI_PROF_SM_OCCUPANCY_RATIO"
-            #         "DCGM_FI_PROF_TENSOR_UTIL_RATIO"
-            #         "DCGM_FI_PROF_DRAM_UTIL_RATIO"
-            #         "DCGM_FI_PROF_PCIE_TX_BYTES"
-            #         "DCGM_FI_PROF_PCIE_RX_BYTES"
-            #         "DCGM_FI_PROF_NVLINK_TX_BYTES"
-            #         "DCGM_FI_PROF_NVLINK_RX_BYTES"
-            #     ]
             # }
         }
     ]
@@ -424,3 +377,19 @@ ml_stacks = [forge.MLStack {
     # Dismiss a finding until a date:
     # decisions = [forge.RecommendationDecision {id = "<finding id>", reason = "<why>", expires = "YYYY-MM-DD"}]
 }]
+
+# The scrapes of the components above: forge.Adopt and forge.Install only
+# declare what runs, and the collector scrapes what this env's observability
+# lists. Add them to its main.k (beside any telemetry it already lists):
+#
+#     forge.Bundle {
+#         observability = forge.Observability {telemetry = ml.ml_telemetry}
+#     }
+ml_telemetry = [
+    # Suggested for finding accel-telemetry-missing: uncomment with its install.
+    # forge.Telemetry {
+    #     service_name = "dcgm-exporter", scope = "platform", cluster = "arn:aws:eks:us-west-2:123456789012:cluster/training"
+    #     namespaces = ["forge-ml"], selector = {"app.kubernetes.io/name": "dcgm-exporter"}
+    #     metrics = [forge.MetricsScrape {port = 9400, allow = "DCGM_FI_DEV_SM_CLOCK_HERTZ|DCGM_FI_DEV_MEMORY_CLOCK_HERTZ|DCGM_FI_DEV_MEMORY_TEMP_CELSIUS|DCGM_FI_DEV_GPU_TEMP_CELSIUS|DCGM_FI_DEV_BOARD_POWER_WATTS|DCGM_FI_DEV_GPU_ENERGY_JOULES_TOTAL|DCGM_FI_DEV_GPU_POWER_THROTTLE_SECONDS_TOTAL|DCGM_FI_DEV_GPU_THERMAL_THROTTLE_SECONDS_TOTAL|DCGM_FI_DEV_PCIE_REPLAY_TOTAL|DCGM_FI_DEV_GPU_UTIL_RATIO|DCGM_FI_DEV_MEMORY_UTIL_RATIO|DCGM_FI_DEV_ENC_UTIL_RATIO|DCGM_FI_DEV_DEC_UTIL_RATIO|DCGM_FI_DEV_XID_ERROR|DCGM_EXP_CLOCK_EVENTS_TOTAL|DCGM_EXP_XID_ERRORS_TOTAL|DCGM_FI_DEV_FB_CAPACITY_BYTES|DCGM_FI_DEV_FB_FREE_BYTES|DCGM_FI_DEV_FB_USED_BYTES|DCGM_FI_DEV_FB_RESERVED_BYTES|DCGM_FI_DEV_ECC_SBE_VOL_TOTAL|DCGM_FI_DEV_ECC_DBE_VOL_TOTAL|DCGM_FI_DEV_PAGE_RETIRED_SBE_TOTAL|DCGM_FI_DEV_PAGE_RETIRED_DBE_TOTAL|DCGM_FI_DEV_PAGE_RETIRED_PENDING|DCGM_FI_DEV_NVLINK_CRC_ERROR_TOTAL|DCGM_FI_DEV_NVLINK_RECOVERY_TOTAL|DCGM_FI_DEV_NVLINK_REPLAY_TOTAL|DCGM_FI_DEV_NVLINK_THROUGHPUT_BYTES_PER_SECOND|DCGM_FI_DEV_VGPU_LICENSE_STATUS|DCGM_FI_DEV_ROW_REMAP_UNCORRECTABLE_TOTAL|DCGM_FI_DEV_ROW_REMAP_CORRECTABLE_TOTAL|DCGM_FI_DEV_ROW_REMAP_FAILED|DCGM_FI_SYSTEM_DRIVER_VERSION|DCGM_FI_PROF_GR_ENGINE_UTIL_RATIO|DCGM_FI_PROF_SM_UTIL_RATIO|DCGM_FI_PROF_SM_OCCUPANCY_RATIO|DCGM_FI_PROF_TENSOR_UTIL_RATIO|DCGM_FI_PROF_DRAM_UTIL_RATIO|DCGM_FI_PROF_PCIE_TX_BYTES|DCGM_FI_PROF_PCIE_RX_BYTES|DCGM_FI_PROF_NVLINK_TX_BYTES|DCGM_FI_PROF_NVLINK_RX_BYTES"}]
+    # }
+]

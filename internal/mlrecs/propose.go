@@ -21,8 +21,9 @@ const (
 )
 
 // TelemetryList is the top-level list of forge.Telemetry a proposal writes
-// when it adopts a component it can scrape: forge.Adopt only records what
-// runs, and the env's Observability.telemetry is what gets scraped.
+// when it adopts or installs a component it can scrape: forge.Adopt and
+// forge.Install only declare what runs, and the env's
+// Observability.telemetry is what gets scraped.
 const TelemetryList = "ml_telemetry"
 
 // DefaultNamespace is where forge.Install charts render by default.
@@ -159,7 +160,7 @@ func kclDiff(inv *mldiscover.Inventory, findings []Finding, opts ProposeOptions,
 		return ""
 	}
 	diff, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
-		A: difflib.SplitLines(base), B: difflib.SplitLines(applied),
+		A: diffLines(base), B: diffLines(applied),
 		FromFile: "a/ml.k", ToFile: "b/ml.k", Context: 3,
 	})
 	if err != nil {
@@ -168,16 +169,35 @@ func kclDiff(inv *mldiscover.Inventory, findings []Finding, opts ProposeOptions,
 	return diff
 }
 
+// diffLines splits s into lines that keep their "\n". Unlike
+// difflib.SplitLines it adds no phantom empty line after the last one, which
+// a diff touching the file's end would carry as context no patch can match.
+func diffLines(s string) []string {
+	ls := strings.SplitAfter(s, "\n")
+	if ls[len(ls)-1] == "" {
+		ls = ls[:len(ls)-1]
+	}
+	return ls
+}
+
 // proposer renders one ml.k.
 type proposer struct {
 	inv    *mldiscover.Inventory
 	opts   ProposeOptions
 	active map[string]bool // finding ids whose suggestions are written uncommented
 	sugg   []suggestion
-	// telemetry is one forge.Telemetry per adopted component discovery
-	// can scrape, collected while the stack renders.
-	telemetry [][]string
+	// telemetry is one forge.Telemetry per component the stack adopts or
+	// installs that can be scraped, collected while the stack renders.
+	telemetry []telemetryEntry
 	b         strings.Builder
+}
+
+// telemetryEntry is one forge.Telemetry of ml_telemetry. suggestedFor is
+// set when it scrapes a suggested install that is commented out: the
+// scrape is written commented out too, to uncomment with it.
+type telemetryEntry struct {
+	lines        []string
+	suggestedFor string
 }
 
 func propose(inv *mldiscover.Inventory, findings []Finding, opts ProposeOptions, active map[string]bool) string {
@@ -282,16 +302,19 @@ func (p *proposer) renderTelemetry() {
 		return
 	}
 	p.line(0, false, "")
-	p.line(0, true, "The scrapes of the components adopted above: forge.Adopt only records what")
-	p.line(0, true, "runs, and the collector scrapes what this env's observability lists. Add")
-	p.line(0, true, "them to its main.k (beside any telemetry it already lists):")
+	p.line(0, true, "The scrapes of the components above: forge.Adopt and forge.Install only")
+	p.line(0, true, "declare what runs, and the collector scrapes what this env's observability")
+	p.line(0, true, "lists. Add them to its main.k (beside any telemetry it already lists):")
 	p.line(0, true, "")
 	p.line(0, true, "    forge.Bundle {")
 	p.line(0, true, "        observability = forge.Observability {"+MainKTelemetryField+"}")
 	p.line(0, true, "    }")
 	p.line(0, false, TelemetryList+" = [")
 	for _, t := range p.telemetry {
-		p.lines(1, false, t)
+		if t.suggestedFor != "" {
+			p.line(1, true, "Suggested for "+t.suggestedFor+": uncomment with its install.")
+		}
+		p.lines(1, t.suggestedFor != "", t.lines)
 	}
 	p.line(0, false, "]")
 }
@@ -368,7 +391,10 @@ func (p *proposer) component(c mldiscover.Component, scrape bool) []string {
 			if ns == "" {
 				ns = p.opts.Namespace
 			}
-			return p.install(chart, ns, scrape, p.fullValues(c.Kind))
+			if t, ok := installScrape(chart, ns); ok && scrape {
+				p.telemetry = append(p.telemetry, telemetryEntry{lines: p.scrape(c.Kind, ns, t)})
+			}
+			return p.install(chart, ns, p.fullValues(c.Kind))
 		}
 	}
 	return p.adopt(c, scrape)
@@ -397,7 +423,13 @@ func (p *proposer) adopt(c mldiscover.Component, scrape bool) []string {
 		fields = append(fields, [2]string{"note", strconv.Quote(note)})
 	}
 	if scrape && len(c.Selector) > 0 && c.MetricsPort != 0 {
-		p.telemetry = append(p.telemetry, p.scrape(c))
+		allow, verified := metricAllow[c.Kind], !unverifiedAllow[c.Kind]
+		t := scrapeTarget{selector: c.Selector, port: c.MetricsPort, allow: allow, verified: verified}
+		if c.Config != nil && c.Config.DeterminedBy != mldiscover.DeterminedByPresence && len(c.Config.Fields) > 0 {
+			t.allow, t.verified = c.Config.Fields, true
+			t.source = c.Config.DeterminedBy + ": " + c.Config.Source
+		}
+		p.telemetry = append(p.telemetry, telemetryEntry{lines: p.scrape(c.Kind, c.Namespace, t)})
 	}
 	parts := make([]string, len(fields))
 	for i, f := range fields {
@@ -406,26 +438,51 @@ func (p *proposer) adopt(c mldiscover.Component, scrape bool) []string {
 	return []string{"forge.Adopt {" + strings.Join(parts, ", ") + "}"}
 }
 
-// scrape renders the forge.Telemetry that scrapes an adopted component:
-// platform scope (no env identity), on the cluster discovery read, named
-// by the component's kind.
-func (p *proposer) scrape(c mldiscover.Component) []string {
+// scrapeTarget is what a component's scrape needs: its pods, its metrics
+// port, and the names kept (source says where discovery read them).
+type scrapeTarget struct {
+	selector map[string]string
+	port     int32
+	allow    []string
+	verified bool
+	source   string
+}
+
+// installScrape is the scrape of a forge.Install of chart in namespace,
+// when forge knows the chart's metrics endpoint.
+func installScrape(chart Chart, namespace string) (scrapeTarget, bool) {
+	if chart.Kind != mldiscover.KindDCGMExporter {
+		return scrapeTarget{}, false
+	}
+	var allow []string
+	for _, f := range mldiscover.ForgeDCGMFields {
+		allow = append(allow, f.Name)
+	}
+	return scrapeTarget{
+		selector: map[string]string{"app.kubernetes.io/name": "dcgm-exporter"},
+		port:     mldiscover.DefaultMetricsPort(mldiscover.KindDCGMExporter),
+		allow:    allow, verified: true,
+	}, true
+}
+
+// scrape renders the forge.Telemetry that scrapes a component: platform
+// scope (no env identity), on the cluster discovery read, named by the
+// component's kind.
+func (p *proposer) scrape(kind, namespace string, t scrapeTarget) []string {
 	out := []string{"forge.Telemetry {",
-		"    service_name = " + strconv.Quote(c.Kind) + `, scope = "platform", cluster = ` + strconv.Quote(p.inv.Context)}
-	sel := "selector = " + kclStringMap(c.Selector)
-	if c.Namespace != "" {
-		sel = "namespaces = [" + strconv.Quote(c.Namespace) + "], " + sel
+		"    service_name = " + strconv.Quote(kind) + `, scope = "platform", cluster = ` + strconv.Quote(p.inv.Context)}
+	sel := "selector = " + kclStringMap(t.selector)
+	if namespace != "" {
+		sel = "namespaces = [" + strconv.Quote(namespace) + "], " + sel
 	}
 	out = append(out, "    "+sel)
-	allow, verified := metricAllow[c.Kind], !unverifiedAllow[c.Kind]
-	if c.Config != nil && c.Config.DeterminedBy != mldiscover.DeterminedByPresence && len(c.Config.Fields) > 0 {
-		allow, verified = c.Config.Fields, true
-		out = append(out, "    # The fields discovery found it exporting ("+c.Config.DeterminedBy+": "+c.Config.Source+").")
+	if t.source != "" {
+		out = append(out, "    # The fields discovery found it exporting ("+t.source+").")
 	}
-	if len(allow) > 0 && !verified {
+	if len(t.allow) > 0 && !t.verified {
 		out = append(out, "    "+unverifiedAllowComment)
 	}
-	return append(out, "    metrics = ["+metricsScrape(c.MetricsPort, allow)+"]", "}")
+	return append(out, "    metrics = ["+metricsScrape(t.port, t.allow)+"]", "}")
 }
 
 // unverifiedAllowComment heads an allow list taken from docs, not a node.
@@ -445,26 +502,11 @@ func metricsScrape(port int32, allow []string) string {
 	return s + "}"
 }
 
-func allowLines(allow []string, verified bool) []string {
-	if len(allow) == 0 {
-		return nil
-	}
-	var out []string
-	if !verified {
-		out = append(out, unverifiedAllowComment)
-	}
-	out = append(out, "allow = [")
-	for _, m := range allow {
-		out = append(out, "    "+strconv.Quote(m))
-	}
-	return append(out, "]")
-}
-
 // install renders a forge.Install of a pinned chart. full writes the
 // chart values forge installs with; a found forge-owned component that a
 // reconfigure finding says lacks them is written without until the
 // finding's diff applies.
-func (p *proposer) install(chart Chart, namespace string, scrape, full bool) []string {
+func (p *proposer) install(chart Chart, namespace string, full bool) []string {
 	out := []string{"forge.Install {", "    kind = " + strconv.Quote(chart.Kind)}
 	if chart.Delivery == DeliveryBootstrap {
 		out = append(out, fmt.Sprintf("    # It ships CRDs, so it is a bootstrap chart: apply it with `forge env deploy <env> --target %s`.", chart.Name))
@@ -487,15 +529,6 @@ func (p *proposer) install(chart Chart, namespace string, scrape, full bool) []s
 		out = append(out, v[1:]...)
 	}
 	out = append(out, "    }")
-	if scrape && chart.Kind == mldiscover.KindDCGMExporter {
-		out = append(out, "    selector = "+kclStringMap(map[string]string{"app.kubernetes.io/name": "dcgm-exporter"}),
-			"    port = "+strconv.Itoa(int(mldiscover.DefaultMetricsPort(mldiscover.KindDCGMExporter))))
-		var allow []string
-		for _, f := range mldiscover.ForgeDCGMFields {
-			allow = append(allow, f.Name)
-		}
-		out = append(out, indentLines(allowLines(allow, true), "    ")...)
-	}
 	return append(out, "}")
 }
 
@@ -593,14 +626,21 @@ func (p *proposer) emitSuggestion(indent int, s suggestion, prefix string) {
 		return
 	}
 	on := p.isActive(s)
+	what := "finding " + s.findingIDs[0]
+	if len(s.findingIDs) > 1 {
+		what = "findings " + strings.Join(s.findingIDs, ", ")
+	}
 	if !on {
-		what := "finding " + s.findingIDs[0]
-		if len(s.findingIDs) > 1 {
-			what = "findings " + strings.Join(s.findingIDs, ", ")
-		}
 		p.line(indent, true, fmt.Sprintf("Suggested for %s: uncomment to install.", what))
 	}
-	ls := p.install(chart, p.opts.Namespace, true, true)
+	if t, ok := installScrape(chart, p.opts.Namespace); ok {
+		e := telemetryEntry{lines: p.scrape(chart.Kind, p.opts.Namespace, t)}
+		if !on {
+			e.suggestedFor = what
+		}
+		p.telemetry = append(p.telemetry, e)
+	}
+	ls := p.install(chart, p.opts.Namespace, true)
 	ls[0] = prefix + ls[0]
 	p.lines(indent, !on, ls)
 }
@@ -863,14 +903,6 @@ func kclValue(v any, indent string) []string {
 		return []string{strconv.Quote(t)}
 	}
 	return []string{fmt.Sprint(v)}
-}
-
-func indentLines(ls []string, pad string) []string {
-	out := make([]string, len(ls))
-	for i, l := range ls {
-		out[i] = pad + l
-	}
-	return out
 }
 
 func contains(list []string, s string) bool {

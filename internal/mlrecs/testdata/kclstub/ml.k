@@ -37,18 +37,14 @@ schema Adopt:
     check:
         regex.match(kind, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Adopt: kind '${kind}' is not RFC-1123"
 
+# A pinned chart forge installs. Its scrape, too, is a forge.Telemetry.
 schema Install:
     kind: str
     chart: HelmChart
     reason?: str
-    selector?: {str:str}
-    port?: int
-    allow: [str] = []
 
     check:
         kind not in _ML_ADOPT_ONLY or reason, "Install '${kind}': adopt-only by policy"
-        port == None or selector != None, "Install '${kind}': port needs selector"
-        not allow or port != None, "Install '${kind}': allow needs port"
 
 type MLComponent = Adopt | Install
 

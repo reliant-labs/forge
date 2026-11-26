@@ -82,9 +82,9 @@ ml_stacks = [forge.MLStack {
     ]
 }]
 
-# The scrapes of the components adopted above: forge.Adopt only records what
-# runs, and the collector scrapes what this env's observability lists. Add
-# them to its main.k (beside any telemetry it already lists):
+# The scrapes of the components above: forge.Adopt and forge.Install only
+# declare what runs, and the collector scrapes what this env's observability
+# lists. Add them to its main.k (beside any telemetry it already lists):
 #
 #     forge.Bundle {
 #         observability = forge.Observability {telemetry = ml.ml_telemetry}

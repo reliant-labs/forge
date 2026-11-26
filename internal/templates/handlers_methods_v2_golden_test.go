@@ -20,6 +20,7 @@ func TestGoldenHandlersMethodsConnectV2(t *testing.T) {
 	method := func(name string, client, server bool) map[string]any {
 		return map[string]any{
 			"Name": name, "InputType": name + "Request", "OutputType": name + "Response",
+			"InputRef": "pb." + name + "Request", "OutputRef": "pb." + name + "Response",
 			"ClientStreaming": client, "ServerStreaming": server, "AuthRequired": true,
 		}
 	}

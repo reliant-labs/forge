@@ -364,7 +364,8 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 //     it, or renamed the method away and kept the file): render a method-only
 //     fragment and APPEND it, then re-parse and ensure the imports the stub
 //     needs (context, connectrpc.com/connect, forge/pkg/svcerr, and the
-//     aliased proto pkg `pb`; for connect-go v2, the generated <pkg>connect
+//     packages of the messages its signature names — the aliased proto pkg
+//     `pb`, or an imported proto file's package (StubImports); for connect-go v2, the generated <pkg>connect
 //     package of a streaming stub instead of the runtime) are present before
 //     gofmt-ing the whole file.
 //     Every stub body references all of them, so none is left unused — which
@@ -450,8 +451,8 @@ func scaffoldHandlerStubs(handlersPath string, data ServiceTemplateData) error {
 		astutil.AddImport(fset, file, "connectrpc.com/connect")
 	}
 	astutil.AddImport(fset, file, "github.com/reliant-labs/forge/pkg/svcerr")
-	if !data.ConnectV2 || data.NamesPbMessages() {
-		astutil.AddNamedImport(fset, file, "pb", data.Module+"/gen/"+data.ProtoPackage+"/v1")
+	for _, imp := range data.StubImports() {
+		astutil.AddNamedImport(fset, file, imp.Alias, imp.Path)
 	}
 
 	var buf bytes.Buffer

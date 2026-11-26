@@ -7316,7 +7316,7 @@ _render_data_access = lambda data_access: DataAccess, lifecycle: str -> {str:str
 }
 
 # The release-health finding codes (pkg/release Health*).
-_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency", "changed_op_errors", "changed_op_latency"]
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency", "changed_op_errors", "changed_op_latency", "seo_regressed", "a11y_regressed"]
 
 # A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
 _release_health_seconds = lambda w: str -> int {
@@ -7391,7 +7391,17 @@ schema ReleaseHealth:
     changed_op_min_errors, 5, errors after the promotion) and
     changed_op_latency (its p95 grew by more than changed_op_max_p95_ratio,
     2); each names the newest commit that changed the op, and both warn
-    unless listed in `fail_on`.
+    unless listed in `fail_on`. For a hosted static frontend the control
+    plane audits after each promotion (Site insights), each compared with
+    the same env's audit of the previous release: seo_regressed (the site's
+    or a route's SEO score dropped by more than `seo_max_score_drop` points,
+    or a new error-severity SEO finding appeared: the env became noindex,
+    robots.txt disallows /, a canonical names another host, an internal
+    link answers 404) and a11y_regressed (the accessibility score dropped
+    by more than `a11y_max_score_drop` points, or a new critical axe
+    violation appeared). Both warn unless listed in `fail_on`; a release
+    with no previous audit has none, and one whose audit has not finished
+    lists site_audit in `not_evaluated`.
 
     Recorded in the release shape (`release_health`) when any value differs
     from the default, so every reader judges by this one declaration.
@@ -7405,6 +7415,8 @@ schema ReleaseHealth:
     error_rate_min_errors: int = 10
     baseline_window: str = "24h"
     alert_baseline_min_firings: int = 1
+    seo_max_score_drop: int = 10
+    a11y_max_score_drop: int = 10
     fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed", "browser_errors", "browser_failed_requests", "browser_page_load"]
     warn_on: [str] = []
     require_baseline: str = "any"
@@ -7425,6 +7437,10 @@ schema ReleaseHealth:
             "ReleaseHealth.baseline_window \"${baseline_window}\": use a number and s, m or h (\"24h\"), from the window (${window}) to 168h"
         alert_baseline_min_firings >= 0, \
             "ReleaseHealth.alert_baseline_min_firings ${alert_baseline_min_firings} must be at least 0 (0 counts every alert opened after the promotion)"
+        0 <= seo_max_score_drop <= 100, \
+            "ReleaseHealth.seo_max_score_drop ${seo_max_score_drop} must be 0 to 100 score points (0 fires on any drop)"
+        0 <= a11y_max_score_drop <= 100, \
+            "ReleaseHealth.a11y_max_score_drop ${a11y_max_score_drop} must be 0 to 100 score points (0 fires on any drop)"
         all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
             "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"

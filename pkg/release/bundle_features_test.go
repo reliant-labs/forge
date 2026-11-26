@@ -55,6 +55,9 @@ var bundleFeatureKeys = map[string][]string{
 	// A value feature: it adds the changed_op_* codes to
 	// shape.release_health.fail_on and no key.
 	BundleFeatureReleaseHealthChangedOps: {},
+	// Also a value feature: it adds the seo_regressed and a11y_regressed
+	// codes to shape.release_health.fail_on, beside their two thresholds.
+	BundleFeatureReleaseHealthSiteAudit: {"shape.release_health.seo_max_score_drop", "shape.release_health.a11y_max_score_drop"},
 }
 
 // snapshotKeys are not features: a snapshot bundle is its own schema, gated

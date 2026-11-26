@@ -199,11 +199,11 @@ large in-progress build can still consume the reserve.
 
 The reserve a build is held to depends on what it writes (its lane):
 
-| Lane | What it builds | Refused below | Warned below |
-|---|---|---|---|
-| `heavy` | images, external/shell and whole-project builds | `host_reserve_gib` | — |
-| `host` | one binary for a process `forge env up` runs, and air's rebuild of it | 10 GiB (or `host_reserve_gib` if smaller) | `host_reserve_gib` |
-| `light` | no go build and no image build (a static site's `npm run build`) | 5 GiB (or `host_reserve_gib` if smaller) | `host_reserve_gib` |
+| Lane    | What it builds                                                        | Refused below                             | Warned below       |
+| ------- | --------------------------------------------------------------------- | ----------------------------------------- | ------------------ |
+| `heavy` | images, external/shell and whole-project builds                       | `host_reserve_gib`                        | —                  |
+| `host`  | one binary for a process `forge env up` runs, and air's rebuild of it | 10 GiB (or `host_reserve_gib` if smaller) | `host_reserve_gib` |
+| `light` | no go build and no image build (a static site's `npm run build`)      | 5 GiB (or `host_reserve_gib` if smaller)  | `host_reserve_gib` |
 
 `forge env up` admits its own start and its host launches under `host`, and
 sets `FORGE_STORAGE_LANE=host` in every host process's environment, so the

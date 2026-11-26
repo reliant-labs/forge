@@ -25,16 +25,16 @@ import (
 type GateStatus string
 
 const (
-	// GateStatusPassed: the check ran and found nothing wrong.
+	// GateStatusPassed means the check ran and found nothing wrong.
 	GateStatusPassed GateStatus = "passed"
-	// GateStatusFailed: the check ran and found something wrong. This is a
-	// VERDICT, not an error — the check itself worked.
+	// GateStatusFailed means the check ran and found something wrong. This is
+	// a VERDICT, not an error — the check itself worked.
 	GateStatusFailed GateStatus = "failed"
-	// GateStatusSkipped: the check did not apply. A hosted smoke with no
+	// GateStatusSkipped means the check did not apply. A hosted smoke with no
 	// URL-bearing workload is skipped, never passed: a green check that
 	// checked nothing is the failure mode this value exists to prevent.
 	GateStatusSkipped GateStatus = "skipped"
-	// GateStatusError: the check could not reach a verdict — it crashed,
+	// GateStatusError means the check could not reach a verdict — it crashed,
 	// timed out, or could not look. Distinct from failed for the same
 	// reason exit code 2 is distinct from exit code 1.
 	GateStatusError GateStatus = "error"

@@ -30,17 +30,15 @@ task fmt    # goimports + go mod tidy
 run. `FORGE_TESTS=off` records nothing for one run.
 
 CI's "Report test results" step uploads the run to your project's control
-plane when the repository secret `FORGE_CONTROL_PLANE_TOKEN` holds a token with
-the `tests:write` scope. Mint one while signed in to the web app under
-Settings → API tokens (Reliant cloud:
-https://forge.reliantlabs.io/settings/tokens), then store it:
-
-```bash
-gh secret set FORGE_CONTROL_PLANE_TOKEN
-```
-
-Without the secret the step prints one line and stays green; it never
-decides the job's result. A token with `deploy:write` also uploads.
+plane with no secret: its job has `id-token: write`, and forge exchanges the
+job's GitHub OIDC token for a short-lived `tests:write` token. That works once
+the Reliant GitHub App is installed on this repository and an org admin has
+linked the installation to the org in the web app's organization settings
+(Reliant cloud: https://forge.reliantlabs.io). Until then, and on a fork's pull
+request, which gets no OIDC token, the step prints one line and stays green; it
+never decides the job's result. To upload with a token instead, store one with
+`tests:write` (or `deploy:write`) as the secret `FORGE_CONTROL_PLANE_TOKEN` and
+pass it in the step's `env:`: the secret, if set, overrides OIDC.
 `tests.upload: never` in `forge.yaml` turns upload off.
 
 ## Adding code

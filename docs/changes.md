@@ -81,6 +81,30 @@ forge sends it only to a control plane that decodes it. `forge env shape <env>` 
 the declared changes. A deploy whose release no longer declares a variant a running
 change uses stops that change; `forge env deploy`'s plan says so first.
 
+**Frontends built from another repository.** A frontend declared with
+`source = forge.GitSource {...}` runs that repository's code, and its accessors come
+from that repository's own `changes.yaml`. So the env's release carries that file
+too: forge reads `changes.yaml` at the root of the source repository (not at
+`subdir`), at the commit the release pins for that frontend, and merges it with this
+project's. It uses the same cache and `.forge/source-overrides.yaml` as the build.
+Each file is validated on its own, and its errors name where it came from
+(`github.com/acme/web@3f9c2a1b7d0e:changes.yaml:5: …`). The merged set is limited
+to 200 changes. `forge env shape <env>` names the source of each change that came
+from one. This project generates no accessors for those changes: they belong to the
+source repository's code.
+
+The same key declared twice is kept once when both declarations are the same change
+(type, default and variants; the description is not compared). Two different
+declarations are the rule `changes-source-conflict`. It warns first: in forge
+v1.12.0 the first declaration ships (this project's, else the first source by
+frontend name) and the conflict is printed. From v1.13.0 the shape and the build are
+refused (opt in early with `lint.rules: {changes-source-conflict: error}`). To fix
+it, rename one of the keys, or make the two declarations equal.
+
+To keep a source's changes out of the env, set `changes_from_source = False` on that
+frontend. The design is in
+[proposals/changes-from-sources.md](proposals/changes-from-sources.md).
+
 **Go** (projects with a `go.mod`): `internal/changes/changes_gen.go` has one constant
 and one accessor per change:
 

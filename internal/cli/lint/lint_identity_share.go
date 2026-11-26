@@ -12,6 +12,7 @@
 package lint
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -20,7 +21,6 @@ import (
 	"strconv"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 )
 
@@ -105,7 +105,7 @@ func identityNames(ids []envIdentity) []string {
 	return out
 }
 
-func identityShareFindings(projectDir string, cfg *config.ProjectConfig) []identityShareFinding {
+func identityShareFindings(ctx context.Context, projectDir string, cfg *config.ProjectConfig) []identityShareFinding {
 	kclDir := filepath.Join(projectDir, deployKCLDirFor(cfg))
 	entries, err := os.ReadDir(kclDir)
 	if err != nil {
@@ -122,7 +122,7 @@ func identityShareFindings(projectDir string, cfg *config.ProjectConfig) []ident
 		}
 		// A render that fails is the render's own error to report (`forge env
 		// render`); this judges only what it can read.
-		raw, err := kclrender.Run(projectDir, envDir, []string{"env=" + strconv.Quote(e.Name())})
+		raw, err := lintKCLRun(ctx, projectDir, envDir, []string{"env=" + strconv.Quote(e.Name())})
 		if err != nil {
 			continue
 		}
@@ -146,7 +146,7 @@ func identityShareFindings(projectDir string, cfg *config.ProjectConfig) []ident
 
 func collectIdentityShareJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 	var out []lintJSONFinding
-	for _, f := range identityShareFindings(rc.cwd, rc.cfg) {
+	for _, f := range identityShareFindings(rc.ctx, rc.cwd, rc.cfg) {
 		out = append(out, lintJSONFinding{
 			File:     deployKCLDirFor(rc.cfg) + "/" + f.Env,
 			Severity: string(finding.SeverityError),

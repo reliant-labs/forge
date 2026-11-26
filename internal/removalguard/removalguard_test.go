@@ -337,6 +337,18 @@ var removals = []removal{
 				Paths: []string{"pkg/fluxdelivery/"},
 			},
 			{
+				Name: "competitors' model-registry RBAC in the ML product spec's competitive research",
+				Reason: "docs/proposals/ml-spec records what other products ship: W&B Registry and MLflow " +
+					"gate their model registries with RBAC. That describes a competitor's feature, not forge " +
+					"authorization. Scoped to the two competitive-bar files, so the word anywhere else in the " +
+					"spec still fails.",
+				Token: regexp.MustCompile(`\bRBAC\b`),
+				Paths: []string{
+					"docs/proposals/ml-spec/03-competitive-bar.md",
+					"docs/proposals/ml-spec/parts/03a-competitive-trackers.md",
+				},
+			},
+			{
 				Name: "Kubernetes PolicyRule in the generated env schema",
 				Reason: "schema/env.v1.schema.json is generated from the Go types the env document decodes " +
 					"into (internal/schemagen; TestEnvSchemaIsCurrent), and carries pkg/deploy/v1alpha1.PolicyRule's " +

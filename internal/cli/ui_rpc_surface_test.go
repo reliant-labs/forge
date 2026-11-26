@@ -70,6 +70,9 @@ func readUIRPCSurface(t *testing.T) []string {
 // RPC the UI calls must be reachable from a forge CLI path, or be listed in
 // uiOnlyRPCs with a reason.
 func TestUIRPCSurfaceHasCLIParity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scans all internal Go source for RPC parity; runs in task test")
+	}
 	called := forgeCalledRPCs(t)
 	var missing []string
 	for _, rpc := range readUIRPCSurface(t) {

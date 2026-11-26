@@ -7,15 +7,15 @@ const (
 	// CredentialUnknown is the zero value: claims built by hand, or returned
 	// by a validator that is not one of forge's (a custom Validate func).
 	CredentialUnknown CredentialKind = iota
-	// CredentialToken: a bearer token a token validator checked — a JWT.
+	// CredentialToken is a bearer token a token validator checked — a JWT.
 	CredentialToken
-	// CredentialAPIKey: an API key the installed [KeyValidator] checked.
+	// CredentialAPIKey is an API key the installed [KeyValidator] checked.
 	CredentialAPIKey
-	// CredentialSession: a server-side browser session id (forge/pkg/session)
-	// the installed [SessionResolver] resolved to an access token, which the
-	// token validator then checked. Only a browser holding the session
-	// cookie presents one: no script can read the cookie, and the id is not
-	// a token any other client is ever issued.
+	// CredentialSession is a server-side browser session id
+	// (forge/pkg/session) the installed [SessionResolver] resolved to an
+	// access token, which the token validator then checked. Only a browser
+	// holding the session cookie presents one: no script can read the cookie,
+	// and the id is not a token any other client is ever issued.
 	CredentialSession
 )
 

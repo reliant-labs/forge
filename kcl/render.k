@@ -352,6 +352,9 @@ _channel = lambda v: any -> str {
         # _llm_resolve lowers every LLMRef before this (a hosted one to a
         # blank literal the platform fills); named for the pre-lowering checks.
         "LLMRef" = "llmRef"
+        # _email_resolve lowers every EmailRef before this; named for the
+        # pre-lowering checks.
+        "EmailRef" = "emailRef"
     }[typeof(v)]
 }
 
@@ -361,7 +364,7 @@ _channel = lambda v: any -> str {
 # the WorkloadURL, through its cluster's host gateway when it is a pod.
 _env_var = lambda name: str, v0: any, where: str, rt: any, bundle: Bundle -> any {
     hosted = rt.type == "hosted"
-    v = _idn_resolve(v0, where, rt, bundle) if typeof(v0) == "IdentityRef" else (_bucket_resolve(v0, where, rt, bundle) if typeof(v0) == "BucketRef" else (_llm_resolve(name, v0, where, rt, bundle) if typeof(v0) == "LLMRef" else v0))
+    v = _idn_resolve(v0, where, rt, bundle) if typeof(v0) == "IdentityRef" else (_bucket_resolve(v0, where, rt, bundle) if typeof(v0) == "BucketRef" else (_llm_resolve(name, v0, where, rt, bundle) if typeof(v0) == "LLMRef" else (_email_resolve(v0, where, rt, bundle) if typeof(v0) == "EmailRef" else v0)))
     _c = _channel(v)
     _TEnvVar {
         name = name
@@ -462,6 +465,40 @@ _compose_llm_env = lambda w: any, rt: any, bundle: Bundle -> {str:str} {
     _store = [v.name for _, v in _vals if typeof(v) == "ManagedSecret"]
     _read = "$" + "{" + (_store[0] if _store else "<NAME>") + "}"
     assert not _refs, "workload '${w.name}' env ${_refs}: a forge.LLMEndpoint credential that is a secret reference cannot reach a compose container, whose environment is literals. Keep the URLs (`env = {k: v for k, v in forge.llm_env() if not k.endswith(\"_API_KEY\")}`) and have the compose file read the key from the store, which is in the compose process env under its store name: `OPENAI_API_KEY: ${_read}`. Or run the referrer on forge.OnHost {} or forge.OnCluster"
+    _vals
+}
+
+# An EmailRef as the value its referrer reads: a literal, or (an
+# EmailOnSMTP credential) the SecretRef / ManagedSecret it declares, which
+# then lowers through its own channel above. The env's Mailpit binds
+# 127.0.0.1, so only a host process reaches it. Reliant-hosted email is not
+# yet available (the Bundle refuses an Email on forge.OnHosted), and neither
+# is mail from a hosted workload: the platform does not yet open SMTP egress
+# for it, so a hosted referrer is refused rather than rendered to fail at
+# its first send.
+_email_resolve = lambda v: any, where: str, rt: any, bundle: Bundle -> any {
+    _es = [e for e in bundle.emails if e.name == v.name]
+    assert _es, "${where}: forge.EmailRef names email '${v.name}', which this environment does not declare. Declared emails: ${[e.name for e in bundle.emails]}. Declare it in Bundle.emails (forge.Email)"
+    _e = _es[0]
+    _rtype = _email_rt(_e)
+    assert _rtype != "hosted", \
+        "${where}: forge.EmailRef '${v.name}' is on forge.OnHosted, and Reliant-hosted email is not yet available on hosted. Bind the Email to forge.EmailOnSMTP or forge.EmailOnMailpit in this env"
+    assert rt.type != "hosted", \
+        "${where}: forge.EmailRef '${v.name}' is read by a workload on forge.OnHosted, and sending mail from a hosted workload is not yet available on hosted: the platform does not yet open SMTP egress for hosted workloads, so every send would fail. Run the referrer on a runtime you operate (forge.OnHost, forge.OnCompose, forge.OnCluster)"
+    assert _rtype != "mailpit" or rt.type == "host", \
+        "${where}: forge.EmailRef '${v.name}' is on forge.EmailOnMailpit, the env's Mailpit, which listens on 127.0.0.1 of this machine, so a workload on the ${rt.type} runtime cannot reach it. Run the referrer on forge.OnHost {}, or bind the Email to forge.EmailOnSMTP in this env"
+    assert _e.domain, \
+        "${where}: forge.EmailRef '${v.name}' names a forge.Email with no domain, so there is no From address to send app mail as. Set domain = \"mail.example.com\" (a domain you own) on the Email"
+    (_email_mailpit_values(_e, _email_mailpits(_e, bundle.infra)[0].port) if _rtype == "mailpit" else _email_smtp_values(_e))[v.key]
+}
+
+# A compose workload's EmailRefs as compose process env. The compose
+# process reads only literals, so a credential the Email declares as a
+# forge.SecretRef / forge.ManagedSecret is refused rather than dropped.
+_compose_email_env = lambda w: any, rt: any, bundle: Bundle -> {str:str} {
+    _vals = {k: _email_resolve(v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in w.env if typeof(v) == "EmailRef"}
+    _refs = [k for k, v in _vals if typeof(v) != "str"]
+    assert not _refs, "workload '${w.name}' env ${_refs}: a forge.EmailOnSMTP credential that is a secret reference cannot reach a compose container, whose environment is literals. Run the referrer on forge.OnHost {} or forge.OnCluster"
     _vals
 }
 
@@ -1831,6 +1868,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         command = w.command
         args = w.args
         replicas = w.replicas
+        autoscale = w.autoscale
         if w.resources:
             resources = w.resources
         env = [_env_var(k, v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in _env] if _env else Undefined
@@ -1863,6 +1901,9 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         successfulJobsHistoryLimit = w.successfulJobsHistoryLimit
         failedJobsHistoryLimit = w.failedJobsHistoryLimit
         ttlSecondsAfterFinished = w.ttlSecondsAfterFinished
+        concurrencyPolicy = w.concurrencyPolicy
+        startingDeadlineSeconds = w.startingDeadlineSeconds
+        timeZone = w.timeZone
     }
 }
 
@@ -1898,10 +1939,10 @@ _render_runtime = lambda w: any, rt: any, bundle: Bundle -> any {
         } | ({"optional": True} if rt.optional else {}) | {
         # The compose PROCESS env: the workload's literal env under the
         # runtime's own (the runtime block is the more specific statement).
-        # A BucketRef (and an LLMRef) resolves to its literal here, so the
+        # A BucketRef (an LLMRef, an EmailRef) resolves to its literal here, so the
         # compose file can hand it to the container
         # (`UPLOADS_ENDPOINT: ${UPLOADS_ENDPOINT}`).
-        "env": {k: v for k, v in w.env if typeof(v) == "str"} | _compose_bucket_env(w, rt, bundle) | _compose_llm_env(w, rt, bundle) | rt.env
+        "env": {k: v for k, v in w.env if typeof(v) == "str"} | _compose_bucket_env(w, rt, bundle) | _compose_llm_env(w, rt, bundle) | _compose_email_env(w, rt, bundle) | rt.env
     } if rt.type == "compose" else ({
         "type": "cluster"
         "cluster": rt.target.cluster
@@ -2058,6 +2099,7 @@ _COMPOSE_REFUSED: {str:str} = _LOCAL_REFUSED | {
     "ports": "the compose file owns the published ports; declare them there"
     "probes": "the compose file owns the healthcheck; declare it there"
     "replicas": "the compose file owns the scale"
+    "autoscale": "the compose file owns the scale; compose runs no autoscaler"
     "command": "the compose file owns the container's command"
     "args": "the compose file owns the container's command"
     "resources": "the compose file owns the container's resources"
@@ -2069,6 +2111,7 @@ _BUILD_ONLY_REFUSED: {str:str} = {
     "ports": "a build-only workload is never run, so nothing listens"
     "probes": "a build-only workload is never run, so there is nothing to probe"
     "replicas": "a build-only workload is never run"
+    "autoscale": "a build-only workload is never run, so there is nothing to scale"
     "storageGiB": "a build-only workload is never run"
 }
 
@@ -2123,6 +2166,7 @@ _mask_violations = lambda w: any, rt: any -> [str] {
         if rt.type == "hosted" else []
     _host = ["${f}: ${_LOCAL_REFUSED[f]}" for f in _LOCAL_REFUSED if _set(w, f)] \
         + (["replicas: a host workload is one local process; forge env up launches it once"] if w.replicas != 1 else []) \
+        + (["autoscale: a host workload is one local process; forge env up launches it once, and nothing scales it"] if w.autoscale else []) \
         + (["build: the ${rt.runner} runner derives its command from a forge.GoBuild; add `build = forge.GoBuild {cmd = ...}`, or set `command` to run a binary verbatim"] \
             if rt.runner in ["go-run", "binary", "delve"] and not (w.build and w.build.type == "go") and not w.command else []) \
         + (["kind '${w.kind}': a local process cannot ${'run on a schedule' if w.kind == 'cron' else 'be a controller-runtime manager'}; bind it to forge.OnCluster"] if w.kind in ["cron", "operator"] else []) \
@@ -2544,6 +2588,32 @@ _render_uptime_checks = lambda b: Bundle -> [any] {
     _declared = {c.name = _uptime_declared(c, b) for c in (_u.checks if _u else [])}
     _all = {k = v for k, v in _derived if k not in _skip and k not in _declared} | _declared
     [{k = v for k, v in _all[n] if v != None} for n in sorted([n for n in _all])]
+}
+
+# ---------------------------------------------------------------------------
+# Status page (schema.k StatusPage), resolved to the release shape's
+# `status_page`. Every check a component names must be in the env's final
+# check list, the way Uptime.skip refuses a name forge derives no check for.
+# ---------------------------------------------------------------------------
+
+_render_status_page = lambda b: Bundle -> any {
+    _p = b.status_page
+    _checks = [c.name for c in _render_uptime_checks(b)]
+    _unknown = ["${c.name}: ${n}" for c in _p.components for n in c.checks if n not in _checks]
+    assert not _unknown, \
+        "StatusPage.components name uptime checks this env does not have: ${_unknown} (its checks: ${_checks}). A component shows the env's uptime checks: name one of them, declare it in forge.Uptime.checks, or stop skipping it"
+    _page = {
+        "title": _p.title
+        "logo_url": _p.logo_url if _p.logo_url else None
+        "accent_color": _p.accent_color if _p.accent_color else None
+        "links": [{"label": l.label, "url": l.url} for l in _p.links] if _p.links else None
+        "components": [{k = v for k, v in {
+            "name": c.name
+            "description": c.description if c.description else None
+            "checks": sorted(c.checks)
+        } if v != None} for c in _p.components]
+    }
+    {k = v for k, v in _page if v != None}
 }
 
 # The declaration, as the Go side (forge env up, the local forwarder) reads it.
@@ -3342,6 +3412,10 @@ render = lambda bundle: Bundle -> any {
         # derives for a hosted env. Go records them in the release shape.
         if _render_uptime_checks(bundle):
             "uptime_checks": _render_uptime_checks(bundle)
+        # The env's status page, resolved against those checks. Go records it
+        # in the release shape. Whether it is public is control-plane state.
+        if bundle.status_page:
+            "status_page": _render_status_page(bundle)
         # The release-health policy, resolved, only when the env declares one.
         # Go records it in the release shape unless it is all defaults.
         if bundle.release_health:
@@ -3885,6 +3959,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         "runtime_config_spec": _rc_spec
     } | ({"apis": _apis, "api_urls": _api_urls} if f.apis else {}) \
       | ({"routes": f.routes} if f.routes else {}) \
+      | ({"changes_from_source": False} if f.changes_from_source == False else {}) \
       | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {}) \
       | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {})
 }

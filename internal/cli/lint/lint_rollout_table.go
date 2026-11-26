@@ -361,6 +361,11 @@ var newRules = []rolloutGroup{
 	// forge lint --idempotency: a read whose response carries a secret or a
 	// per-call value never declares NO_SIDE_EFFECTS (lint_idempotency_secret.go).
 	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Reads that return a token, a presigned URL or a one-time link already declare NO_SIDE_EFFECTS in existing protos, some because forge-idempotency-read-undeclared asked them to; warn for a release so each can move to forge:mutation with a reason before the rule gates"}, Rules: []string{ruleIdempotencySecretResponse}},
+	// Forge Changes declared by a pinned source (docs/proposals/changes-from-sources.md):
+	// a change key two declarations give different definitions (the root and
+	// a GitSource frontend's changes.yaml, or two sources). Graded outside
+	// forge lint, at `forge env shape` and every bundle write (rollout_grade.go).
+	{IntroducedIn: "v1.12.0", Grace: &rolloutGrace{Until: "v1.13.0", Reason: "Before this release a pinned source's changes.yaml was never read, so a project whose root declares a key its source also declares differently built cleanly; warn for a release (the root's declaration ships) so each can rename the key or make the two equal before the conflict refuses the build"}, Rules: []string{RuleChangesSourceConflict}},
 }
 
 // rolloutLinkFixture is a grace row linked into a test build of the forge

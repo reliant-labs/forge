@@ -38,6 +38,19 @@ func TestDemandOfHoundersShape(t *testing.T) {
 	}
 }
 
+// An autoscaled workload is charged at its maxReplicas, not at the one
+// replica its Deployment starts with (docs/proposals/autoscaling.md).
+func TestDemandOfChargesAnAutoscaledWorkloadAtItsMax(t *testing.T) {
+	got := DemandOf([]HostedPreflightItem{{Name: "api", Tier: HostedTierWorkload, Workload: &v1alpha1.WorkloadSpec{
+		Kind:      v1alpha1.KindService,
+		Autoscale: &v1alpha1.Autoscale{MinReplicas: 2, MaxReplicas: 6},
+		Resources: v1alpha1.Resources{CPURequestMillicores: 500, MemoryRequestBytes: 512 << 20},
+	}}}, 0)
+	if got.CPUMillicores != 3000 || got.MemoryBytes != 3<<30 {
+		t.Fatalf("demand = %+v, want 6 x 500m and 6 x 512MiB", got)
+	}
+}
+
 type capacityCaller struct {
 	resp map[string]any
 	err  error

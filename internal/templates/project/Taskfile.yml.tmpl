@@ -163,7 +163,7 @@ tasks:
       # with its exit status. It reads -json and prints it as the text `go test`
       # prints (raw when you pass -json yourself: `task test -- -json ./...`),
       # and records the results and -coverprofile in the run.
-      - "{{`{{.SLOT}}`}} {{`{{.FORGE}}`}} test capture --run \"{{`{{.RUN}}`}}\" --lane unit{{`{{if contains \"-json\" .CLI_ARGS}}`}} --render raw{{`{{end}}`}} -- go test {{`{{.GOTESTRACE}}`}} -count=1 -json -covermode=atomic -coverprofile=\"{{`{{.RUN}}`}}/unit/cover.out\" -timeout 120s {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}`}}"
+      - '{{`{{.SLOT}}`}} {{`{{.FORGE}}`}} test capture --run "{{`{{.RUN}}`}}" --lane unit{{`{{if contains "-json" .CLI_ARGS}}`}} --render raw{{`{{end}}`}} -- go test {{`{{.GOTESTRACE}}`}} -count=1 -json -covermode=atomic -coverprofile="{{`{{.RUN}}`}}/unit/cover.out" -timeout 120s {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}`}}'
       - task: test:frontend
         vars: { RUN: "{{`{{.RUN}}`}}" }
 
@@ -281,7 +281,7 @@ tasks:
       # database / running infra (see docker-compose.yml). -timeout=10m gives
       # heavy DB-backed scenarios room while still surfacing hangs. Recorded
       # as lane `integration`, like `task test`'s unit lane.
-      - "{{`{{.SLOT}}`}} {{`{{.FORGE}}`}} test capture --run \"{{`{{.RUN}}`}}\" --lane integration{{`{{if contains \"-json\" .CLI_ARGS}}`}} --render raw{{`{{end}}`}} -- go test {{`{{.GOTESTRACE}}`}} -tags=integration -count=1 -json -covermode=atomic -coverprofile=\"{{`{{.RUN}}`}}/integration/cover.out\" -timeout=10m {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}`}}"
+      - '{{`{{.SLOT}}`}} {{`{{.FORGE}}`}} test capture --run "{{`{{.RUN}}`}}" --lane integration{{`{{if contains "-json" .CLI_ARGS}}`}} --render raw{{`{{end}}`}} -- go test {{`{{.GOTESTRACE}}`}} -tags=integration -count=1 -json -covermode=atomic -coverprofile="{{`{{.RUN}}`}}/integration/cover.out" -timeout=10m {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}`}}'
 
   test:e2e:
     # `--` args replace the default `./e2e/...`, same as `task test`, so
@@ -296,7 +296,7 @@ tasks:
       RUN:
         sh: "{{`{{.FORGE}}`}} test begin"
     cmds:
-      - "{{`{{.FORGE}}`}} test capture --run \"{{`{{.RUN}}`}}\" --lane e2e{{`{{if contains \"-json\" .CLI_ARGS}}`}} --render raw{{`{{end}}`}} -- go test -tags=e2e -v -count=1 -json -timeout=20m {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./e2e/...{{end}}`}}"
+      - '{{`{{.FORGE}}`}} test capture --run "{{`{{.RUN}}`}}" --lane e2e{{`{{if contains "-json" .CLI_ARGS}}`}} --render raw{{`{{end}}`}} -- go test -tags=e2e -v -count=1 -json -timeout=20m {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./e2e/...{{end}}`}}'
 
   test:report:
     # Test runs are recorded. `task test`, `test:integration` and `test:e2e`

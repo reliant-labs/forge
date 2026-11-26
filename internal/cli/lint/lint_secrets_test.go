@@ -1,6 +1,7 @@
 package lint
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,7 +91,7 @@ func TestSecretsLaneJudgesARenderedEnv(t *testing.T) {
 	t.Cleanup(kclvendor.SetCacheDirForTest(t.TempDir()))
 	root := writeSecretsProject(t, prodMainK)
 
-	res, err := secretsFindings(root, &config.ProjectConfig{})
+	res, err := secretsFindings(context.Background(), root, &config.ProjectConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +176,7 @@ func TestSecretsLaneHonoursTheSharedWaiver(t *testing.T) {
 	waived := strings.Replace(prodMainK, "            name = \"cloudflare-api-token\"\n",
 		"            # forge:lint-disable-next-line secrets-out-of-band-reason: the Cloudflare token predates the store; tracked in SC20\n            name = \"cloudflare-api-token\"\n", 1)
 	root := writeSecretsProject(t, waived)
-	res, err := secretsFindings(root, &config.ProjectConfig{})
+	res, err := secretsFindings(context.Background(), root, &config.ProjectConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +186,7 @@ func TestSecretsLaneHonoursTheSharedWaiver(t *testing.T) {
 
 	bare := strings.Replace(prodMainK, "            name = \"cloudflare-api-token\"\n",
 		"            # forge:lint-disable-next-line secrets-out-of-band-reason\n            name = \"cloudflare-api-token\"\n", 1)
-	res, err = secretsFindings(writeSecretsProject(t, bare), &config.ProjectConfig{})
+	res, err = secretsFindings(context.Background(), writeSecretsProject(t, bare), &config.ProjectConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +205,7 @@ func TestSecretsLaneHonoursLintRules(t *testing.T) {
 	root := writeSecretsProject(t, prodMainK)
 	cfg := &config.ProjectConfig{}
 	cfg.Lint.Rules = map[string]string{secrets.RuleOutOfBandReason: "warn", secrets.RuleKeyCoverage: "off"}
-	res, err := secretsFindings(root, cfg)
+	res, err := secretsFindings(context.Background(), root, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +230,7 @@ func TestSecretsLaneHonoursLintRules(t *testing.T) {
 // A project that declares nothing of the model is not rendered and not judged.
 func TestSecretsLaneIsInertForAProjectThatDidNotAdoptTheModel(t *testing.T) {
 	root := writeSecretsProject(t, "import forge\n\noutput = forge.render(forge.Bundle {project = \"acme\"})\n")
-	res, err := secretsFindings(root, &config.ProjectConfig{})
+	res, err := secretsFindings(context.Background(), root, &config.ProjectConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +288,7 @@ output = forge.render(forge.Bundle {
 })
 `
 	root := writeSecretsProject(t, main)
-	res, err := secretsFindings(root, &config.ProjectConfig{})
+	res, err := secretsFindings(context.Background(), root, &config.ProjectConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +306,7 @@ output = forge.render(forge.Bundle {
 
 	// With a real reason, nothing is left to say.
 	fixed := strings.Replace(main, `"todo"`, `"the deployer reads every hosted env until per-env grants land (SC1)"`, 1)
-	res, err = secretsFindings(writeSecretsProject(t, fixed), &config.ProjectConfig{})
+	res, err = secretsFindings(context.Background(), writeSecretsProject(t, fixed), &config.ProjectConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

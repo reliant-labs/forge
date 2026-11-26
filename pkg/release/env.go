@@ -14,19 +14,19 @@ import (
 type EnvKind string
 
 const (
-	// EnvPersistent: the platform runs it (something is bound OnHosted).
+	// EnvPersistent means the platform runs it (something is bound OnHosted).
 	// A converger applies its promotions; its secrets are write-only.
 	EnvPersistent EnvKind = "persistent"
-	// EnvPreview: a persistent env with a TTL.
+	// EnvPreview is a persistent env with a TTL.
 	EnvPreview EnvKind = "preview"
-	// EnvSelfManaged: a control plane keeps its ledger, nothing is hosted,
-	// and something runs on a cluster the author operates or through the
-	// author's own deploy tooling (forge.OnExternal). forge applies it; the
-	// platform places nothing. Its secrets are write-only, which is the
+	// EnvSelfManaged means a control plane keeps its ledger, nothing is
+	// hosted, and something runs on a cluster the author operates or through
+	// the author's own deploy tooling (forge.OnExternal). forge applies it;
+	// the platform places nothing. Its secrets are write-only, which is the
 	// point of separating it from EnvLocal: such an env's secrets must never
 	// be pullable.
 	EnvSelfManaged EnvKind = "self_managed"
-	// EnvLocal: every workload runs on a developer machine (`forge env
+	// EnvLocal means every workload runs on a developer machine (`forge env
 	// up`). Never a deploy target; its secrets are readable back.
 	EnvLocal EnvKind = "local"
 )

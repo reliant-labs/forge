@@ -128,21 +128,22 @@ type ImportOptions struct {
 type ImportOutcome string
 
 const (
-	// ImportCreated: the account did not exist and was created.
+	// ImportCreated means the account did not exist and was created.
 	ImportCreated ImportOutcome = "created"
-	// ImportUpdated: the account existed and a difference was applied.
+	// ImportUpdated means the account existed and a difference was applied.
 	ImportUpdated ImportOutcome = "updated"
-	// ImportUnchanged: the account existed and nothing was written. Reason
-	// names what differs when UpdateExisting was not set ("differs:roles").
+	// ImportUnchanged means the account existed and nothing was written.
+	// Reason names what differs when UpdateExisting was not set
+	// ("differs:roles").
 	ImportUnchanged ImportOutcome = "unchanged"
-	// ImportConflict: the row collides with another account (its address,
+	// ImportConflict means the row collides with another account (its address,
 	// its username or a social link belongs to someone else, or its id holds
 	// another address). Nothing was written for it.
 	ImportConflict ImportOutcome = "conflict"
-	// ImportInvalid: the row itself is wrong (a malformed id or address, an
-	// unsupported hash, an unknown provider or role). Nothing was written.
+	// ImportInvalid means the row itself is wrong (a malformed id or address,
+	// an unsupported hash, an unknown provider or role). Nothing was written.
 	ImportInvalid ImportOutcome = "invalid"
-	// ImportFailed: the instance failed the write. Re-running retries it.
+	// ImportFailed means the instance failed the write. Re-running retries it.
 	ImportFailed ImportOutcome = "failed"
 )
 

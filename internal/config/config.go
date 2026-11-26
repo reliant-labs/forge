@@ -1062,6 +1062,19 @@ type CIGateConfig struct {
 	// full suite; a file no rule matches behaves as without rules. See
 	// CIGateAffectedRule and internal/cigate/affected.go.
 	AffectedRules []CIGateAffectedRule `yaml:"affected_rules,omitempty"`
+	// AffectedReaders turns on the reader scan: forge reads each test
+	// package's Go sources for string literals naming tracked repo paths,
+	// and a changed non-Go file no rule claims selects the packages that
+	// name it (or a directory holding it) instead of the full suite. A file
+	// no package names still runs the full suite. Go-only. See
+	// internal/cigate/affected_readers.go.
+	AffectedReaders bool `yaml:"affected_readers,omitempty"`
+	// AffectedModules, when "auto", maps a change in a nested module the
+	// root go.mod replaces onto a local directory (`replace X => ./sdk/go`)
+	// to the root packages that import it, and runs the module's own
+	// affected tests in a test-mod-<dir> row. Empty (the default) sends any
+	// such change to the full suite, as before.
+	AffectedModules string `yaml:"affected_modules,omitempty"`
 	// AffectedReach caps how far affected mode follows the import graph.
 	// Unset is every test package whose binary links a changed package
 	// (full transitive reach). See CIGateAffectedReach.

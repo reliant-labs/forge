@@ -67,6 +67,16 @@ var FieldProfiles = map[string]Profile{
 	"args":     ProfileRestricted,
 	"replicas": ProfileRestricted,
 
+	// autoscale moves the author's OWN Deployment within a range they
+	// declared, capped by MaxAutoscaleReplicas, so it reaches nothing a fixed
+	// replica count does not. Admission charges the maximum. A control plane
+	// that does not apply HorizontalPodAutoscalers yet is refused at deploy
+	// (release.CapabilityAutoscalesWorkloads), not here.
+	"autoscale":                  ProfileRestricted,
+	"autoscale.minReplicas":      ProfileRestricted,
+	"autoscale.maxReplicas":      ProfileRestricted,
+	"autoscale.cpuTargetPercent": ProfileRestricted,
+
 	"resources":                      ProfileRestricted,
 	"resources.cpuRequestMillicores": ProfileRestricted,
 	"resources.cpuLimitMillicores":   ProfileRestricted,
@@ -160,6 +170,13 @@ var FieldProfiles = map[string]Profile{
 	"successfulJobsHistoryLimit": ProfileRestricted,
 	"failedJobsHistoryLimit":     ProfileRestricted,
 	"ttlSecondsAfterFinished":    ProfileRestricted,
+	// How a cron's ticks fire (overlap, lateness, time zone) only schedules
+	// the author's own runs. Restricted, but unreachable on hosted while
+	// schedule and kind cron stay Full: a field is admitted only beside a
+	// kind that is.
+	"concurrencyPolicy":       ProfileRestricted,
+	"startingDeadlineSeconds": ProfileRestricted,
+	"timeZone":                ProfileRestricted,
 	// The rollout strategy trades the author's OWN availability against
 	// running one version at a time. It reaches nothing outside their
 	// workload, so a hosted user decides it.

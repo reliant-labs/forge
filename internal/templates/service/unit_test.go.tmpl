@@ -1,5 +1,7 @@
 {{- $m := index .Methods 0 -}}
 // yours: scaffolded once, never touched again — forge will not overwrite this file.
+// Rename it freely once it holds real tests (e.g. to {{$m.RenamedTestFileName}}, beside the handler), or delete it:
+// .forge/scaffolded/ records that forge wrote it, so forge never writes it again, even if {{$m.Name | goName}} is re-stubbed.
 // ONE RPC PER FILE, no package-level identifiers, so two RPCs' owners never collide; CRUD RPCs are
 // tested in handlers_crud_test.go.
 {{- if and $m.ClientStreaming $m.ServerStreaming}}
@@ -36,8 +38,9 @@ import (
 	connect "connectrpc.com/connect/v2"
 
 	"github.com/reliant-labs/forge/pkg/tdd"
-
-	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
+{{range .TestImports}}
+	{{.Alias}} "{{.Path}}"
+{{- end}}
 
 	{{.ServicePackage}} "{{.Module}}/internal/handlers/{{.ServiceImportPath}}"
 )
@@ -58,7 +61,7 @@ func Test{{$m.Name | goName}}_Generated(t *testing.T) {
 		// across the wire (a v2 error carries no metadata of its own).
 		ctx, info := connect.NewClientContext(ctx)
 {{- if $m.ServerStreaming}}
-		stream, err := client.{{$m.Name | goName}}(ctx, &pb.{{$m.InputType | goName}}{})
+		stream, err := client.{{$m.Name | goName}}(ctx, &{{$m.InputRef}}{})
 		if err == nil {
 			for {
 				// A real case asserts on each received message here.
@@ -76,7 +79,7 @@ func Test{{$m.Name | goName}}_Generated(t *testing.T) {
 		if err == nil {
 			// A real case sends its messages here. The stub may refuse the stream
 			// before reading one, so the outcome is CloseAndReceive's.
-			_ = stream.Send(&pb.{{$m.InputType | goName}}{})
+			_ = stream.Send(&{{$m.InputRef}}{})
 			_, err = stream.CloseAndReceive()
 		}
 {{- end}}
@@ -95,8 +98,9 @@ import (
 {{- end}}
 
 	"github.com/reliant-labs/forge/pkg/tdd"
-
-	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
+{{range .TestImports}}
+	{{.Alias}} "{{.Path}}"
+{{- end}}
 
 	{{.ServicePackage}} "{{.Module}}/internal/handlers/{{.ServiceImportPath}}"
 )
@@ -114,7 +118,7 @@ func Test{{$m.Name | goName}}_Generated(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 {{- if $m.ServerStreaming}}
-		stream, err := client.{{$m.Name | goName}}(ctx, connect.NewRequest(&pb.{{$m.InputType | goName}}{}))
+		stream, err := client.{{$m.Name | goName}}(ctx, connect.NewRequest(&{{$m.InputRef}}{}))
 		if err == nil {
 			for stream.Receive() {
 				// A real case asserts on each stream.Msg() here.
@@ -126,7 +130,7 @@ func Test{{$m.Name | goName}}_Generated(t *testing.T) {
 		stream := client.{{$m.Name | goName}}(ctx)
 		// A real case sends its messages here. The stub may refuse the stream
 		// before reading one, so the outcome is CloseAndReceive's.
-		_ = stream.Send(&pb.{{$m.InputType | goName}}{})
+		_ = stream.Send(&{{$m.InputRef}}{})
 		_, err := stream.CloseAndReceive()
 {{- end}}
 		tdd.AssertScaffoldStub(t, err)
@@ -142,8 +146,9 @@ import (
 {{- end}}
 
 	"github.com/reliant-labs/forge/pkg/tdd"
-
-	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
+{{range .TestImports}}
+	{{.Alias}} "{{.Path}}"
+{{- end}}
 
 	{{/* The handler package is imported for its test factory: NewTest<X> is
 	     declared in that package's OWN helpers_gen_test.go (package
@@ -178,24 +183,24 @@ func Test{{$m.Name | goName}}_Generated(t *testing.T) {
 {{- end}}
 {{- if connectV2 .}}
 
-	tdd.RunRPCCasesV2(t, []tdd.RPCCaseV2[pb.{{$m.InputType | goName}}, pb.{{$m.OutputType | goName}}]{
+	tdd.RunRPCCasesV2(t, []tdd.RPCCaseV2[{{$m.InputRef}}, {{$m.OutputRef}}]{
 		{
 			Name: "unimplemented_scaffold", // delete this row once you implement {{$m.Name | goName}}; it only asserts nobody has
-			Req:  &pb.{{$m.InputType | goName}}{},
+			Req:  &{{$m.InputRef}}{},
 			Ctx:  {{.ServicePackage}}.AuthedContext(t), // authenticated test claims (UserID "test-user", role "admin")
-			// replace with Check: func(t *testing.T, resp *pb.{{$m.OutputType | goName}}) {...}, or WantErr: connect.CodeInvalidArgument
+			// replace with Check: func(t *testing.T, resp *{{$m.OutputRef}}) {...}, or WantErr: connect.CodeInvalidArgument
 			WantScaffoldStub: true,
 		},
 	}, svc.{{$m.Name | goName}})
 }
 {{- else}}
 
-	tdd.RunRPCCases(t, []tdd.RPCCase[pb.{{$m.InputType | goName}}, pb.{{$m.OutputType | goName}}]{
+	tdd.RunRPCCases(t, []tdd.RPCCase[{{$m.InputRef}}, {{$m.OutputRef}}]{
 		{
 			Name: "unimplemented_scaffold", // delete this row once you implement {{$m.Name | goName}}; it only asserts nobody has
-			Req:  connect.NewRequest(&pb.{{$m.InputType | goName}}{}),
+			Req:  connect.NewRequest(&{{$m.InputRef}}{}),
 			Ctx:  {{.ServicePackage}}.AuthedContext(t), // authenticated test claims (UserID "test-user", role "admin")
-			// replace with Check: func(t *testing.T, resp *connect.Response[pb.{{$m.OutputType | goName}}]) {...}, or WantErr: connect.CodeInvalidArgument
+			// replace with Check: func(t *testing.T, resp *connect.Response[{{$m.OutputRef}}]) {...}, or WantErr: connect.CodeInvalidArgument
 			WantScaffoldStub: true,
 		},
 	}, svc.{{$m.Name | goName}})

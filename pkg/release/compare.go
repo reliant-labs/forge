@@ -20,18 +20,18 @@ import (
 type CommitComparisonState string
 
 const (
-	// CommitsComputed: the later release's range was walked back, base by
+	// CommitsComputed means the later release's range was walked back, base by
 	// base, to the earlier one.
 	CommitsComputed CommitComparisonState = "computed"
-	// CommitsSame: the two are one release.
+	// CommitsSame means the two are one release.
 	CommitsSame CommitComparisonState = "same"
-	// CommitsByCutTime: no base chain joins the two (a release in between
+	// CommitsByCutTime means no base chain joins the two (a release in between
 	// was cut from a shallow clone, or before ranges were recorded), so the
 	// commits are those recorded by the releases cut between them on the
 	// later one's branch. Approximate, and marked Truncated when any of
 	// those ranges was.
 	CommitsByCutTime CommitComparisonState = "by_cut_time"
-	// CommitsUnrecorded: no release between them recorded any commits.
+	// CommitsUnrecorded means no release between them recorded any commits.
 	CommitsUnrecorded CommitComparisonState = "unrecorded"
 )
 
@@ -188,8 +188,12 @@ func composeRanges(releases []Release, state CommitComparisonState, reverts bool
 type ArtifactChangeKind string
 
 const (
-	ArtifactAdded   ArtifactChangeKind = "added"
+	// ArtifactAdded is an artifact the later release has and the earlier one
+	// does not.
+	ArtifactAdded ArtifactChangeKind = "added"
+	// ArtifactRemoved is an artifact only the earlier release has.
 	ArtifactRemoved ArtifactChangeKind = "removed"
+	// ArtifactChanged is an artifact both have, with a different identity.
 	ArtifactChanged ArtifactChangeKind = "changed"
 )
 
@@ -270,9 +274,13 @@ func artifactIdentities(r Release) map[string]artifactIdentity {
 type ObjectChangeKind string
 
 const (
-	ObjectAdded    ObjectChangeKind = "added"
+	// ObjectAdded is an object the later bundle has and the earlier one does
+	// not.
+	ObjectAdded ObjectChangeKind = "added"
+	// ObjectModified is an object both bundles have, with different content.
 	ObjectModified ObjectChangeKind = "modified"
-	ObjectRemoved  ObjectChangeKind = "removed"
+	// ObjectRemoved is an object only the earlier bundle has.
+	ObjectRemoved ObjectChangeKind = "removed"
 )
 
 // PartChange is one section of an object that moved.

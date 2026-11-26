@@ -44,8 +44,9 @@ database to 1 GiB. The control plane publishes the caps
 
 Once the deploy is claimed and you deploy it to your organization, delete
 `claimable = True`, the `resources` line in `_hosted` (the default 250m /
-1 GiB is on the band) and the database's `spec`, then
-`forge env deploy prod`.
+1 GiB is on the band), the `signup = "open"` override on `identity`
+(unclaimed, anyone may sign up with an unverified address) and the database's
+`spec`, then `forge env deploy prod`.
 """
 
 import forge
@@ -199,7 +200,13 @@ _bundle = forge.Bundle {
     # id and broker token to the API (forge.IdentityRef): nothing is copied by
     # hand. Bringing your own issuer instead? Delete this line and set
     # jwt_issuer / oidc_client_id in config.k.
-    identity = idn.IDENTITY
+    # `signup = "open"`: anyone may create an account on the sign-in screen,
+    # so the unclaimed deploy is usable before anyone claims it. An unclaimed
+    # org's identity sends no mail, so those accounts' addresses are not
+    # verified. Once the deploy is claimed, drop the override (identity.k's
+    # default is "invite") with `claimable = True`, or keep it once your
+    # organization delivers mail, which then verifies every new address.
+    identity = idn.IDENTITY | {signup = "open"}
     # Where each frontend runs here, one binding each — rebind by editing its
     # line, or as an env is created: `forge env new <name> --bind
     # web=bucket`.

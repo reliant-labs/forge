@@ -3,6 +3,7 @@ package release
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -238,6 +239,13 @@ const (
 	// stripped. A shape with one identity carries Shape.Identity alone, as it
 	// always did, and needs nothing of the reader.
 	BundleFeatureIdentities = "shape-identities"
+	// BundleFeatureStatusPage is Shape.StatusPage: the env's declared status
+	// page (forge.StatusPage). A control plane that predates it builds no
+	// page for the env, so a shape carrying it is written only to one that
+	// names the feature. The page names uptime checks, so it is also left
+	// out for a reader that does not decode those. A project that declares
+	// none carries no key, so it needs nothing of the reader.
+	BundleFeatureStatusPage = "shape-status-page"
 )
 
 // CapabilityConvergesSeveralIdentities is advertised beside the bundle
@@ -312,12 +320,26 @@ const CapabilityCollectsTelemetry = "collects-telemetry"
 // /_api/@<name> calls 404.
 const CapabilityServesNamedSiteAPIs = "serves-named-site-apis"
 
+// CapabilityAutoscalesWorkloads is advertised beside the bundle features by a
+// control plane that APPLIES a hosted workload's autoscale
+// (WorkloadSpec.Autoscale): its operator renders the HorizontalPodAutoscaler,
+// hands spec.replicas over to it, and admits the workload at its maximum.
+//
+// Decoding the field is a matter of the forge a control plane pins, which it
+// would gain on any pin bump, and a control plane that predates it ignores
+// the unknown field, so the workload would run at one replica with nothing
+// saying so. Like [CapabilityEnforcesPromotionChecks] it is deliberately not
+// in [BundleDocFeatures]: a control plane adds it by hand, in the change that
+// applies HPAs. Until it does, forge refuses to deploy an autoscaled hosted
+// workload there ([BundleReader.CheckAutoscaledWorkloads]).
+const CapabilityAutoscalesWorkloads = "autoscales-workloads"
+
 // BundleDocFeatures is every optional bundle feature this version's
 // [DecodeBundleDoc] and [ValidateManifestsLayer] accept. A control plane
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities, BundleFeatureStatusPage}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -510,6 +532,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	if !r.Supports(BundleFeatureChanges) {
 		s.Changes = nil
 	}
+	if !r.Supports(BundleFeatureStatusPage) || !r.Supports(BundleFeatureUptimeChecks) {
+		s.StatusPage = nil
+	}
 	if !r.Supports(BundleFeaturePromotionChecks) && s.DeliveryPolicy != nil &&
 		(s.DeliveryPolicy.RequiredGates != nil || s.DeliveryPolicy.ApprovalHook != nil) {
 		pol := *s.DeliveryPolicy
@@ -589,6 +614,24 @@ func (r *BundleReader) CheckNamedSiteAPIs(sites []string) error {
 		"does not serve them (it does not advertise %q), so every call to one would 404. Upgrade the control plane, or call those "+
 		"backends by URL (a literal in runtime_config) until it is",
 		strings.Join(sites, ", "), CapabilityServesNamedSiteAPIs)
+}
+
+// CheckAutoscaledWorkloads refuses hosted workloads that declare autoscale
+// (workloads names them) to a reader that does not apply it: one that does
+// not advertise [CapabilityAutoscalesWorkloads] would run each at one replica
+// and never scale it. One error per workload, joined. No such workload, and
+// the nil reader (this forge's own machine ledger), always pass. Callers run
+// it before anything is written.
+func (r *BundleReader) CheckAutoscaledWorkloads(workloads []string) error {
+	if len(workloads) == 0 || r.Supports(CapabilityAutoscalesWorkloads) {
+		return nil
+	}
+	errs := make([]error, 0, len(workloads))
+	for _, name := range workloads {
+		errs = append(errs, fmt.Errorf("workload %q declares autoscale, but this control plane does not apply HorizontalPodAutoscalers yet "+
+			"(it does not advertise %q); set replicas instead until it is upgraded", name, CapabilityAutoscalesWorkloads))
+	}
+	return errors.Join(errs...)
 }
 
 // identityOutputLoginPolicy is the identity output the sign-in feature added.

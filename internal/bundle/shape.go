@@ -83,6 +83,8 @@ type ShapeInput struct {
 	ReleaseHealth *release.ShapeReleaseHealth
 	// UptimeChecks are the env's uptime checks, or nil when it has none.
 	UptimeChecks []release.ShapeUptimeCheck
+	// StatusPage is the env's declared status page, or nil when it has none.
+	StatusPage *release.ShapeStatusPage
 	// ReleaseProbes are the env's release probes, or nil when it has none.
 	ReleaseProbes []release.ShapeReleaseProbe
 	// Identity is the env's managed identity declaration when it declares
@@ -168,6 +170,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		DataAccess:          in.DataAccess,
 		ReleaseHealth:       in.ReleaseHealth,
 		UptimeChecks:        in.UptimeChecks,
+		StatusPage:          in.StatusPage,
 		ReleaseProbes:       in.ReleaseProbes,
 		Identity:            in.Identity,
 		Identities:          in.Identities,

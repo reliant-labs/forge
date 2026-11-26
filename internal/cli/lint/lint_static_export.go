@@ -66,7 +66,6 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/staticexport"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
@@ -170,7 +169,7 @@ func frontendTypeLabel(fe config.FrontendConfig) string {
 
 // renderStaticBindings renders every env under the deploy tree and collects
 // its static-runtime frontend bindings.
-func renderStaticBindings(_ context.Context, projectDir string, cfg *config.ProjectConfig) map[string][]staticexport.Binding {
+func renderStaticBindings(ctx context.Context, projectDir string, cfg *config.ProjectConfig) map[string][]staticexport.Binding {
 	kclDir := filepath.Join(projectDir, deployKCLDirFor(cfg))
 	entries, err := os.ReadDir(kclDir)
 	if err != nil {
@@ -185,7 +184,7 @@ func renderStaticBindings(_ context.Context, projectDir string, cfg *config.Proj
 		if _, err := os.Stat(filepath.Join(envDir, "main.k")); err != nil {
 			continue
 		}
-		raw, err := kclrender.Run(projectDir, envDir, []string{"env=" + strconv.Quote(e.Name())})
+		raw, err := lintKCLRun(ctx, projectDir, envDir, []string{"env=" + strconv.Quote(e.Name())})
 		if err != nil {
 			continue
 		}

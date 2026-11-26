@@ -91,38 +91,16 @@ YAML literal. The login credential is `GITHUB_TOKEN` (GitHub's container
 registry); for another registry, pipe its credential from a secret (a GAR
 key with `--username _json_key`, an ECR token with `--username AWS`).
 
-### A hosted env needs NO registry credential — one token
+### Credentials: one token, and none for tests
 
-Where the env pushes to the PLATFORM registry, there is no registry login step
-and no registry secret. forge authenticates it with the same
-`FORGE_CONTROL_PLANE_TOKEN` the job already holds for the release ledger, and
-`forge env build --push` / `forge env deploy` log themselves in before their
-first push. So the scaffolded workflows differ by env, not by project:
-
-| Workflow | Login step | Credential |
-|---|---|---|
-| `release.yml` (hosted by construction) | none | `FORGE_CONTROL_PLANE_TOKEN` |
-| `build-images.yml`, hosted build env   | none for the build; the `vuln-scan` job runs `forge registry login <env>` with no flags, because it PULLS rather than pushing | `FORGE_CONTROL_PLANE_TOKEN` |
-| `build-images.yml`, cluster build env | `forge registry login <env> --username … --password-stdin` | `GITHUB_TOKEN` or your own |
-| `deploy.yml` (non-hosted envs only) | same as above | `GITHUB_TOKEN` or your own |
-
-Two things follow, and both are worth knowing before editing a workflow:
-
-- **Do not add `--username`/`--password-*` for the platform registry.** forge
-  refuses them for our host, so the job fails on its first run. The flags are
-  for a registry you chose.
-- **One secret, not two.** A hosted pipeline needs `FORGE_CONTROL_PLANE_TOKEN`
-  and nothing else for images. Adding a registry secret gives you two things to
-  rotate and only one of them in anybody's memory.
-
-An env that pushes to the platform registry AND one of your own keeps the login
-step for yours alone; forge does its half in the same run.
-
-A job that gets a realm **401 / DENIED** on push is almost never missing a
-credential. forge composes the push address from the org the token acts for
-(there is no `organization` to declare), so check whether the token expired and
-whether it carries `deploy:write` — a push needs both the org's subtree and
-write access. forge prints a hint saying so. Do not add a `docker login`.
+A hosted env needs no registry credential: the `FORGE_CONTROL_PLANE_TOKEN` the
+job holds for the release ledger also logs `forge env build --push` and
+`forge env deploy` in. The test upload needs no secret on GitHub: it uses the
+job's OIDC token (`id-token: write`). A private repository that sends write
+tokens to fork pull requests records their runs under `refs/pull/N/merge`;
+that is accepted, and the org can turn the setting off. **Load
+`ci/credentials`** for the per-workflow table, and before adding any login step
+or secret.
 
 ### Deploys go through forge
 
@@ -179,8 +157,8 @@ same verdict locally:
 Every check runs even after one fails; a check that could not run is `SKIPPED`
 and fails the gate unless named in `CI_SKIP`; tools run at the versions CI pins.
 The `test` and `integration-test` jobs each end with a **Report test results**
-step that uploads the recorded run when the secret `FORGE_CONTROL_PLANE_TOKEN`
-is set, and never fails the job. **Load `ci/test-report`.**
+step that uploads the recorded run with GitHub OIDC (the job has `id-token:
+write`; no secret), and never fails the job. **Load `ci/test-report`.**
 
 **Load `ci/gate` for the rules, the check list, `CI_SKIP`, adding your own checks
 (`ci.gate.extra_checks`) and why the workflow has few jobs.**
@@ -302,6 +280,10 @@ before `forge lint` then (a scaffolded `release.yml` is the usual place);
 `lint.rules: {forge-frontend-no-install: error}` refuses now.
 
 New or tightened lint rules warn for one release first: `ci/lint-rollout`.
+
+The golangci-lint rules the scaffolded `.golangci.yml` gates on, which gofmt
+and go vet do not check (goimports' three import groups, funlen's 80
+statements, the complexity caps), and the fix for each: `ci/golangci`.
 
 ## Linting the workflows themselves
 

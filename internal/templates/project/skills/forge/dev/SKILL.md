@@ -24,6 +24,7 @@ For local-dev-against-a-cluster workflows. For local-go-only (no k8s) see the
 | `forge env up <env> --target <workload> [--background]` | Single-workload runner: scopes the WHOLE run — build, deploy, host and frontend phases — to the named workload. A workload bound to `forge.OnHost` launches as a host process, dispatching on its `runner` (`go-run` / `air` / `binary` / `delve`). |
 | `forge env options <env> [--json]` | List the `-D` render options that env's KCL declares (see below). |
 | `forge env config <env> [--json] [--workload <name>]` | Print the resolved configuration `deploy/kcl/<env>/` hands each workload — the values `forge env up` passes to each process (see below). |
+| `forge env exec <env> [--workload <name>] -- <command> [args...]` | Run a one-off command on this host with a workload's resolved configuration (default workload `api`): `DATABASE_URL` and every other value `forge env up` hands it. The way to run your binary's CLI subcommands, a script or `psql` against the running stack (see below). |
 | `forge env down <env> [--all]` | Stop this project's stack for that env, tracked or orphaned. `--all`: all of them, machine-wide. Never stops the process running it or any ancestor — safe to run from a shell a forge-started server spawned (see below). |
 | `forge env ps` | Every stack running here: project dir, env, process count. |
 | `forge env up <env> [--no-build] [--no-deploy] [--target <name>] [-D name=value] [--background]` | The whole-loop orchestrator: build (host-bound workloads need no image) → cluster apply → host launch → frontend dev-serve. Reads each workload's runtime from `deploy/kcl/<env>/`. The cluster steps run only when something the env runs is bound to a cluster (a workload, route, chart, placed Secret or raw manifest); a `cluster_target` that only places the env's Namespace and Gateway needs no cluster, so the scaffolded dev env comes up with none and the run says which cluster it left alone. `--target` narrows WHICH entities each phase acts on; it never turns phases off. |
@@ -195,6 +196,11 @@ host = forge.HostOverrides {
 `forge env config <env>` prints what each workload is actually configured
 with — the same values `forge env up` hands the processes it launches, with
 launch-resolved ports reported as launched rather than as rendered.
+Each workload's heading names where it runs and, for a long-running host
+process, the port it listens on (`api (service) — on host, listens on
+localhost:8087`; `listen_ports` in `--json`). Read the port there, not from a
+`PORT` variable: a job or a worker is handed the project's `PORT` default
+(8080) whether or not it binds anything.
 
 ```bash
 forge env config dev                      # every workload, grouped
@@ -222,6 +228,24 @@ psql "$(forge env config dev --json | jq -r '.workloads[].env.DATABASE_URL // em
 export DATABASE_URL="$(forge env config dev --json | jq -r '.workloads[].env.DATABASE_URL // empty' | head -1)"
 forge db seed status
 ```
+
+## Running a command with an environment's configuration
+
+To run something ONCE against the stack — your binary's CLI subcommand, a
+script, `psql` — use `forge env exec`. It runs the command on this host with
+the exact environment `forge env up` gives the workload (default `api`;
+`--workload <name>` for another OnHost or OnCompose workload), so nothing has
+to be exported by hand and nothing drifts from what the server sees:
+
+```bash
+forge env exec dev -- go run ./cmd/<bin> <subcommand>
+forge env exec dev -- ./tmp/<bin> <subcommand>   # the binary air last built
+forge env exec dev -- sh -c 'psql "$DATABASE_URL"'   # shell syntax only inside an explicit shell
+```
+
+Arguments after `--` go to the child literally (no shell), its exit code passes
+through, and no deploy or startup runs. The `forge env up` summary box names it
+too.
 
 ## Logs & the `forge env up` summary
 

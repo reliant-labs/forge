@@ -727,7 +727,7 @@ func claimableIneligibility(e *KCLEntities, caps deploy.ClaimableLimits) []strin
 		default:
 			out = append(out, fmt.Sprintf("%s %q (only one service may run)", w.Spec.EffectiveKind(), w.Name))
 		}
-		if replicas := w.Spec.Replicas; int(replicas) > caps.MaxReplicas && w.Spec.EffectiveKind() == v1alpha1.KindService {
+		if replicas := w.Spec.EffectiveMaxReplicas(); int(replicas) > caps.MaxReplicas && w.Spec.EffectiveKind() == v1alpha1.KindService {
 			out = append(out, fmt.Sprintf("workload %q asks for %d replicas (%d is allowed)", w.Name, replicas, caps.MaxReplicas))
 		}
 		if w.Spec.EffectiveKind() == v1alpha1.KindService || w.Spec.EffectiveKind() == v1alpha1.KindJob {

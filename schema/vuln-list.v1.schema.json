@@ -105,7 +105,7 @@
       "type": "object",
       "properties": {
         "artifacts": {
-          "description": "Artifacts is how many artifacts the release has.",
+          "description": "Artifacts is how many artifacts of the release an SBOM applies to (release.SBOMApplicable): the N of \"N of N applicable\".",
           "type": [
             "integer",
             "null"
@@ -133,6 +133,16 @@
           ],
           "items": {
             "$ref": "#/$defs/UnscannedArtifact"
+          }
+        },
+        "not_applicable": {
+          "description": "NotApplicable names each artifact of the release no SBOM describes (source maps, a git source pin), with why. They are outside Artifacts, and never unscanned.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/NotApplicableArtifact"
           }
         }
       },
@@ -386,6 +396,25 @@
         "blocking",
         "determined"
       ],
+      "additionalProperties": false
+    },
+    "NotApplicableArtifact": {
+      "description": "NotApplicableArtifact is an artifact no SBOM describes, so no scan covers.",
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
       "additionalProperties": false
     },
     "Package": {

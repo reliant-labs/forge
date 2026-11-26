@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
@@ -70,8 +71,12 @@ type recordedSteps struct {
 func (r *recordedSteps) steps() *upgradeSteps {
 	return &upgradeSteps{
 		generate: func(string) error { r.calls = append(r.calls, "generate"); return r.genErr },
-		lint: func(string) ([]byte, error) {
-			r.calls = append(r.calls, "lint")
+		lint: func(_ string, install bool) ([]byte, error) {
+			if install {
+				r.calls = append(r.calls, "lint --install")
+			} else {
+				r.calls = append(r.calls, "lint")
+			}
 			if r.lint == "" {
 				return []byte(`{"findings":[],"summary":{"errors":0,"warnings":0,"infos":0,"total":0},"ok":true}`), nil
 			}
@@ -378,7 +383,33 @@ func TestUpgradeConverge_LintThatCannotBeReadIsUndetermined(t *testing.T) {
 	}
 }
 
-// --check changes nothing and runs neither generate nor lint, but still says what it would do.
+// An upgrade that changes a frontend's lockfile leaves the INSTALLED
+// node_modules stale, and linting against it reported every generated hook
+// importing a new runtime export as its own item for a person: 128 for one
+// stale install (forge report 39603ed1). The lint phase passes --install
+// then, which refreshes the tree from the lockfile first; a frontend with no
+// node_modules is left uninstalled (TestUpgradeConverge_AppliesTheRange...).
+func TestUpgradeConverge_StaleInstalledTreeIsRefreshedBeforeLint(t *testing.T) {
+	testkit.Slow(t, "execs git and go")
+	dir := newConvergeFixture(t)
+	fakeUpgradeNPM(t)
+	nm := filepath.Join(dir, "frontends", "web", "node_modules")
+	if err := os.MkdirAll(nm, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(nm, old, old); err != nil {
+		t.Fatal(err)
+	}
+	rec := &recordedSteps{}
+	if _, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps()}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(rec.calls, ","); got != "generate,lint --install" {
+		t.Errorf("follow-up = %q, want generate,lint --install: the stale install must be refreshed before lint", got)
+	}
+}
+
 // A forge older than the pin, run with no --to, refuses to move the pin
 // backwards — dry run or not — before it touches anything: forge report
 // 17382bac, "v1.11.0 → v1.10.1 (dev build)" offered as an upgrade.
@@ -398,6 +429,7 @@ func TestUpgradeConverge_RefusesAnImplicitDowngrade(t *testing.T) {
 	}
 }
 
+// --check changes nothing and runs neither generate nor lint, but still says what it would do.
 func TestUpgradeConverge_CheckWritesNothing(t *testing.T) {
 	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)

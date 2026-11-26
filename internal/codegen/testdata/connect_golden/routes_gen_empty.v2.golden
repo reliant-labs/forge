@@ -20,6 +20,13 @@
 //
 //	return NewUserRoutes(UserRoutesDeps{…, Options: MountOptions{Alpha: []mountkit.Option{mountkit.WithInterceptorsV2(wake)}}})
 //
+// One service's payload caps and compression go here too. A mount's connecthttp
+// options apply after the chain's and the last one wins, so
+// mountkit.WithHTTPOptionsV2(connecthttp.WithSendMaxBytes(64<<20)) raises
+// send_max_bytes for that service alone. Responses are already gzipped when
+// the client accepts gzip; connecthttp.WithCompressMinBytes sets the floor.
+// (forge skill load api/connect-v2)
+//
 // The Mount<Svc> methods are the same per-service mounts, for a route set of
 // your own (serverkit.RoutesFuncV2). Inventory is data only, for introspection.
 //

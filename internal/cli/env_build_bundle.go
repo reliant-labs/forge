@@ -245,7 +245,9 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	// a render later rather than losing the deploy. What is NOT tolerated is
 	// a bundle that was written and then mis-recorded — see
 	// recordWrittenBundle.
-	doc, err := projectEnvShapeFn(withHostedPinRelease(ctx, in.Release), in.errWriter(), env)
+	// The source pins too: a sourced frontend's Forge Changes are read at
+	// the commit this bundle ships (env_shape_changes_sources.go).
+	doc, err := projectEnvShapeFn(withChangeSourcePins(withHostedPinRelease(ctx, in.Release), in.Pins.Sources), in.errWriter(), env)
 	if err != nil {
 		fmt.Fprintf(in.errWriter(),
 			"[bundle] Warning: env %s's bundle was not written: %v\n"+

@@ -52,7 +52,7 @@ func runGatePlan(cmd *cobra.Command, flags gateFlags) error {
 	}
 	a := cigate.ComputeAffected(cmd.Context(), cigate.AffectedInput{
 		Root: root, BaseRef: base, Env: goexec.CheckEnv(cigate.GateEnv(cfg)...), Force: force,
-		Ignore: cfg.CI.Gate.AffectedIgnore, Rules: cfg.CI.Gate.AffectedRules, Modules: cfg.CI.Gate.AffectedModules, Files: flags.files,
+		Ignore: cfg.CI.Gate.AffectedIgnore, Rules: cfg.CI.Gate.AffectedRules, Modules: cfg.CI.Gate.AffectedModules, Reach: cfg.CI.Gate.AffectedReach, Files: flags.files,
 	})
 	// The rows the diff decides beyond the unit lane: paths_go_closure
 	// hits and lockfile-<frontend> rows, so --plan reports them too.
@@ -95,6 +95,9 @@ func writeAffectedPlan(out io.Writer, a cigate.Affected) {
 			what = "whole suite (" + m.Reason + ")"
 		}
 		fmt.Fprintf(out, "nested module %s (%s): %s\n", m.Dir, cigate.ModuleTestName(m.Dir), what)
+	}
+	for _, p := range a.Deferred {
+		fmt.Fprintln(out, "deferred to the full gate: "+p)
 	}
 	for _, c := range a.LockfileChecks {
 		fmt.Fprintln(out, "lockfile row: "+c)

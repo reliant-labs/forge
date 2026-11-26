@@ -907,6 +907,24 @@ _Enforced · Forge, on any infrastructure_
 
 - skill `testing` (`forge skill load testing`)
 
+<a id="test-results-recorded"></a>
+
+### Test lanes and coverage recorded
+
+`task test` records each lane it runs (unit, every frontend, integration, e2e) with its coverage under `.forge/tests/runs/`, and the scaffolded CI uploads the run to the project's control plane, so test results and coverage are history rather than a log line.
+
+_Recorded · Forge, on any infrastructure_
+
+**Use:** Nothing to set up locally: `task test`, then `task test:report`. GitHub CI uploads with no secret, by GitHub OIDC (`id-token: write` on the test jobs), once the Reliant GitHub App is linked to the org; without a credential the step prints one line and the job stays green. `FORGE_TESTS=off` or `tests.upload: never` turn it off.
+
+**Evidence:**
+
+- command `forge test report`
+- command `forge test capture`
+- source [`internal/templates/ci/github/ci.yml.tmpl`](../internal/templates/ci/github/ci.yml.tmpl)
+- skill `testing` (`forge skill load testing`)
+- skill `ci` (`forge skill load ci`)
+
 <a id="slow-test-enforcement"></a>
 
 ### Slow-test gating for the fast tier
@@ -4073,7 +4091,7 @@ _In progress · Reliant hosting_
 
 **Use:** Declare a change's default and variants in changes.yaml, then choose who gets it: everyone (remote config), a gradual rollout to a stable percentage, or compare versions (an A/B test measured against your own product events). The same user, account, or visitor keeps the same outcome, and ramping up only adds people. The Experiments screen and Reliant agents use the same permissions and audit trail; apps still implement both behaviors.
 
-**Why:** Beta until platform delivery, the readout and the Experiments screen have all shipped. Shipped: the evaluation SDK (a Go store and OpenFeature provider, a browser loader and OpenFeature provider, assignment events recorded as product events), changes declared in the project (changes.yaml) and shipped in the release, and the readout's query and verdict. Not shipped yet: delivery of each environment's policy to every hosted app, and the Experiments screen that shows the readout. Evaluation is local in the app, from a versioned policy, without a network call on each request or changes to load balancers.
+**Why:** Beta until platform delivery, the readout and the Experiments screen have all shipped. Shipped: the evaluation SDK (a Go store and OpenFeature provider, a browser loader and OpenFeature provider, assignment events recorded as product events), changes declared in the project (changes.yaml) and shipped in the release, including a frontend built from another repository's own changes.yaml, and the readout's query and verdict. Not shipped yet: delivery of each environment's policy to every hosted app, and the Experiments screen that shows the readout. Evaluation is local in the app, from a versioned policy, without a network call on each request or changes to load balancers.
 
 **Evidence:**
 
@@ -4086,9 +4104,14 @@ _In progress · Reliant hosting_
 - source [`web-runtime/src/changes-provider.ts`](../web-runtime/src/changes-provider.ts)
 - source [`web-runtime/src/exposure.ts`](../web-runtime/src/exposure.ts)
 - source [`internal/changesdecl/changesdecl.go`](../internal/changesdecl/changesdecl.go)
+- source [`internal/cli/env_shape_changes_sources.go`](../internal/cli/env_shape_changes_sources.go)
 - source [`docs/changes.md`](../docs/changes.md)
 - skill `observability/changes` (`forge skill load observability/changes`)
 - skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
+
+| Rule                      | Bug class it prevents                                                                                                                                                                           | Lane              |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| `changes-source-conflict` | One change key declared differently by the project's changes.yaml and a pinned source frontend's (or by two sources), so the release would serve one repository's variants to the other's code. | `forge env shape` |
 
 <a id="builtin-ai-hub"></a>
 

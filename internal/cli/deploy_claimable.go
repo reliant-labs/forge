@@ -295,10 +295,21 @@ func refuseClaimableFlags(envName string, f deployCmdFlags) error {
 func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFlags) error {
 	report := newDeployReport(envName, f.jsonOut)
 	out := progressWriter(f.jsonOut)
+	// What a refusal reports (claimable_telemetry.go): the deploy's shape once
+	// the env rendered, the step that refused when the error does not say,
+	// and whether the refusal is the control plane's (its availability
+	// verdict and the start), which forge does not count as a local one.
+	var (
+		shape       cloud.DeployShape
+		stage       string
+		serverHeard bool
+	)
 	err := func() error {
+		stage = refusedInvalidFlags
 		if err := refuseClaimableFlags(envName, f); err != nil {
 			return err
 		}
+		stage = ""
 		adopted, err := adoptBeforeClaimableDeploy(ctx, out)
 		if err != nil {
 			return err
@@ -309,6 +320,9 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if err != nil {
 			return err
 		}
+		// From here every control-plane call names the deploy's shape.
+		shape = claimableShapeOf(entities)
+		ctx = cloud.WithDeployShape(ctx, shape)
 		if entities == nil || !entities.HasHosted() || entities.ControlPlane == nil {
 			return fmt.Errorf("env %q publishes nothing to a hosted control plane, so there is nothing to deploy with --claimable.\n"+
 				"fix: bind the env's workloads to forge.OnHosted (deploy/hosting), then: %s env deploy %s --claimable", envName, Name(), envName)
@@ -323,7 +337,9 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 			return err
 		}
 		// One availability answer serves the caps every check below judges
-		// by, the preview and the preflight.
+		// by, the preview and the preflight. Asking it refuses nothing: the
+		// checks between it and requireClaimableAvailable (signed in,
+		// admission, migrations) are forge's own refusals and are counted.
 		answer := askClaimableAvailability(ctx, ep)
 		limits := claimableLimitsFrom(ep, answer.av, answer.ok, answer.err)
 		defer useClaimableLimits(limits)()
@@ -337,9 +353,11 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if reasons := claimableAdmission(envName, entities, limits.limits); len(reasons) > 0 {
 			return claimableIneligibleError(envName, limits.limits, reasons)
 		}
+		stage = refusedUnmergedMigrations
 		if err := claimableMigrationNote(out, projectDir, entities); err != nil {
 			return err
 		}
+		stage = ""
 		project := hostedProjectName()
 		if project == "" {
 			return fmt.Errorf("--claimable needs the project's name: set `name` in forge.yaml, then: %s env deploy %s --claimable", Name(), envName)
@@ -347,6 +365,9 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		// Before any proof of work, any account and any build: can the
 		// platform take this env anonymously at all right now?
 		_, storedErr := cloud.LoadClaimable(ep, project, envName, claimableNow())
+		// From the platform's availability verdict through the start, a
+		// refusal is the control plane's own decision, not a local one.
+		serverHeard = true
 		if err := requireClaimableAvailable(answer, ep, envName, entities, storedErr != nil); err != nil {
 			return err
 		}
@@ -354,6 +375,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if err != nil {
 			return err
 		}
+		serverHeard = false
 		restore := cloud.UseClaimableCredential(ep, session.cred.Token, session.cred.ExpiresAt)
 		defer restore()
 		compute := needsCompute(entities)
@@ -437,6 +459,17 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 	}()
 	if err == nil {
 		return nil
+	}
+	if !f.promote.planOnly && !serverHeard && !errors.Is(err, context.Canceled) {
+		// Refused before the control plane recorded a deploy attempt: it
+		// never hears of this one, so forge counts it. After the attempt
+		// opened, the attempt's own close records the failure.
+		if opened, phase := deployAttemptFrom(ctx).progress(); !opened {
+			if phase == "build" {
+				stage = refusedBuild
+			}
+			trackClaimableRefused(claimableRefusedReason(err, stage), shape)
+		}
 	}
 	// A refusal raised on this path owes a --json caller its envelope. An error
 	// from inside the deploy keeps the deploy's own reporting.
@@ -620,10 +653,14 @@ func refuseClaimableWhenSignedIn(ep cloud.Endpoint, env string) error {
 	cred, err := cloud.ResolveCredential("", ep)
 	if err == nil {
 		next := fmt.Sprintf("%s env deploy %s", Name(), env)
+		msg := fmt.Sprintf("you are signed in to %s (%s: %s); drop --claimable to deploy to your organization: %s",
+			ep.URL, cred.Source, cred.From, next)
+		if escape := claimableEscape(cred.Source, ep.TokenEnv, env); escape != "" {
+			msg += "\n" + escape
+		}
 		return &claimableRefusal{
 			exit: exitWrong, code: cloud.CodeFailedPrecondition, reason: reasonClaimableSignedIn,
-			msg: fmt.Sprintf("you are signed in to %s (%s: %s); drop --claimable to deploy to your organization: %s",
-				ep.URL, cred.Source, cred.From, next),
+			msg:  msg,
 			next: []string{next},
 		}
 	}
@@ -631,6 +668,38 @@ func refuseClaimableWhenSignedIn(ep cloud.Endpoint, env string) error {
 		return nil
 	}
 	return err
+}
+
+// claimableEscape names how to deploy anonymously from this machine on
+// purpose, given the source of the credential that refused --claimable (an
+// agent reproducing a fresh user's first deploy on a machine that is signed
+// in: obs 88c94bfa). The refusal itself stays: a signed-in user who passes
+// --claimable by accident must not create an orphan preview. The command
+// removes every credential this process can see, not only the one that
+// refused, so it does not just move the refusal to the next source. "" for
+// a --token flag (drop it). tokenEnv is the endpoint's declared token
+// variable ("" means cloud.DefaultTokenEnv), the one ResolveCredential reads.
+func claimableEscape(src cloud.CredentialSource, tokenEnv, env string) string {
+	if src == cloud.SourceFlag {
+		return ""
+	}
+	if tokenEnv == "" {
+		tokenEnv = cloud.DefaultTokenEnv
+	}
+	args := []string{"env"}
+	if os.Getenv("FORGE_CREDENTIAL_HELPER") != "" {
+		args = append(args, "-u", "FORGE_CREDENTIAL_HELPER")
+	}
+	if os.Getenv(tokenEnv) != "" || src == cloud.SourceEnv {
+		args = append(args, "-u", tokenEnv)
+	}
+	tail := ""
+	if src == cloud.SourceLogin {
+		args = append(args, "FORGE_HOME=<empty dir>")
+		tail = " (keep that FORGE_HOME: the deploy's claim link and the token that stops or deletes it are stored there)"
+	}
+	return fmt.Sprintf("to deploy anonymously from this machine anyway, as a user with no account would: %s %s env deploy %s --claimable%s",
+		strings.Join(args, " "), Name(), env, tail)
 }
 
 // claimableIneligibility lists what in the render an unclaimed deploy may not

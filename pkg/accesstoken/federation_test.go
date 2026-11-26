@@ -36,14 +36,23 @@ func TestFederatableScopesAreInBundleCI(t *testing.T) {
 	}
 }
 
+// memberFederatable is the one membership-implied scope a CI identity may be
+// minted: tests:write, membership-implied since 2026-11-25 (owner: daemons
+// hold it by default) and append-only evidence any CI run may record. A member
+// scope joins only as a reviewed diff of this list, and only while it is also
+// in BundleCI (TestFederatableScopesAreInBundleCI).
+var memberFederatable = []Scope{ScopeTestsWrite}
+
 // TestNoPrivilegedScopeIsFederatable holds the classes and kinds of scope a
-// CI identity must never be minted: sensitive, personal and member scopes,
-// registry-only credentials, and scopes that act as a person.
+// CI identity must never be minted: sensitive and personal scopes, member
+// scopes other than memberFederatable, registry-only credentials, and scopes
+// that act as a person.
 func TestNoPrivilegedScopeIsFederatable(t *testing.T) {
 	for _, e := range federatableRows() {
-		switch e.class {
-		case ClassSensitive, ClassPersonal, ClassMember:
-			t.Errorf("%s is %s but federatable: only standard org authority may be minted for a CI identity", e.scope, e.class)
+		switch {
+		case e.class == ClassSensitive, e.class == ClassPersonal,
+			e.class == ClassMember && !slices.Contains(memberFederatable, e.scope):
+			t.Errorf("%s is %s but federatable: only standard org authority (and %v) may be minted for a CI identity", e.scope, e.class, memberFederatable)
 		}
 		if RegistryOnly(e.scope) {
 			t.Errorf("%s is registry-only but federatable: it is a whole credential of its own", e.scope)
@@ -57,7 +66,7 @@ func TestNoPrivilegedScopeIsFederatable(t *testing.T) {
 			if !Federatable(scope, protected) {
 				continue
 			}
-			if c := ClassOf(scope); c != ClassStandard {
+			if c := ClassOf(scope); c != ClassStandard && !(c == ClassMember && slices.Contains(memberFederatable, scope)) {
 				t.Errorf("Federatable(%s, %v) = true for class %s", scope, protected, c)
 			}
 			if RegistryOnly(scope) || RequiresActingUser(scope) {

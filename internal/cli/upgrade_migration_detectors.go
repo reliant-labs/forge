@@ -39,6 +39,14 @@ func migrationDetector(name string) (func(projectRoot string) bool, bool) {
 		// The codemod's own decision, so the playbook is offered exactly
 		// where `forge fix trimpath-default` has something to do or say.
 		return projectNeedsTrimpathDefault, true
+	case "tests-capture":
+		// A lane still in an old forge shape, or no test:report: what
+		// `forge fix tests-capture` rewrites (projectNeedsTestsCapture).
+		return projectNeedsTestsCapture, true
+	case "ci-oidc-permissions":
+		// A job that runs `forge test report` and lacks id-token: write:
+		// what `forge fix ci-oidc-permissions` edits.
+		return projectNeedsCIOIDCPermissions, true
 	case "entity-type-alias":
 		// The codemod's own decision: a page whose entity type import
 		// collides with another import of the file.

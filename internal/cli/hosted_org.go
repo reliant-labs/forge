@@ -62,6 +62,24 @@ func (cp *ControlPlaneEntity) setResolvedOrg(org string) {
 	cp.org.done, cp.org.org, cp.org.err = true, org, nil
 }
 
+// withPlaceholderOrg is a COPY of cp whose organization is placeholder, for a
+// credential-free `forge env build --plan`: the plan composes every hosted
+// address under it and labels them unresolved (placeholderOrg).
+//
+// A copy, never cp itself: cp's org cache is the one every later read of this
+// declaration consults, and a placeholder written there would read as a
+// resolved org to anything that ran after the plan in the same process. The
+// copy has its own cache, pinned, so it never makes a call.
+func (cp *ControlPlaneEntity) withPlaceholderOrg(placeholder string) *ControlPlaneEntity {
+	if cp == nil {
+		return nil
+	}
+	c := *cp
+	c.org = &orgState{done: true, org: placeholder}
+	c.placeholderOrg = true
+	return &c
+}
+
 // organization is the strict read: the org the credential acts for, or an error
 // that says why it could not be learned. Either answer is remembered for the
 // process.

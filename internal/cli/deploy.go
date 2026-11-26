@@ -367,6 +367,11 @@ func newDeployCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// --floor's reason is the floor's reason: refused here, by name, before
+			// anything is built or recorded (env_floor.go floorReasonRefusal).
+			if err := floorReasonRefusal("forge env deploy", "--floor", promote.floorReason); err != nil {
+				return err
+			}
 			apply.promote = promote
 			// The deploy's last line says how it ended (deploy_outcome.go).
 			ctx, outcome := withDeployOutcome(cmd.Context(), args[0])

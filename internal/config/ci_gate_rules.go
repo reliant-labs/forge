@@ -94,6 +94,20 @@ func validateCIGatePaths(cfg *ProjectConfig, root *yaml.Node) []validationIssue 
 		issue([]string{"ci", "gate", "affected_modules"}, fmt.Sprintf("ci.gate.affected_modules %q is not a known mode", m),
 			"set `affected_modules: auto`, or remove it to keep nested modules on the full suite.")
 	}
+	if r := cfg.CI.Gate.AffectedReach; r != nil {
+		at := []string{"ci", "gate", "affected_reach"}
+		switch {
+		case r.Mode != "" && r.Mode != "all" && r.Mode != "direct":
+			issue(append(at, "mode"), fmt.Sprintf("ci.gate.affected_reach.mode %q is not all or direct", r.Mode),
+				"use `mode: direct` (changed packages and their direct importers) or `mode: all` (the default, full transitive reach).")
+		case r.TransitiveCap < 0:
+			issue(append(at, "transitive_cap"), "ci.gate.affected_reach.transitive_cap is negative",
+				"set it to how many transitive importers may join a direct run, e.g. 20; 0 defers them all.")
+		case r.TransitiveCap > 0 && r.Mode != "direct":
+			issue(append(at, "transitive_cap"), "ci.gate.affected_reach.transitive_cap is set without mode: direct",
+				"set `mode: direct`, or drop transitive_cap: full reach has no cap.")
+		}
+	}
 	for i, c := range cfg.CI.Gate.ExtraChecks {
 		globs([]string{"ci", "gate", "extra_checks", fmt.Sprintf("[%d]", i), "paths"}, fmt.Sprintf("ci.gate.extra_checks[%d].paths", i), c.Paths)
 		for j, p := range c.PathsGoClosure {

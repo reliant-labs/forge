@@ -1049,6 +1049,29 @@ benefits:
     evidence:
       - skill: testing
 
+  - id: test-results-recorded
+    category: test
+    title: Test lanes and coverage recorded
+    claim: >-
+      `task test` records each lane it runs (unit, every frontend, integration,
+      e2e) with its coverage under `.forge/tests/runs/`, and the scaffolded CI
+      uploads the run to the project's control plane, so test results and
+      coverage are history rather than a log line.
+    status: recorded
+    availability: forge
+    use: >-
+      Nothing to set up locally: `task test`, then `task test:report`. GitHub
+      CI uploads with no secret, by GitHub OIDC (`id-token: write` on the test
+      jobs), once the Reliant GitHub App is linked to the org; without a
+      credential the step prints one line and the job stays green.
+      `FORGE_TESTS=off` or `tests.upload: never` turn it off.
+    evidence:
+      - command: test report
+      - command: test capture
+      - path: internal/templates/ci/github/ci.yml.tmpl
+      - skill: testing
+      - skill: ci
+
   - id: slow-test-enforcement
     category: test
     title: Slow-test gating for the fast tier
@@ -4869,8 +4892,9 @@ benefits:
       have all shipped. Shipped: the evaluation SDK (a Go store and
       OpenFeature provider, a browser loader and OpenFeature provider,
       assignment events recorded as product events), changes declared in the
-      project (changes.yaml) and shipped in the release, and the readout's
-      query and verdict. Not shipped yet: delivery of each environment's
+      project (changes.yaml) and shipped in the release, including a
+      frontend built from another repository's own changes.yaml, and the
+      readout's query and verdict. Not shipped yet: delivery of each environment's
       policy to every hosted app, and the Experiments screen that shows the
       readout. Evaluation is local in the app,
       from a versioned policy, without a network call on each request or
@@ -4885,9 +4909,17 @@ benefits:
       - path: web-runtime/src/changes-provider.ts
       - path: web-runtime/src/exposure.ts
       - path: internal/changesdecl/changesdecl.go
+      - path: internal/cli/env_shape_changes_sources.go
       - path: docs/changes.md
       - skill: observability/changes
       - skill: observability/product-analytics
+    rules:
+      - id: changes-source-conflict
+        lane: forge env shape
+        bug_class: >-
+          One change key declared differently by the project's changes.yaml and
+          a pinned source frontend's (or by two sources), so the release would
+          serve one repository's variants to the other's code.
 
   - id: builtin-ai-hub
     category: run

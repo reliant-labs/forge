@@ -59,6 +59,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/checksums"
 )
 
@@ -256,7 +257,7 @@ func (s *generateWriteScope) compileBefore(projectDir, root string, candidates [
 			return nil, fmt.Errorf("the pre-run bytes of %s were not captured", rel)
 		default:
 			saved := filepath.Join(tmp, strconv.Itoa(i))
-			if err := os.WriteFile(saved, state.Content, 0o600); err != nil {
+			if err := atomicfile.WriteFile(saved, state.Content, 0o600); err != nil {
 				return nil, err
 			}
 			replace[full] = saved
@@ -267,7 +268,7 @@ func (s *generateWriteScope) compileBefore(projectDir, root string, candidates [
 		return nil, err
 	}
 	overlayFile := filepath.Join(tmp, "overlay.json")
-	if err := os.WriteFile(overlayFile, overlay, 0o600); err != nil {
+	if err := atomicfile.WriteFile(overlayFile, overlay, 0o600); err != nil {
 		return nil, err
 	}
 	patterns := make([]string, len(candidates))

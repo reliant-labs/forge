@@ -481,6 +481,36 @@ func WithRoles(roles ...string) ClaimsOption {
 	}
 }
 
+// WithAPIKey makes the test principal a caller that authenticated with an
+// API key whose lookup prefix ([apikey.LookupPrefix]) is keyPrefix: its
+// Credential is auth.APIKeyCredential(keyPrefix), the mark forge's
+// Authenticator stamps on every key it checks, so claims.IsAPIKey() and
+// authn.IsAPIKey(ctx) report true and Credential.KeyPrefix() returns
+// keyPrefix. A key has no person behind it, so UserID becomes
+// "apikey:<keyPrefix>" (the auth/api-keys skill's convention) and Email is
+// cleared.
+//
+// The key's role and tenant are whatever your key validator returns for its
+// row; set them with the other options, in any order:
+//
+//	testkit.ServerPrincipalV2(middleware.ContextWithClaims,
+//	    testkit.WithAPIKey("abcd1234"),
+//	    testkit.WithRoles("dataplane"),
+//	    testkit.WithOrgID(tenantID))
+//
+// Without WithRoles the principal keeps the default role, "admin". WithClaims
+// replaces every field, the credential included, so it goes before WithAPIKey.
+//
+// [apikey.LookupPrefix]: https://pkg.go.dev/github.com/reliant-labs/forge/pkg/apikey#LookupPrefix
+func WithAPIKey(keyPrefix string) ClaimsOption {
+	return func(c *auth.Claims) {
+		c.UserID = "apikey:" + keyPrefix
+		c.Email = ""
+		c.EmailVerified = false
+		c.Credential = auth.APIKeyCredential(keyPrefix)
+	}
+}
+
 // WithClaims replaces the default test claims wholesale. Later options
 // still apply on top.
 func WithClaims(claims auth.Claims) ClaimsOption {

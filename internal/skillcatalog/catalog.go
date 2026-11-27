@@ -12,7 +12,9 @@ package skillcatalog
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -719,8 +721,18 @@ func resolveSkillContentAt(projectRoot, skillPath string) ([]byte, SkillScope, e
 // shape, and the synthetic "forge" parent skill at skills/forge/SKILL.md),
 // then falls back to the general category. Returns the body from
 // whichever root resolves; both errors only propagate when neither exists.
+//
+// skillPath must name a skill beneath a skill root: a clean relative path
+// such as "db" or "db/seeding". An absolute path, a ".." or "." element,
+// an empty element or a backslash is refused with ErrInvalidSkillPath before
+// any template path is built, so no request can address an embedded file
+// outside skills/forge or skills/general (path.Join would clean "../.."
+// straight out of the root).
 func LoadShipped(skillPath string) ([]byte, error) {
 	skillPath = strings.TrimPrefix(skillPath, "forge/")
+	if err := checkShippedSkillPath(skillPath); err != nil {
+		return nil, err
+	}
 	var forgeTemplatePath string
 	if skillPath == "forge" {
 		forgeTemplatePath = path.Join("skills", "forge", "SKILL.md")
@@ -732,6 +744,21 @@ func LoadShipped(skillPath string) ([]byte, error) {
 	}
 	generalTemplatePath := path.Join("skills", "general", skillPath, "SKILL.md")
 	return templates.ProjectTemplates().Get(generalTemplatePath)
+}
+
+// ErrInvalidSkillPath is LoadShipped's error for a skill path that is not a
+// clean relative path beneath a skill root. It also matches fs.ErrNotExist:
+// such a path names no skill.
+var ErrInvalidSkillPath = errors.New("invalid skill path")
+
+// checkShippedSkillPath refuses a skill path that could leave the skill root.
+// fs.ValidPath rejects a leading "/", "..", "." and empty elements; a
+// backslash is refused as well, since it is a separator on Windows.
+func checkShippedSkillPath(skillPath string) error {
+	if skillPath == "." || strings.ContainsRune(skillPath, '\\') || !fs.ValidPath(skillPath) {
+		return fmt.Errorf("%w %q: want a relative path of skill names such as \"db/seeding\", with no leading \"/\" and no \"..\" or \".\" elements: %w", ErrInvalidSkillPath, skillPath, fs.ErrNotExist)
+	}
+	return nil
 }
 
 // ParseFrontmatter extracts name and description from YAML frontmatter.

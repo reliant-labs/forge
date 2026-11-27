@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/skillcatalog"
@@ -85,5 +86,24 @@ func TestLoadSkillForAudience(t *testing.T) {
 	}
 	if string(forge) != body {
 		t.Errorf("forge audience body = %q, want the file as written", forge)
+	}
+}
+
+// No skill path escapes the skill root through the public loaders: each of
+// these is refused, never answered with an embedded file it names.
+func TestSkillPathsCannotLeaveTheSkillRoot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, p := range []string{"../general/code-review", "forge/../general/code-review", "../../project", "/etc/passwd", "db/../api", `..\general\code-review`} {
+		if body, err := LoadSkill("", p); err == nil || body != nil {
+			t.Errorf("LoadSkill(%q) = %d bytes, err %v; want an error", p, len(body), err)
+		}
+		if body, err := RenderSkill("", p, RenderSkillOptions{}); err == nil || body != nil {
+			t.Errorf("RenderSkill(%q) = %d bytes, err %v; want an error", p, len(body), err)
+		}
+		if body, err := LoadSkillForAudience("", p, "general"); err == nil || body != nil {
+			t.Errorf("LoadSkillForAudience(%q) = %d bytes, err %v; want an error", p, len(body), err)
+		} else if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("LoadSkillForAudience(%q): err %v, want \"not found\"", p, err)
+		}
 	}
 }

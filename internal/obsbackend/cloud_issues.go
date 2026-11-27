@@ -349,33 +349,51 @@ func isCloudNotFound(err error) bool {
 // issuePrefixPages bounds the issues a prefix is resolved against.
 const issuePrefixPages, issuePrefixPageSize = 10, 100
 
+// prefixIssueSources are the issue sources a short id is resolved against:
+// errors ("") and the two bug-report sources forge and Reliant file
+// (`forge report-bug`, an agent's report_bug). A list of one source never
+// shows another's issues, so resolving against errors alone refused the
+// short id of every bug report (`forge obs issue c40fad01 prod`).
+var prefixIssueSources = []string{"", "llm_bug_report", "forge_cli_report"}
+
 // resolveIssuePrefix is the one issue of this env (any status, in the
-// narrow's time range) whose id starts with prefix. None, or more than one,
-// is refused naming the fix.
+// narrow's time range, of any prefixIssueSources source) whose id starts with
+// prefix. None, or more than one, is refused naming the fix.
 func (c Cloud) resolveIssuePrefix(ctx context.Context, prefix string, n Narrow) (string, error) {
 	want := strings.ToLower(prefix)
 	var matches []string
 	seen := map[string]bool{}
-	token := ""
-	for page := 0; page < issuePrefixPages; page++ {
-		res, err := c.ListIssues(ctx, ListIssuesRequest{Narrow: n, Statuses: IssueStatuses, Sort: "last", Limit: issuePrefixPageSize, PageToken: token})
-		if err != nil {
-			return "", err
-		}
-		for _, i := range res.Issues {
-			// Deduplicated: a list that shifts between pages may repeat one.
-			if strings.HasPrefix(strings.ToLower(i.ID), want) && !seen[i.ID] {
-				seen[i.ID] = true
-				matches = append(matches, i.ID)
+	capped := false
+	for _, source := range prefixIssueSources {
+		token := ""
+		for page := 0; page < issuePrefixPages; page++ {
+			res, err := c.ListIssues(ctx, ListIssuesRequest{Narrow: n, Statuses: IssueStatuses, Source: source, Sort: "last", Limit: issuePrefixPageSize, PageToken: token})
+			if err != nil {
+				var e *Error
+				if source != "" && errors.As(err, &e) && e.Code == ExitUndetermined {
+					// A control plane that predates issue sources: it has
+					// only errors, which the first pass read.
+					token = ""
+					break
+				}
+				return "", err
+			}
+			for _, i := range res.Issues {
+				// Deduplicated: a list that shifts between pages may repeat one.
+				if strings.HasPrefix(strings.ToLower(i.ID), want) && !seen[i.ID] {
+					seen[i.ID] = true
+					matches = append(matches, i.ID)
+				}
+			}
+			if token = res.NextPageToken; token == "" {
+				break
 			}
 		}
-		if token = res.NextPageToken; token == "" {
-			break
-		}
+		capped = capped || token != ""
 	}
 	// The scan stopped at its cap with issues left unread: one match so far
 	// is not proof of a unique one, so nothing is resolved.
-	if token != "" && len(matches) <= 1 {
+	if capped && len(matches) <= 1 {
 		return "", Wrong("%s has more than %d issues in this time range, so %q could not be resolved to exactly one: use the full id from `forge obs issues %s` (or narrow --since)",
 			c.Env, issuePrefixPages*issuePrefixPageSize, prefix, c.Env)
 	}

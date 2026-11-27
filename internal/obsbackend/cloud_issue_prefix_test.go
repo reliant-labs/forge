@@ -20,6 +20,9 @@ type prefixIssuesCP struct {
 	// endless answers every ListIssues page with a next token, as an env
 	// with more issues than the scan reads.
 	endless bool
+	// sources maps an issue source to its issues' ids. Nil is a control
+	// plane that predates sources: every list answers the error issues.
+	sources map[string][]string
 }
 
 func (p *prefixIssuesCP) Call(_ context.Context, proc string, req, out any) error {
@@ -31,16 +34,29 @@ func (p *prefixIssuesCP) Call(_ context.Context, proc string, req, out any) erro
 		}
 		_ = json.Unmarshal(b, &in)
 		p.gets = append(p.gets, in.IssueID)
-		for _, id := range p.ids {
+		all := append([]string(nil), p.ids...)
+		for _, ids := range p.sources {
+			all = append(all, ids...)
+		}
+		for _, id := range all {
 			if id == in.IssueID {
 				return json.Unmarshal([]byte(`{"issue":{"id":"`+id+`","envId":"env-1","status":"ISSUE_STATUS_NEW"}}`), out)
 			}
 		}
 		return &cloud.Error{Code: cloud.CodeNotFound, Message: "issue not found"}
 	case strings.HasSuffix(proc, "/ListIssues"):
+		b, _ := json.Marshal(req)
+		var in struct {
+			Source string `json:"source"`
+		}
+		_ = json.Unmarshal(b, &in)
+		ids, source := p.ids, ""
+		if in.Source != "" && p.sources != nil {
+			ids, source = p.sources[in.Source], in.Source
+		}
 		var rows []string
-		for _, id := range p.ids {
-			rows = append(rows, `{"id":"`+id+`","envId":"env-1"}`)
+		for _, id := range ids {
+			rows = append(rows, `{"id":"`+id+`","envId":"env-1","source":"`+source+`"}`)
 		}
 		next := ""
 		if p.endless {
@@ -66,6 +82,23 @@ func TestCloudGetIssueResolvesAUniquePrefix(t *testing.T) {
 	}
 	if got := cp.gets[len(cp.gets)-1]; got != fullIssueID {
 		t.Errorf("last GetIssue asked for %q, want the full id", got)
+	}
+}
+
+// `forge obs issue c40fad01 prod` for a bug report: the issues of a source are
+// never in the errors' list, so a short id is resolved against the
+// bug-report sources too, and an ambiguity across sources is still refused.
+func TestCloudGetIssueResolvesABugReportPrefix(t *testing.T) {
+	const report = "c40fad01-a80e-4828-a6c8-db3a22d1dadf"
+	cp := &prefixIssuesCP{ids: []string{fullIssueID}, sources: map[string][]string{"forge_cli_report": {report}}}
+	res, err := Cloud{Env: "prod", EnvID: "env-1", OrgID: "org-1", Caller: cp}.GetIssue(context.Background(), GetIssueRequest{Narrow: prefixNarrow(), ID: "c40fad01"})
+	if err != nil || res.Issue.ID != report {
+		t.Fatalf("GetIssue(bug-report prefix) = %+v, %v; want the report's issue", res.Issue, err)
+	}
+	cp = &prefixIssuesCP{ids: []string{fullIssueID}, sources: map[string][]string{"llm_bug_report": {"48416900-0000-4000-8000-000000000000"}}}
+	_, err = Cloud{Env: "prod", EnvID: "env-1", OrgID: "org-1", Caller: cp}.GetIssue(context.Background(), GetIssueRequest{Narrow: prefixNarrow(), ID: "4841"})
+	if err == nil || !strings.Contains(err.Error(), "give more of the id") {
+		t.Fatalf("an ambiguity across sources = %v, want a refusal", err)
 	}
 }
 

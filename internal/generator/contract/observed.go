@@ -292,16 +292,7 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 	// Attach a generated constant map without changing the owned chain seam.
 	// Scope+interface+method is servicecatalog.MethodID.
 	if scope != "" {
-		var ids strings.Builder
-		ids.WriteString(".WithMethodIDs(map[string]string{")
-		for _, method := range target.Methods {
-			if !method.SkipObserve {
-				id, legacyName := servicecatalog.MethodIdentity(scope, ifaceName, opNamespace, method.Name)
-				fmt.Fprintf(&ids, "%q:%q,", legacyName, id)
-			}
-		}
-		ids.WriteString("})")
-		data.ChainExpr += ids.String()
+		data.ChainExpr += renderMethodIDs(scope, ifaceName, opNamespace, target.Methods)
 	}
 	var buf bytes.Buffer
 	if err := observedTmpl.Execute(&buf, data); err != nil {
@@ -327,6 +318,20 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 		return false, err
 	}
 	return true, nil
+}
+
+// renderMethodIDs binds each chain-routed method's legacy name to its catalog ID.
+func renderMethodIDs(scope, ifaceName, opNamespace string, methods []MethodDef) string {
+	var ids strings.Builder
+	ids.WriteString(".WithMethodIDs(map[string]string{")
+	for _, method := range methods {
+		if !method.SkipObserve {
+			id, legacyName := servicecatalog.MethodIdentity(scope, ifaceName, opNamespace, method.Name)
+			fmt.Fprintf(&ids, "%q:%q,", legacyName, id)
+		}
+	}
+	ids.WriteString("})")
+	return ids.String()
 }
 
 // RemoveObservedDecorator deletes middleware_gen.go from dir if present —

@@ -192,37 +192,11 @@ func Gate(ctx context.Context, o GateOptions) GateResult {
 	if len(batches) > 1 {
 		fmt.Fprintf(o.Stdout, "the selection is too large for one -run argument: %d go test invocations\n", len(batches))
 	}
-	tee := newStreamTee(o.Stdout, false)
 	laneStart := o.Now()
-	code := 0
-	var startErr error
-	var failedBatches []Batch
-	for i, argv := range res.Argvs {
-		c, err := o.Runner(ctx, o.Root, argv, childEnv(o.Environ, runDir, LaneFlakeGate), tee, o.Stderr)
-		if err != nil {
-			startErr = err
-			break
-		}
-		if c != 0 {
-			failedBatches = append(failedBatches, batches[i])
-			if code == 0 {
-				code = c
-			}
-		}
-	}
-	tee.Close()
+	code, failedBatches, stream, startErr := o.runBatches(ctx, runDir, res.Argvs, batches)
 	laneEnd := o.Now()
-	stream := tee.buf.Bytes()
 	if recording {
-		// The lane's command: every invocation, separated by ";".
-		var command []string
-		for i, argv := range res.Argvs {
-			if i > 0 {
-				command = append(command, ";")
-			}
-			command = append(command, argv...)
-		}
-		l := laneRun{Lane: LaneFlakeGate, Command: command, StartedAt: laneStart, FinishedAt: laneEnd, ExitCode: code, Stream: stream}
+		l := laneRun{Lane: LaneFlakeGate, Command: laneCommand(res.Argvs), StartedAt: laneStart, FinishedAt: laneEnd, ExitCode: code, Stream: stream}
 		if startErr != nil {
 			l.Error = startErr.Error()
 		}
@@ -258,6 +232,40 @@ func Gate(ctx context.Context, o GateOptions) GateResult {
 		o.summary(fmt.Sprintf("flake gate: **FAILED** after %s", elapsed))
 	}
 	return res
+}
+
+// runBatches runs each invocation in turn, teeing every stream into one: the
+// first non-zero exit, the batches that failed, the concatenated `go test
+// -json` stream, and the error of a command that could not start (it stops there).
+func (o *GateOptions) runBatches(ctx context.Context, runDir string, argvs [][]string, batches []Batch) (code int, failed []Batch, stream []byte, startErr error) {
+	tee := newStreamTee(o.Stdout, false)
+	for i, argv := range argvs {
+		c, err := o.Runner(ctx, o.Root, argv, childEnv(o.Environ, runDir, LaneFlakeGate), tee, o.Stderr)
+		if err != nil {
+			startErr = err
+			break
+		}
+		if c != 0 {
+			failed = append(failed, batches[i])
+			if code == 0 {
+				code = c
+			}
+		}
+	}
+	tee.Close()
+	return code, failed, tee.buf.Bytes(), startErr
+}
+
+// laneCommand is the recorded lane's command: every invocation, separated by ";".
+func laneCommand(argvs [][]string) []string {
+	var command []string
+	for i, argv := range argvs {
+		if i > 0 {
+			command = append(command, ";")
+		}
+		command = append(command, argv...)
+	}
+	return command
 }
 
 // passedOf says how many runs each test passed.

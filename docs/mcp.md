@@ -108,6 +108,29 @@ A project pinned to another forge version is not handed over to that forge (the
 exec would replace the server). `generate` refuses with the usual skew message
 and the reinstall hint instead.
 
+### Choosing tools: `--tools`
+
+A client resends every listed tool's name, description and input schema to the
+model on every call, so a tool the agent never calls still costs tokens each
+turn. `--tools` picks the groups the server lists: `all` (the default), or a
+comma-separated list of groups.
+
+| Group     | Tools                                                                                        |
+| --------- | -------------------------------------------------------------------------------------------- |
+| `core`    | `audit`, `shapes`, `skill_search`, `skill_load`, `lint`, `generate`                          |
+| `catalog` | `benefits`, `why`, `capabilities`, `schema`, `annotations`, `libraries`, `skill_list`        |
+| `support` | `explain_error`, `report_bug`                                                                |
+| `ops`     | `blast_radius`, `db_query`, `obs_status`, `obs_issues`, `obs_issue`, `obs_logs`, `obs_check` |
+| `deploy`  | `deploy_claimable`, `deploy_status`                                                          |
+
+`forge mcp --tools core` is the smallest useful server: its tool list is about a
+quarter the size of the full one. When a group is left out the server also
+lists `forge_tools`, which lists the groups and enables more in the session
+(the client gets `notifications/tools/list_changed`; one that ignores it needs a
+restart with `--tools all`), and its instructions shrink to a few lines. The
+default is planned to become `core` in a later minor; `--tools all` stays
+accepted permanently.
+
 ## Deploying with no account
 
 `deploy_claimable` is the whole of "put this live" for an agent that has no

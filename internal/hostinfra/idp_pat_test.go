@@ -3,6 +3,7 @@ package hostinfra
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -174,5 +175,123 @@ func TestIDPPATLocations_MirrorIfRewritten(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(loc.Checkout); string(b) != "older-forge-token" {
 		t.Errorf("an unchanged shared file overwrote the checkout copy: %q", b)
+	}
+}
+
+func TestIDPPATLocationsSearchedListsEachPathOnce(t *testing.T) {
+	cases := []struct {
+		name string
+		loc  IDPPATLocations
+		want []string
+	}{
+		{"both", IDPPATLocations{Shared: "/s/pat", Checkout: "/c/pat"}, []string{"/s/pat", "/c/pat"}},
+		{"only the declared path", IDPPATLocations{Checkout: "/c/pat"}, []string{"/c/pat"}},
+		{"the same path twice", IDPPATLocations{Shared: "/p", Checkout: "/p"}, []string{"/p"}},
+		{"neither", IDPPATLocations{}, nil},
+	}
+	for _, tc := range cases {
+		got := tc.loc.Searched()
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: Searched = %v, want %v", tc.name, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("%s: Searched = %v, want %v", tc.name, got, tc.want)
+			}
+		}
+	}
+}
+
+func TestPrepareWriteDirAndSecureShared(t *testing.T) {
+	dir := t.TempDir()
+	// Forge's own shared directory is created; a declared path's is only created.
+	shared := IDPPATLocations{Shared: filepath.Join(dir, "home", "key", "pat.txt"), Checkout: filepath.Join(dir, "c", "pat.txt")}
+	if err := shared.PrepareWriteDir(); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(filepath.Dir(shared.Shared)); err != nil || !st.IsDir() {
+		t.Errorf("the shared directory was not created: %v", err)
+	}
+	declared := IDPPATLocations{Checkout: filepath.Join(dir, "declared", "sub", "pat.txt")}
+	if err := declared.PrepareWriteDir(); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(filepath.Dir(declared.Checkout)); err != nil || !st.IsDir() {
+		t.Errorf("the declared directory was not created: %v", err)
+	}
+
+	// A file where a directory must go is reported, not hidden.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := (IDPPATLocations{Shared: filepath.Join(blocker, "d", "pat.txt")}).PrepareWriteDir(); err == nil {
+		t.Error("PrepareWriteDir under a file must fail")
+	}
+	if err := (IDPPATLocations{Checkout: filepath.Join(blocker, "d", "pat.txt")}).PrepareWriteDir(); err == nil {
+		t.Error("PrepareWriteDir of a declared path under a file must fail")
+	}
+
+	// SecureShared: no shared location, or no file yet, is a no-op.
+	if err := (IDPPATLocations{Checkout: "/c"}).SecureShared(); err != nil {
+		t.Errorf("no shared location: %v", err)
+	}
+	if err := shared.SecureShared(); err != nil {
+		t.Errorf("no shared file yet: %v", err)
+	}
+	if err := os.WriteFile(shared.Shared, []byte("tok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := shared.SecureShared(); err != nil {
+		t.Errorf("SecureShared: %v", err)
+	}
+}
+
+func TestCopyPATReportsEachFailure(t *testing.T) {
+	dir := t.TempDir()
+	if err := copyPAT(filepath.Join(dir, "absent"), filepath.Join(dir, "dst")); err == nil || !strings.Contains(err.Error(), "read ") {
+		t.Errorf("an unreadable source: %v", err)
+	}
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyPAT(src, filepath.Join(blocker, "sub", "dst")); err == nil {
+		t.Error("a destination directory that cannot be created must fail")
+	}
+	if err := securePATFile(filepath.Join(dir, "absent")); err == nil || !strings.Contains(err.Error(), "restrict") {
+		t.Errorf("securePATFile of a missing file: %v", err)
+	}
+	if err := securePATDir(filepath.Join(blocker, "d")); err == nil {
+		t.Error("securePATDir under a file must fail")
+	}
+}
+
+func TestPublishSharedIsANoOpWithoutASharedLocationOrSource(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("t"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, loc := range map[string]IDPPATLocations{
+		"no shared location": {Checkout: src},
+		"no source":          {Shared: filepath.Join(dir, "sh")},
+		"source is shared":   {Shared: src},
+	} {
+		in := src
+		if name == "no source" {
+			in = ""
+		}
+		if err := loc.PublishShared(in); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sh")); err == nil {
+		t.Error("a no-op published a file")
 	}
 }

@@ -157,7 +157,7 @@ unit at a time. See deploy/shape; `applier = "flux"`: deploy/flux/self-hosted.
   worker kinds; `maxReplicas` at most 10; refused beside `replicas`,
   `storageGiB` and `strategy = "Recreate"`, and on host, compose and
   build-only. The cluster needs metrics-server (k3d, GKE, EKS and AKS ship
-  it).
+  it). Depth: `deploy/autoscale`.
 - **`strategy`**: unset is `RollingUpdate`, which surges a new pod before
   the old one stops, so `replicas = 1` still runs two during a rollout.
   When the count is a correctness bound (a sweeper not idempotent under

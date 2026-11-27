@@ -16,21 +16,27 @@
 # TestCandidateCIHasNoExposedGitHubCredentials). This runs from the default
 # branch after CI completes, never for a pull request.
 #
+# THE CREDENTIAL IS THE JOB'S GITHUB OIDC IDENTITY, NO STORED SECRET. Each job
+# holds `id-token: write`, and forge exchanges the job's ID token at the
+# control plane for a `tests:write` token that lives 15 minutes (event
+# workflow_run, ref main; control-plane#3737). No step is handed a secret: the
+# exchange's event policy and the scope's federation class are what bound the
+# token. When the exchange refuses or is not deployed yet, forge prints a
+# `Test results not uploaded` warning naming why, on the run's summary, and
+# the job stays green.
+#
 # TWO JOBS, ONE TRUST BOUNDARY: no job here runs code that is not on main.
 #   - upload (a push to main) checks out the pushed commit, main's own,
 #     already merged, and is the only job that reaches the `tests-upload`
-#     environment and its FORGE_CONTROL_PLANE_TOKEN (`tests:write`, minted
-#     by the owner; never a repository secret: forge is public).
+#     environment. The environment still holds FORGE_CONTROL_PLANE_TOKEN (a
+#     `tests:write` token minted by the owner; never a repository secret:
+#     forge is public), which no step reads any more. It is the rollback:
+#     pass it to the upload step's env again and forge prefers it to OIDC.
 #   - upload-merge-queue (a merge-queue entry; its CI run's head branch is
 #     gh-readonly-queue/main/...) checks out main's tip, the code this
 #     workflow file came from, and treats the entry as data: its artifacts,
-#     and its commit, fetched by sha for the diff. It gets no environment and
-#     no secret, because its input was produced by code that may never merge.
-# Both authorize with the job's own GitHub OIDC identity
-# (`id-token: write`), which forge exchanges at the control plane when no
-# token is set (event workflow_run, ref main; control-plane#3737). When
-# neither credential works, forge prints a `Test results not uploaded`
-# warning naming why, on the run's summary.
+#     and its commit, fetched by sha for the diff. It gets no environment,
+#     because its input was produced by code that may never merge.
 #
 # WHAT IT NEVER DOES: change a verdict. The jobs are continue-on-error and the
 # script always exits 0. A red run's runs upload too: they are the ones its
@@ -91,7 +97,6 @@ jobs:
           github-token: ${{ github.token }}
       - name: forge test report --upload
         env:
-          FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: scripts/ci-test-upload.sh "$HEAD_SHA"
 

@@ -5332,6 +5332,22 @@ schema Frontend:
     # runtime_config, which the browser calls cross-origin.
     apis: {str:str | WorkloadURL} = {}
 
+    # Per-release URLs, on forge.OnHosted: the platform serves every release
+    # this env still retains at a URL of its own, on the preview domain
+    # (https://<unguessable>--<site>.<preview domain>), so a past release can
+    # be opened and compared without promoting it. Each URL sends noindex,
+    # serves this env's CURRENT config.js with the release's own files,
+    # _headers and _redirects, and stops answering once the release is
+    # collected. The platform's console links them from each deploy.
+    #
+    # Unset means on. False turns them off for this frontend in this env:
+    # an old release may still hold what a newer one removed, and this is how
+    # an env says none of its releases may be reachable but the live one.
+    # On every other runtime nothing serves release URLs, so False holds
+    # there by construction and is accepted; declare it once on a frontend
+    # bound per env.
+    release_urls?: bool
+
     check:
         name, "Frontend.name is required"
         all k, _v in apis { regex.match(k, "^[a-z][a-z0-9-]{0,30}$") }, \
@@ -7401,7 +7417,7 @@ _render_data_access = lambda data_access: DataAccess, lifecycle: str -> {str:str
 }
 
 # The release-health finding codes (pkg/release Health*).
-_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency", "changed_op_errors", "changed_op_latency"]
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency", "changed_op_errors", "changed_op_latency", "seo_regressed", "a11y_regressed"]
 
 # A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
 _release_health_seconds = lambda w: str -> int {
@@ -7476,7 +7492,17 @@ schema ReleaseHealth:
     changed_op_min_errors, 5, errors after the promotion) and
     changed_op_latency (its p95 grew by more than changed_op_max_p95_ratio,
     2); each names the newest commit that changed the op, and both warn
-    unless listed in `fail_on`.
+    unless listed in `fail_on`. For a hosted static frontend the control
+    plane audits after each promotion (Site insights), each compared with
+    the same env's audit of the previous release: seo_regressed (the site's
+    or a route's SEO score dropped by more than `seo_max_score_drop` points,
+    or a new error-severity SEO finding appeared: the env became noindex,
+    robots.txt disallows /, a canonical names another host, an internal
+    link answers 404) and a11y_regressed (the accessibility score dropped
+    by more than `a11y_max_score_drop` points, or a new critical axe
+    violation appeared). Both warn unless listed in `fail_on`; a release
+    with no previous audit has none, and one whose audit has not finished
+    lists site_audit in `not_evaluated`.
 
     Recorded in the release shape (`release_health`) when any value differs
     from the default, so every reader judges by this one declaration.
@@ -7490,6 +7516,8 @@ schema ReleaseHealth:
     error_rate_min_errors: int = 10
     baseline_window: str = "24h"
     alert_baseline_min_firings: int = 1
+    seo_max_score_drop: int = 10
+    a11y_max_score_drop: int = 10
     fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed", "browser_errors", "browser_failed_requests", "browser_page_load"]
     warn_on: [str] = []
     require_baseline: str = "any"
@@ -7510,6 +7538,10 @@ schema ReleaseHealth:
             "ReleaseHealth.baseline_window \"${baseline_window}\": use a number and s, m or h (\"24h\"), from the window (${window}) to 168h"
         alert_baseline_min_firings >= 0, \
             "ReleaseHealth.alert_baseline_min_firings ${alert_baseline_min_firings} must be at least 0 (0 counts every alert opened after the promotion)"
+        0 <= seo_max_score_drop <= 100, \
+            "ReleaseHealth.seo_max_score_drop ${seo_max_score_drop} must be 0 to 100 score points (0 fires on any drop)"
+        0 <= a11y_max_score_drop <= 100, \
+            "ReleaseHealth.a11y_max_score_drop ${a11y_max_score_drop} must be 0 to 100 score points (0 fires on any drop)"
         all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
             "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"
@@ -7927,10 +7959,64 @@ schema ObservabilityAgent:
     namespace: str = "forge-observability"
     image: str = OTEL_COLLECTOR_IMAGE
     memory_limit_mib: int = 256
+    # Opt-in: each agent cluster's Kubernetes inventory and events (see
+    # KubernetesInventory). Unset, the default, renders none.
+    kubernetes_inventory?: KubernetesInventory
 
     check:
         regex.match(namespace, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "ObservabilityAgent.namespace must be an RFC-1123 label"
         memory_limit_mib >= 64, "ObservabilityAgent.memory_limit_mib must be >= 64"
+
+schema KubernetesInventory:
+    """Opt-in: a cluster's own Kubernetes objects, shipped beside the node
+    agent's telemetry. Declare it to deploy it; unset renders nothing.
+
+        observability = forge.Observability {
+            destination = forge.ObservabilityDestination {endpoint = "https://otlp.example.com"}
+            agent = forge.ObservabilityAgent {
+                kubernetes_inventory = forge.KubernetesInventory {}
+            }
+        }
+
+    On every cluster forge's node agent runs on (a cluster the env deploys
+    to or scrapes, with an observability destination), it renders:
+
+      * the cluster collector: one single-replica Deployment
+        `cluster-collector` (with its ConfigMap and ServiceAccount) in the
+        agent's namespace, exporting to the same destination with the same
+        credential. Its OTel `k8sobjects` receiver lists Nodes every
+        `node_interval` and apps DaemonSets and Deployments every
+        `workload_interval`, and watches events.k8s.io Events (unless
+        `events = False`). Each object is one log record whose body is the
+        object projected onto an allowlist of inventory fields (names,
+        uids, labels naming the component, container names and images,
+        replica and node counts, capacity, condition types and reasons,
+        Event reasons; never env values, args, commands, annotations,
+        messages or an Event's note), an Event inside its watch envelope
+        `{type, object}`, with k8sobjects' `k8s.resource.name` attribute
+        ("nodes", "daemonsets", "deployments", "events") and the resource
+        attribute `k8s.cluster.name` (the cluster's kube context). A config
+        change rolls the collector (its pod template carries the config's
+        SHA-256). Its ClusterRole `<namespace>-cluster-collector` is
+        read-only: get/list/watch nodes, apps daemonsets/deployments and,
+        with `events`, events.k8s.io events; never Secrets;
+      * on the node agent's scrapes (each `forge.Telemetry` metrics
+        target it pulls), the resource attributes `k8s.cluster.name` and
+        `k8s.node.name` (the agent's own node: it pulls only its node's
+        pods), so scraped rows join the inventory's Nodes.
+
+    The rows are logs, so the env's `signals.logs` must be on.
+    """
+    # How often Nodes are listed, and DaemonSets and Deployments are.
+    node_interval: str = "60s"
+    workload_interval: str = "300s"
+    # Watch events.k8s.io Events (node conditions and the like surfaced as
+    # Events).
+    events: bool = True
+
+    check:
+        regex.match(node_interval, r"^[0-9]+(ms|s|m|h)$"), "KubernetesInventory.node_interval '${node_interval}' must be a duration like 60s"
+        regex.match(workload_interval, r"^[0-9]+(ms|s|m|h)$"), "KubernetesInventory.workload_interval '${workload_interval}' must be a duration like 300s"
 
 # Alert durations are one or more <int><unit> groups, unit in s m h ("90s", "5m",
 # "1h30m"): exactly what Go's time.ParseDuration reads, so the evaluator and
@@ -8273,6 +8359,8 @@ schema Observability:
     telemetry_collector?: TelemetryCollector
 
     check:
+        not agent.kubernetes_inventory or signals.logs, \
+            "Observability.agent.kubernetes_inventory ships the cluster's objects as logs, and signals.logs = False drops every log. Turn logs on or drop kubernetes_inventory"
         enabled or len(telemetry) == 0, \
             "Observability.telemetry is declared with enabled = False: there is no pipeline to collect it into. Drop it or set enabled = True"
         all t in telemetry { t.service_name }, \
@@ -9546,10 +9634,11 @@ schema Bundle:
     # `source` needs one on the cluster it lands on; it may be declared by
     # another env's bundle, in which case the deploy preflight checks it.
     external_secrets_operators: [ExternalSecretsOperator] = []
-    # What each cluster runs for ML (forge.MLStack, kcl/ml.k): every
-    # component adopted (read where it runs) or installed (a pinned chart
-    # forge labels as its own), one stack per cluster. `forge ml discover`
-    # proposes it. Empty renders nothing.
+    # The ML components each cluster declares (forge.MLStack, kcl/ml.k),
+    # any subset of them, one stack per cluster: each declared component is
+    # adopted (read where it runs) or installed (a pinned chart forge labels
+    # as its own), and only what a stack declares renders. `forge ml
+    # discover` proposes it. Empty renders nothing.
     ml_stacks: [MLStack] = []
     _agent_workloads = _obs_workloads(workloads, ml_stacks, observability)
     # Where the values the secret store needs BEFORE it can serve a read live

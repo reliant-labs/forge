@@ -82,16 +82,109 @@ func (c ChangedTests) Names() []string {
 	return out
 }
 
+// MaxRunBytes bounds one `-run` argument: below Linux's per-argument limit
+// (128 KiB) and Windows' whole command line (32 KiB) with room for the rest.
+const MaxRunBytes = 8192
+
 // RunRegex is the `-run` value selecting every name: `^(TestA|TestB)$`.
-// Large selections (notably edits to TestMain) run all tests in the selected
-// packages instead. This is extra coverage, never an omission, and keeps one
-// argument below Linux's per-argument limit and Windows' command-line limit.
+// A selection past MaxRunBytes does not fit one argument; the gate runs
+// Batches instead, and RunRegex says so by selecting every test
+// (`^(Test|Fuzz)`), which it never passes to go test.
 func (c ChangedTests) RunRegex() string {
-	run := "^(" + strings.Join(c.Names(), "|") + ")$"
-	if len(run) > 8192 {
+	run := runRegex(c.Names())
+	if len(run) > MaxRunBytes {
 		return "^(Test|Fuzz)"
 	}
 	return run
+}
+
+func runRegex(names []string) string { return "^(" + strings.Join(names, "|") + ")$" }
+
+// Batch is one `go test` invocation of the flake gate: its packages, and the
+// `-run` value selecting the names it runs.
+type Batch struct {
+	Packages []string `json:"packages"` // "./rel" per package
+	Names    []string `json:"names"`
+	Run      string   `json:"run"`
+}
+
+// Batches packs the selection into `go test` invocations whose `-run` stays
+// within maxRun bytes (MaxRunBytes when <= 0). Every selected name runs, and
+// only selected names: a package whose own names do not fit one argument is
+// split across invocations, and packages share an invocation while their
+// names together fit. Nothing falls back to every test of a package: a wide
+// change once ran every test of 17 packages three times under one budget and
+// timed out (reliant#3723). Each invocation's packages keep their own test
+// binary and so their own -timeout; a split package gets one per part.
+// Names that another package of the same invocation also declares run there
+// too: extra coverage, never an omission.
+func (c ChangedTests) Batches(maxRun int) []Batch {
+	if maxRun <= 0 {
+		maxRun = MaxRunBytes
+	}
+	type part struct {
+		pkg   string
+		names []string
+	}
+	// Each package's names, cut into parts that fit one argument alone.
+	var parts []part
+	for _, p := range c.Packages {
+		pkg := "./" + strings.TrimPrefix(p.Rel, "./")
+		names := append([]string(nil), p.Names...)
+		sort.Strings(names)
+		var cur []string
+		for _, n := range names {
+			if len(cur) > 0 && len(runRegex(append(cur, n))) > maxRun {
+				parts = append(parts, part{pkg, cur})
+				cur = nil
+			}
+			cur = append(cur, n)
+		}
+		if len(cur) > 0 {
+			parts = append(parts, part{pkg, cur})
+		}
+	}
+	// Consecutive parts share an invocation while the union of their names
+	// fits; a package appears at most once per invocation.
+	var out []Batch
+	var pkgs []string
+	seen := map[string]bool{}
+	names := map[string]bool{}
+	flush := func() {
+		if len(pkgs) == 0 {
+			return
+		}
+		ns := make([]string, 0, len(names))
+		for n := range names {
+			ns = append(ns, n)
+		}
+		sort.Strings(ns)
+		out = append(out, Batch{Packages: pkgs, Names: ns, Run: runRegex(ns)})
+		pkgs, seen, names = nil, map[string]bool{}, map[string]bool{}
+	}
+	for _, pt := range parts {
+		union := make([]string, 0, len(names)+len(pt.names))
+		for n := range names {
+			union = append(union, n)
+		}
+		for _, n := range pt.names {
+			if !names[n] {
+				union = append(union, n)
+			}
+		}
+		if len(pkgs) > 0 && (seen[pt.pkg] || len(runRegex(union)) > maxRun) {
+			flush()
+		}
+		if !seen[pt.pkg] {
+			seen[pt.pkg] = true
+			pkgs = append(pkgs, pt.pkg)
+		}
+		for _, n := range pt.names {
+			names[n] = true
+		}
+	}
+	flush()
+	return out
 }
 
 // ChangedOptions configures FindChangedTests.

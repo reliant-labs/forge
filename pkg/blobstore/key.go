@@ -5,6 +5,7 @@ package blobstore
 import (
 	"context"
 	"fmt"
+	"io"
 	"mime"
 	"strings"
 	"time"
@@ -118,16 +119,25 @@ func listLimit(n int) int {
 }
 
 // contentDisposition is an attachment header saving the download as name.
-// The quoted form carries an ASCII fallback; filename* (RFC 6266 / RFC 5987)
-// carries the real name, which browsers prefer.
 func contentDisposition(name string) string {
+	return disposition("attachment", name)
+}
+
+// disposition is a Content-Disposition of kind ("attachment" or "inline"),
+// naming the file name when there is one. The quoted form carries an ASCII
+// fallback; filename* (RFC 6266 / RFC 5987) carries the real name, which
+// browsers prefer.
+func disposition(kind, name string) string {
+	if name == "" {
+		return kind
+	}
 	fallback := strings.Map(func(r rune) rune {
 		if r < 0x20 || r >= 0x7f || r == '"' || r == '\\' {
 			return '_'
 		}
 		return r
 	}, name)
-	return `attachment; filename="` + fallback + `"; filename*=UTF-8''` + rfc5987(name)
+	return kind + `; filename="` + fallback + `"; filename*=UTF-8''` + rfc5987(name)
 }
 
 // rfc5987 percent-encodes everything but RFC 5987's attr-char.
@@ -280,6 +290,42 @@ func (s *scoped) PresignDownload(ctx context.Context, key string, opts DownloadO
 		return PresignedRequest{}, err
 	}
 	return PresignDownload(ctx, s.inner, k, opts)
+}
+
+// Open implements ObjectReader when the wrapped store does (otherwise
+// ErrUnsupported). An object the inner store reports outside the scope is
+// refused, and its stream closed.
+func (s *scoped) Open(ctx context.Context, key string, opts OpenOptions) (io.ReadCloser, Object, error) {
+	k, err := s.key(key)
+	if err != nil {
+		return nil, Object{}, err
+	}
+	r, o, err := Open(ctx, s.inner, k, opts)
+	if err != nil {
+		return nil, Object{}, err
+	}
+	if o.Key, err = s.unscope(o.Key); err != nil {
+		_ = r.Close()
+		return nil, Object{}, err
+	}
+	return r, o, nil
+}
+
+// PutObject implements ObjectWriter when the wrapped store does (otherwise
+// ErrUnsupported).
+func (s *scoped) PutObject(ctx context.Context, key string, body io.Reader, opts PutObjectOptions) (Object, error) {
+	k, err := s.key(key)
+	if err != nil {
+		return Object{}, err
+	}
+	o, err := PutObject(ctx, s.inner, k, body, opts)
+	if err != nil {
+		return Object{}, err
+	}
+	if o.Key, err = s.unscope(o.Key); err != nil {
+		return Object{}, err
+	}
+	return o, nil
 }
 
 // unscope removes the scope prefix from a key the inner store reported, and

@@ -220,6 +220,40 @@ tasks:
     cmds:
       - go test -tags e2e -count=1 -timeout 60m -run '^TestE2E' ./internal/cli/ {{.CLI_ARGS}}
 
+  gate:
+    # THE FULL LINUX SUITE, as one command: the test stage of the Reliant
+    # merge queue's gate (.reliant/pipeline.yaml), and what main's push CI runs
+    # on Linux, on one machine. The unit and internal/cli lanes under -race,
+    # the guards, the e2e corpus and E2E Scaffold, concurrently, in one table
+    # (scripts/gate.sh says what each lane runs and what it leaves out).
+    #
+    # Exit 0 pass, 1 a lane failed, 2 unproven: no lane failed, but one could
+    # not run or failed only on the host (no docker daemon, a missing tool, a
+    # full disk, a registry rate limit); task itself turns any failure into
+    # 201, so `task --exit-code gate` is the spelling that keeps them.
+    # 25-60 minutes: run it in the background, as one heavy command.
+    # GATE_LANES=unit,cli narrows a run.
+    desc: "The full Linux suite (unit + internal/cli -race, guards, e2e, E2E Scaffold), the merge queue's gate: exit 0 pass | 1 fail | 2 unproven"
+    cmds:
+      - scripts/gate.sh test
+
+  gate:lint:
+    # The merge queue gate's lint stage: main's Lint job (golangci-lint over
+    # the root and pkg/ at the release CI pins, go vet, go vet -tags e2e).
+    desc: "The merge queue gate's lint stage: golangci-lint (root and pkg/), go vet, go vet -tags e2e"
+    cmds:
+      - scripts/gate.sh lint
+
+  gate:build:
+    # The merge queue gate's build stage: the module, then the release
+    # binaries with the release flags (ci.yml's `build` job). The env block's
+    # GOFLAGS adds -trimpath already; it is written out so the stage says what
+    # it proves.
+    desc: "The merge queue gate's build stage: go build ./..., then the release build (-trimpath -buildvcs=true ./cmd/...)"
+    cmds:
+      - go build ./...
+      - go build -trimpath -buildvcs=true ./cmd/...
+
   test:integration:
     desc: Run integration tests (build tag `integration`, real dependencies expected)
     cmds:

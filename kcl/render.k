@@ -2358,8 +2358,21 @@ _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
             }
             "image": _o.agent.image
             "memoryLimitMiB": _o.agent.memory_limit_mib
-        } | _tel_agent_spec(b, t.cluster)
+        } | _tel_agent_spec(b, t.cluster) | _k8s_inventory_spec(_o.agent, t.cluster)
     } for _, t in _targets]
+}
+
+# The `kubernetesInventory` key of a cluster's agent record (kcl/schema.k
+# KubernetesInventory; pkg/deploy.KubernetesInventory): absent unless the env
+# opts in.
+_k8s_inventory_spec = lambda agent: ObservabilityAgent, cluster: str -> {str:} {
+    _k = agent.kubernetes_inventory
+    {"kubernetesInventory": {
+        "cluster": cluster
+        "nodeInterval": _k.node_interval
+        "workloadInterval": _k.workload_interval
+        "events": _k.events
+    }} if _k else {}
 }
 
 # ---------------------------------------------------------------------------
@@ -2478,8 +2491,9 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
 # regressed_issue_min_events only when it is set and differs from
 # new_issue_min_events (which it follows unset), and error_rate_min_errors
 # and baseline_window_seconds only when they are not the defaults (10, 24h),
-# and alert_baseline_min_firings only when it is not the default (1), so a
-# render that keeps them records the shape it always did.
+# and alert_baseline_min_firings only when it is not the default (1), and
+# seo_max_score_drop and a11y_max_score_drop only when they are not the
+# default (10), so a render that keeps them records the shape it always did.
 _render_release_health = lambda h: ReleaseHealth -> any {
     {
         "window_seconds": _release_health_seconds(h.window)
@@ -2498,6 +2512,10 @@ _render_release_health = lambda h: ReleaseHealth -> any {
             "baseline_window_seconds": _release_health_seconds(h.baseline_window)
         if h.alert_baseline_min_firings != 1:
             "alert_baseline_min_firings": h.alert_baseline_min_firings
+        if h.seo_max_score_drop != 10:
+            "seo_max_score_drop": h.seo_max_score_drop
+        if h.a11y_max_score_drop != 10:
+            "a11y_max_score_drop": h.a11y_max_score_drop
     }
 }
 
@@ -3975,6 +3993,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
     } | ({"apis": _apis, "api_urls": _api_urls} if f.apis else {}) \
       | ({"routes": f.routes} if f.routes else {}) \
       | ({"changes_from_source": False} if f.changes_from_source == False else {}) \
+      | ({"release_urls": False} if f.release_urls == False else {}) \
       | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {}) \
       | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {})
 }

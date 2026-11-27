@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -202,7 +201,7 @@ func (b *putBody) Read(p []byte) (int, error) {
 	b.n += int64(n)
 	b.sha.Write(p[:n])
 	switch {
-	case errors.Is(err, io.EOF):
+	case err == io.EOF: //nolint:errorlint // a Reader ends with io.EOF itself; a wrapped one is a failure, not the end
 		if b.exact > 0 && b.n < b.exact {
 			return 0, b.fail(errorf(ErrInvalidOptions, "the body ended after %d of its declared %d bytes", b.n, b.exact))
 		}
@@ -234,7 +233,7 @@ func (b *putBody) atLimit() error {
 			}
 			return b.fail(errorf(ErrTooLarge, "the body is longer than the limit of %d bytes", b.max))
 		}
-		if errors.Is(err, io.EOF) {
+		if err == io.EOF { //nolint:errorlint // as in Read: only io.EOF itself ends a body
 			b.done = true
 			return nil
 		}

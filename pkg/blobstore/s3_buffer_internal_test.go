@@ -7,6 +7,7 @@ import (
 	"io"
 	"runtime"
 	"testing"
+	"testing/iotest"
 )
 
 // zeros is an endless stream of zero bytes.
@@ -51,6 +52,26 @@ func TestBufferPartHoldsAtMostItsLimit(t *testing.T) {
 		if got := s3BufferLimit(maxBytes); got != want {
 			t.Errorf("s3BufferLimit(%d) = %d, want %d", maxBytes, got, want)
 		}
+	}
+}
+
+// chunkReader is one stream over its chunks, readable in any read size and
+// seekable anywhere (iotest.TestReader checks Read and Seek against the
+// concatenation).
+func TestChunkReader(t *testing.T) {
+	t.Parallel()
+	for _, chunks := range [][][]byte{nil, {[]byte("a")}, {[]byte("abc"), []byte("d"), []byte("efghij")}} {
+		want := bytes.Join(chunks, nil)
+		if err := iotest.TestReader(chunksReader(chunks), want); err != nil {
+			t.Errorf("chunks %q: %v", chunks, err)
+		}
+	}
+	r := chunksReader([][]byte{[]byte("ab")})
+	if _, err := r.Seek(-1, io.SeekStart); err == nil {
+		t.Error("Seek to a negative position succeeded")
+	}
+	if _, err := r.Seek(0, 42); err == nil {
+		t.Error("Seek with an invalid whence succeeded")
 	}
 }
 

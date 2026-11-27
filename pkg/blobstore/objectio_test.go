@@ -23,6 +23,11 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// failAfter yields data, then fails with err.
+func failAfter(data []byte, err error) io.Reader {
+	return io.MultiReader(bytes.NewReader(data), iotest.ErrReader(err))
+}
+
 // readOpen opens key in store with opts and reads the stream whole.
 func readOpen(t *testing.T, store blobstore.Store, key string, opts blobstore.OpenOptions) ([]byte, blobstore.Object, error) {
 	t.Helper()
@@ -100,6 +105,12 @@ func checkObjectIO(t *testing.T, store blobstore.Store, prefix string) {
 			"bad content type":             {bytes.NewReader(body), blobstore.PutObjectOptions{ContentType: "not a type"}, blobstore.ErrInvalidOptions},
 			"negative length":              {bytes.NewReader(body), blobstore.PutObjectOptions{ContentType: "text/plain", ContentLength: -1}, blobstore.ErrInvalidOptions},
 			"unreadable":                   {iotest.TimeoutReader(bytes.NewReader(body)), blobstore.PutObjectOptions{ContentType: "text/plain", ContentLength: int64(len(body))}, iotest.ErrTimeout},
+			// A reader failing with io.ErrUnexpectedEOF (a truncated
+			// download it was copying, say) has failed: the error is not
+			// the body's end, whatever its value, so nothing is stored.
+			"fails with ErrUnexpectedEOF":        {failAfter(body[:11], io.ErrUnexpectedEOF), blobstore.PutObjectOptions{ContentType: "text/plain"}, io.ErrUnexpectedEOF},
+			"fails with ErrUnexpectedEOF, sized": {failAfter(body[:11], io.ErrUnexpectedEOF), blobstore.PutObjectOptions{ContentType: "text/plain", ContentLength: int64(len(body))}, io.ErrUnexpectedEOF},
+			"fails with ErrUnexpectedEOF, max":   {failAfter(body[:11], io.ErrUnexpectedEOF), blobstore.PutObjectOptions{ContentType: "text/plain", MaxBytes: 1 << 20}, io.ErrUnexpectedEOF},
 		}
 		for name, c := range cases {
 			k := key("refused-" + strings.NewReplacer(" ", "-", ",", "").Replace(name))

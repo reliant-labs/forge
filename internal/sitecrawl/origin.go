@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -177,23 +178,31 @@ func serveFile(root *os.Root, w http.ResponseWriter, r *http.Request, rel string
 	if serveFileHook != nil {
 		serveFileHook(rel)
 	}
-	b, err := io.ReadAll(f)
-	if err != nil {
-		return false
-	}
 	ct := mime.TypeByExtension(path.Ext(rel))
 	switch {
 	case strings.HasSuffix(rel, ".html"), strings.HasSuffix(rel, ".htm"):
 		ct = "text/html; charset=utf-8"
 	case ct == "":
-		ct = http.DetectContentType(b)
+		// Sniff the head of the file, then stream it from the start.
+		var head [512]byte
+		n, _ := io.ReadFull(f, head[:])
+		ct = http.DetectContentType(head[:n])
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return false
+		}
 	}
 	h := w.Header()
 	h.Set("Content-Type", ct)
 	h.Set("X-Content-Type-Options", "nosniff")
+	if fi, err := f.Stat(); err == nil {
+		h.Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+	}
 	w.WriteHeader(status)
 	if r.Method != http.MethodHead {
-		_, _ = w.Write(b)
+		// Streamed from the descriptor, never read whole: a writer that
+		// stops accepting (the crawl's capped recorder, a closed client)
+		// stops the read with it.
+		_, _ = io.Copy(w, f)
 	}
 	return true
 }

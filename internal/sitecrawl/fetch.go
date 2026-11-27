@@ -1,6 +1,7 @@
 package sitecrawl
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -30,6 +31,9 @@ type Response struct {
 	Header http.Header
 	Body   []byte
 	Err    string
+	// Truncated reports that the body was longer than the fetch's limit and
+	// Body holds only its first maxBody bytes.
+	Truncated bool
 }
 
 // Fetcher fetches a URL with method (GET or HEAD), reading at most maxBody
@@ -64,13 +68,49 @@ func (f HandlerFetcher) Fetch(ctx context.Context, method, rawURL string, maxBod
 	req := httptest.NewRequestWithContext(ctx, method, u.RequestURI(), nil)
 	req.Host = u.Host
 	req.Header.Set("User-Agent", UserAgent)
-	rec := httptest.NewRecorder()
+	rec := &cappedRecorder{header: http.Header{}, max: maxBody}
 	f.Handler.ServeHTTP(rec, req)
-	body := rec.Body.Bytes()
-	if int64(len(body)) > maxBody {
-		body = body[:maxBody]
+	if rec.status == 0 {
+		rec.status = http.StatusOK
 	}
-	return Response{Status: rec.Code, Header: rec.Result().Header, Body: body}
+	return Response{Status: rec.status, Header: rec.header, Body: rec.body.Bytes(), Truncated: rec.truncated}
+}
+
+// errBodyCapped is what a cappedRecorder's Write returns once its limit is
+// reached, so the handler writing to it (an io.Copy from a file) stops.
+var errBodyCapped = errors.New("sitecrawl: response body over the fetch limit")
+
+// cappedRecorder is an http.ResponseWriter that keeps at most max bytes of
+// the body and refuses the rest, recording that it did: the in-process
+// fetch never holds more of a response than the crawl would read off the
+// network.
+type cappedRecorder struct {
+	header    http.Header
+	status    int
+	body      bytes.Buffer
+	max       int64
+	truncated bool
+}
+
+func (c *cappedRecorder) Header() http.Header { return c.header }
+
+func (c *cappedRecorder) WriteHeader(code int) {
+	if c.status == 0 {
+		c.status = code
+	}
+}
+
+func (c *cappedRecorder) Write(b []byte) (int, error) {
+	c.WriteHeader(http.StatusOK)
+	room := c.max - int64(c.body.Len())
+	if int64(len(b)) <= room {
+		return c.body.Write(b)
+	}
+	if room > 0 {
+		c.body.Write(b[:room])
+	}
+	c.truncated = true
+	return int(max(room, 0)), errBodyCapped
 }
 
 // HTTPFetcher fetches over the network with a client that follows no
@@ -92,11 +132,15 @@ func (f HTTPFetcher) Fetch(ctx context.Context, method, rawURL string, maxBody i
 		return Response{Err: fetchError(err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
-	if err != nil {
-		return Response{Status: resp.StatusCode, Header: resp.Header, Body: body, Err: fetchError(err)}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+	truncated := int64(len(body)) > maxBody
+	if truncated {
+		body = body[:maxBody]
 	}
-	return Response{Status: resp.StatusCode, Header: resp.Header, Body: body}
+	if err != nil {
+		return Response{Status: resp.StatusCode, Header: resp.Header, Body: body, Err: fetchError(err), Truncated: truncated}
+	}
+	return Response{Status: resp.StatusCode, Header: resp.Header, Body: body, Truncated: truncated}
 }
 
 // fetchError is a fetch failure without Go's "Get \"url\":" wrapping.

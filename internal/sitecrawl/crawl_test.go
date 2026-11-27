@@ -9,7 +9,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -438,5 +440,44 @@ func TestDirHandlerSymlinkSwapAfterOpenServesNothingOutside(t *testing.T) {
 				t.Errorf("GET %s once swapped served the outside file", swap.reqPath)
 			}
 		})
+	}
+}
+
+// TestHandlerFetchOfAHugeFileStaysBounded fetches a 50 MiB (sparse) asset
+// from a build through the in-process handler with a 1 MiB limit: the body
+// is cut at the limit, marked truncated, and the fetch allocates a bounded
+// amount — the file is streamed and the copy stops at the cap, never read
+// or buffered whole. Not parallel: it reads the process's allocation total.
+func TestHandlerFetchOfAHugeFileStaysBounded(t *testing.T) {
+	dir := writeSite(t, map[string]string{"index.html": page("Home", "home")})
+	f, err := os.Create(filepath.Join(dir, "huge.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const size, limit = 50 << 20, 1 << 20
+	if err := f.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	fetcher := HandlerFetcher{Host: "acme.example", Handler: DirHandler(dir, "")}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	r := fetcher.Fetch(context.Background(), http.MethodGet, "https://acme.example/huge.bin", limit)
+	runtime.ReadMemStats(&after)
+
+	if r.Status != http.StatusOK || len(r.Body) != limit || !r.Truncated {
+		t.Fatalf("fetch = status %d, %d bytes, truncated %v; want 200, %d, true", r.Status, len(r.Body), r.Truncated, limit)
+	}
+	if got := r.Header.Get("Content-Length"); got != strconv.Itoa(size) {
+		t.Errorf("Content-Length = %q, want %d", got, size)
+	}
+	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 8<<20 {
+		t.Errorf("the fetch allocated %d MiB for a %d MiB limit: the file was read or buffered whole", alloc>>20, limit>>20)
+	}
+	small := fetcher.Fetch(context.Background(), http.MethodGet, "https://acme.example/", limit)
+	if small.Truncated || !strings.Contains(string(small.Body), "home") {
+		t.Errorf("a page under the limit: truncated %v body %q", small.Truncated, small.Body)
 	}
 }

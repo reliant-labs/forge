@@ -144,8 +144,11 @@ func preservesEmptyTables(stmt string, emptyTables map[indexRelation]tableProof)
 	case "comment", "grant", "revoke":
 		return true
 	case "alter":
+		// Only a table proved empty: validating a foreign key over a table
+		// named IF NOT EXISTS (it may already hold rows) can run user-defined
+		// equality operators, which may write to another fresh table.
 		if m := addForeignKeyRe.FindStringSubmatch(stmt); len(m) >= 2 {
-			return emptyTables[relationKey(m[1])] != 0
+			return emptyTables[relationKey(m[1])] == createdEmpty
 		}
 		m := addOneColumnRe.FindStringSubmatch(stmt)
 		return len(m) >= 2 && emptyTables[relationKey(m[1])] != 0

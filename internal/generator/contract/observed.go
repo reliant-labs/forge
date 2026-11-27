@@ -273,7 +273,7 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 		OpsVar:      opsVar,
 		Ops:         ops,
 	}
-	if b, ok := findLoggerBinding(dir, scan.impl); ok {
+	if b, ok := findLoggerBinding(dir, scan.impl, *target); ok {
 		data.LoggerBind = b.render()
 	}
 	if c, ok := findInstrumentableCtor(dir, ifaceName); ok {

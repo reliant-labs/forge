@@ -34,8 +34,8 @@ import (
 type loggerBinding struct {
 	Impl      string // the implementing type
 	DepsField string // its field of type Deps
-	// ValueRecv is true when every method has a value receiver, so New may
-	// return the type by value as well as by pointer.
+	// ValueRecv is true when every target interface method has a value
+	// receiver, so New may return the type by value as well as by pointer.
 	ValueRecv bool
 }
 
@@ -43,9 +43,13 @@ type loggerBinding struct {
 // Deps.Logger, if it can: impl is a non-generic struct with a field of type
 // Deps (named or embedded), and Deps is a struct with a `Logger *slog.Logger`
 // field. Test and generated files are not read.
-func findLoggerBinding(dir, impl string) (loggerBinding, bool) {
+func findLoggerBinding(dir, impl string, target InterfaceDef) (loggerBinding, bool) {
 	if impl == "" {
 		return loggerBinding{}, false
+	}
+	targetMethods := make(map[string]bool, len(target.Methods))
+	for _, m := range target.Methods {
+		targetMethods[m.Name] = true
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -70,7 +74,7 @@ func findLoggerBinding(dir, impl string) (loggerBinding, bool) {
 		for _, d := range f.Decls {
 			switch d := d.(type) {
 			case *ast.FuncDecl:
-				if d.Recv == nil || receiverType(d.Recv) != impl {
+				if d.Recv == nil || receiverType(d.Recv) != impl || !targetMethods[d.Name.Name] {
 					continue
 				}
 				methods++

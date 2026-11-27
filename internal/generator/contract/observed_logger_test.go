@@ -117,6 +117,25 @@ func TestObservedDecorator_LoggerBindingShapes(t *testing.T) {
 	}
 }
 
+// An unrelated pointer-receiver helper does not prevent service values from
+// satisfying Service or having their logger bound by the decorator.
+func TestObservedDecorator_ValueLoggerWithPointerHelper(t *testing.T) {
+	src := strings.NewReplacer(
+		"&service{deps: deps}", "service{deps: deps}",
+		"func (s *service) Get", "func (s service) Get",
+	).Replace(loggerService) + "\nfunc (s *service) reset() {}\n"
+	got := genDecorator(t, writeLoggerPackage(t, src), "Service", "store")
+	for _, want := range []string{
+		"switch component := inner.(type) {",
+		"case *service:",
+		"case service:\n\t\tchain = chain.WithLogger(component.deps.Logger)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("value implementation with pointer helper missing %q\n---\n%s", want, got)
+		}
+	}
+}
+
 // TestGenerate_DecoratorLogsToTheComponentLogger compiles the decorator
 // against this checkout's pkg/observe and runs it: a component built with its
 // own logger writes its failed call there and nothing to slog.Default, through

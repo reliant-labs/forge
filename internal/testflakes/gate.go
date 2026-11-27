@@ -98,8 +98,11 @@ type GateResult struct {
 	// Message is the one-line verdict.
 	Message string
 	Changed ChangedTests
-	// Argv is the command the gate ran; empty when it ran nothing.
-	Argv []string
+	// Argv is the first command the gate ran; empty when it ran nothing.
+	// Argvs is every command, one per Batch (a selection too large for one
+	// -run argument is split across several).
+	Argv  []string
+	Argvs [][]string
 	// LaneDir is where the run was recorded; "" when it was not.
 	LaneDir string
 	// Failed are the changed tests that failed at least one run, and
@@ -114,7 +117,8 @@ type GateResult struct {
 }
 
 // GateFlags are the `go test` flags the gate passes before -run: -short
-// -count=3 -timeout 10m, with -cpu=<cpu> instead of -count=3 when cpu is set,
+// -count=3 -timeout 10m (a budget per package's test binary, so per package
+// and per part of a split package), with -cpu=<cpu> instead of -count=3 when cpu is set,
 // and -race under full.
 func GateFlags(full bool, cpu string) []string {
 	flags := []string{"-short", "-count=3", "-timeout", "10m"}
@@ -153,10 +157,14 @@ func Gate(ctx context.Context, o GateOptions) GateResult {
 	for _, p := range changed.Packages {
 		pkgs = append(pkgs, "./"+strings.TrimPrefix(p.Rel, "./"))
 	}
-	run := changed.RunRegex()
-	argv := append(append(append([]string(nil), o.Command...), "-json"), flags...)
-	argv = append(append(argv, "-run", run), pkgs...)
-	res.Argv = argv
+	// One invocation per Batch: every selected test, and only those, however
+	// many there are (never every test of the packages).
+	batches := changed.Batches(MaxRunBytes)
+	for _, b := range batches {
+		argv := append(append(append([]string(nil), o.Command...), "-json"), flags...)
+		res.Argvs = append(res.Argvs, append(append(argv, "-run", b.Run), b.Packages...))
+	}
+	res.Argv = res.Argvs[0]
 
 	mode := "short"
 	if o.Full {
@@ -181,14 +189,40 @@ func Gate(ctx context.Context, o GateOptions) GateResult {
 	for _, w := range warnings {
 		fmt.Fprintf(o.Stderr, "forge test flakes gate: warning: %s\n", w)
 	}
+	if len(batches) > 1 {
+		fmt.Fprintf(o.Stdout, "the selection is too large for one -run argument: %d go test invocations\n", len(batches))
+	}
 	tee := newStreamTee(o.Stdout, false)
 	laneStart := o.Now()
-	code, startErr := o.Runner(ctx, o.Root, argv, childEnv(o.Environ, runDir, LaneFlakeGate), tee, o.Stderr)
+	code := 0
+	var startErr error
+	var failedBatches []Batch
+	for i, argv := range res.Argvs {
+		c, err := o.Runner(ctx, o.Root, argv, childEnv(o.Environ, runDir, LaneFlakeGate), tee, o.Stderr)
+		if err != nil {
+			startErr = err
+			break
+		}
+		if c != 0 {
+			failedBatches = append(failedBatches, batches[i])
+			if code == 0 {
+				code = c
+			}
+		}
+	}
 	tee.Close()
 	laneEnd := o.Now()
 	stream := tee.buf.Bytes()
 	if recording {
-		l := laneRun{Lane: LaneFlakeGate, Command: argv, StartedAt: laneStart, FinishedAt: laneEnd, ExitCode: code, Stream: stream}
+		// The lane's command: every invocation, separated by ";".
+		var command []string
+		for i, argv := range res.Argvs {
+			if i > 0 {
+				command = append(command, ";")
+			}
+			command = append(command, argv...)
+		}
+		l := laneRun{Lane: LaneFlakeGate, Command: command, StartedAt: laneStart, FinishedAt: laneEnd, ExitCode: code, Stream: stream}
 		if startErr != nil {
 			l.Error = startErr.Error()
 		}
@@ -202,7 +236,11 @@ func Gate(ctx context.Context, o GateOptions) GateResult {
 	res.Failed, res.RetryPassed = gateFailures(parseStream(stream, LaneFlakeGate))
 
 	elapsed := o.Now().Sub(started).Round(time.Second)
-	reproduce := fmt.Sprintf("%s %s -run '%s' %s", strings.Join(o.Command, " "), strings.Join(flags, " "), run, strings.Join(pkgs, " "))
+	var repro []string
+	for _, b := range failedBatches {
+		repro = append(repro, fmt.Sprintf("%s %s -run '%s' %s", strings.Join(o.Command, " "), strings.Join(flags, " "), b.Run, strings.Join(b.Packages, " ")))
+	}
+	reproduce := strings.Join(repro, "; ")
 	switch {
 	case startErr != nil:
 		res.ExitCode, res.Message = GateUndetermined, fmt.Sprintf("flake gate: could not run %s: %v", o.Command[0], startErr)

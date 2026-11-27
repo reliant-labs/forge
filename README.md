@@ -305,7 +305,10 @@ gemini extensions install https://github.com/reliant-labs/forge
 `deploy_claimable` puts a Vite app or a Next.js static export live with no
 account and returns its URL plus a claim link that is good for 72 hours. The
 other tools introspect the project, read the skill catalog, and run `lint` and
-`generate`. Every tool, and the config for Codex: [docs/mcp.md](docs/mcp.md).
+`generate`. By default the server lists only its core tools, to keep each
+model call small; `forge_tools` enables the rest mid-session, and
+`forge mcp --tools all` lists every tool up front. Every tool, and the config
+for Codex: [docs/mcp.md](docs/mcp.md).
 
 ### The reliant-forge plugin
 

@@ -83,6 +83,8 @@ func StatusOf(ctx context.Context, projectDir string, spec Spec) (Status, error)
 		return temporalEngine.status(ctx, spec, dataDir), nil
 	case EngineMailpit:
 		return mailpitEngine.status(ctx, spec, dataDir), nil
+	case EngineMinIO:
+		return minioEngine.status(ctx, spec, dataDir), nil
 	default:
 		return Status{DataDir: dataDir}, unsupportedEngine(spec)
 	}

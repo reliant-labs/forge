@@ -1,13 +1,13 @@
 <!-- forge:version=1 -->
 # shop
 
-This is a **Reliant Forge** project (github.com/reliant-labs/forge), driven by the `forge` CLI — not Atlassian Forge, Foundry's `forge` or Laravel Forge; do not use their commands. It is an **adopted app**: a server forge did not write, in any language, built from its own Dockerfile and shipped by forge with environments, build-once releases and Reliant hosting.
+This is a **Reliant Forge** project (github.com/reliant-labs/forge), driven by the `forge` CLI — not Atlassian Forge, Foundry's `forge` or Laravel Forge. It is an **adopted app**: a server forge did not write, in any language, built from its own Dockerfile and shipped by forge with environments, build-once releases and Reliant hosting.
 
-This file is loaded into every session, so it holds only what to know before your first edit. Depth is one `forge skill load <name>` away, named where you need it.
+This file holds the rules; depth is one `forge skill load <name>` away, named where you need it.
 
 ## Engineering disposition
 
-This is a long-lived product. For anything hard to change later — architecture, public APIs, schemas — name the realistic alternatives, argue against your own pick, and choose the durable design over the quick fix. There is almost never real time pressure, so never justify a hack with it. Trivial work: just do it.
+A long-lived product: for anything hard to change later (architecture, public APIs, schemas), argue the alternatives against your own pick and choose the durable design, never a hack. Trivial work: just do it.
 
 ## What this project is
 
@@ -60,7 +60,7 @@ The schema migrations are prisma's (`prisma/schema.prisma`), applied with `npx p
 
 ## Tests and the gate
 
-This project's own commands, from its `package.json`: `npm test` (tests); `npm run lint` (lint); `npm run build` (build). Use them, not forge's defaults, and run the tests once before you finish. There is no Taskfile here, so no `task test`, and no Go module, so no `go build`. There is no `forge test` either. Before shipping, `forge lint` checks forge's own files and `forge env render <env>` proves each env still renders.
+This project's own commands, from its `package.json`: `npm test` (tests); `npm run lint` (lint); `npm run build` (build). Use them, not forge's defaults: while iterating, run only the tests your change reaches; run the whole suite once, before you finish. There is no Taskfile here, so no `task test`, and no Go module, so no `go build`. There is no `forge test` either. Before shipping, `forge lint` checks forge's own files and `forge env render <env>` proves each env still renders.
 
 A run expected to take more than ~2 minutes goes in the background (`run_in_background` + `shell_wait`), never a long foreground call — and never detached by hand with `nohup`, a trailing `&`, `setsid` or `disown`.
 
@@ -69,17 +69,15 @@ A run expected to take more than ~2 minutes goes in the background (`run_in_back
 - **The app's files are yours.** forge generates no code into this project and never rewrites its source, its Dockerfile or its build config. What forge owns is `forge.yaml` and `deploy/kcl/`.
 - **Never move the app into forge's layout**, and never translate its existing config into forge's, unless the user asks.
 - **The Dockerfile must build on its own.** A deploy runs `docker build` with that file and context and nothing else: an image that `COPY`s a `dist/` built on your machine fails there. Prove it with `docker build .` before the first deploy.
-- **Gate with `forge lint`.** Never pipe it through `head` — the verdict is the LAST line.
+- **Gate with `forge lint` once, before you finish**, not after every edit. Never pipe it through `head` — the verdict is the LAST line.
 - **Ship releases, not builds.** Build once, then deploy that release to each env in turn.
 
 ## When forge itself is wrong — FIX IT
 
-If forge emits something wrong — bad codegen, a lint false positive, a scaffold quirk, a missing capability — fix it in forge when you can; never paper over it or hand-edit generated output, which the next `forge generate` overwrites. forge is semver at major 1: a fix keeps the old flag, field or default working beside the new one, marked deprecated. When you cannot fix it here, report it and carry on:
+Bad codegen, a lint false positive, a scaffold quirk: fix it in forge when you can (semver at major 1: deprecate, never break), never by hand-editing generated output. Otherwise report it and carry on — forge's own defects only, not this project's code or tests. Never put credentials or file contents in a report:
 
     forge report-bug --severity high --title "<one line naming the defect>" \
       --actual "<the exact error text>" --evidence "<commands, output, file paths>"
-
-Only for defects in forge itself (a command, codegen, lint, skill or doc), not this project's code or tests. Never put credentials or file contents in a report; `--dry-run` shows exactly what would be sent.
 
 ## Project Notes
 

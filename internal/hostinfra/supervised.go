@@ -83,6 +83,10 @@ type binaryRelease struct {
 	versionNeedle string
 	// approxSize is printed with the one-time download notice.
 	approxSize string
+	// raw marks a release whose asset IS the executable, published bare
+	// rather than inside an archive (MinIO's). The checksum then covers the
+	// binary itself, and installing it is a rename, not an extraction.
+	raw bool
 }
 
 // assetFor reports the asset for goos/goarch, and whether it is published.
@@ -223,7 +227,23 @@ func (r binaryRelease) download(ctx context.Context, asset, dest string) error {
 				"  the download was corrupted or substituted; forge will not run an unverified binary",
 			asset, want, got)
 	}
+	if r.raw {
+		return installRaw(tmpName, dest)
+	}
 	return extractMember(tmpName, asset, r.binary(runtime.GOOS), dest)
+}
+
+// installRaw installs a verified bare executable at dest: executable, by
+// rename, so a concurrent run sees no binary or a whole one. The staged file
+// is in dest's directory, so the rename never crosses a filesystem.
+func installRaw(staged, dest string) error {
+	if err := os.Chmod(staged, 0o755); err != nil { // #nosec G302 -- an executable must be executable
+		return fmt.Errorf("chmod downloaded binary: %w", err)
+	}
+	if err := os.Rename(staged, dest); err != nil {
+		return fmt.Errorf("install %s: %w", filepath.Base(dest), err)
+	}
+	return nil
 }
 
 // extractMember pulls the regular file whose base name is member out of the
@@ -312,26 +332,48 @@ type supervisedEngine struct {
 	release binaryRelease
 	// args is the argv after the binary, for this declaration.
 	args func(spec Spec, dataDir string) []string
+	// env, when set, is the whole environment the server starts with
+	// (KEY=value), given the one forge inherited. For configuration a server
+	// reads only from its environment, or that must stay out of argv (which
+	// every user on the machine can read in the process table). Unset, the
+	// server inherits forge's environment unchanged.
+	env func(spec Spec, inherited []string) []string
 	// ready performs ONE readiness probe against a running instance.
 	ready func(ctx context.Context, spec Spec, bin string) bool
+	// converge, when set, brings a READY instance to what the declaration
+	// asks for (MinIO's buckets), on a fresh start and on an adopted one
+	// alike, so a declaration that changed while the server ran still
+	// lands. Idempotent.
+	converge func(ctx context.Context, spec Spec) error
+	// launched, when set, records what this start launched with, beside
+	// the pidfile, so drift can compare a later declaration against it.
+	launched func(spec Spec, dataDir string) error
 	// drift, when set, names what an already-running instance does not do
 	// that the declaration asks for (a listener added since it started),
 	// or "" when it matches. It is reported, never acted on: restarting a
 	// server under a running stack is the developer's call.
-	drift func(spec Spec) string
+	drift func(spec Spec, dataDir string) string
 	// readyTimeout bounds the wait for the first boot.
 	readyTimeout time.Duration
 }
 
 // reportDrift prints what an adopted instance does not serve that the
 // declaration asks for (see drift).
-func (e supervisedEngine) reportDrift(spec Spec) {
+func (e supervisedEngine) reportDrift(spec Spec, dataDir string) {
 	if e.drift == nil {
 		return
 	}
-	if msg := e.drift(spec); msg != "" {
+	if msg := e.drift(spec, dataDir); msg != "" {
 		fmt.Printf("  %s: ⚠ %s\n", spec.Name, msg)
 	}
+}
+
+// runConverge applies the declaration to a ready instance (see converge).
+func (e supervisedEngine) runConverge(ctx context.Context, spec Spec) error {
+	if e.converge == nil {
+		return nil
+	}
+	return e.converge(ctx, spec)
 }
 
 func (e supervisedEngine) pidFile(dataDir string) string {
@@ -360,7 +402,10 @@ func (e supervisedEngine) start(ctx context.Context, projectDir string, spec Spe
 				return fmt.Errorf("host-infra %s: %w", spec.Name, err)
 			}
 			fmt.Printf("  %s: already ready on :%d (host process)\n", spec.Name, spec.Port)
-			e.reportDrift(spec)
+			e.reportDrift(spec, dataDir)
+			if err := e.runConverge(ctx, spec); err != nil {
+				return fmt.Errorf("host-infra %s: %w", spec.Name, err)
+			}
 			return nil
 		}
 	}
@@ -393,6 +438,9 @@ func (e supervisedEngine) start(ctx context.Context, projectDir string, spec Spe
 	cmd.Dir = dataDir
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	if e.env != nil {
+		cmd.Env = e.env(spec, os.Environ())
+	}
 	detachProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("host-infra %s: start %s: %w", spec.Name, name, err)
@@ -403,10 +451,18 @@ func (e supervisedEngine) start(ctx context.Context, projectDir string, spec Spe
 		return fmt.Errorf("host-infra %s: record pid: %w", spec.Name, err)
 	}
 	_ = cmd.Process.Release()
+	if e.launched != nil {
+		if err := e.launched(spec, dataDir); err != nil {
+			return fmt.Errorf("host-infra %s: record launch: %w", spec.Name, err)
+		}
+	}
 
 	fmt.Printf("  %s: %s %s starting on :%d (host process, data %s)\n",
 		spec.Name, name, e.release.version, spec.Port, shortPath(projectDir, dataDir))
 	if err := e.waitReady(ctx, spec, bin, pid); err != nil {
+		return fmt.Errorf("host-infra %s: %w\n  logs: %s", spec.Name, err, shortPath(projectDir, logPath))
+	}
+	if err := e.runConverge(ctx, spec); err != nil {
 		return fmt.Errorf("host-infra %s: %w\n  logs: %s", spec.Name, err, shortPath(projectDir, logPath))
 	}
 	fmt.Printf("  %s: ready on :%d (pid %d)\n", spec.Name, spec.Port, pid)

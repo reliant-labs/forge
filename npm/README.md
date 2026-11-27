@@ -66,7 +66,9 @@ recorded history of every deploy come once forge deploys the app, which the
 `adopt` skill walks without rewriting it.
 
 For an agent, register the MCP server and call its `benefits` tool: what applies
-to the repo, with the first step and the agent time to each.
+to the repo, with the first step and the agent time to each. The server lists
+its core tools by default; `forge_tools` enables `benefits` (or start it with
+`mcp --tools all`).
 
 ```sh
 claude mcp add forge -- npx -y @reliantlabs/forge mcp

@@ -226,7 +226,7 @@ func TestAdoptedMemoryNeverPrescribesTheGreenfieldGate(t *testing.T) {
 		memory := string(body)
 		for _, banned := range []string{
 			"go build ./...", "&& task test", "`task test` is the test suite", "This is a Go project",
-			"## Architecture in one screen", "Proto is the API's canonical input", "Migrations are the DB source of truth",
+			"## Where logic goes", "Proto is the API's canonical input", "Migrations are the DB source of truth",
 		} {
 			if strings.Contains(memory, banned) {
 				t.Errorf("%s memory contains %q", name, banned)

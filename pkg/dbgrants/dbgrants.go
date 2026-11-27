@@ -57,10 +57,17 @@
 //   - objects in a schema the declaration does not name.
 //
 // What the role is never given: INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES,
-// TRIGGER, any sequence privilege, any view (a view can expose a secret column
-// of its base table, and the catalog cannot say which), and any table-level
-// SELECT — a table-level SELECT would cover columns added later, including
-// secret ones.
+// TRIGGER, any sequence privilege, and any table-level SELECT on a table — a
+// table-level SELECT would cover columns added later, including secret ones.
+//
+// A view is the one relation it may SELECT whole, and only when the view can
+// show it nothing it could not already read: a view runs its query as its
+// owner, so it can expose a secret column of its base table. The script reads
+// the columns each view's query references from the catalog (the view rule's
+// pg_depend rows) and grants SELECT on the view only when the role holds SELECT
+// on every one of them, and the view reads no relation under row-level
+// security. Every run re-derives these grants after revoking them, so a view
+// redefined over a secret column loses its grant on the next run.
 //
 // The dashboard role, [DashboardRoleName], is a different contract: forge
 // renders no grants for it. The project grants it with ordinary migrations,
@@ -303,7 +310,7 @@ func RenderFilesFor(role string, tables []Table) (Files, error) {
 	var b strings.Builder
 	b.WriteString("-- The read-only role's grants: a convergence, not a delta. See pkg/dbgrants.\n")
 	b.WriteString("DO " + dollarTag + "\n")
-	b.WriteString("DECLARE\n  r record;\n  readable text;\n  leftover text;\n  declared text[] := ARRAY[]::text[];\n  role_oid oid;\n  failed_index text;\nBEGIN\n")
+	b.WriteString("DECLARE\n  r record;\n  readable text;\n  leftover text;\n  declared text[] := ARRAY[]::text[];\n  role_oid oid;\n  failed_index text;\n  granted int;\nBEGIN\n")
 	fmt.Fprintf(&b, "  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s) THEN\n", quoteLiteral(role))
 	fmt.Fprintf(&b, "    RAISE NOTICE %s;\n    RETURN;\n  END IF;\n\n", quoteLiteral("role "+role+" does not exist: read-only grants not applied"))
 
@@ -431,6 +438,50 @@ func RenderFilesFor(role string, tables []Table) (Files, error) {
 	b.WriteString("    IF readable IS NOT NULL THEN\n")
 	fmt.Fprintf(&b, "      EXECUTE format('GRANT SELECT (%%s) ON TABLE %%I.%%I TO %%I', readable, r.schema, r.tbl, %s);\n", quoteLiteral(role))
 	b.WriteString("    END IF;\n  END LOOP;\n")
+
+	// A view (or materialized view) reads its relations with its OWNER's
+	// privileges, so SELECT on it is SELECT on every column its query reads,
+	// whatever the role's column grants say. It is granted only when the role
+	// could already read every one of those columns itself: then the view
+	// shows nothing the role could not select directly, and a view over a
+	// forge:secret or undecided column stays refused. What the query reads is
+	// Postgres's own record of it, the view rule's pg_depend rows: one per
+	// column it references anywhere (select list, WHERE, subqueries, joins),
+	// and one for the whole relation when it references no column of it, which
+	// a whole-row reference (row_to_json(t)) also leaves, so a whole-relation
+	// row counts as reading every column. A relation under row-level security
+	// is never read through a view: its owner, whom the view runs as, bypasses
+	// the policies the role would be held to. A view over another view is
+	// granted once the inner one is, hence the outer loop, which ends at the
+	// first pass that grants nothing (a pass counts only a grant that took, so
+	// it cannot spin). Only a view the migrating role can grant as its owner is
+	// considered: another role's view keeps no grant, as before. Every run revokes these grants with the
+	// rest (above) and re-derives them, so a view that starts to read a secret
+	// column loses its grant on the next run.
+	b.WriteString("\n  -- views: only those whose every column read is one the role may read itself (pg_depend of the view's rule)\n")
+	b.WriteString("  LOOP\n    granted := 0;\n")
+	b.WriteString("    FOR r IN SELECT n.nspname AS schema, v.relname AS tbl, v.oid AS rel\n")
+	b.WriteString("               FROM pg_class v JOIN pg_namespace n ON n.oid = v.relnamespace\n")
+	b.WriteString("              WHERE n.nspname = ANY (declared) AND v.relkind IN ('v','m')\n")
+	b.WriteString("                AND NOT has_table_privilege(role_oid, v.oid, 'SELECT')\n")
+	b.WriteString("                AND pg_has_role(v.relowner, 'USAGE')\n")
+	b.WriteString("                AND EXISTS (SELECT 1 FROM pg_rewrite w WHERE w.ev_class = v.oid)\n")
+	b.WriteString("                AND NOT EXISTS (\n")
+	b.WriteString("                  SELECT 1 FROM pg_rewrite w\n")
+	b.WriteString("                    JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = w.oid\n")
+	b.WriteString("                                    AND d.refclassid = 'pg_class'::regclass AND d.refobjid <> v.oid\n")
+	b.WriteString("                    JOIN pg_class t ON t.oid = d.refobjid\n")
+	b.WriteString("                   WHERE w.ev_class = v.oid\n")
+	b.WriteString("                     AND (t.relrowsecurity\n")
+	b.WriteString("                          OR (d.refobjsubid <> 0 AND NOT has_column_privilege(role_oid, t.oid, d.refobjsubid::smallint, 'SELECT'))\n")
+	b.WriteString("                          OR (d.refobjsubid = 0 AND EXISTS (\n")
+	b.WriteString("                                SELECT 1 FROM pg_attribute a\n")
+	b.WriteString("                                 WHERE a.attrelid = t.oid AND a.attnum > 0 AND NOT a.attisdropped\n")
+	b.WriteString("                                   AND NOT has_column_privilege(role_oid, t.oid, a.attnum, 'SELECT')))))\n")
+	b.WriteString("              ORDER BY 1, 2 LOOP\n")
+	fmt.Fprintf(&b, "      EXECUTE format('GRANT SELECT ON TABLE %%I.%%I TO %%I', r.schema, r.tbl, %s);\n", quoteLiteral(role))
+	b.WriteString("      IF has_table_privilege(role_oid, r.rel, 'SELECT') THEN\n        granted := granted + 1;\n      END IF;\n")
+	b.WriteString("    END LOOP;\n    EXIT WHEN granted = 0;\n  END LOOP;\n")
 
 	// Defence in depth only: the grants above already give the role no write
 	// privilege, and every query runs in a READ ONLY transaction. Changing a

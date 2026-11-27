@@ -233,6 +233,130 @@ REVOKE EXECUTE ON FUNCTION leak() FROM PUBLIC;
 	f.allowed(`SELECT id FROM events`, "the declared column")
 }
 
+const viewsSchemaSQL = convergeSchemaSQL + `
+CREATE VIEW events_open AS SELECT id, model FROM events;
+CREATE VIEW events_email AS SELECT id, user_email FROM events;
+CREATE VIEW events_filtered AS SELECT id FROM events WHERE user_email LIKE '%@example.test';
+CREATE VIEW events_rows AS SELECT row_to_json(e) AS j FROM events e;
+CREATE VIEW events_count AS SELECT count(*) AS n FROM events;
+CREATE VIEW events_open_outer AS SELECT id, model FROM events_open;
+CREATE VIEW other_count AS SELECT count(*) AS n FROM other;
+CREATE VIEW events_email_outer AS SELECT id FROM events_email;
+CREATE MATERIALIZED VIEW events_open_m AS SELECT id, model FROM events;
+CREATE TABLE guarded (id TEXT PRIMARY KEY);
+INSERT INTO guarded VALUES ('g1');
+ALTER TABLE guarded ENABLE ROW LEVEL SECURITY;
+CREATE VIEW guarded_v AS SELECT id FROM guarded;
+`
+
+func viewsTables(cols ...Column) []Table {
+	return append(eventsTable(cols...), Table{Schema: "public", Name: "guarded", Columns: []Column{{Name: "id"}}})
+}
+
+// A view runs as its owner, so the role may SELECT one only when it could
+// already read every column the view's query references: in the select list,
+// in a WHERE clause, through a whole-row reference, or through another view.
+func TestConvergeGrantsAViewOnlyOverColumnsTheRoleMayRead(t *testing.T) {
+	f := newPGFixture(t, viewsSchemaSQL)
+	f.converge(viewsTables(Column{Name: "id"}, Column{Name: "model"}, Column{Name: "user_email", Secret: true}, Column{Name: "note"}))
+
+	f.allowed(`SELECT id, model FROM events_open`, "a view over readable columns")
+	f.allowed(`SELECT id, model FROM events_open_m`, "a materialized view over readable columns")
+	f.allowed(`SELECT id, model FROM events_open_outer`, "a view over a granted view")
+	f.denied(`SELECT n FROM other_count`, "a view over a table none of whose columns the role may read")
+	f.denied(`SELECT id FROM events_email`, "a view that selects a secret column")
+	f.denied(`SELECT id FROM events_filtered`, "a view that filters on a secret column")
+	f.denied(`SELECT j FROM events_rows`, "a view with a whole-row reference to a table with a secret column")
+	f.denied(`SELECT id FROM events_email_outer`, "a view over a view over a secret column")
+	f.denied(`SELECT id FROM guarded_v`, "a view over a table under row-level security")
+	f.denied(`SELECT user_email FROM events`, "the secret column itself")
+
+	// No secret column on the table: the whole-relation reference is readable.
+	f.converge(viewsTables(Column{Name: "id"}, Column{Name: "model"}, Column{Name: "user_email"}, Column{Name: "note"}))
+	f.allowed(`SELECT j FROM events_rows`, "a whole-row view once every column is readable")
+	f.allowed(`SELECT n FROM events_count`, "a view that references a table but none of its columns")
+	f.allowed(`SELECT id FROM events_email_outer`, "a view over a view, both readable")
+}
+
+// A view grant is re-derived on every run: when a column it reads becomes
+// secret, the next run takes the view away with it.
+func TestConvergeRevokesAViewWhoseColumnBecameSecret(t *testing.T) {
+	f := newPGFixture(t, viewsSchemaSQL)
+	tables := viewsTables(Column{Name: "id"}, Column{Name: "model"}, Column{Name: "user_email"}, Column{Name: "note"})
+	f.converge(tables)
+	f.converge(tables)
+	f.allowed(`SELECT id, user_email FROM events_email`, "before the column became secret")
+	f.allowed(`SELECT id FROM events_email_outer`, "before the column became secret")
+
+	f.converge(viewsTables(Column{Name: "id"}, Column{Name: "model"}, Column{Name: "user_email", Secret: true}, Column{Name: "note"}))
+	f.denied(`SELECT id FROM events_email`, "a view whose column became secret")
+	f.denied(`SELECT id FROM events_email_outer`, "a view over it")
+	f.allowed(`SELECT id, model FROM events_open`, "a view whose columns stayed readable")
+
+	var views string
+	if err := f.db.QueryRowContext(context.Background(), `
+SELECT string_agg(c.relname || ':' || x.privilege_type, ',' ORDER BY c.relname)
+  FROM pg_class c, aclexplode(c.relacl) x
+ WHERE x.grantee = (SELECT oid FROM pg_roles WHERE rolname = $1)`, f.role).Scan(&views); err != nil {
+		t.Fatal(err)
+	}
+	if want := "events_open:SELECT,events_open_m:SELECT,events_open_outer:SELECT"; views != want {
+		t.Errorf("relations the role may SELECT whole = %q, want %q", views, want)
+	}
+}
+
+// The migrator is the application's owner role, not a superuser: it grants the
+// views it owns, and a view another role owns (which it cannot grant) neither
+// stops the run nor keeps it looping.
+func TestConvergeGrantsOnlyTheViewsTheMigratorOwns(t *testing.T) {
+	f := newPGFixture(t, convergeSchemaSQL)
+	ctx := context.Background()
+	app, stranger := f.role+"_app", f.role+"_st"
+	for _, r := range []string{app, stranger} {
+		f.exec(`CREATE ROLE ` + r + ` NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE`)
+		r := r
+		t.Cleanup(func() {
+			_, _ = f.db.ExecContext(context.Background(), `DROP OWNED BY `+r)
+			_, _ = f.db.ExecContext(context.Background(), `DROP ROLE IF EXISTS `+r)
+		})
+	}
+	f.exec(`GRANT USAGE, CREATE ON SCHEMA public TO ` + app + `, ` + stranger)
+	for _, tbl := range []string{"events", "other"} {
+		f.exec(`ALTER TABLE ` + tbl + ` OWNER TO ` + app)
+	}
+	f.exec(`CREATE VIEW mine AS SELECT id, model FROM events`)
+	f.exec(`ALTER VIEW mine OWNER TO ` + app)
+	f.exec(`GRANT SELECT ON events TO ` + stranger)
+	f.exec(`CREATE VIEW theirs AS SELECT id, model FROM events`)
+	f.exec(`ALTER VIEW theirs OWNER TO ` + stranger)
+	// Some privilege of its own on it, or the schema-wide REVOKE fails on a
+	// relation the migrator holds nothing on (a constraint that predates views).
+	f.exec(`GRANT SELECT ON theirs TO ` + app)
+
+	script, err := RenderFor(f.role, eventsTable(Column{Name: "id"}, Column{Name: "model"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := f.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, `SET ROLE `+app); err != nil {
+		t.Fatal(err)
+	}
+	tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := Apply(tctx, conn, script); err != nil {
+		t.Fatalf("a non-superuser migrator could not converge: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `RESET ROLE`); err != nil {
+		t.Fatal(err)
+	}
+	f.allowed(`SELECT id, model FROM mine`, "a readable view the migrator owns")
+	f.denied(`SELECT id FROM theirs`, "a view another role owns")
+}
+
 // ALTER DEFAULT PRIVILEGES entries name the role for objects that do not exist
 // yet. A table created after convergence must not be readable.
 func TestConvergeRevokesDefaultPrivileges(t *testing.T) {

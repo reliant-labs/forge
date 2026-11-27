@@ -31,8 +31,8 @@ const (
 	// TrafficRollupAfter is the shortest range read from the rollup, when the
 	// question needs only its columns: past a week a per-request scan costs
 	// far more than whole days answer, and a week of days is fine-grained
-	// enough. The rollup counts whole UTC days, so the range is widened to
-	// the days it touches.
+	// enough. Only complete UTC days use the rollup; partial boundary days
+	// are read from the per-request table to preserve the half-open range.
 	TrafficRollupAfter = 7 * 24 * time.Hour
 	// DefaultTrafficLimit and MaxTrafficLimit bound a ranked table's rows.
 	DefaultTrafficLimit = 20
@@ -148,8 +148,28 @@ var (
 	trafficRaw = trafficSource{table: TrafficTable, weight: "SampleWeight", bytes: "Bytes * SampleWeight",
 		when: "Timestamp >= {from:DateTime64(9)} AND Timestamp < {to:DateTime64(9)}"}
 	trafficDaily = trafficSource{table: TrafficRollupTable, weight: "Requests", bytes: "Bytes", rollup: true,
-		when: "Day >= toDate({from:DateTime64(9)}, 'UTC') AND Day <= toDate({to:DateTime64(9)}, 'UTC')"}
+		when: "1"}
 )
+
+// from reads whole UTC days from the rollup and only the partial boundary
+// days from raw requests. Both branches expose the rollup's weighted columns.
+func (s trafficSource) from() string {
+	if !s.rollup {
+		return s.table
+	}
+	return `(SELECT EnvId, Site, Path, Status, CacheStatus, UaClass, Requests, Bytes
+FROM ` + TrafficRollupTable + `
+WHERE Day >= toDate({from:DateTime64(9)}, 'UTC')
+  AND toDateTime(Day, 'UTC') >= {from:DateTime64(9)}
+  AND Day < toDate({to:DateTime64(9)}, 'UTC')
+UNION ALL
+SELECT EnvId, Site, Path, Status, CacheStatus, UaClass, SampleWeight AS Requests, raw.Bytes * SampleWeight AS Bytes
+FROM ` + TrafficTable + ` AS raw
+WHERE ` + trafficRaw.when + `
+  AND (({from:DateTime64(9)} > toStartOfDay({from:DateTime64(9)}, 'UTC')
+        AND Timestamp < toStartOfDay({from:DateTime64(9)}, 'UTC') + INTERVAL 1 DAY)
+       OR Timestamp >= toStartOfDay({to:DateTime64(9)}, 'UTC')))`
+}
 
 func (s trafficSource) count(classes []string) string {
 	if classes == nil {
@@ -178,7 +198,8 @@ type TrafficStatement struct {
 	// Purpose names what the statement reads: "totals", or the grouping.
 	Purpose string
 	SQL     string
-	// Table is the table it reads (TrafficTable or TrafficRollupTable).
+	// Table is the primary table (TrafficTable or TrafficRollupTable).
+	// Rollup reads also use raw requests for partial boundary days.
 	Table string
 }
 
@@ -277,7 +298,7 @@ func trafficTotalsSQL(src trafficSource, cond string) string {
        sum(%[2]s) AS bytes
 FROM %[4]s
 WHERE %[5]s
-GROUP BY site ORDER BY requests DESC, site`, src.weight, src.bytes, statusCol, src.table, cond)
+GROUP BY site ORDER BY requests DESC, site`, src.weight, src.bytes, statusCol, src.from(), cond)
 }
 
 // TrafficRankColumns are trafficRankSQL's columns, in order.
@@ -288,7 +309,7 @@ func trafficRankSQL(src trafficSource, cond, key string, limit int) string {
 FROM %[7]s
 WHERE %[8]s
 GROUP BY key ORDER BY requests DESC, key LIMIT %[9]d`,
-		key, src.count(nil), src.count(trafficHumans), src.count(trafficAgents), src.count(trafficCrawlers), src.bytes, src.table, cond, limit)
+		key, src.count(nil), src.count(trafficHumans), src.count(trafficAgents), src.count(trafficCrawlers), src.bytes, src.from(), cond, limit)
 }
 
 // TrafficAgentColumns are trafficAgentsSQL's columns, in order. A claimed
@@ -297,7 +318,7 @@ GROUP BY key ORDER BY requests DESC, key LIMIT %[9]d`,
 var TrafficAgentColumns = []string{"agent", "operator", "class", "verified", "requests", "markdown", "llms_txt", "top_page"}
 
 func trafficAgentsSQL(src trafficSource, cond string, limit int) string {
-	return fmt.Sprintf(`SELECT Agent AS agent, any(AgentOperator) AS operator, UaClass AS class, if(AgentVerified, 'yes', 'no') AS verified,
+	return fmt.Sprintf(`SELECT Agent AS agent, AgentOperator AS operator, UaClass AS class, if(AgentVerified, 'yes', 'no') AS verified,
        sum(%[1]s) AS requests,
        sumIf(%[1]s, ContentKind = 'markdown') AS markdown,
        sumIf(%[1]s, ContentKind = 'llms') AS llms_txt,
@@ -305,7 +326,7 @@ func trafficAgentsSQL(src trafficSource, cond string, limit int) string {
 FROM %[2]s
 WHERE %[3]s
   AND Agent != ''
-GROUP BY agent, class, verified ORDER BY requests DESC, agent LIMIT %[4]d`, src.weight, src.table, cond, limit)
+GROUP BY agent, operator, class, verified ORDER BY requests DESC, agent, operator, class, verified LIMIT %[4]d`, src.weight, src.table, cond, limit)
 }
 
 // TrafficTotal is one site's totals.

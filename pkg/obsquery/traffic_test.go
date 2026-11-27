@@ -72,6 +72,63 @@ func TestTrafficReadsTheRollupOnlyWhereItAnswers(t *testing.T) {
 	}
 }
 
+func TestTrafficRollupPreservesPartialBoundaryDays(t *testing.T) {
+	sts, err := (TrafficQuery{Range: 30 * 24 * time.Hour}).Statements()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range sts {
+		// Whole days must fit entirely inside [from,to). In particular the
+		// to date is never included by the daily branch, even at midnight.
+		for _, want := range []string{
+			"toDateTime(Day, 'UTC') >= {from:DateTime64(9)}",
+			"Day < toDate({to:DateTime64(9)}, 'UTC')",
+			"UNION ALL",
+			"SampleWeight AS Requests, raw.Bytes * SampleWeight AS Bytes",
+			trafficRaw.when,
+			"{from:DateTime64(9)} > toStartOfDay({from:DateTime64(9)}, 'UTC')",
+			"Timestamp < toStartOfDay({from:DateTime64(9)}, 'UTC') + INTERVAL 1 DAY",
+			"OR Timestamp >= toStartOfDay({to:DateTime64(9)}, 'UTC')",
+		} {
+			if !strings.Contains(st.SQL, want) {
+				t.Errorf("%s missing boundary constraint %q:\n%s", st.Purpose, want, st.SQL)
+			}
+		}
+		for _, hour := range []int{0, 12} {
+			sc := Scope{Database: "t_org", EnvRestricted: true, EnvIDs: []string{"env-1"},
+				Start: time.Date(2026, 10, 1, hour, 0, 0, 0, time.UTC),
+				End:   time.Date(2026, 11, 1, hour, 0, 0, 0, time.UTC)}
+			if _, err := (SQLPanel{Scope: sc, SQL: st.SQL, StepSeconds: 3600}).Compile(); err != nil {
+				t.Fatalf("%s hour %d: %v", st.Purpose, hour, err)
+			}
+		}
+	}
+}
+
+func TestTrafficAgentsKeepConflictingOperatorsSeparate(t *testing.T) {
+	sts, err := (TrafficQuery{By: TrafficByAgent}).Statements()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sql := range []string{sts[0].SQL, BotsByAgentSQL()} {
+		if !strings.Contains(sql, "AgentOperator AS operator") ||
+			!strings.Contains(sql, "GROUP BY agent, operator, class, verified") ||
+			strings.Contains(sql, "any(AgentOperator)") {
+			t.Errorf("operator is not a row dimension:\n%s", sql)
+		}
+	}
+	got, err := ParseTrafficAgents(&fakeTrafficRows{rows: [][]any{
+		{"ExampleBot", "First", "ai_crawler", "yes", uint64(3), uint64(0), uint64(0), "/"},
+		{"ExampleBot", "Second", "ai_crawler", "yes", uint64(2), uint64(0), uint64(0), "/"},
+	}})
+	if err != nil || len(got) != 2 {
+		t.Fatalf("agents = %+v, %v", got, err)
+	}
+	if got[0].Operator != "First" || got[1].Operator != "Second" || got[0].Requests != 3 || got[1].Requests != 2 {
+		t.Errorf("conflicting operators lost attribution: %+v", got)
+	}
+}
+
 func TestTrafficRefusesWhatItCannotQuoteSafely(t *testing.T) {
 	for name, q := range map[string]TrafficQuery{
 		"class":   {Class: "browser') OR 1=1 --"},

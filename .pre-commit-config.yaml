@@ -133,7 +133,11 @@ repos:
         # (internal/schemagen; TestEnvSchemaIsCurrent compares it byte for
         # byte and embeds it as schema.EnvV1). Its encoder owns the layout,
         # as with .forge/ above: a prettier rewrite fails that test.
-        exclude: ^(gen/|\.forge/|.*\.pb\.go$|.*/skills/.*\.md$|pkg/deploy/[^/]+/crds/|schema/[^/]+\.schema\.json$|CHANGELOG\.md$)|(^|/)testdata/
+        #
+        # pkg/llmprice/litellm_prices.json is LiteLLM's price map, written by
+        # pkg/llmprice/internal/refresh one model per line so a refresh diffs
+        # by model; prettier would spread each entry over eight lines.
+        exclude: ^(gen/|\.forge/|.*\.pb\.go$|.*/skills/.*\.md$|pkg/deploy/[^/]+/crds/|schema/[^/]+\.schema\.json$|pkg/llmprice/litellm_prices\.json$|CHANGELOG\.md$)|(^|/)testdata/
 
   # Compiled binaries do not belong in git: they never diff usefully, they are
   # large forever, and a Go binary embeds the build machine's absolute paths.

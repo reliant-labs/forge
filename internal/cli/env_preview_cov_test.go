@@ -337,7 +337,7 @@ func TestCovDEnvGCCmd(t *testing.T) {
 
 func TestCovDFindExpiredPreviews_Errors(t *testing.T) {
 	dir := previewProject(t)
-	installPreviewWorld(t, &fakePreviewWorld{}, time.Now())
+	installPreviewWorld(t, &fakePreviewWorld{}, time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC))
 	boom := errors.New("kubectl down")
 	previewKubectl = func(context.Context, string, ...string) ([]byte, error) { return nil, boom }
 	if _, err := findExpiredPreviews(context.Background(), dir, []string{"preview"}, nil); !errors.Is(err, boom) {

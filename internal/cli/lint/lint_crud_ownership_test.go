@@ -87,6 +87,43 @@ func TestCRUDOwnership_Answers(t *testing.T) {
 	}
 }
 
+func TestCRUDOwnership_CommentsBeforeValues(t *testing.T) {
+	for name, trivia := range map[string]string{
+		"block":  " /* explanation */ ",
+		"line":   " -- explanation\n ",
+		"nested": " /* outer /* inner */ outer */ -- explanation\n /* more */ ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, literal := range []string{"'forge:owner=user_id'", "E'forge:owner=user_id'", "$owner$forge:owner=user_id$owner$"} {
+				fs := ownershipJudged(t, map[string]string{
+					"0001_birth.up.sql": ownershipBirthSQL,
+					"0002_owner.up.sql": "COMMENT ON TABLE tasks IS" + trivia + literal + ";\n",
+				}, allGenerated, taskService(true))
+				if len(fs) != 0 {
+					t.Fatalf("owner %s: findings = %+v, want none", literal, fs)
+				}
+			}
+
+			// Delimiters inside a reason are literal text, not SQL trivia.
+			const reason = "admin only /* literal */ -- literal"
+			migrations := map[string]string{
+				"0001_birth.up.sql": ownershipBirthSQL,
+				"0002_scope.up.sql": "COMMENT ON TABLE tasks IS" + trivia + "'forge:unscoped: " + reason + "';\n",
+			}
+			fs := ownershipJudged(t, migrations, allGenerated, taskService(true))
+			if len(fs) != 1 || fs[0].Reason != reason || fs[0].Marker != "forge:unscoped" {
+				t.Fatalf("findings = %+v, want the reasoned exemption unchanged", fs)
+			}
+
+			migrations["0003_remove.up.sql"] = "COMMENT ON TABLE tasks IS" + trivia + "NULL;\n"
+			fs = ownershipJudged(t, migrations, allGenerated, taskService(true))
+			if len(fs) != 1 || fs[0].Table != "tasks" || fs[0].Comment != "" || fs[0].Marker != "" || fs[0].optOut() {
+				t.Fatalf("findings = %+v, want an unowned table after removing the exemption", fs)
+			}
+		})
+	}
+}
+
 func TestCRUDOwnership_PlainAuthenticatedCRUDIsAFinding(t *testing.T) {
 	fs := ownershipFindings(t, map[string]string{"0001_birth.up.sql": ownershipBirthSQL}, allGenerated, taskService(true))
 	if len(fs) != 1 {

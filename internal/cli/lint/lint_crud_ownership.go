@@ -656,7 +656,42 @@ var dollarTagRe = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$`)
 // too) or a dollar quote. known is false for anything else — a U&'…'
 // string, or text that is not a literal at all.
 func sqlCommentValue(s string) (value string, known bool) {
-	s = strings.TrimLeft(s, " \t\r\n")
+	// Skip only leading SQL trivia: comment delimiters inside the value
+	// belong to the literal and must remain untouched.
+	for {
+		s = strings.TrimLeft(s, " \t\r\n\f\v")
+		switch {
+		case strings.HasPrefix(s, "--"):
+			end := strings.IndexByte(s, '\n')
+			if end < 0 {
+				return "", false
+			}
+			s = s[end+1:]
+		case strings.HasPrefix(s, "/*"):
+			i, depth := 2, 1
+			for i < len(s) && depth > 0 {
+				switch {
+				case strings.HasPrefix(s[i:], "/*"):
+					depth++
+					i += 2
+				case strings.HasPrefix(s[i:], "*/"):
+					depth--
+					i += 2
+				default:
+					i++
+				}
+			}
+			if depth != 0 {
+				return "", false
+			}
+			s = s[i:]
+		default:
+			return sqlCommentLiteralValue(s)
+		}
+	}
+}
+
+func sqlCommentLiteralValue(s string) (value string, known bool) {
 	switch {
 	case len(s) >= 4 && strings.EqualFold(s[:4], "null") && (len(s) == 4 || !isIdentByte(s[4])):
 		return "", true

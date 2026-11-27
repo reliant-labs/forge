@@ -148,14 +148,39 @@ func (s *generateWriteScope) attribute(projectDir string, pkgs []*listedPackage)
 		if !inside || wroteInto[dir] {
 			return nil, false
 		}
-		for _, line := range compilerErrorLines(text) {
+		mapped := 0
+		// Do not use compilerErrorLines here: it drops diagnostics without
+		// a file location, which cannot establish pre-existing breakage.
+		for _, line := range strings.Split(text, "\n") {
+			if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "# ") ||
+				strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") ||
+				strings.HasSuffix(line, ": too many errors") {
+				continue
+			}
 			file := filepath.FromSlash(errorLineFile(line))
+			if file == "" {
+				return nil, false
+			}
 			if !filepath.IsAbs(file) {
 				file = filepath.Join(root, file)
 			}
-			if goSourceOriginOf(file) == originGenerated {
-				return nil, false // forge's output fails: forge's to answer for
+			name, err := filepath.Rel(p.Dir, file)
+			if err != nil || filepath.Dir(name) != "." || filepath.Ext(name) != ".go" ||
+				(!slices.Contains(p.GoFiles, name) && !slices.Contains(p.CgoFiles, name)) {
+				return nil, false
 			}
+			// goSourceOriginOf treats unreadable files as hand-written for
+			// remediation hints; attribution must instead fail closed.
+			if _, err := os.ReadFile(file); err != nil {
+				return nil, false
+			}
+			if goSourceOriginOf(file) != originHandWritten {
+				return nil, false
+			}
+			mapped++
+		}
+		if mapped == 0 {
+			return nil, false
 		}
 		candidates = append(candidates, p)
 		own[p.ImportPath] = text

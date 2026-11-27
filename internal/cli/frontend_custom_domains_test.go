@@ -100,3 +100,20 @@ func TestHostedStaticSpec_EdgeFieldsOnlyWhenDeclared(t *testing.T) {
 		t.Errorf("declared fields publish %s, want %s", b, want)
 	}
 }
+
+// The implicit edge-log opt-out is observability disabled with nothing said
+// about edge logs; an explicit edge_logs (rendered) is never also implicit.
+func TestEdgeLogsOffIfHonoured(t *testing.T) {
+	off := false
+	disabled := &KCLEntities{Observability: &ObservabilityEntity{Enabled: false}}
+	if !edgeLogsOffIfHonoured(disabled, FrontendEntity{Name: "web"}) {
+		t.Error("observability disabled is not the implicit opt-out")
+	}
+	if edgeLogsOffIfHonoured(disabled, FrontendEntity{Name: "web", EdgeLogs: &off}) {
+		t.Error("an explicit opt-out is also reported implicit")
+	}
+	if edgeLogsOffIfHonoured(&KCLEntities{Observability: &ObservabilityEntity{Enabled: true}}, FrontendEntity{Name: "web"}) ||
+		edgeLogsOffIfHonoured(&KCLEntities{}, FrontendEntity{Name: "web"}) {
+		t.Error("an env that keeps observability (or declares none) reports an opt-out")
+	}
+}

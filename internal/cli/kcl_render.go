@@ -1500,9 +1500,10 @@ type FrontendEntity struct {
 	// MarkdownNegotiation is Frontend.markdown_negotiation (rendered only
 	// when true, and only on forge.OnHosted).
 	MarkdownNegotiation bool `json:"markdown_negotiation,omitempty"`
-	// EdgeLogs is false when the env opted out of hosted edge request logs
-	// (ObservabilitySignals.edge = False, or observability disabled); nil,
-	// the rendered absence, means on.
+	// EdgeLogs is false when the env EXPLICITLY opted out of hosted edge
+	// request logs (ObservabilitySignals.edge = False); nil, the rendered
+	// absence, means on unless observability is disabled (the implicit
+	// opt-out, edgeLogsOffIfHonoured).
 	EdgeLogs *bool `json:"edge_logs,omitempty"`
 	// APIURLs are the same APIs resolved to each workload's own URL, for the
 	// config.js forge writes itself (an own bucket, Firebase). Empty on a

@@ -357,3 +357,40 @@ func specEdgeLogsOff(spec map[string]any) bool {
 	v, ok := spec["edgeLogs"].(bool)
 	return ok && !v
 }
+
+// EdgeLogsOffIfHonouredAnnotation marks a forge StaticSite carrying the
+// IMPLICIT edge-log opt-out: its env disabled observability
+// (`Observability {enabled = False}`) without naming edge logs. Build
+// removes it, and writes `edgeLogs: false` into the spec only for a reader
+// that advertises release.CapabilityHonorsEdgeLogOptOut; for one that does
+// not, the site is recorded exactly as before the field, never refused. The
+// opt-out still holds there: a control plane without the capability collects
+// no per-env edge logs, and its edge worker ships only with it.
+const EdgeLogsOffIfHonouredAnnotation = "forge.dev/edge-logs-off-if-honoured"
+
+// resolveImplicitEdgeLogOptOut applies EdgeLogsOffIfHonouredAnnotation to
+// docs in place.
+func resolveImplicitEdgeLogOptOut(docs []parsedDoc, honoured bool) {
+	for _, d := range docs {
+		if d.meta.kind != "StaticSite" || !strings.HasPrefix(d.meta.apiVersion, "forge.dev/") {
+			continue
+		}
+		body, _ := d.body.(map[string]any)
+		meta := mapAt(body, "metadata")
+		ann := mapAt(meta, "annotations")
+		if _, ok := ann[EdgeLogsOffIfHonouredAnnotation]; !ok {
+			continue
+		}
+		delete(ann, EdgeLogsOffIfHonouredAnnotation)
+		if len(ann) == 0 {
+			delete(meta, "annotations")
+		}
+		spec := mapAt(body, "spec")
+		if !honoured || spec == nil {
+			continue
+		}
+		if _, set := spec["edgeLogs"]; !set {
+			spec["edgeLogs"] = false
+		}
+	}
+}

@@ -306,6 +306,10 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
 	docs, secretRefs := splitSecrets(docs)
+	// Before anything hashes or serializes the bodies, like the fixes below:
+	// the implicit edge-log opt-out becomes `edgeLogs: false` only for a
+	// reader that honours it, and its marker never reaches the bundle.
+	resolveImplicitEdgeLogOptOut(docs, in.Reader.Supports(release.CapabilityHonorsEdgeLogOptOut))
 	secretRefs = mergeSecretRefs(secretRefs, in.Shape.SyncedSecrets)
 	if !in.Shape.Kind.Valid() {
 		return Bundle{}, fmt.Errorf("%w: bundle %s/%s: environment kind %q", release.ErrInvalid, in.Project, in.Env, in.Shape.Kind)

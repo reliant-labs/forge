@@ -656,11 +656,15 @@ _obs_disabled = lambda b: Bundle -> [str] {
     ([] if not b.observability else (OBS_CATEGORIES if not b.observability.enabled else [c for c in OBS_CATEGORIES if _obs_category_off(_s, c)]))
 }
 
-# Edge request logs of hosted static sites are off: the author disabled the
-# signal, or everything. Rendered as `edge_logs: false` on each hosted
-# frontend only then, so an env that keeps them renders as it did before.
+# The author EXPLICITLY switched hosted sites' edge request logs off
+# (ObservabilitySignals.edge = False). Rendered as `edge_logs: false` on each
+# hosted frontend only then, so an env that keeps them renders as before.
+# `Observability {enabled = False}` alone is the IMPLICIT opt-out: it renders
+# nothing here, and the Go side sends it only to a control plane that honours
+# it (deploytarget.HostedWorkload.EdgeLogsOffIfHonoured), so an env that
+# deployed before the field never starts being refused.
 _obs_edge_off = lambda b: Bundle -> bool {
-    bool(b.observability) and (not b.observability.enabled or not b.observability.signals.edge)
+    bool(b.observability) and not b.observability.signals.edge
 }
 
 # Browser telemetry is off: the author disabled it, or everything.

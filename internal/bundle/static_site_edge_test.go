@@ -28,3 +28,38 @@ func TestStaticSitesWhereEdgeFields(t *testing.T) {
 		t.Errorf("edge-off sites = %v, want %v", got, want)
 	}
 }
+
+// The implicit edge-log opt-out marker never reaches a bundle: Build removes
+// it, and writes edgeLogs: false only for a reader that honours it. An
+// explicit value is never overridden, and the marker's removal leaves no
+// empty annotations map behind (the doc is then byte-identical to a site
+// without the opt-out).
+func TestResolveImplicitEdgeLogOptOut(t *testing.T) {
+	stream := func() string {
+		return "---\n# cluster: hosted\napiVersion: forge.dev/v1alpha1\nkind: StaticSite\nmetadata:\n  name: web\n  annotations:\n    " +
+			EdgeLogsOffIfHonouredAnnotation + ": \"true\"\nspec:\n  basePath: /x\n"
+	}
+	for honoured, want := range map[bool]map[string]any{
+		false: {"basePath": "/x"},
+		true:  {"basePath": "/x", "edgeLogs": false},
+	} {
+		docs, err := parseStream(stream())
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolveImplicitEdgeLogOptOut(docs, honoured)
+		body := docs[0].body.(map[string]any)
+		if got := mapAt(body, "spec"); !reflect.DeepEqual(got, want) {
+			t.Errorf("honoured=%v: spec = %v, want %v", honoured, got, want)
+		}
+		if _, ok := mapAt(body, "metadata")["annotations"]; ok {
+			t.Errorf("honoured=%v: the marker's annotations map survived", honoured)
+		}
+	}
+	docs, _ := parseStream("---\napiVersion: forge.dev/v1alpha1\nkind: StaticSite\nmetadata:\n  name: web\n  annotations:\n    " +
+		EdgeLogsOffIfHonouredAnnotation + ": \"true\"\nspec:\n  edgeLogs: true\n")
+	resolveImplicitEdgeLogOptOut(docs, true)
+	if got := mapAt(docs[0].body.(map[string]any), "spec")["edgeLogs"]; got != true {
+		t.Errorf("an explicit edgeLogs was overridden: %v", got)
+	}
+}

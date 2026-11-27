@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -336,6 +337,11 @@ type goCachePass struct {
 	// stop is why the pass ended early, when it was not its deadline: the
 	// delete cap (a CutOffError) or a back-off (a BackedOffError).
 	stop error
+	// unremovable counts the entries the trim selected and could not remove
+	// for a reason other than their being gone already, and unremovableErr
+	// is the first such error: a cache this user may read but not write.
+	unremovable    int
+	unremovableErr error
 }
 
 type goCacheSample struct {
@@ -585,7 +591,14 @@ func (r Runner) saveGoCacheCursor(label string, next int) {
 // go_cache_volume_percent of its volume) and the go_cache_unused age rule.
 func (r Runner) trimGoBuildCache(label, root string, budgetGiB uint64, apply bool) error {
 	if _, err := os.Stat(root); err != nil {
-		return nil // absent: nothing to trim
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // absent: nothing to trim
+		}
+		// One this pass cannot reach (another user's cache under a 0700
+		// parent) is never reported as trimmed: a declared cache that
+		// silently stays untrimmed is how one grows to hundreds of GiB.
+		r.print("%s %s: cannot read it (%v); not trimmed\n", label, root, err)
+		return fmt.Errorf("%s %s: %w", label, root, err)
 	}
 	if !hasCacheSentinel(root) {
 		r.print("skip %s %s: no cache README, not recognised as a Go cache\n", label, root)
@@ -678,6 +691,11 @@ func (r Runner) trimGoBuildCache(label, root string, budgetGiB uint64, apply boo
 		if err := ctx.Err(); err != nil {
 			pass.stop = &CutOffError{Err: fmt.Errorf("stopped after %d/%d shards: %w", pass.shardsCovered, pass.shardsTotal, err)}
 		}
+	}
+	if pass.unremovable > 0 {
+		err := fmt.Errorf("%s %s: %d selected entries could not be removed (first: %w)", label, root, pass.unremovable, pass.unremovableErr)
+		r.print("WARNING %v\n", err)
+		pass.stop = errors.Join(pass.stop, err)
 	}
 	if young > budget {
 		unreachable := &BudgetUnreachableError{Cache: label, Estimated: estTotal, Budget: budget, Young: young, Floor: protectedFor}
@@ -868,6 +886,13 @@ func streamTrimGoCache(ctx context.Context, root string, shards []string, start 
 								}
 								complete = false
 								break
+							}
+							if !errors.Is(err, fs.ErrNotExist) {
+								mu.Lock()
+								if pass.unremovable++; pass.unremovableErr == nil {
+									pass.unremovableErr = err
+								}
+								mu.Unlock()
 							}
 							continue // this entry could not be removed; the rest can
 						}

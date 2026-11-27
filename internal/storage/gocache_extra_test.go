@@ -69,6 +69,41 @@ func TestValidateRefusesARelativeGoCache(t *testing.T) {
 	}
 }
 
+// TestAGoCacheThisUserCannotTrimIsAFailure: cicd's runner caches sit under a
+// 0700 directory of another user. A declared cache the pass cannot reach, or
+// whose entries it cannot remove, is a failed layer naming the cache, never a
+// clean pass over nothing.
+func TestAGoCacheThisUserCannotTrimIsAFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the permission bits this test relies on")
+	}
+	parent := t.TempDir()
+	unreachable := filepath.Join(parent, "locked", "go-build")
+	makeBuildCache(t, unreachable)
+	readOnly := filepath.Join(parent, "ro", "go-build")
+	makeBuildCache(t, readOnly)
+	putEntry(t, readOnly, "ab", hexName(1, "-a"), 10, 30*time.Hour)
+	for dir, mode := range map[string]os.FileMode{filepath.Join(parent, "locked"): 0o000, filepath.Join(readOnly, "ab"): 0o555} {
+		if err := os.Chmod(dir, mode); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	}
+	var out strings.Builder
+	r := goRunner(t, &out)
+	r.GoCacheRoot, r.GolangciCacheRoot = t.TempDir(), t.TempDir()
+	r.Policy.GoCaches = []string{unreachable, readOnly}
+	err := RealFailure(r.GoCaches(true))
+	if err == nil {
+		t.Fatalf("a cache the pass cannot trim must fail its layer:\n%s", out.String())
+	}
+	for _, want := range []string{"go caches: go build cache " + unreachable, "go caches: go build cache " + readOnly, "could not be removed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
 // TestGoCachesTrimsEveryDeclaredCache: the 2026-11-26 cicd machine, where two
 // GitHub runner caches outside the shared GOCACHE grew to 430G with nothing
 // trimming them. A cache in go_caches, or passed for one pass, is trimmed by

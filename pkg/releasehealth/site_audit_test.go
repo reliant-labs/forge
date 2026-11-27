@@ -436,3 +436,44 @@ func TestCompareSiteAuditsRouteOnlyCoverage(t *testing.T) {
 		t.Errorf("findings = %v: /x has no previous a11y score", got)
 	}
 }
+
+// A report that states its release is compared only as that release's: a
+// mismatched current or previous report is not evaluated, and says why
+// (review B1).
+func TestCompareSiteAuditsChecksReportIdentity(t *testing.T) {
+	mk := func(rel string, seo int) *siteaudit.Report {
+		r := report(score(ip(seo), ip(95)), []siteaudit.RouteReport{{Route: "/", Status: 200, Score: score(ip(seo), ip(95))}},
+			siteaudit.Finding{Code: "indexing_mismatch", Severity: siteaudit.SeverityError, Category: siteaudit.CategorySEO, Route: "/"})
+		r.Release = rel
+		if seo > 50 {
+			r.Findings = nil
+		}
+		return r
+	}
+	for _, tc := range []struct {
+		name      string
+		cur, prev *siteaudit.Report
+		reason    string
+	}{
+		{"current is another release's", mk("v3", 20), mk("v1", 95), "the audit passed as v2's is of release v3"},
+		{"previous is another release's", mk("v2", 20), mk("v0", 95), "the audit passed as the previous release v1's is of release v0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := CompareSiteAudits("web", "v2", tc.cur, "v1", tc.prev)
+			if f.State != SiteAuditMissing || f.Reason != tc.reason || f.Previous != nil || len(f.NewErrors) != 0 {
+				t.Errorf("facts = %+v", f)
+			}
+			r := Evaluate(siteInput(t, f))
+			if len(r.Findings) != 0 || !slices.Contains(r.NotEvaluated, NotEvaluatedSiteAudit) {
+				t.Errorf("findings %v, not_evaluated %v", codesRefs(r.Findings), r.NotEvaluated)
+			}
+		})
+	}
+	// Matching, or unstated, identities are compared.
+	for _, rels := range [][2]string{{"v2", "v1"}, {"", ""}} {
+		f := CompareSiteAudits("web", "v2", mk(rels[0], 20), "v1", mk(rels[1], 95))
+		if f.State != SiteAuditDone || f.Reason != "" || len(f.NewErrors) != 1 {
+			t.Errorf("identities %v: facts = %+v", rels, f)
+		}
+	}
+}

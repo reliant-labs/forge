@@ -94,6 +94,10 @@ type SiteAuditFacts struct {
 	// State is SiteAuditDone, SiteAuditPending, SiteAuditFailed or
 	// SiteAuditMissing; any state but done is not evaluated.
 	State string `json:"state"`
+	// Reason says why an audit that is not done was not evaluated, when
+	// CompareSiteAudits knows (a report of another release than the one
+	// named).
+	Reason string `json:"reason,omitempty"`
 	// RulesVersion is siteaudit.RulesVersion of the audit.
 	RulesVersion string `json:"rules_version,omitempty"`
 	// SEO and A11y are the site-wide scores (0-100); nil was not evaluated.
@@ -166,9 +170,23 @@ const (
 // baseline, so the facts can yield no finding. Two audits of different rule
 // versions are not compared: the previous one is named, its scores are not
 // joined and no error is new.
+//
+// A report that states its release (siteaudit.Report.Release) must be of
+// the release it is passed as: current of release, previous of
+// previousRelease. A mismatched pair is never compared, since it could
+// invent a regression or hide one: the facts are SiteAuditMissing (not
+// evaluated), with Reason naming the mismatch.
 func CompareSiteAudits(frontend, release string, current *siteaudit.Report, previousRelease string, previous *siteaudit.Report) SiteAuditFacts {
 	f := SiteAuditFacts{Frontend: frontend, Release: release, State: SiteAuditMissing}
 	if current == nil {
+		return f
+	}
+	if current.Release != "" && current.Release != release {
+		f.Reason = fmt.Sprintf("the audit passed as %s's is of release %s", nameOr(release, "the judged release"), current.Release)
+		return f
+	}
+	if previous != nil && previous.Release != "" && previous.Release != previousRelease {
+		f.Reason = fmt.Sprintf("the audit passed as the previous release %s's is of release %s", nameOr(previousRelease, "(unnamed)"), previous.Release)
 		return f
 	}
 	f.State, f.RulesVersion = SiteAuditDone, current.RulesVersion

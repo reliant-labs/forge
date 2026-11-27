@@ -275,6 +275,11 @@ invalidates only its entity's). While the stub stands, the hooks file's
 an rpc whose remainder IS another entity's name — `UpdateJobNote` where
 `JobNote` is an entity is that entity's Update.
 
+A CRUD-named rpc that does more than CRUD (`CreateTask` also wires its
+dependencies) gets `// forge:custom` on the line above it: forge then stubs it
+like any custom rpc and never CRUD-wires it (`authoring`). Never rename an rpc
+to dodge detection.
+
 **The generated frontend hooks** — which rpcs become `useQuery` vs `useMutation`,
 `// forge:query-scope`, paged `use<Rpc>Infinite`, and `<svc>Queries` /
 `<svc>Mutations` for code outside React: `forge skill load proto/hooks`.

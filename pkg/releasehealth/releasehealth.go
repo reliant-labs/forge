@@ -33,7 +33,7 @@
 //   - Findings: error_rate, latency, new_issue, regressed_issue, alert_firing,
 //     workload_restarts, browser_errors, browser_failed_requests,
 //     browser_page_load, probe_failed, probe_latency, changed_op_errors,
-//     changed_op_latency. A finding's policy is "fail" when its code is in
+//     changed_op_latency, seo_regressed, a11y_regressed. A finding's policy is "fail" when its code is in
 //     fail_on, "warn" otherwise.
 //   - error_rate (error_rate.go): with per-endpoint figures, the rise is the
 //     after-window request-weighted mean of each endpoint's rise over its
@@ -57,6 +57,15 @@
 //     Being the release's own calls, they are attributed whatever their
 //     service's version share. They never prove a release good: a PASS
 //     still rests on the services.
+//   - Site audits (site_audit.go): a static frontend's audit of the
+//     release (Input.SiteAudits) against the same env's audit of the
+//     previous release. seo_regressed: its SEO score, site-wide or on a
+//     route, dropped by more than seo_max_score_drop points, or a new
+//     error-severity SEO finding appeared; a11y_regressed: the same for
+//     accessibility (a11y_max_score_drop, a new critical axe violation).
+//     Both warn unless fail_on lists them. No previous audit is no finding;
+//     an audit that has not finished is named in not_evaluated (site_audit)
+//     and never changes the verdict on its own.
 //   - Issues count when they were first seen (new) or regressed in the after
 //     window [P, after.To), with enough after-window events: new_issue_min_events for
 //     a new issue, regressed_issue_min_events (unset: the same) for a
@@ -154,6 +163,13 @@ const (
 	ThresholdChangedOpMaxErrorRateIncrease = "changed_op_max_error_rate_increase"
 	ThresholdChangedOpMinErrors            = "changed_op_min_errors"
 	ThresholdChangedOpMaxP95Ratio          = "changed_op_max_p95_ratio"
+	// The site-audit thresholds (site_audit.go): the points a static
+	// frontend's SEO or accessibility score may drop against the previous
+	// release's audit. The env's policy sets them (release_health); they are
+	// not --threshold overrides: a site audit is judged by the control
+	// plane, from the shape.
+	ThresholdSEOMaxScoreDrop  = "seo_max_score_drop"
+	ThresholdA11yMaxScoreDrop = "a11y_max_score_drop"
 )
 
 // ErrInvalid marks a request the rule refuses (an unknown threshold, a value
@@ -233,6 +249,12 @@ type Thresholds struct {
 	ChangedOpMaxErrorRateIncrease float64
 	ChangedOpMinErrors            int
 	ChangedOpMaxP95Ratio          float64
+	// SEOMaxScoreDrop and A11yMaxScoreDrop are the score points a site
+	// audit may drop before seo_regressed or a11y_regressed fires
+	// (site_audit.go); 0 fires on any drop. Resolve fills them from the
+	// env's policy, else release.DefaultSiteAuditMaxScoreDrop.
+	SEOMaxScoreDrop  int
+	A11yMaxScoreDrop int
 	// Sources maps a threshold name to SourceReleaseShape, SourceDefault or
 	// SourceRequest.
 	Sources map[string]string
@@ -315,11 +337,13 @@ func Resolve(o Options) (Thresholds, error) {
 		ChangedOpMaxErrorRateIncrease: DefaultChangedOpMaxErrorRateIncrease,
 		ChangedOpMinErrors:            DefaultChangedOpMinErrors,
 		ChangedOpMaxP95Ratio:          DefaultChangedOpMaxP95Ratio,
+		SEOMaxScoreDrop:               base.SEOScoreDrop(),
+		A11yMaxScoreDrop:              base.A11yScoreDrop(),
 		Sources: map[string]string{
 			ThresholdWindow: src, ThresholdMinRequests: src, ThresholdMaxErrorRateIncrease: src,
 			ThresholdMaxP95Ratio: src, ThresholdNewIssueMinEvents: src, ThresholdFailOn: src,
 			ThresholdRequireBaseline: src, ThresholdErrorRateMinErrors: src, ThresholdBaselineWindow: src,
-			ThresholdAlertBaselineMinFirings: src,
+			ThresholdAlertBaselineMinFirings: src, ThresholdSEOMaxScoreDrop: src, ThresholdA11yMaxScoreDrop: src,
 		},
 	}
 	for _, n := range ChangedOpThresholds {
@@ -416,6 +440,10 @@ func (t Thresholds) validate() error {
 		return invalid("changed_op_min_errors must be at least 1")
 	case t.ChangedOpMaxP95Ratio <= 1:
 		return invalid("changed_op_max_p95_ratio %v must be above 1", t.ChangedOpMaxP95Ratio)
+	case t.SEOMaxScoreDrop < 0 || t.SEOMaxScoreDrop > release.MaxSiteAuditScoreDrop:
+		return invalid("seo_max_score_drop %d must be 0 to %d score points", t.SEOMaxScoreDrop, release.MaxSiteAuditScoreDrop)
+	case t.A11yMaxScoreDrop < 0 || t.A11yMaxScoreDrop > release.MaxSiteAuditScoreDrop:
+		return invalid("a11y_max_score_drop %d must be 0 to %d score points", t.A11yMaxScoreDrop, release.MaxSiteAuditScoreDrop)
 	}
 	for _, c := range t.FailOn {
 		if !slices.Contains(release.HealthFindings, c) {
@@ -465,6 +493,8 @@ func (t Thresholds) List() []Threshold {
 		{ThresholdNewIssueMinEvents, strconv.Itoa(t.NewIssueMinEvents), src(ThresholdNewIssueMinEvents)},
 		{ThresholdRegressedIssueMinEvents, strconv.Itoa(t.RegressedIssueMinEvents), src(ThresholdRegressedIssueMinEvents)},
 		{ThresholdAlertBaselineMinFirings, strconv.Itoa(t.AlertBaselineMinFirings), src(ThresholdAlertBaselineMinFirings)},
+		{ThresholdSEOMaxScoreDrop, strconv.Itoa(t.SEOMaxScoreDrop), src(ThresholdSEOMaxScoreDrop)},
+		{ThresholdA11yMaxScoreDrop, strconv.Itoa(t.A11yMaxScoreDrop), src(ThresholdA11yMaxScoreDrop)},
 		{ThresholdChangedOpMinCalls, strconv.Itoa(c.minCalls), src(ThresholdChangedOpMinCalls)},
 		{ThresholdChangedOpMaxErrorRateIncrease, strconv.FormatFloat(c.maxIncrease, 'g', -1, 64), src(ThresholdChangedOpMaxErrorRateIncrease)},
 		{ThresholdChangedOpMinErrors, strconv.Itoa(c.minErrors), src(ThresholdChangedOpMinErrors)},
@@ -691,7 +721,11 @@ type Input struct {
 	Workloads   []Workload
 	// Ops are the figures of the ops the release's commit range changed,
 	// selected by the caller (changed_ops.go); nil judges no op.
-	Ops        []OpHealth
+	Ops []OpHealth
+	// SiteAudits are the site audits of the judged release's static
+	// frontends, each beside the same env's audit of the previous release,
+	// read by the caller (site_audit.go); nil judges none.
+	SiteAudits []SiteAuditFacts
 	Thresholds Thresholds
 	// NotEvaluated names the checks the backend could not run (a local env has
 	// no alert state or workload restarts), so a PASS is not read as covering
@@ -857,6 +891,14 @@ func Evaluate(in Input) Report {
 	}
 	r.ChangedOps = in.Ops
 	r.NotEvaluated = withNotEvaluated(r.NotEvaluated, thin)
+
+	sfs, unaudited := siteAuditFindings(in.SiteAudits, t, in.Subject)
+	for _, f := range sfs {
+		add(f) // site_audit.go
+	}
+	if unaudited {
+		r.NotEvaluated = withNotEvaluated(r.NotEvaluated, []string{NotEvaluatedSiteAudit})
+	}
 
 	for _, is := range in.NewIssues {
 		if in.Subject.Release != "" && is.FirstVersion != "" && is.FirstVersion != in.Subject.Release {

@@ -209,3 +209,16 @@ func TestFindingKeysAreUnique(t *testing.T) {
 		}
 	}
 }
+
+// The report carries the release the caller named, and none when it named
+// none.
+func TestReportCarriesItsRelease(t *testing.T) {
+	in := Input{Site: "https://example.com", Pages: []Page{{URL: "https://example.com/", Status: 200, RawHTML: "<html><head><title>Home page here</title></head></html>"}}}
+	if r := Evaluate(in); r.Release != "" {
+		t.Errorf("release = %q, want none", r.Release)
+	}
+	in.Release = "v1.8.2"
+	if r := Evaluate(in); r.Release != "v1.8.2" {
+		t.Errorf("release = %q", r.Release)
+	}
+}

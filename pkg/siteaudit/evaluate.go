@@ -152,7 +152,7 @@ func evaluate(in Input, rawOnly bool) Report {
 	a.judgeSitemaps()
 	soft := a.judgeNotFound()
 
-	rep := Report{RulesVersion: RulesVersion, Findings: a.findings}
+	rep := Report{RulesVersion: RulesVersion, Release: in.Release, Findings: a.findings}
 	rep.Routes = a.score()
 	rep.Site = a.summary(rep.Routes, soft)
 	sortFindings(rep.Findings)

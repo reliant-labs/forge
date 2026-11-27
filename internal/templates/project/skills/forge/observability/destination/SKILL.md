@@ -46,6 +46,7 @@ observability = forge.Observability {
 | `local_port` | `0` | the loopback port the env's collector publishes; host processes export there. Not needed in a container-free env (see below) |
 | `profiles_port` | `0` | the loopback port of the local profiles collector (`otel-profiles`, beside ClickStack only); host processes get `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT` aimed there |
 | `agent.namespace / image / memory_limit_mib` | `forge-observability`, contrib pinned by digest, 256 | the node agent |
+| `agent.kubernetes_inventory` | unset | **opt-in**: `forge.KubernetesInventory {}` ships each agent cluster's Nodes, DaemonSets, Deployments and Events, and stamps `k8s.cluster.name` / `k8s.node.name` on the agent's scrapes. See [Kubernetes inventory](#kubernetes-inventory-opt-in) |
 
 
 ## What each runtime gets
@@ -63,6 +64,28 @@ An author's own `OTEL_EXPORTER_OTLP_*` (endpoint or protocol, for any signal) wi
 Apps **push** traces, metrics and profiles over OTLP. The agent pulls only what cannot push: container stdout (`filelog`) and kubelet/node metrics (`kubeletstats`). It scrapes no application endpoints. `k8sattributes` **enriches** (pod, namespace, node, workload labels); it decides nothing about whose data it is. Authentication is the destination's headers, read from the Secret into `FORGE_OTLP_HEADERS`. Attributing records to an owner is the receiving platform's rule, never forge's.
 
 What `filelog` costs: a **read-only hostPath on `/var/log/pods`** (container logs are root-readable on the node), a hostPath for checkpoints and the exporter's persistent queue, root with every capability dropped and a read-only root filesystem. hostPath is forbidden by pod-security `baseline`, so the agent gets its **own namespace labelled `privileged`**. That is why it is never rendered by the Restricted (hosted) profile: its kinds (DaemonSet, ClusterRole) are outside `RestrictedKinds` on purpose.
+
+### Kubernetes inventory (opt-in)
+
+The node agent sees what each node sees. A cluster's own objects come from the API server, through one more collector that is off unless you declare it:
+
+```kcl
+observability = forge.Observability {
+    destination = forge.ObservabilityDestination {endpoint = "https://otlp.example.com"}
+    agent = forge.ObservabilityAgent {
+        kubernetes_inventory = forge.KubernetesInventory {}   # node_interval = "60s", workload_interval = "300s", events = True
+    }
+}
+```
+
+On every cluster the agent runs on, that adds:
+
+- **The cluster collector**: a one-replica Deployment `cluster-collector` (with its ConfigMap and ServiceAccount of the same name) in `agent.namespace`, exporting to the agent's destination with the agent's credential. One replica on purpose: two would ship every row twice. Its `k8sobjects` receiver pulls `nodes` every `node_interval` and apps `daemonsets` and `deployments` every `workload_interval`, and watches events.k8s.io `events` (unless `events = False`). Each object is one log record: k8sobjects' `k8s.resource.name` attribute naming the kind, the resource attribute `k8s.cluster.name` (the cluster's kube context), and as the body the object projected onto an allowlist (an Event inside its watch envelope, `{type, object}`). It sets no `service.name`. A change to the config (events, an interval, the destination) rolls the collector: its pod template carries the config's SHA-256.
+- **Only inventory fields leave the cluster.** A whole Deployment carries credentials (env values, args, the last-applied annotation), so the collector wipes each body and copies back only: kind, apiVersion, the object's name, namespace, uid, creation and deletion times and generation; the labels `app.kubernetes.io/{name,instance,version,component,part-of,managed-by}`, `helm.sh/chart` and `forge.dev/component-owner`; container names and images (the first 8); replica and scheduling counts; a Node's capacity, allocatable, `nodeInfo` versions, `unschedulable` and `providerID`; condition `type`/`status`/`reason` (the first 16, never `message`); and an Event's type, reason, action, reporting controller, times, counts and `regarding` object. Annotations, env, args, commands, other labels, messages and an Event's `note` never ship.
+- **A read-only ClusterRole** `<agent.namespace>-cluster-collector`: get/list/watch on `nodes`, apps `daemonsets`/`deployments` and, with `events`, events.k8s.io `events`. Never Secrets, never `nodes/proxy`, no write verb.
+- **The cluster and node on scrapes**: each `forge.Telemetry` metrics pipeline the agent pulls gets `k8s.cluster.name` and `k8s.node.name` (the agent pulls only its own node's pods, so that is the scraped pod's node), so a scraped row joins the inventory's Nodes.
+
+The rows are logs, so `signals.logs = False` with `kubernetes_inventory` is refused.
 
 ## Secrets must resolve
 

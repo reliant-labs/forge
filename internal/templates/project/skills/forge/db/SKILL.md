@@ -82,7 +82,9 @@ A table with authenticated CRUD and no owner declares `forge:public: <why>` or
 `forge:unscoped: <why>`, or the `crud-table-unowned` lint flags it. Forge
 writes neither for you: a table `forge scaffold` births without a
 `// forge:owner` field declares nothing about its owner, and the scaffold says
-so, so the decision is yours to write in a new migration. The full
+so, so the decision is yours to write in a new migration. Until you edit the
+born table the lint only warns (`pending: choose an owner`); after that it
+gates. The full
 grammar, every op's behavior and how overrides compose are in
 `db/crud-overrides`.
 

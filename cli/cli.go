@@ -10,6 +10,7 @@ import (
 
 	internalcli "github.com/reliant-labs/forge/internal/cli"
 	"github.com/reliant-labs/forge/internal/exitcode"
+	"github.com/reliant-labs/forge/pkg/forgepin"
 )
 
 // NewRootCmd returns the fully assembled Forge root command.
@@ -37,7 +38,10 @@ func HandOffToPinned(ctx context.Context, args []string, stderr io.Writer) (hand
 // PinnedForge is the forge a project pins, resolved and ready to run: its
 // executable, a Key naming exactly which forge it is (for caching what it
 // prints), and Want, which forge the project asked for.
-type PinnedForge = internalcli.PinnedForge
+//
+// Deprecated: use forgepin.Forge (github.com/reliant-labs/forge/pkg/forgepin),
+// the same type, which a host package can name without linking the forge CLI.
+type PinnedForge = forgepin.Forge
 
 // ResolvePinnedForge makes HandOffToPinned's decision for the forge command
 // command ("skill load", "skill list") in projectRoot, and resolves the forge
@@ -45,6 +49,10 @@ type PinnedForge = internalcli.PinnedForge
 // false when this forge is the one to run command there; err, with the reason,
 // when the project's forge is wanted and cannot be obtained — a host must then
 // not substitute this forge's answer. log receives the one-time build notice.
+//
+// Deprecated: use forgepin.Resolve (github.com/reliant-labs/forge/pkg/forgepin),
+// which gives the same answer whenever this package is linked into the binary
+// and lets the host packages that call it skip the forge CLI's imports.
 func ResolvePinnedForge(ctx context.Context, projectRoot, command string, log io.Writer) (PinnedForge, bool, error) {
 	return internalcli.ResolvePinnedForge(ctx, projectRoot, command, log)
 }
@@ -64,12 +72,14 @@ func ResolvePinnedForge(ctx context.Context, projectRoot, command string, log io
 // The hand-off's overrides (FORGE_ALLOW_VERSION_SKEW) do not change the
 // answer: they say which forge to run, not which one is pinned. log receives
 // the one-time build notice.
-func ResolvePinnedForgePath(ctx context.Context, dir string, log io.Writer) (PinnedForge, error) {
+func ResolvePinnedForgePath(ctx context.Context, dir string, log io.Writer) (forgepin.Forge, error) {
 	return internalcli.ResolvePinnedForgePath(ctx, dir, log)
 }
 
 // PinnedSourceSelf is PinnedForge.Source when this forge is the project's.
-const PinnedSourceSelf = internalcli.PinnedSourceSelf
+//
+// Deprecated: use forgepin.SourceSelf (github.com/reliant-labs/forge/pkg/forgepin).
+const PinnedSourceSelf = forgepin.SourceSelf
 
 // SetVersion sets the version, build date, and git commit for the Forge CLI.
 func SetVersion(version, buildDate, gitCommit string) {

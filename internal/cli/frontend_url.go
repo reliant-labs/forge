@@ -43,7 +43,11 @@ func resolveBuildFrontendURLs(ctx context.Context, w io.Writer, envName string, 
 		target := ev.FrontendURL.Frontend
 		var u string
 		if err == nil {
-			u = hostedFrontendURL(st.Workloads, target, frontendBasePath(e, target))
+			var warnings []string
+			u, warnings = hostedFrontendURL(st.Workloads, target, frontendBasePath(e, target))
+			for _, msg := range warnings {
+				_, _ = fmt.Fprintf(w, "[build] %s: ⚠️  %s: %s\n", f.Name, ev.Name, msg)
+			}
 		}
 		if u == "" {
 			_, _ = fmt.Fprintf(w, "[build] %s: %s is empty: %s. The build leaves out what needs the site's origin "+
@@ -75,34 +79,98 @@ func frontendURLGap(err error, envName, target string) string {
 }
 
 // hostedFrontendURL is the public URL of hosted frontend name in ws: its first
-// live custom domain, else the platform's URL, with basePath appended unless
-// the URL already ends in it. "" when the frontend has neither.
-func hostedFrontendURL(ws []deploytarget.HostedWorkloadStatus, name, basePath string) string {
+// live custom domain that is a valid bare hostname, else the platform's URL,
+// joined with basePath. It returns "" when the frontend has neither, and a
+// warning for each value it had to skip or trim, which the build prints.
+//
+// Both are values another system wrote, and the result becomes the site's
+// canonical origin: a wrong one hands the site's ranking to another URL. So
+// every URL is built through url.URL, never by concatenating strings.
+func hostedFrontendURL(ws []deploytarget.HostedWorkloadStatus, name, basePath string) (string, []string) {
+	var warnings []string
 	for _, w := range ws {
 		if w.Name != name || deploytarget.HostedTier(w.Tier) != deploytarget.HostedTierStatic {
 			continue
 		}
-		origin := ""
+		var site *url.URL
 		for _, d := range w.Domains {
-			if d.State == "live" && d.Domain != "" {
-				origin = "https://" + d.Domain
-				break
+			if d.State != "live" || d.Domain == "" {
+				continue
 			}
+			if !isBareHostname(d.Domain) {
+				warnings = append(warnings, fmt.Sprintf("custom domain %q is not a bare hostname; using the next live domain or the platform URL instead", d.Domain))
+				continue
+			}
+			site = &url.URL{Scheme: "https", Host: strings.ToLower(d.Domain)}
+			break
 		}
-		if origin == "" {
+		if site == nil {
 			u, err := url.Parse(w.URL)
-			if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
-				return ""
+			if err != nil || u.Host == "" || u.User != nil || u.Opaque != "" || (u.Scheme != "https" && u.Scheme != "http") {
+				if w.URL != "" {
+					warnings = append(warnings, fmt.Sprintf("platform URL %q is not an absolute http(s) URL; leaving the origin empty", w.URL))
+				}
+				return "", warnings
 			}
-			origin = strings.TrimRight(u.Scheme+"://"+u.Host+u.Path, "/")
+			if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+				warnings = append(warnings, fmt.Sprintf("platform URL %q carries a query or fragment, which a site origin cannot; dropped it", w.URL))
+			}
+			site = &url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}
 		}
-		base := strings.TrimRight(basePath, "/")
-		if base != "" && !strings.HasSuffix(origin, base) {
-			origin += base
-		}
-		return origin
+		return joinBasePath(site, basePath).String(), warnings
 	}
-	return ""
+	return "", warnings
+}
+
+// joinBasePath appends the frontend's base_path to site's path, segment by
+// segment, unless site's path already ends with those segments (a platform
+// URL that names the mount). The result has no trailing slash.
+func joinBasePath(site *url.URL, basePath string) *url.URL {
+	segments := func(p string) []string {
+		var out []string
+		for _, s := range strings.Split(p, "/") {
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	have, base := segments(site.Path), segments(basePath)
+	if len(base) > 0 && (len(have) < len(base) || !slices.Equal(have[len(have)-len(base):], base)) {
+		have = append(have, base...)
+	}
+	out := *site
+	out.Path, out.RawPath = "", ""
+	if len(have) > 0 {
+		// Decoded segments; String() escapes them.
+		out.Path = "/" + strings.Join(have, "/")
+	}
+	return &out
+}
+
+// isBareHostname reports whether s is a hostname alone, as a custom domain
+// must be: no scheme, userinfo, port, path, query or fragment, and only
+// DNS labels (letters, digits, hyphens; 1-63 characters, not starting or
+// ending with a hyphen) separated by dots, with at least two labels.
+func isBareHostname(s string) bool {
+	if len(s) > 253 {
+		return false
+	}
+	labels := strings.Split(s, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, l := range labels {
+		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		for _, c := range l {
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // frontendBasePath is the declared base_path of frontend name, "" for none.

@@ -54,10 +54,81 @@ func TestHostedFrontendURL(t *testing.T) {
 		{"absent", nil, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := hostedFrontendURL(tc.ws, "web", tc.base); got != tc.want {
-				t.Errorf("hostedFrontendURL = %q, want %q", got, tc.want)
+			if got, warnings := hostedFrontendURL(tc.ws, "web", tc.base); got != tc.want || len(warnings) != 0 {
+				t.Errorf("hostedFrontendURL = %q %v, want %q and no warning", got, warnings, tc.want)
 			}
 		})
+	}
+}
+
+// A platform URL is joined with base_path segment by segment, through
+// url.URL, and its query and fragment are dropped with a warning: neither
+// belongs in a canonical origin.
+func TestHostedFrontendURLPlatformURLShapes(t *testing.T) {
+	static := string(deploytarget.HostedTierStatic)
+	for _, tc := range []struct {
+		name, url, base, want string
+		warn                  bool
+	}{
+		{"path, base appended", "https://acme.sites.example.dev/sites/web/", "/docs", "https://acme.sites.example.dev/sites/web/docs", false},
+		{"path already ends with the mount", "https://acme.sites.example.dev/sites/docs", "docs/", "https://acme.sites.example.dev/sites/docs", false},
+		{"a suffix that is not a segment is appended", "https://acme.sites.example.dev/mydocs", "/docs", "https://acme.sites.example.dev/mydocs/docs", false},
+		{"multi-segment base", "https://acme.sites.example.dev/a/b", "/a/b", "https://acme.sites.example.dev/a/b", false},
+		{"escaped segment kept escaped", "https://acme.sites.example.dev/caf%C3%A9", "", "https://acme.sites.example.dev/caf%C3%A9", false},
+		{"query dropped", "https://acme.sites.example.dev/?ref=x", "", "https://acme.sites.example.dev", true},
+		{"fragment dropped", "https://acme.sites.example.dev/web#top", "/docs", "https://acme.sites.example.dev/web/docs", true},
+		{"empty query dropped", "https://acme.sites.example.dev/?", "", "https://acme.sites.example.dev", true},
+		{"userinfo refused", "https://user:pw@acme.sites.example.dev/", "", "", true},
+		{"not http(s)", "ftp://acme.sites.example.dev/", "", "", true},
+		{"relative", "/web", "", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, warnings := hostedFrontendURL([]deploytarget.HostedWorkloadStatus{{Name: "web", Tier: static, URL: tc.url}}, "web", tc.base)
+			if got != tc.want || (len(warnings) > 0) != tc.warn {
+				t.Errorf("hostedFrontendURL(%q, base %q) = %q, warnings %v; want %q, warning %v", tc.url, tc.base, got, warnings, tc.want, tc.warn)
+			}
+		})
+	}
+}
+
+// A custom domain must be a bare hostname. A malformed one is skipped with a
+// warning, for the next live domain or the platform URL: a value like
+// "evil.example/x" or "https://www.example.com" must never become the
+// canonical origin as written.
+func TestHostedFrontendURLSkipsMalformedDomains(t *testing.T) {
+	const platform = "https://web-acme.sites.example.dev"
+	for _, bad := range []string{
+		"https://www.example.com", "www.example.com/path", "www.example.com?x=1", "www.example.com#top",
+		"user@www.example.com", "www.example.com:8443", "localhost", "-bad.example.com", "bad-.example.com",
+		"www..example.com", "www.exa mple.com", "www.example.com.", strings.Repeat("a", 64) + ".example.com",
+	} {
+		t.Run(bad, func(t *testing.T) {
+			ws := []deploytarget.HostedWorkloadStatus{{Name: "web", Tier: string(deploytarget.HostedTierStatic), URL: platform,
+				Domains: []topology.CustomDomain{{Domain: bad, State: "live"}}}}
+			got, warnings := hostedFrontendURL(ws, "web", "")
+			if got != platform || len(warnings) != 1 || !strings.Contains(warnings[0], "not a bare hostname") {
+				t.Errorf("domain %q: got %q, warnings %v; want the platform URL and one warning", bad, got, warnings)
+			}
+		})
+	}
+	// The next live domain that is well-formed wins over the platform URL.
+	ws := []deploytarget.HostedWorkloadStatus{{Name: "web", Tier: string(deploytarget.HostedTierStatic), URL: platform,
+		Domains: []topology.CustomDomain{{Domain: "https://bad.example.com", State: "live"}, {Domain: "WWW.Example.com", State: "live"}}}}
+	if got, warnings := hostedFrontendURL(ws, "web", "/docs"); got != "https://www.example.com/docs" || len(warnings) != 1 {
+		t.Errorf("got %q, warnings %v; want the second domain, lower-cased, with the base path", got, warnings)
+	}
+}
+
+// resolveBuildFrontendURLs prints the resolver's warnings into the build.
+func TestResolveBuildFrontendURLsPrintsWarnings(t *testing.T) {
+	stubFrontendURLStatus(t, deploytarget.HostedEnvStatus{Workloads: []deploytarget.HostedWorkloadStatus{{
+		Name: "web", Tier: string(deploytarget.HostedTierStatic), URL: "https://web-acme.sites.example.dev",
+		Domains: []topology.CustomDomain{{Domain: "www.example.com/x", State: "live"}},
+	}}}, nil)
+	var out bytes.Buffer
+	got := resolveBuildFrontendURLs(context.Background(), &out, "prod", nil, siteURLFrontend())
+	if got.EnvVars[0].Value != "https://web-acme.sites.example.dev" || !strings.Contains(out.String(), `custom domain "www.example.com/x" is not a bare hostname`) {
+		t.Errorf("value %q, output:\n%s", got.EnvVars[0].Value, out.String())
 	}
 }
 

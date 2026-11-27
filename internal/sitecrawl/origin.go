@@ -36,13 +36,30 @@ func routeShaped(p string) bool {
 // for the host root, else "/docs"), with the hosted static origin's rules
 // (see the package doc). It never lists a directory and refuses a path with a
 // ".." segment.
+//
+// Every file is read through an [os.Root] at dir, so nothing outside the
+// build is ever served: a symlink that resolves inside the build is followed
+// (a build may link one asset to another), and one that resolves outside it
+// — a file, or a directory — is not found.
 func DirHandler(dir, basePath string) http.Handler {
 	base := "/" + strings.Trim(basePath, "/")
 	if base == "/" {
 		base = ""
 	}
-	_, err := os.Stat(filepath.Join(dir, NotFoundFile))
-	return &dirOrigin{dir: dir, base: base, has404: err == nil}
+	o := &dirOrigin{dir: dir, base: base}
+	o.has404 = o.isFile("/" + NotFoundFile)
+	return o
+}
+
+// ReadFile reads the build-relative file rel ("index.html") from dir
+// without leaving it: a path or symlink that resolves outside dir fails.
+func ReadFile(dir, rel string) ([]byte, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	return root.ReadFile(filepath.FromSlash(strings.TrimPrefix(rel, "/")))
 }
 
 type dirOrigin struct {
@@ -113,9 +130,15 @@ func (o *dirOrigin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
-// isFile reports a regular file at the build-relative path rel.
+// isFile reports a regular file at the build-relative path rel, inside the
+// build.
 func (o *dirOrigin) isFile(rel string) bool {
-	fi, err := os.Stat(filepath.Join(o.dir, filepath.FromSlash(strings.TrimPrefix(rel, "/"))))
+	root, err := os.OpenRoot(o.dir)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = root.Close() }()
+	fi, err := root.Stat(filepath.FromSlash(strings.TrimPrefix(rel, "/")))
 	return err == nil && fi.Mode().IsRegular()
 }
 
@@ -125,7 +148,7 @@ func (o *dirOrigin) serveFile(w http.ResponseWriter, r *http.Request, rel string
 	if !o.isFile(rel) {
 		return false
 	}
-	b, err := os.ReadFile(filepath.Join(o.dir, filepath.FromSlash(strings.TrimPrefix(rel, "/"))))
+	b, err := ReadFile(o.dir, rel)
 	if err != nil {
 		return false
 	}

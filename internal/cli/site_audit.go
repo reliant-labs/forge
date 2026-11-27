@@ -342,7 +342,7 @@ func siteAuditDirURL(dir, basePath, flag, envSiteURL string) (*url.URL, string, 
 	if u := origin(envSiteURL); u != nil {
 		return u, "from the env's SITE_URL", nil
 	}
-	if b, err := os.ReadFile(filepath.Join(dir, "index.html")); err == nil {
+	if b, err := sitecrawl.ReadFile(dir, "index.html"); err == nil {
 		h := siteaudit.ExtractHead(string(b))
 		if u := origin(h.Canonical); u != nil {
 			return u, "from the home page's canonical", nil
@@ -392,7 +392,7 @@ func resolveProjectSite(ctx context.Context, o siteAuditOptions) (siteAuditTarge
 	feDir := filepath.Join(projectDir, filepath.FromSlash(rel))
 	publicDir, basePath, envSiteURL := siteBuildFacts(ctx, projectDir, fe, feDir, o.env)
 	dir := filepath.Join(feDir, filepath.FromSlash(publicDir))
-	if _, err := os.Stat(filepath.Join(dir, "index.html")); err != nil {
+	if _, err := sitecrawl.ReadFile(dir, "index.html"); err != nil {
 		return siteAuditTarget{}, siteAuditUnrunnable("%s is not built: %s has no index.html. Build it first (cd %s && npm run build), or pass a build directory", fe.Name, siteRelPath(dir), siteRelPath(feDir))
 	}
 	site, from, err := siteAuditDirURL(dir, basePath, o.siteURL, envSiteURL)

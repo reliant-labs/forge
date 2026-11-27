@@ -325,3 +325,70 @@ func TestGuardedClientRefusesLoopback(t *testing.T) {
 		t.Error("RefusedHost accepted a loopback address")
 	}
 }
+
+// The build is served through an os.Root: a symlink that escapes the build
+// (to a file or a directory) is not found, one that stays inside it works.
+func TestDirHandlerNeverServesOutsideTheBuild(t *testing.T) {
+	t.Parallel()
+	outside := writeSite(t, map[string]string{"secret.txt": "TOP SECRET", "etc/passwd": "root:x:0:0", "index.html": page("Outside", "outside")})
+	dir := writeSite(t, map[string]string{
+		"index.html":      page("Home", "home"),
+		"assets/real.css": "body{}",
+		"docs/guide.html": page("Guide", "guide"),
+	})
+	links := map[string]string{
+		"leak.txt":       filepath.Join(outside, "secret.txt"),
+		"etc":            filepath.Join(outside, "etc"),
+		"escape":         outside,
+		"rel-escape.txt": "../" + filepath.Base(outside) + "/secret.txt",
+		"alias.css":      filepath.Join("assets", "real.css"),
+		"manual":         "docs",
+	}
+	for name, target := range links {
+		if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+			t.Skipf("symlinks unavailable here: %v", err)
+		}
+	}
+	h := DirHandler(dir, "")
+	get := func(p string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "http://site.test/", nil)
+		req.URL.Path = p
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	for _, p := range []string{"/leak.txt", "/etc/passwd", "/escape/secret.txt", "/escape/", "/escape", "/rel-escape.txt"} {
+		rec := get(p)
+		if body := rec.Body.String(); strings.Contains(body, "SECRET") || strings.Contains(body, "root:x") || strings.Contains(body, "outside") {
+			t.Errorf("GET %s served a file outside the build (status %d): %q", p, rec.Code, body)
+		}
+	}
+	if rec := get("/leak.txt"); rec.Code != http.StatusNotFound {
+		t.Errorf("GET /leak.txt: status %d, want 404", rec.Code)
+	}
+	if rec := get("/alias.css"); rec.Code != 200 || rec.Body.String() != "body{}" {
+		t.Errorf("an in-build symlinked file: status %d body %q", rec.Code, rec.Body.String())
+	}
+	if rec := get("/manual/guide"); rec.Code != 200 || !strings.Contains(rec.Body.String(), "guide") {
+		t.Errorf("an in-build symlinked directory: status %d body %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestReadFileStaysInsideTheBuild(t *testing.T) {
+	t.Parallel()
+	outside := writeSite(t, map[string]string{"secret.txt": "TOP SECRET"})
+	dir := writeSite(t, map[string]string{"assets/real.css": "body{}"})
+	for name, target := range map[string]string{"leak.txt": filepath.Join(outside, "secret.txt"), "escape": outside, "alias.css": filepath.Join("assets", "real.css")} {
+		if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+			t.Skipf("symlinks unavailable here: %v", err)
+		}
+	}
+	for _, rel := range []string{"leak.txt", "escape/secret.txt", "../" + filepath.Base(outside) + "/secret.txt"} {
+		if b, err := ReadFile(dir, rel); err == nil {
+			t.Errorf("ReadFile(%s) read outside the build: %q", rel, b)
+		}
+	}
+	if b, err := ReadFile(dir, "alias.css"); err != nil || string(b) != "body{}" {
+		t.Errorf("ReadFile of an in-build symlink = %q, %v", b, err)
+	}
+}

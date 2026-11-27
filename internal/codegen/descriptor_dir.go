@@ -75,6 +75,7 @@ var descriptorContextBuilder func(string, bool) error
 // output policy. RegisterDescriptorBuilder remains available to legacy hosts.
 func RegisterDescriptorPolicyBuilder(build func(string, bool) error) {
 	descriptorContextBuilder = build
+	descriptorBuilder = nil
 }
 
 // WriteGeneratedFrom stamps the protos gen/ was just generated from. Only the

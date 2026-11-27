@@ -252,6 +252,11 @@ type Plan struct {
 	vocabErrs []string
 	// planWarns holds constraint-satisfaction notes recorded by finalize.
 	planWarns []string
+	// scopeWarns names the tables the development dataset left out because
+	// they require a `forge:no-seed` table (see ExcludeNoSeed).
+	scopeWarns []string
+	// noSeed names the tables ExcludeNoSeed left out (NoSeedTables).
+	noSeed []string
 	// derivedRefs maps table -> foreign-key column -> the transitive route its
 	// value is DERIVED from, per a `forge:ref derived-from=` declaration on
 	// that column's constraint. Set by finalize; read by fkParentRow.
@@ -324,7 +329,8 @@ type Plan struct {
 // never fails on these — the CLI surfaces them. An undeclared diamond is NOT
 // among them: that one refuses the seed (see Validate / diamondRefusal).
 func (p *Plan) Warnings() []string {
-	out := make([]string, 0, len(p.vocabWarns)+len(p.planWarns))
+	out := make([]string, 0, len(p.scopeWarns)+len(p.vocabWarns)+len(p.planWarns))
+	out = append(out, p.scopeWarns...)
 	out = append(out, p.vocabWarns...)
 	out = append(out, p.planWarns...)
 	return out

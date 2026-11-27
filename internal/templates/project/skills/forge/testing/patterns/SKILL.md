@@ -95,7 +95,7 @@ func TestContract(t *testing.T) {
 }
 ```
 
-When to use: testing a contract's Service interface implementation (`contract.go`-defined or derived from a `//forge:contract` struct). Forge's `forge package new` and `forge generate` scaffold a starter `contract_test.go` once; user owns it after.
+When to use: testing a contract's Service interface implementation (`contract.go`-defined or derived from a `//forge:contract` struct). Forge's `forge scaffold package` and `forge generate` scaffold a starter `contract_test.go` once; user owns it after.
 
 ## Pattern 3: Cobra runner test (validator extraction)
 

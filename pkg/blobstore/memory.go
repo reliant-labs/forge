@@ -3,9 +3,11 @@
 package blobstore
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5" //nolint:gosec // an ETag, as S3 computes it for a single-part upload; not a security boundary
 	"encoding/hex"
+	"io"
 	"net/url"
 	"sort"
 	"strconv"
@@ -40,6 +42,8 @@ var (
 	_ LevelLister       = (*Memory)(nil)
 	_ DownloadPresigner = (*Memory)(nil)
 	_ ObjectAccess      = (*Memory)(nil)
+	_ ObjectReader      = (*Memory)(nil)
+	_ ObjectWriter      = (*Memory)(nil)
 )
 
 // Put stores data at key, as a completed upload would. It is the test's
@@ -92,15 +96,60 @@ func (m *Memory) PresignGet(_ context.Context, key string, opts GetOptions) (Pre
 	if err := ValidateKey(key); err != nil {
 		return PresignedRequest{}, err
 	}
-	d, err := ttl(opts.TTL)
+	d, q, err := getParams(opts)
 	if err != nil {
 		return PresignedRequest{}, err
 	}
-	q := url.Values{}
-	if opts.DownloadName != "" {
-		q.Set("response-content-disposition", contentDisposition(opts.DownloadName))
+	if q == nil {
+		q = url.Values{}
 	}
 	return m.presigned("GET", key, d, q), nil
+}
+
+// Open implements ObjectReader.
+func (m *Memory) Open(_ context.Context, key string, opts OpenOptions) (io.ReadCloser, Object, error) {
+	if err := ValidateKey(key); err != nil {
+		return nil, Object{}, err
+	}
+	if err := validateOpen(opts); err != nil {
+		return nil, Object{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o, ok := m.objects[key]
+	if !ok {
+		return nil, Object{}, errorf(ErrNotFound, "%q", key)
+	}
+	off, n, err := openRange(int64(len(o.data)), opts)
+	if err != nil {
+		return nil, Object{}, err
+	}
+	// The stored slice is never written again (Put and PutObject replace
+	// it), so the reader can share it.
+	return io.NopCloser(bytes.NewReader(o.data[off : off+n])), o.info(key), nil
+}
+
+// PutObject implements ObjectWriter. The body is read whole before it is
+// stored, so a body that fails leaves the key as it was.
+func (m *Memory) PutObject(_ context.Context, key string, body io.Reader, opts PutObjectOptions) (Object, error) {
+	if err := ValidateKey(key); err != nil {
+		return Object{}, err
+	}
+	if err := validatePutObject(opts); err != nil {
+		return Object{}, err
+	}
+	b := newPutBody(body, opts)
+	data, err := io.ReadAll(b)
+	if err != nil {
+		return Object{}, b.failed(err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o := memObject{data: data, contentType: opts.ContentType, modified: m.now()}
+	m.objects[key] = o
+	info := o.info(key)
+	info.SHA256 = b.sum()
+	return info, nil
 }
 
 // Stat implements Store.

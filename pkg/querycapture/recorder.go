@@ -170,6 +170,9 @@ func (r *Recorder) Record(query string) {
 		r.mu.Unlock()
 		return
 	}
+	if r.seen == nil { // a zero Recorder: a panic here would deadlock on fail's lock
+		r.seen = map[seenKey]struct{}{}
+	}
 	r.seen[key] = struct{}{}
 	r.mu.Unlock()
 

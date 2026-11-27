@@ -99,7 +99,11 @@ func TestLintScopeContainsAndFilter(t *testing.T) {
 	kept := s.filter([]lintJSONFinding{
 		{File: "internal/handlers/jobs/service.go", Rule: "in"},
 		{File: "internal/handlers/jobs2/service.go", Rule: "sibling"},
+		// The scoped handler's own proto is the other half of its service,
+		// so its findings are reported (lint_scope_service.go); another
+		// service's proto is not.
 		{File: "proto/services/jobs/v1/jobs.proto", Rule: "proto"},
+		{File: "proto/services/billing/v1/billing.proto", Rule: "other-proto"},
 		// No file: unattributable, so a scoped run must keep it rather
 		// than hide an error it cannot place.
 		{Rule: "fileless"},
@@ -108,7 +112,7 @@ func TestLintScopeContainsAndFilter(t *testing.T) {
 	for _, f := range kept {
 		rules = append(rules, f.Rule)
 	}
-	if want := []string{"in", "fileless"}; !reflect.DeepEqual(rules, want) {
+	if want := []string{"in", "proto", "fileless"}; !reflect.DeepEqual(rules, want) {
 		t.Errorf("filter kept %v, want %v", rules, want)
 	}
 
@@ -286,10 +290,33 @@ func TestRenderLintOutcomesQuiet(t *testing.T) {
 	}
 	// The verdict — returned, so main prints it as the LAST line — names
 	// what failed and admits what --quiet hid.
-	for _, want := range []string{"1 gating linter(s) failed: read-only-fields lint", "2 advisory findings not shown (--quiet)"} {
+	for _, want := range []string{"1 gating linter(s) failed: read-only-fields lint", "2 advisory findings not shown (--quiet: ", "run without --quiet to see them"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("verdict %q missing %q", err, want)
 		}
+	}
+}
+
+// --quiet names the rules it hid, most findings first, and how to see them:
+// it used to say only "3 advisory findings not shown (--quiet)" (Ranger
+// build, friction #10).
+func TestQuietVerdictNamesHiddenRules(t *testing.T) {
+	warn := func(rule string) lintJSONFinding {
+		return lintJSONFinding{File: "a.go", Severity: lintSevWarning, Rule: rule, Message: "m"}
+	}
+	outcomes := []lintStepOutcome{
+		{name: "golangci-lint", gates: true, ran: true},
+		{name: "idempotency lint", gates: true, ran: true, findings: []lintJSONFinding{
+			warn("forge-idempotency-read-undeclared"), warn("forge-idempotency-read-undeclared"), warn("forge-idempotency-read-undeclared")}},
+		{name: "config-deps lint", ran: true, findings: []lintJSONFinding{warn("forge-config-deps"), warn("b-rule"), warn("a-rule")}},
+	}
+	var buf bytes.Buffer
+	if err := renderLintOutcomes(&buf, outcomes, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	want := "6 advisory findings not shown (--quiet: forge-idempotency-read-undeclared ×3, a-rule, b-rule, and 1 more; run without --quiet to see them)"
+	if got := buf.String(); !strings.Contains(got, want) {
+		t.Errorf("verdict %q does not contain %q", got, want)
 	}
 }
 
@@ -338,7 +365,7 @@ func TestRenderLintOutcomesQuietCleanRunIsOneLine(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("a clean --quiet run must be ONE line (the verdict); got %d:\n%s", len(lines), buf.String())
 	}
-	if want := "✅ All 2 gating linters passed; 1 advisory finding not shown (--quiet)."; lines[0] != want {
+	if want := "✅ All 2 gating linters passed; 1 advisory finding not shown (--quiet: scaffold-not-customized; run without --quiet to see them)."; lines[0] != want {
 		t.Errorf("verdict = %q, want %q", lines[0], want)
 	}
 }
@@ -469,13 +496,25 @@ func TestCollectTargetedOutcomeHonoursScope(t *testing.T) {
 		t.Errorf("in-scope targeted lane: name=%q gated=%v findings=%+v; want the read-only error, gated", o.name, o.gated, o.findings)
 	}
 
-	outOfScope, err := parseLintScope(root, []string{"internal/handlers/estimates"})
+	// The finding sits on the proto, but it is about the handler that
+	// never writes the field: a scope over the service's handlers reports
+	// it too (lint_scope_service.go).
+	handlers, err := parseLintScope(root, []string{"internal/handlers/estimates"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o = collectOneTargetedOutcome(t, lintFlags{readOnlyFields: true}, root, handlers)
+	if !o.gated || len(o.findings) != 1 {
+		t.Errorf("handler-scoped targeted lane: gated=%v findings=%+v; want its service's proto error, gated", o.gated, o.findings)
+	}
+
+	outOfScope, err := parseLintScope(root, []string{"db"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	o = collectOneTargetedOutcome(t, lintFlags{readOnlyFields: true}, root, outOfScope)
-	if o.gated || len(o.findings) != 0 {
-		t.Errorf("a finding anchored outside the scope still reported/gated: gated=%v findings=%+v", o.gated, o.findings)
+	if o.gated || len(o.findings) != 0 || o.outside != 1 {
+		t.Errorf("a finding anchored outside the scope: gated=%v findings=%+v outside=%d; want it dropped and counted", o.gated, o.findings, o.outside)
 	}
 
 	o = collectOneTargetedOutcome(t, lintFlags{configReach: true}, root, outOfScope)
@@ -488,7 +527,7 @@ func TestCollectTargetedOutcomeHonoursScope(t *testing.T) {
 // collectTargetedOutcomes and returns that lane's outcome.
 func collectOneTargetedOutcome(t *testing.T, flags lintFlags, root string, scope *lintScope) lintStepOutcome {
 	t.Helper()
-	outcomes, targeted, err := collectTargetedOutcomes(t.Context(), flags, nil, root, nil, nil, scope, nil)
+	outcomes, targeted, err := collectTargetedOutcomes(t.Context(), flags, nil, root, nil, nil, scope, targetedOutcomeOutput{})
 	if err != nil || !targeted || len(outcomes) != 1 {
 		t.Fatalf("one lane named: targeted=%v outcomes=%d err=%v", targeted, len(outcomes), err)
 	}
@@ -519,7 +558,7 @@ func TestCollectTargetedOutcomes_EveryNamedLaneRuns(t *testing.T) {
 	}
 
 	outcomes, targeted, err := collectTargetedOutcomes(t.Context(),
-		lintFlags{readOnlyFields: true, computedFields: true}, nil, root, nil, nil, nil, nil)
+		lintFlags{readOnlyFields: true, computedFields: true}, nil, root, nil, nil, nil, targetedOutcomeOutput{})
 	if err != nil || !targeted {
 		t.Fatalf("targeted=%v err=%v", targeted, err)
 	}

@@ -46,7 +46,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -58,6 +60,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
@@ -199,6 +202,25 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 		}
 	}
 
+	// A per-RPC scaffold test is born only beside the stub of an RPC the
+	// package does not declare yet. For an RPC that is implemented, or whose
+	// scaffold test lives on under another name, no renderer may write it
+	// (its rows assert CodeUnimplemented; a second copy would not compile):
+	// say why now, not after a whole generate run that wrote nothing. An RPC
+	// still on forge's stub may yet come back from the staged scaffold, so
+	// its reason is named only if nothing does (below).
+	withheld := map[string]codegen.WithheldScaffoldTest{}
+	for _, p := range paths {
+		w, ok := codegen.WithholdingOfScaffoldTest(filepath.Join(root, filepath.Dir(filepath.FromSlash(p))), path.Base(p))
+		if !ok {
+			continue
+		}
+		if !w.UnwiredStub || w.TestFuncFile != "" {
+			return withheldScaffoldTestErr(root, paths, p, w)
+		}
+		withheld[p] = w
+	}
+
 	// CI paths answer to the mapper, and a workflow the mapper does not
 	// emit for this project is not re-created from any other renderer.
 	if slices.ContainsFunc(paths, generator.IsCIMapperPath) {
@@ -208,10 +230,21 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 	}
 
 	// Drop the birth records — the ONE thing standing between a deleted
-	// scaffold and every writer that would scaffold it.
+	// scaffold and every writer that would scaffold it. A path no renderer
+	// re-creates gets its record back, whichever way this returns: absent
+	// and unrecorded reads as "never scaffolded", and the next generate
+	// would write the file the user deleted.
+	undo := make(map[string]func(), len(paths))
 	for _, p := range paths {
-		checksums.ForgetScaffold(root, p)
+		undo[p] = checksums.ForgetScaffoldUndoably(root, p)
 	}
+	defer func() {
+		for _, p := range paths {
+			if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(p))); errors.Is(statErr, fs.ErrNotExist) {
+				undo[p]()
+			}
+		}
+	}()
 
 	// Pass 1: the generate pipeline. It owns the CI workflows and every
 	// scaffold whose content depends on the project's current state.
@@ -238,30 +271,9 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 
 	// Pass 2: anything the pipeline did not write comes from the upgrade
 	// renderer or the staging render of `forge project new`.
-	var remaining []string
-	for _, p := range paths {
-		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(p))); statErr != nil {
-			remaining = append(remaining, p)
-		}
-	}
-	var unrenderable []string
-	if len(remaining) > 0 {
-		staging, stageErr := stagedProjectScaffold(root, cfg)
-		if staging != "" {
-			defer func() { _ = os.RemoveAll(staging) }()
-		}
-		for _, p := range remaining {
-			written, werr := rescaffoldFromRenderers(root, cfg, staging, p)
-			if werr != nil {
-				return werr
-			}
-			if !written {
-				unrenderable = append(unrenderable, p)
-			}
-		}
-		if len(unrenderable) > 0 && stageErr != nil {
-			return fmt.Errorf("render the project scaffold for %s: %w", strings.Join(unrenderable, ", "), stageErr)
-		}
+	unrenderable, err := rescaffoldRemainingPaths(root, cfg, paths)
+	if err != nil {
+		return err
 	}
 
 	var done []string
@@ -284,6 +296,11 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 	}
 	if len(unrenderable) > 0 {
 		sort.Strings(unrenderable)
+		for _, p := range unrenderable {
+			if w, ok := withheld[p]; ok {
+				return withheldScaffoldTestErr(root, unrenderable, p, w)
+			}
+		}
 		return rescaffoldErr(unrenderable,
 			fmt.Sprintf("forge does not scaffold %s for this project", strings.Join(unrenderable, ", ")),
 			"check the path: rescaffold re-creates files forge writes for this project's forge.yaml (kind, features, frontends, services)")
@@ -370,6 +387,38 @@ func refuseCIPathsTheProjectLacks(root string, cfg *config.ProjectConfig, paths 
 			"change forge.yaml or the project so it has one, then re-run rescaffold")
 	}
 	return nil
+}
+
+// rescaffoldRemainingPaths tries the fallback renderers for paths the pipeline
+// left absent, returning those no renderer owns. The staging tree lives only
+// for this pass; ledger restoration remains the caller's responsibility.
+func rescaffoldRemainingPaths(root string, cfg *config.ProjectConfig, paths []string) ([]string, error) {
+	var remaining []string
+	for _, p := range paths {
+		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(p))); statErr != nil {
+			remaining = append(remaining, p)
+		}
+	}
+	var unrenderable []string
+	if len(remaining) > 0 {
+		staging, stageErr := stagedProjectScaffold(root, cfg)
+		if staging != "" {
+			defer func() { _ = os.RemoveAll(staging) }()
+		}
+		for _, p := range remaining {
+			written, werr := rescaffoldFromRenderers(root, cfg, staging, p)
+			if werr != nil {
+				return nil, werr
+			}
+			if !written {
+				unrenderable = append(unrenderable, p)
+			}
+		}
+		if len(unrenderable) > 0 && stageErr != nil {
+			return nil, fmt.Errorf("render the project scaffold for %s: %w", strings.Join(unrenderable, ", "), stageErr)
+		}
+	}
+	return unrenderable, nil
 }
 
 // rescaffoldFromRenderers writes p from the upgrade renderer, the advisory
@@ -513,6 +562,41 @@ func serviceProtoOf(p string) (string, bool) {
 		return "", false
 	}
 	return parts[2], true
+}
+
+// withheldScaffoldTestErr refuses the per-RPC scaffold test p, saying which
+// of codegen.WithholdingOfScaffoldTest's reasons holds and what to do.
+func withheldScaffoldTestErr(root string, paths []string, p string, w codegen.WithheldScaffoldTest) error {
+	dir := path.Dir(p)
+	var why []string
+	switch {
+	case w.MethodFile != "" && w.UnwiredStub:
+		why = append(why, fmt.Sprintf("%s still holds forge's Unimplemented stub of %s, and forge writes an RPC's scaffold test only in the run that writes its stub",
+			path.Join(dir, w.MethodFile), w.Method))
+	case w.MethodFile != "":
+		why = append(why, fmt.Sprintf("%s is implemented (%s), and forge offers a scaffold test only beside the Unimplemented stub it writes for an RPC — the test's rows assert CodeUnimplemented",
+			w.Method, path.Join(dir, w.MethodFile)))
+	}
+	if w.TestFuncFile != "" {
+		why = append(why, fmt.Sprintf("%s already declares %s, the func the scaffold test declares, so a second copy beside it would not compile",
+			path.Join(dir, w.TestFuncFile), w.TestFunc))
+	}
+	var fix string
+	switch {
+	case w.TestFuncFile != "":
+		fix = fmt.Sprintf("nothing is missing: %s is that scaffold test under a new name (`git mv` it back to %s if you want the old name)",
+			path.Join(dir, w.TestFuncFile), p)
+	case w.UnwiredStub:
+		fix = fmt.Sprintf("delete the %s stub from %s (the whole file, if it holds nothing else) and re-run rescaffold: forge writes the stub and its scaffold test back together",
+			w.Method, path.Join(dir, w.MethodFile))
+	default:
+		own := path.Join(dir, strings.TrimSuffix(codegen.RPCHandlerFileName(w.Method), ".go")+"_test.go")
+		fix = fmt.Sprintf("test %s in a file of your own (%s is the conventional name)", w.Method, own)
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(own))); err == nil {
+			fix = fmt.Sprintf("nothing is missing if %s holds %s's tests; forge's scaffold test would only assert the stub's CodeUnimplemented", own, w.Method)
+		}
+	}
+	return rescaffoldErr(paths, fmt.Sprintf("forge does not scaffold %s for this project: %s", p, strings.Join(why, "; ")), fix)
 }
 
 func rescaffoldErr(paths []string, what, fix string) error {

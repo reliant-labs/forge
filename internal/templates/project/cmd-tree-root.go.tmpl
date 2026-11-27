@@ -1,6 +1,7 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-// The command tree: root command, Deps (threaded to every command) and Factory. Plain cobra, yours
-// to reshape; your own commands go in commands.go. Every file here is yours except roots_gen.go:
+// The command tree: root command, Deps and Factory. Plain cobra, yours to
+// reshape. The commands.go hook wires your own subcommands into the tree.
+// Every file here is yours except roots_gen.go:
 // each forge:root struct in internal/app gets one command (default `server`), not one per service.
 // Depth: `forge skill load binaries`.
 package cmd
@@ -99,8 +100,8 @@ func newRootCmd(deps Deps) *cobra.Command {
 		root.AddCommand(f(deps))
 	}
 
-	// userCommands (cmd/{{.Name}}/cmd/commands.go, user-owned): second
-	// binaries and custom tooling register as code.
+	// userCommands (cmd/{{.Name}}/cmd/commands.go, user-owned) registers
+	// custom tooling as code.
 	for _, c := range userCommands(deps) {
 		root.AddCommand(c)
 	}

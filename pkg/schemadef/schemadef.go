@@ -301,6 +301,22 @@ const TableMarkerAppendOnly = "forge:append-only"
 // custom, as if the table did not exist.
 const TableMarkerNoEntity = "forge:no-entity"
 
+// TableMarkerNoSeed keeps one table out of the development dataset: the
+// dev seeder (`forge env up`'s first-boot seed, `forge db seed apply|reset`,
+// `forge db reset`) never synthesizes rows into it. A
+// table whose rows only the app itself can write correctly — a lease, a
+// serialized protobuf payload, a ledger whose rows mean money moved — would
+// otherwise get synthesized rows the app then reads as facts. A table that
+// cannot exist without one (a NOT NULL foreign key into it) is left out too,
+// with a plan warning naming why.
+//
+// It is about seed data only. The table keeps its store, entity factory and
+// mock fixtures (those are fixtures for tests and the frontend, not rows in
+// a database), and it is orthogonal to TableMarkerNoEntity: an ORM opt-out
+// says nothing about whether forge may fabricate rows, and a CRUD entity may
+// still be one whose rows the app alone writes.
+const TableMarkerNoSeed = "forge:no-seed"
+
 // TableMarkerEntityName declares the Go/wire name of the entity a table
 // projects to: `COMMENT ON TABLE daemon_attachment IS
 // 'forge:entity-name=DaemonAttachment'`. Without it the name is derived from
@@ -315,7 +331,7 @@ const TableMarkerEntityName = "forge:entity-name"
 // COMMENT ON TABLE may carry — the table-level twin of
 // KnownColumnMarkers, and registered for the same reason: a vocabulary
 // nothing enumerates is a vocabulary a typo silently leaves inert.
-var KnownTableMarkers = []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName, ViewMarkerEntity, TableMarkerOwner, TableMarkerPublic, TableMarkerUnscoped}
+var KnownTableMarkers = []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerNoSeed, TableMarkerEntityName, ViewMarkerEntity, TableMarkerOwner, TableMarkerPublic, TableMarkerUnscoped}
 
 // DeclaredEntityName returns the name a TableMarkerEntityName declaration
 // gives the table's entity, "" when it declares none.
@@ -359,6 +375,13 @@ var viewEntityMarkerRE = regexp.MustCompile(regexp.QuoteMeta(ViewMarkerEntity) +
 func (t Table) NoEntity() bool { return noEntityTableMarkerRE.MatchString(t.Comment) }
 
 var noEntityTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerNoEntity) + `(?:[^\w:-]|$)`)
+
+// NoSeed reports whether the table declares TableMarkerNoSeed in its catalog
+// comment, matched as a whole token, so a reason may follow it
+// ('forge:no-seed — the control plane writes leases').
+func (t Table) NoSeed() bool { return noSeedTableMarkerRE.MatchString(t.Comment) }
+
+var noSeedTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerNoSeed) + `(?:[^\w:-]|$)`)
 
 // AppendOnly reports whether the table is an append-only ledger: INSERT and
 // SELECT only, no UPDATE and no DELETE.

@@ -100,8 +100,11 @@ func forgeShimScript(goos string, tokens []string) (name, body string) {
 
 // withForgeShimOnPath puts the forge shim first on env's PATH. When the shim
 // cannot be written the env is returned unchanged, with one line saying why:
-// a host process that never calls forge must still start.
+// a host process that never calls forge must still start. It also sets the
+// storage lane that shim's `forge storage check` admits under
+// (withHostStorageLane).
 func withForgeShimOnPath(env []string, who string) []string {
+	env = withHostStorageLane(env)
 	dir, err := forgeShimDir()
 	if err != nil {
 		forgeShimWarnOnce.Do(func() {
@@ -114,6 +117,22 @@ func withForgeShimOnPath(env []string, who string) []string {
 
 // prependPathDir returns env with dir first on its PATH (Path on Windows,
 // whose environment is case-insensitive).
+// withHostStorageLane sets storageLaneEnv to "host" in a host process's env,
+// unless the developer already set it. What such a process builds is its own
+// binary — the scaffolded .air.toml runs `forge storage check ./tmp` before
+// each rebuild — so it is admitted under the host floor, not the reserve sized
+// for image builds, which refused a ~30 MB rebuild with 39 GiB free (Ranger
+// friction #1). Setting it here reaches every existing project's air config
+// without editing it.
+func withHostStorageLane(env []string) []string {
+	for _, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok && k == storageLaneEnv {
+			return env
+		}
+	}
+	return append(env[:len(env):len(env)], storageLaneEnv+"="+string(laneHost))
+}
+
 func prependPathDir(env []string, dir string) []string {
 	out := make([]string, 0, len(env)+1)
 	found := false

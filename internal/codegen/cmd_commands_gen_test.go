@@ -49,4 +49,9 @@ func TestGenerateCmdCommands(t *testing.T) {
 	if string(after) != string(sentinel) {
 		t.Error("GenerateCmdCommands overwrote a user-owned cmd/<bin>/cmd/commands.go")
 	}
+	// Regeneration of a legacy project must not opt it into the fresh
+	// scaffold's sibling usercmd package.
+	if _, err := os.Stat(filepath.Join(dir, "cmd", "proj", "usercmd")); !os.IsNotExist(err) {
+		t.Errorf("legacy GenerateCmdCommands must not create usercmd, stat error: %v", err)
+	}
 }

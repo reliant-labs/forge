@@ -147,6 +147,10 @@ type File struct {
 	// import block, and a db.EstimateStore's signatures routinely mention
 	// packages contract.go never imports (orm, the db package itself).
 	ForeignImports map[string]ImportDef
+	// PackageScopeNames is every package-level identifier the package
+	// declares outside mock_gen.go. The mock's typed call-record types are
+	// package-level too, and must not redeclare one (mock_calls.go).
+	PackageScopeNames map[string]bool
 }
 
 // Options controls optional aspects of mock generation. The zero value is
@@ -543,6 +547,10 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 		cf.Interfaces = append(cf.Interfaces, iface)
 	}
 	cf.ForeignImports = foreignImports
+	cf.PackageScopeNames, err = collectPackageScopeNames(dir, cf.Package)
+	if err != nil {
+		return nil, err
+	}
 
 	return cf, nil
 }
@@ -847,13 +855,16 @@ func renderMock(cf *File, opts Options) ([]byte, error) {
 			ifaces[i].Methods[j] = m.withBodyScopedNames(mockReceiver, "contractkit")
 		}
 	}
+	// The typed call records are named from the contract's own parameter
+	// names (a parameter `m` is field M, not the body-scoped P1).
+	mocks := buildMockInterfaces(cf.Interfaces, ifaces, cf.PackageScopeNames)
 
 	data := templateData{
 		Package:          cf.Package,
 		Source:           cf.sourceName(),
 		Receiver:         mockReceiver,
 		Imports:          imports,
-		Interfaces:       ifaces,
+		Interfaces:       mocks,
 		InterfaceNames:   interfaceNames,
 		PrimitiveAliases: cf.PrimitiveAliases,
 	}

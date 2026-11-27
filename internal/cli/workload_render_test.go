@@ -38,6 +38,10 @@ func writeKCLProject(t *testing.T, main string) string {
 // once written, so parallel tests share it safely.
 func renderKCLProject(t *testing.T, dir string, dArgs ...string) []byte {
 	t.Helper()
+	// Native KCL renders are slow and their inputs are invisible to Go's test cache.
+	if testing.Short() {
+		t.Skip("renders KCL through the native runtime; runs in task test")
+	}
 	kclplugin.Register()
 	out, err := kclrender.Run(dir, dir, dArgs)
 	if err != nil {

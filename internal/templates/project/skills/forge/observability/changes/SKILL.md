@@ -21,10 +21,13 @@ recreated or re-instrumented.
 
 **Status: beta.** The evaluation SDK below ships, and so does the declaration
 (`changes.yaml` at the project root, shipped in every release, with generated
-typed accessors: `docs/changes.md`). Delivering each environment's policy to
-every hosted app, and steering it from the console's Experiments screen, are
-still rolling out; until the platform delivers a snapshot, every call site gets
-the default written in code, so it is safe to ship evaluation code now.
+typed accessors: `docs/changes.md`). On Reliant hosting the platform delivers
+each environment's snapshot to its static sites and hosted backends, and the
+console's Experiments page (labelled Beta) steers it and shows whether a
+change's revision has reached the environment's apps. Apps not on Reliant
+hosting cannot fetch a snapshot yet (below). Until a snapshot reaches an app,
+every call site gets the default written in code, so it is safe to ship
+evaluation code now.
 
 ## Declare it
 
@@ -129,16 +132,40 @@ snapshot) and the variant each sees. It applies under every mode but `off`, so
 your team keeps its variant while an experiment runs, and a previewed unit is
 never measured.
 
+## Did it reach the apps?
+
+The Experiments page's change view says whether the change's saved revision has
+reached the environment's apps: delivered, waiting (N of M targets), saved with
+no targets, or saved. It reads `ChangesService/GetChangesDeliveryStatus`
+(control plane v1.31.0 and later) and compares with the environment's snapshot
+revision, not the change's own, so another change moving in the environment can
+keep it at waiting. Delivered means written to the site's origin or the
+workload's ConfigMap, not seen by every page or pod.
+
+## Frontends built from another repository
+
+A frontend with `source = forge.GitSource {...}` takes its accessors from that
+repository's `changes.yaml`, so forge carries that file into the release (v1.12.0
+and later): read at the source repo's root, at the pinned commit, merged with this
+project's, each file validated alone with errors naming its origin. The same key
+declared twice is kept once when type, default and variants match; otherwise the
+`changes-source-conflict` lint rule warns first and gates from v1.13.0. Keep a
+source's changes out with `changes_from_source = False` on the frontend. Details:
+`docs/changes.md`.
+
 ## Deploying a release that drops a variant
 
 A deploy whose release no longer declares a variant a running change
-delivers, or the change's whole key, goes through, and the control plane
-stops that change (everyone gets the default) and records why. The plan
-`forge env deploy` prints says so first, under `running changes this deploy
-stops`, as a `[warn]` line naming the change, its run and the variant; `--json`
-carries it as `deploy_plan.change_warnings`. It is a warning only: no
-acknowledgement, no exit code. To keep the change running, keep the variant
-declared in `changes.yaml` until the change ends.
+delivers, or the change's whole key, goes through: the platform serves that
+change as off, so everyone gets the default. forge prints a `[warn]` line in
+the plan `forge env deploy` shows, under `running changes this deploy stops`,
+naming the change, its run and the variant; `--json` carries it as
+`deploy_plan.change_warnings`. It is a warning only: no acknowledgement, no
+exit code. The warning and the control plane's recorded stop (the change moves
+to off, with the reason in its audit trail) need a control plane that carries
+control-plane#3712; until your control plane does, the plan prints no such
+warning. To keep the change running, keep the variant declared in
+`changes.yaml` until the change ends.
 
 ## What gets recorded
 

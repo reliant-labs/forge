@@ -112,6 +112,18 @@ func TestReasonAndFixOf(t *testing.T) {
 	}
 }
 
+func TestResultReasonIncludesTheDetailIntroducedByAColon(t *testing.T) {
+	t.Parallel()
+	err := errStackHostsThisCommand("dev", []ancestorSkip{{pid: 300, command: "reliant serve"}})
+	if got := reasonOf(err); got != "pid 300 (reliant serve)" {
+		t.Errorf("restart refusal loses its cause in the RESULT reason: %q", got)
+	}
+	err = errors.New("failed to build:\n\n  link exited 1\n  fix: inspect log")
+	if got := reasonOf(err); got != "failed to build: link exited 1" {
+		t.Errorf("RESULT reason = %q, want exactly one detail line", got)
+	}
+}
+
 // ─── env deploy ─────────────────────────────────────────────────────────────
 
 func TestFinishDeployOutcome(t *testing.T) {

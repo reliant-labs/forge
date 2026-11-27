@@ -128,11 +128,14 @@ ci:
     affected_readers: true
 ```
 
-A changed file that is not Go, not embedded, not a package's testdata and not
-claimed by a rule then selects the packages that name it, or name a directory
-holding it; the gate's selection lines say which (`ci.gate.affected_readers:
-deploy/kcl/main.k changed → ex.com/m/internal/render (names deploy/kcl)`). A file
-no package names still runs the whole suite.
+An owned file (including Go source) or a non-Go file that changes also selects
+the packages that name it or a directory holding it. Reader selections add to
+package ownership and rules; they are not deferred by the transitive cap. The
+gate's selection lines say which (`ci.gate.affected_readers: deploy/kcl/main.k
+changed → ex.com/m/internal/render (names deploy/kcl)`). Explicit
+`affected_ignore` still opts out of reader selection. An unplaced Go file still
+falls back to the full suite unless a rule claims it; an unclaimed non-Go file
+that no package owns or names also falls back to the full suite.
 
 What counts as naming a path: a package is scanned only if its sources locate
 the repo root (`runtime.Caller`, `os.Getwd`, a `".."`, `git rev-parse`,

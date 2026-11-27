@@ -1,9 +1,11 @@
 # Static-site edge: request logs in the org's telemetry, and Markdown negotiation
 
-**Status:** proposed. Raised by the owner on 2026-11-25. Nothing here is built.
+**Status:** approved. Raised by the owner on 2026-11-25. Nothing here is built.
 The architectural choices are collected in
-[section 8](#8-open-owner-decisions); each says what it blocks, and no slice
-starts before the decisions it names are settled.
+[section 8](#8-owner-decisions-decided-2026-11-26); on 2026-11-26 the owner
+accepted every recommendation there ("take your recommendations on all"), so
+all nine are the [Settled](#settled-owner-2026-11-26) list and no slice waits
+on a decision.
 **Date:** 2026-11-26
 **Related:** control-plane#3745 (request logs; the ticket), the owner's
 2026-11-25 ask for `Accept: text/markdown` negotiation (B),
@@ -64,6 +66,35 @@ The proposal:
 
 Both features ride the same seams: the StaticSite spec, the operator's
 `serving.json`, and the edge's request log.
+
+## Settled (owner, 2026-11-26)
+
+The owner accepted each recommendation of
+[section 8](#8-owner-decisions-decided-2026-11-26) ("take your recommendations
+on all"):
+
+1. **Source of edge request data:** the CDN request log, through a second sink,
+   Pub/Sub and a control-plane worker, to the gateway.
+2. **On by default.** An env opts out with `ObservabilitySignals.edge = False`.
+   It starts for existing sites when the control-plane slice ships, and the
+   release notes announce it.
+3. **The agent list** is forge `pkg/agentua`, embedded YAML shipped by forge
+   releases. A community list may seed it once its licence is checked.
+4. **Billing:** observability ingest, like any signal (10 GiB included, then
+   10¢/GiB).
+5. **Retention:** raw rows on a new `edge_days` (default: the env's info-log
+   days), and a daily rollup on the product-events retention (90 days free,
+   400 paid).
+6. **Client address:** a truncated network (/24, /48) and a country, never the
+   full IP. The country column stays empty until control-plane has a GeoIP
+   source.
+7. **Markdown negotiation is declared** with `markdown_negotiation = True` on a
+   hosted `forge.Frontend`; twins are detected from the build.
+8. **The origin decides at serve time**, with `Vary: Accept` and no CDN change.
+9. **The `.md` serving fix ships with B for every site:** `.md` is a static
+   file extension, and a missing twin is a 404.
+
+These are not reopened below.
 
 ## 1. Problem and experience
 
@@ -635,12 +666,14 @@ a warning with a row in `internal/cli/lint/lint_rollout_table.go`.
 | **B as a redirect** (`303` to `/x.md`)                                        | Costs agents a round trip, and many agent fetchers do not follow redirects across content types. Content negotiation is what `Accept` is for.                                              |
 | **B automatic for every site with twins**                                     | Changes responses (adds `Vary: Accept`) for sites that never asked, and the brief requires opt-in. Kept as decision 7's option (b) for later.                                              |
 
-## 8. Open owner decisions
+## 8. Owner decisions (decided 2026-11-26)
 
-Per project rules, the owner decides architectural choices; each row gives the
-realistic options, a recommendation, and what it blocks.
+**All settled (owner, 2026-11-26): each row is decided on its recommended
+option** ("take your recommendations on all"), recorded as the
+[Settled](#settled-owner-2026-11-26) list. The table keeps the options that
+were weighed, as the record of why. Reopening a row is the owner's call.
 
-| #   | Decision                           | Options                                                                                                                                                                                                                                | Recommendation                                                                                                                                                                                                                           | Blocks                                     |
+| #   | Decision                           | Options                                                                                                                                                                                                                                | Decided (owner, 2026-11-26)                                                                                                                                                                                                              | Blocked                                    |
 | --- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
 | 1   | Where edge request data comes from | (a) CDN request log, second sink → Pub/Sub → cp worker → gateway; (b) origin logs for misses plus CDN logs for hits; (c) origin logs only.                                                                                             | (a). The edge log is the only complete source, and the export, consumer and host resolution already exist for metering.                                                                                                                  | Slices 1 and 2.                            |
 | 2   | Default and opt-out                | (a) on by default, `ObservabilitySignals.edge = False` per env opts out; (b) off by default, opt in per env; (c) per frontend rather than per env.                                                                                     | (a), as the ticket says. Every signal but replay defaults on, and the data holds no visitor identity. Note it starts for existing sites when the cp slice ships; announce it in the release notes.                                       | Slice 1 (schema), slice 2 (worker filter). |
@@ -659,7 +692,7 @@ panels) and **S** for B (an origin branch, an operator field, a KCL field).
 They share no slice and can be built in parallel; B's measurement panel waits
 for A's dashboard group. Each slice ships alone.
 
-0. **Decisions** 1 to 9 settled by the owner.
+0. **Decisions** 1 to 9 settled by the owner (done, 2026-11-26).
 1. **forge: schema and vocabulary.** `ObservabilitySignals.edge`,
    `ObservabilityRetention.edge_days`, their render into the StaticSite spec
    behind `honors-edge-log-opt-out`; `pkg/agentua` with its list and tests.

@@ -75,9 +75,9 @@ func TestExtractService_RecordsMCP(t *testing.T) {
 	want := map[string]*codegen.MethodMCP{
 		"ListOrders":  {OptIn: true},
 		"CancelOrder": {OptIn: true, MutatingAck: true, Mutating: true, Idempotent: true},
-		"GetSecret":   {OptIn: false},
+		"GetSecret":   {OptIn: false, Explicit: true},
 		"SetFlag":     {OptIn: true, Mutating: true, Idempotent: true},
-		"GetStatus":   {OptIn: true},
+		"GetStatus":   {OptIn: true, Explicit: true},
 		"GetVersion":  nil,
 	}
 	for i := range f.Services {

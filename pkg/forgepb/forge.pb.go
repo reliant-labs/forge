@@ -837,8 +837,9 @@ type ServiceOptions struct {
 	// kind's RPCs.
 	Audience string `protobuf:"bytes,7,opt,name=audience,proto3" json:"audience,omitempty"`
 	// Serve every unary rpc of this service as an MCP tool on the app's /mcp
-	// endpoint: the default for (forge.v1.method).mcp. Each mutating rpc still
-	// needs (forge.v1.method).mcp_mutating to be served.
+	// endpoint: the default for (forge.v1.method).mcp. Streaming rpcs are
+	// skipped. Each mutating rpc still needs (forge.v1.method).mcp_mutating to
+	// be served.
 	Mcp           *bool `protobuf:"varint,8,opt,name=mcp,proto3,oneof" json:"mcp,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1029,7 +1030,7 @@ type MethodOptions struct {
 	Activity *ActivityOptions `protobuf:"bytes,7,opt,name=activity,proto3" json:"activity,omitempty"`
 	// Serve this rpc as an MCP tool on the app's /mcp endpoint. Unset inherits
 	// (forge.v1.service).mcp; false opts one rpc out of a service that opts in.
-	// `forge generate` refuses it on a streaming rpc. See
+	// `forge generate` refuses an explicit mcp: true on a streaming rpc. See
 	// docs/proposals/mcp-from-rpcs.md.
 	Mcp *bool `protobuf:"varint,8,opt,name=mcp,proto3,oneof" json:"mcp,omitempty"`
 	// Required, beside mcp, for an rpc that changes state (activity.IsMutating:

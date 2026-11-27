@@ -49,7 +49,8 @@ func MCPToolName(svc, method string) string {
 
 // MCPTools decides the MCP tools the services serve, in service then
 // declaration order. It refuses (returns an error naming every defect) what
-// cannot be served: `mcp` on a streaming rpc, a tool name that is not
+// cannot be served: an explicit `(forge.v1.method).mcp: true` on a streaming
+// rpc (one inheriting the service default is skipped), a tool name that is not
 // [a-z0-9_]{1,64}, and two rpcs projecting to one name. A mutating rpc
 // without mcp_mutating is not an error here, only absent: lint says why.
 func MCPTools(services []ServiceDef) ([]MCPToolDef, error) {
@@ -63,6 +64,10 @@ func MCPTools(services []ServiceDef) ([]MCPToolDef, error) {
 			}
 			where := fmt.Sprintf("%s.%s.%s", svc.Package, svc.Name, m.Name)
 			if m.ClientStreaming || m.ServerStreaming {
+				// The service default covers unary rpcs only.
+				if !m.MCP.Explicit {
+					continue
+				}
 				errs = append(errs, fmt.Sprintf("%s: mcp is set on a streaming rpc; MCP tools are request/response, so set (forge.v1.method).mcp = false on it", where))
 				continue
 			}

@@ -291,7 +291,7 @@ func methodMCP(md protoreflect.MethodDescriptor, mutating bool, svcMCP *bool) *c
 	}
 	switch {
 	case mo != nil && mo.Mcp != nil:
-		m.OptIn = mo.GetMcp()
+		m.OptIn, m.Explicit = mo.GetMcp(), true
 	case svcMCP != nil:
 		m.OptIn = *svcMCP
 	}

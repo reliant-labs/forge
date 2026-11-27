@@ -190,6 +190,10 @@ type MethodMCP struct {
 	// OptIn is the effective opt-in: `(forge.v1.method).mcp` when set, else
 	// `(forge.v1.service).mcp`.
 	OptIn bool `json:",omitempty"`
+	// Explicit: OptIn came from `(forge.v1.method).mcp` itself, not the
+	// service default. Only an explicit mcp: true on a streaming rpc is
+	// refused; the service default covers unary rpcs only.
+	Explicit bool `json:",omitempty"`
 	// MutatingAck is `(forge.v1.method).mcp_mutating`.
 	MutatingAck bool `json:",omitempty"`
 	// Mutating is activity.IsMutating: the rpc is not read-named and does

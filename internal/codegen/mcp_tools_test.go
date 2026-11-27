@@ -58,8 +58,16 @@ func TestMCPTools(t *testing.T) {
 		},
 		{
 			name:    "streaming refused",
-			svcs:    []ServiceDef{mcpSvc("OrdersService", Method{Name: "WatchOrders", ServerStreaming: true, AuthRequired: true, MCP: optIn})},
+			svcs:    []ServiceDef{mcpSvc("OrdersService", Method{Name: "WatchOrders", ServerStreaming: true, AuthRequired: true, MCP: &MethodMCP{OptIn: true, Explicit: true}})},
 			wantErr: "streaming rpc",
+		},
+		{
+			name: "service default skips a streaming rpc",
+			svcs: []ServiceDef{mcpSvc("OrdersService",
+				Method{Name: "ListOrders", AuthRequired: true, NoSideEffects: true, MCP: optIn},
+				Method{Name: "WatchOrders", ServerStreaming: true, AuthRequired: true, MCP: optIn},
+			)},
+			want: []string{"orders_list_orders r"},
 		},
 		{
 			name: "streaming opted out by default is fine",

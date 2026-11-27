@@ -45,7 +45,7 @@ func TestStepMCPTools_NoToolsWritesEmptyTable(t *testing.T) {
 
 // mcp on a streaming rpc is refused before any plugin runs.
 func TestStepMCPTools_RefusesStreaming(t *testing.T) {
-	svcs := mcpStepServices(&codegen.MethodMCP{OptIn: true})
+	svcs := mcpStepServices(&codegen.MethodMCP{OptIn: true, Explicit: true})
 	svcs[0].Methods[0].ServerStreaming = true
 	ctx := &pipelineContext{ProjectDir: t.TempDir(), Checksums: &checksums.FileChecksums{}, DeclaredServices: svcs}
 	if err := stepMCPTools(ctx); err == nil || !strings.Contains(err.Error(), "streaming") {

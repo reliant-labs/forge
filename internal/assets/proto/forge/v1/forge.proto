@@ -266,8 +266,9 @@ message ServiceOptions {
   string audience = 7;
 
   // Serve every unary rpc of this service as an MCP tool on the app's /mcp
-  // endpoint: the default for (forge.v1.method).mcp. Each mutating rpc still
-  // needs (forge.v1.method).mcp_mutating to be served.
+  // endpoint: the default for (forge.v1.method).mcp. Streaming rpcs are
+  // skipped. Each mutating rpc still needs (forge.v1.method).mcp_mutating to
+  // be served.
   optional bool mcp = 8;
 }
 
@@ -345,7 +346,7 @@ message MethodOptions {
 
   // Serve this rpc as an MCP tool on the app's /mcp endpoint. Unset inherits
   // (forge.v1.service).mcp; false opts one rpc out of a service that opts in.
-  // `forge generate` refuses it on a streaming rpc. See
+  // `forge generate` refuses an explicit mcp: true on a streaming rpc. See
   // docs/proposals/mcp-from-rpcs.md.
   optional bool mcp = 8;
 

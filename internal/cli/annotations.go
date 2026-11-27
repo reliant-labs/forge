@@ -964,7 +964,7 @@ var methodOptionMeta = map[string]optionMeta{
 	"idempotency_key": {"Convention marker advising callers to supply an idempotency key; forge does not enforce or inspect it.", "false"},
 	"errors":          {"Declared Connect/gRPC error codes the method may return (e.g. NotFound, InvalidArgument); informational, surfaced to handler authors.", "[] (no declared errors)"},
 	"activity":        {"The typed activity event a successful call records: verb, target {kind, id, label} (field paths into the request, or the response with a response. prefix), env, scope, detail, writer; or none: \"<why>\" for a mutation that records nothing. forge/pkg/activity's interceptor writes it. CRUD-shaped Create/Update/Delete rpcs imply theirs.", "unset (CRUD implied, or nothing recorded)"},
-	"mcp":             {"Serve this unary rpc as an MCP tool on the app's /mcp endpoint, named <service>_<rpc> (snake case, Service suffix dropped), described by its leading proto comment, with JSON Schemas of its request/response projected at forge generate. false opts one rpc out of a service that opts in; forge generate refuses it on a streaming rpc. NO_SIDE_EFFECTS rpcs are announced readOnlyHint.", "unset (inherits (forge.v1.service).mcp; off)"},
+	"mcp":             {"Serve this unary rpc as an MCP tool on the app's /mcp endpoint, named <service>_<rpc> (snake case, Service suffix dropped), described by its leading proto comment, with JSON Schemas of its request/response projected at forge generate. false opts one rpc out of a service that opts in; forge generate refuses an explicit mcp: true on a streaming rpc. NO_SIDE_EFFECTS rpcs are announced readOnlyHint.", "unset (inherits (forge.v1.service).mcp; off)"},
 	"mcp_mutating":    {"Required, beside mcp, for an rpc that changes state (not read-named and not idempotency_level = NO_SIDE_EFFECTS, as activity.IsMutating decides). Without it a mutating rpc is never served; with it the tool is announced destructiveHint.", "false"},
 }
 
@@ -978,7 +978,7 @@ var serviceOptionMeta = map[string]optionMeta{
 	"dependencies": {"Other services this service depends on.", "[]"},
 	"auth":         {"Service-wide authentication defaults (AuthConfig.auth_required / auth_provider); individual methods override via (forge.v1.method).auth_required.", ""},
 	"audience":     {"The trust domain whose callers the service serves (\"user\", or a project-chosen name such as \"daemon\" or \"operator\"). A serverkit.Listener refuses to start when it mounts a service whose audience differs from its chain's Authenticator.Audience().", "\"user\""},
-	"mcp":          {"Serve every unary rpc of this service as an MCP tool on the app's /mcp endpoint: the default for (forge.v1.method).mcp. Each mutating rpc still needs (forge.v1.method).mcp_mutating.", "unset (off)"},
+	"mcp":          {"Serve every unary rpc of this service as an MCP tool on the app's /mcp endpoint: the default for (forge.v1.method).mcp. Streaming rpcs are skipped. Each mutating rpc still needs (forge.v1.method).mcp_mutating.", "unset (off)"},
 }
 
 func optionSpecsFromDescriptor(fields protoreflect.FieldDescriptors, meta map[string]optionMeta) []OptionSpec {

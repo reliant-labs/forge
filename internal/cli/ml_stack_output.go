@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -95,17 +96,52 @@ type MLDecisionOutput struct {
 // fields of forge.Adopt and forge.Install.
 const mlScrapeDeprecationVersion = "v1.14.0"
 
-// usesScrapeFields reports whether a component sets the deprecated scrape
-// fields of forge.Adopt / forge.Install: a selector or a port (allow and
-// service_name need a port, so they never appear alone).
-func (c MLComponentOutput) usesScrapeFields() bool {
-	return c.Port != 0 || len(c.Selector) > 0
+// mlServicePrefix is kcl/ml.k's ML_SERVICE_PREFIX: a derived scrape's
+// default service.name is mlServicePrefix + kind.
+const mlServicePrefix = "ml-"
+
+// mlCtxSuffixRE is the character class kcl/ml.k's _ml_ctx_suffix replaces.
+var mlCtxSuffixRE = regexp.MustCompile(`[^-a-z0-9_.]`)
+
+// mlDefaultScrapeService is the service.name kcl/ml.k's _ml_scrape_svc
+// derives for a scraped component that sets no service_name: ml-<kind>,
+// suffixed with the cluster when the env has several stacks.
+func mlDefaultScrapeService(kind, cluster string, nstacks int) string {
+	if nstacks > 1 {
+		return mlServicePrefix + kind + "-" + strings.Trim(mlCtxSuffixRE.ReplaceAllString(strings.ToLower(cluster), "-"), "-_.")
+	}
+	return mlServicePrefix + kind
+}
+
+// scrapeFields are the deprecated scrape fields of forge.Adopt /
+// forge.Install the component sets, in declaration order (empty: none).
+// selector, port and allow are the declared values. The output's
+// service_name is the scrape's derived service.name, so service_name counts
+// as set when it differs from the default kcl/ml.k would derive (cluster and
+// nstacks are the stack's kube context and the env's stack count). KCL
+// refuses allow or service_name without a port, so a render never shows
+// them alone, but any one of the four marks the component.
+func (c MLComponentOutput) scrapeFields(cluster string, nstacks int) []string {
+	var fields []string
+	if len(c.Selector) > 0 {
+		fields = append(fields, "selector")
+	}
+	if c.Port != 0 {
+		fields = append(fields, "port")
+	}
+	if len(c.Allow) > 0 {
+		fields = append(fields, "allow")
+	}
+	if c.ServiceName != "" && c.ServiceName != mlDefaultScrapeService(c.Kind, cluster, nstacks) {
+		fields = append(fields, "service_name")
+	}
+	return fields
 }
 
 // mlScrapeDeprecations are the render's warnings for components that scrape
 // through their own fields: one per component, naming the stack, the
-// component and the forge.Telemetry that replaces the fields. A warning
-// only: the fields keep working within major 1.
+// component, the fields it sets and the forge.Telemetry that replaces them.
+// A warning only: the fields keep working within major 1.
 func mlScrapeDeprecations(entities *KCLEntities) []string {
 	if entities == nil {
 		return nil
@@ -113,22 +149,13 @@ func mlScrapeDeprecations(entities *KCLEntities) []string {
 	var out []string
 	for _, s := range entities.MLStacks {
 		for _, c := range s.Components {
-			if !c.usesScrapeFields() {
+			fields := c.scrapeFields(s.Cluster, len(entities.MLStacks))
+			if len(fields) == 0 {
 				continue
 			}
 			schema := "forge.Adopt"
 			if c.Mode == "install" {
 				schema = "forge.Install"
-			}
-			var fields []string
-			if len(c.Selector) > 0 {
-				fields = append(fields, "selector")
-			}
-			if c.Port != 0 {
-				fields = append(fields, "port")
-			}
-			if len(c.Allow) > 0 {
-				fields = append(fields, "allow")
 			}
 			msg := fmt.Sprintf("warning: ml stack %q: %s %q (%s) sets %s, deprecated in %s: declare the scrape as a forge.Telemetry entry in Observability.telemetry "+
 				"(service_name, scope = \"platform\", cluster = %q, namespaces, selector, metrics = [forge.MetricsScrape {port = ...}]) and drop the fields from the %s. They still work; removal only in a future major",

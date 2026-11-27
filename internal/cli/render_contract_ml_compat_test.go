@@ -80,3 +80,60 @@ func TestMLScrapeFieldsWarnDeprecated(t *testing.T) {
 		t.Errorf("Install warnings = %q", w)
 	}
 }
+
+// Any deprecated scrape field marks a component, alone or not, and the
+// warning lists exactly the fields it sets. service_name counts as set only
+// when it is not the ml-<kind>[-<cluster>] default kcl/ml.k derives.
+func TestMLScrapeDeprecationsListExactlyTheFieldsSet(t *testing.T) {
+	sel := map[string]string{"app": "prom"}
+	for _, tc := range []struct {
+		name    string
+		stacks  int
+		c       MLComponentOutput
+		want    string // "" = no warning
+		service string // a "scrapes as service" clause the warning must carry
+	}{
+		{name: "service_name only", stacks: 1, c: MLComponentOutput{ServiceName: "prom-a"},
+			want: `sets service_name, deprecated`, service: `scrapes as service "prom-a"`},
+		{name: "allow only", stacks: 1, c: MLComponentOutput{Allow: []string{"up"}},
+			want: `sets allow, deprecated`},
+		{name: "selector only", stacks: 1, c: MLComponentOutput{Selector: sel},
+			want: `sets selector, deprecated`},
+		{name: "every field", stacks: 1, c: MLComponentOutput{Selector: sel, Port: 9090, Allow: []string{"up"}, ServiceName: "prom-a"},
+			want: `sets selector, port, allow, service_name, deprecated`, service: `scrapes as service "prom-a"`},
+		{name: "derived default name", stacks: 1, c: MLComponentOutput{Selector: sel, Port: 9090, ServiceName: "ml-prometheus"},
+			want: `sets selector, port, deprecated`, service: `scrapes as service "ml-prometheus"`},
+		{name: "derived default name, several stacks", stacks: 2, c: MLComponentOutput{Selector: sel, Port: 9090, ServiceName: "ml-prometheus-gke_acme_us-central1_gpu"},
+			want: `sets selector, port, deprecated`, service: `scrapes as service "ml-prometheus-gke_acme_us-central1_gpu"`},
+		{name: "one stack's default under several stacks is set", stacks: 2, c: MLComponentOutput{Selector: sel, Port: 9090, ServiceName: "ml-prometheus"},
+			want: `sets selector, port, service_name, deprecated`},
+		{name: "no scrape fields", stacks: 1, c: MLComponentOutput{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.c.Slot, tc.c.Mode, tc.c.Kind = "monitoring", "adopt", "prometheus"
+			e := &KCLEntities{}
+			for i := 0; i < tc.stacks; i++ {
+				s := MLStackOutput{Cluster: "GKE_acme_us-central1_gpu"}
+				if i == 0 {
+					s.Components = []MLComponentOutput{tc.c}
+				} else {
+					s.Cluster = "other"
+				}
+				e.MLStacks = append(e.MLStacks, s)
+			}
+			w := mlScrapeDeprecations(e)
+			if tc.want == "" {
+				if len(w) != 0 {
+					t.Fatalf("warnings = %q, want none", w)
+				}
+				return
+			}
+			if len(w) != 1 || !strings.Contains(w[0], `forge.Adopt "prometheus" (monitoring) `+tc.want) {
+				t.Fatalf("warnings = %q, want one containing %q", w, tc.want)
+			}
+			if tc.service != "" && !strings.Contains(w[0], tc.service) {
+				t.Errorf("warning %q lacks %q", w[0], tc.service)
+			}
+		})
+	}
+}

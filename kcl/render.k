@@ -392,11 +392,13 @@ _env_var = lambda name: str, v0: any, where: str, rt: any, bundle: Bundle -> any
 }
 
 # A BucketRef as the value its referrer reads: a literal, or (a BucketOnS3
-# credential) the SecretRef / ManagedSecret it declares, which then lowers
-# through its own channel above. A dev MinIO is reached through the
-# cluster's host gateway from a pod, on localhost from a host process and
-# by its compose service from a compose container (_bucket_minio_endpoint);
-# a hosted workload cannot reach it at all. A bucket on forge.OnHosted is the
+# credential, a host MinIO's generated root credential) the SecretRef /
+# ManagedSecret it declares, which then lowers through its own channel
+# above. A compose MinIO is reached through the cluster's host gateway from
+# a pod, on localhost from a host process and by its compose service from a
+# compose container (_bucket_minio_endpoint); a host MinIO (`infra` set)
+# binds 127.0.0.1, so only a host process reaches it; a hosted workload
+# reaches neither. A bucket on forge.OnHosted is the
 # reverse: only the control plane knows its real name and key, so a hosted
 # referrer KEEPS the BucketRef (the wire's bucketRef, read from the Secret
 # the platform writes) and any other referrer is refused.
@@ -408,7 +410,10 @@ _bucket_resolve = lambda v: any, where: str, rt: any, bundle: Bundle -> any {
         "${where}: forge.BucketRef '${v.name}' is on forge.BucketOnMinIO, the env's local MinIO, which a hosted workload cannot reach. Bind the bucket to forge.BucketOnS3 in this env"
     assert not (_b.runtime.type == "hosted" and rt.type != "hosted"), \
         "${where}: forge.BucketRef '${v.name}' is on forge.OnHosted, whose credential only exists in the control plane's namespace, so a workload on the ${rt.type} runtime cannot read it. Run the referrer on forge.OnHosted {}, or bind the bucket to forge.BucketOnS3 in this env"
-    _val = v if _b.runtime.type == "hosted" else (_bucket_minio_values(_b, _bucket_minio_endpoint(_b, v.name, where, rt, bundle)) if _b.runtime.type == "minio" else _bucket_s3_values(_b))[v.key]
+    _host_minio = _b.runtime.infra if _b.runtime.type == "minio" else ""
+    assert not _host_minio or rt.type == "host", \
+        "${where}: forge.BucketRef '${v.name}' is on the host MinIO '${_host_minio}' (forge.HostInfra), which listens on 127.0.0.1 of this machine, so a workload on the ${rt.type} runtime cannot reach it. Run the referrer on forge.OnHost {}, or bind the bucket to the compose MinIO (forge.BucketOnMinIO {port = ...} + forge.minio_workload) in this env"
+    _val = v if _b.runtime.type == "hosted" else (_bucket_host_minio_values(_b, _bucket_host_minios(_b, bundle.infra)[0]) if _host_minio else (_bucket_minio_values(_b, _bucket_minio_endpoint(_b, v.name, where, rt, bundle)) if _b.runtime.type == "minio" else _bucket_s3_values(_b)))[v.key]
     assert not (rt.type == "hosted" and typeof(_val) == "SecretRef"), \
         "${where}: forge.BucketRef '${v.name}' ${v.key} is a forge.SecretRef, a Kubernetes Secret a hosted workload cannot read. Use forge.ManagedSecret {name = ...} on the bucket's forge.BucketOnS3 (the env's secret store: `forge secret set --env <env> <NAME>`)"
     _val
@@ -2358,8 +2363,21 @@ _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
             }
             "image": _o.agent.image
             "memoryLimitMiB": _o.agent.memory_limit_mib
-        } | _tel_agent_spec(b, t.cluster)
+        } | _tel_agent_spec(b, t.cluster) | _k8s_inventory_spec(_o.agent, t.cluster)
     } for _, t in _targets]
+}
+
+# The `kubernetesInventory` key of a cluster's agent record (kcl/schema.k
+# KubernetesInventory; pkg/deploy.KubernetesInventory): absent unless the env
+# opts in.
+_k8s_inventory_spec = lambda agent: ObservabilityAgent, cluster: str -> {str:} {
+    _k = agent.kubernetes_inventory
+    {"kubernetesInventory": {
+        "cluster": cluster
+        "nodeInterval": _k.node_interval
+        "workloadInterval": _k.workload_interval
+        "events": _k.events
+    }} if _k else {}
 }
 
 # ---------------------------------------------------------------------------
@@ -2478,8 +2496,9 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
 # regressed_issue_min_events only when it is set and differs from
 # new_issue_min_events (which it follows unset), and error_rate_min_errors
 # and baseline_window_seconds only when they are not the defaults (10, 24h),
-# and alert_baseline_min_firings only when it is not the default (1), so a
-# render that keeps them records the shape it always did.
+# and alert_baseline_min_firings only when it is not the default (1), and
+# seo_max_score_drop and a11y_max_score_drop only when they are not the
+# default (10), so a render that keeps them records the shape it always did.
 _render_release_health = lambda h: ReleaseHealth -> any {
     {
         "window_seconds": _release_health_seconds(h.window)
@@ -2498,6 +2517,10 @@ _render_release_health = lambda h: ReleaseHealth -> any {
             "baseline_window_seconds": _release_health_seconds(h.baseline_window)
         if h.alert_baseline_min_firings != 1:
             "alert_baseline_min_firings": h.alert_baseline_min_firings
+        if h.seo_max_score_drop != 10:
+            "seo_max_score_drop": h.seo_max_score_drop
+        if h.a11y_max_score_drop != 10:
+            "a11y_max_score_drop": h.a11y_max_score_drop
     }
 }
 
@@ -3446,7 +3469,7 @@ render = lambda bundle: Bundle -> any {
             "identity": _render_identity(bundle, _idns(bundle)[0])
         if len(_idns(bundle)) > 1:
             "identities": [_render_identity(bundle, id) for id in _idns(bundle)]
-        "infra": [_render_host_infra(i) for i in bundle.infra]
+        "infra": [_render_host_infra(i, bundle) for i in bundle.infra]
         "frontends": [_render_frontend(f, bundle) for f in bundle.frontends]
         "databases": [_render_database(db, bundle) for db in bundle.databases]
         # The env's buckets forge manages, as the ManagedBucket the hosted
@@ -3519,7 +3542,7 @@ render = lambda bundle: Bundle -> any {
         # WHERE secret values come from. A declaration only: no secret VALUE
         # ever enters this output.
         if bundle.secret_provider:
-            "secret_provider": bundle.secret_provider
+            "secret_provider": _render_secret_provider(bundle)
         # Explicitly-placed Secrets, placement RESOLVED here (own
         # cluster/namespace, else the primary target's) so the CLI applies
         # each exactly where it says. A `from = "file"` key carries only the
@@ -3563,7 +3586,36 @@ render = lambda bundle: Bundle -> any {
 # returns a fully-populated dict so the Go consumer sees stable keys.
 # ---------------------------------------------------------------------------
 
-_render_host_infra = lambda d: HostInfra -> any {
+# A host MinIO's buckets: those the env declares on it (BucketOnMinIO
+# {infra = <its name>}).
+_host_minio_buckets = lambda d: HostInfra, bundle: Bundle -> [Bucket] {
+    [b for b in bundle.buckets if b.runtime.type == "minio" and b.runtime.infra == d.name]
+}
+
+# The browser origins a host MinIO allows: the union of its buckets'
+# cors_origins, any origin when none declares one — forge.minio_workload's
+# rule, so a bucket behaves the same on either MinIO.
+_host_minio_cors = lambda d: HostInfra, bundle: Bundle -> str {
+    _origins = sorted({o: 0 for b in _host_minio_buckets(d, bundle) for o in b.cors_origins})
+    "*" if not _origins or "*" in _origins else ",".join(_origins)
+}
+
+# The env's secret provider as rendered. A forge.FileSecrets beside a host
+# MinIO also `generate`s that MinIO's root credentials, under the keys
+# _minio_root_secrets names: hex, because an access key travels inside the
+# SigV4 Credential header, where a base64 '/' would split it. A spec the
+# author declared for the same key wins. Each added spec is the env
+# document's GenerateSpec shape (bytes, encoding) and nothing more. The
+# declared provider is merged into, not rebuilt: every field it carries
+# renders as declared, and only `generate` gains entries.
+_render_secret_provider = lambda bundle: Bundle -> any {
+    _sp = bundle.secret_provider
+    _keys = [k for i in bundle.infra if i.engine == "minio" for k in [_minio_root_secrets(i.name).user, _minio_root_secrets(i.name).password]] if _sp.type == "file" else []
+    _minio_gen = {k: {"bytes": 16 if k.endswith("_ROOT_USER") else 32, "encoding": "hex"} for k in _keys if k not in (_sp.generate or {})}
+    _sp if not _minio_gen else {k: v for k, v in _sp if k != "generate"} | {"generate": _minio_gen | (_sp.generate or {})}
+}
+
+_render_host_infra = lambda d: HostInfra, bundle: Bundle -> any {
     {
         "name": d.name
         "engine": d.engine
@@ -3589,6 +3641,16 @@ _render_host_infra = lambda d: HostInfra -> any {
         # Only when declared, so an env without it renders as before.
         if d.temporal_metrics_port:
             "temporal_metrics_port": d.temporal_metrics_port
+        # engine = "minio" only, and only then, so every other engine renders
+        # as before. The buckets come from Bundle.buckets; the credentials are
+        # the secret-store KEYS forge generates them under, never values.
+        if d.engine == "minio":
+            "minio_console_port": d.minio_console_port if d.minio_console_port else None
+            "minio_region": _host_minio_region(d)
+            "minio_buckets": [{"name": b.name, "public_read": b.public_read} for b in _host_minio_buckets(d, bundle)]
+            "minio_cors_allow_origin": _host_minio_cors(d, bundle)
+            "minio_root_user_secret": _minio_root_secrets(d.name).user
+            "minio_root_password_secret": _minio_root_secrets(d.name).password
     }
 }
 
@@ -3951,7 +4013,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         "dev_runner": f.dev_runner
         "port": f.port
         "env_file": f.env_file if f.env_file else None
-        "env_vars": [_render_env_var(e) for e in f.env_vars if not (_obs_browser_off(bundle) and e.name == _otel_endpoint_var(f))] \
+        "env_vars": [_render_frontend_env_var(e, f, bundle) for e in f.env_vars if not (_obs_browser_off(bundle) and e.name == _otel_endpoint_var(f))] \
             + ([_render_env_var(EnvVar {name = _otel_endpoint_var(f), value = "off"})] if _obs_browser_off(bundle) else [])
         "config": _render_frontend_config(f.config) if f.config else None
         "runtime": _render_frontend_runtime(f.runtime)
@@ -3975,6 +4037,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
     } | ({"apis": _apis, "api_urls": _api_urls} if f.apis else {}) \
       | ({"routes": f.routes} if f.routes else {}) \
       | ({"changes_from_source": False} if f.changes_from_source == False else {}) \
+      | ({"release_urls": False} if f.release_urls == False else {}) \
       | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {}) \
       | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {})
 }
@@ -3984,6 +4047,44 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
 # `value`, which preserves an explicitly-set empty string (rendered as
 # `""`, not `null`). Empty-string `value` is a legal disable sentinel
 # downstream (e.g. RUNTIME_CLASS_NAME="" to skip runtimeClassName).
+#
+# A frontend's env var lowers a forge.FrontendURL by where its TARGET runs
+# (kcl/schema.k FrontendURL): a dev server's URL is known now, so it becomes
+# the value; a hosted frontend's hostname is the control plane's, so the
+# reference is kept for the build to resolve (`frontend_url`, value null);
+# every other runtime has no hostname forge knows, and is refused. Every
+# var that carries no FrontendURL renders exactly as _render_env_var does.
+_render_frontend_env_var = lambda ev: EnvVar, f: Frontend, bundle: Bundle -> any {
+    _r = _render_env_var(ev)
+    (_r | _frontend_url_lowered(ev.name, ev.frontend_url, f, bundle)) if ev.frontend_url else _r
+}
+
+_frontend_url_lowered = lambda name: str, ref: FrontendURL, f: Frontend, bundle: Bundle -> any {
+    _where = "frontend '${f.name}' env_vars ${name}"
+    _targets = [t for t in bundle.frontends if t.name == ref.frontend]
+    assert _targets, \
+        "${_where}: forge.FrontendURL names frontend '${ref.frontend}', which this environment does not declare. " \
+        + "Declared frontends: " + ", ".join([t.name for t in bundle.frontends]) + "."
+    _t = _targets[0]
+    _type = _t.runtime.type if _t.runtime else ""
+    assert _type in ["host", "hosted"], \
+        "${_where}: forge.FrontendURL '${ref.frontend}' runs on the ${_type} runtime, whose public hostname forge does not know " \
+        + "(it is your CDN's or your Firebase site's). Set ${name} to the site's URL as a literal: forge.EnvVar {name = \"${name}\", value = \"https://example.com\"}."
+    # A dev server's URL baked into a published build would ship localhost
+    # as the site's canonical origin.
+    assert not (_type == "host" and f.runtime and f.runtime.type != "host"), \
+        "${_where}: forge.FrontendURL '${ref.frontend}' is a dev server (forge.OnHost), and frontend '${f.name}' publishes a build on the ${f.runtime.type} runtime: " \
+        + "the build would carry http://localhost as its origin. Name a hosted frontend, or set ${name} to a literal value."
+    # A hosted target's hostname is resolved only by a build forge runs (a
+    # hosted release, a bucket/Firebase/BuildOnly deploy). A dev server is
+    # not one, so it would see the variable empty.
+    assert not (_type == "hosted" and f.runtime and f.runtime.type == "host"), \
+        "${_where}: forge.FrontendURL '${ref.frontend}' is a hosted site, and frontend '${f.name}' is a dev server (forge.OnHost), which forge does not build: " \
+        + "nothing would resolve the hosted hostname. Name a dev-served frontend of this env, or set ${name} to a literal value."
+    {"value": "http://localhost:" + str(_t.port) + (_t.base_path if _t.base_path else "")} if _type == "host" \
+        else {"frontend_url": {"frontend": ref.frontend}}
+}
+
 _render_env_var = lambda ev: EnvVar -> any {
     {
         "name": ev.name

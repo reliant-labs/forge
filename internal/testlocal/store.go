@@ -52,20 +52,53 @@ type Lane struct {
 	Dir string
 }
 
-// ResultsPath is the lane's results file, or "" when it has none.
-func (l *Lane) ResultsPath() string {
-	name := l.ResultsFile
-	if name == "" {
-		if l.Results == testreport.LaneResultsMissing {
-			return ""
-		}
-		name = testreport.LaneResultsFile
+// resultsName is the results file capture.json names, "" when it has none.
+func (l *Lane) resultsName() string {
+	if l.ResultsFile != "" {
+		return l.ResultsFile
 	}
-	p := filepath.Join(l.Dir, filepath.FromSlash(name))
-	if fi, err := os.Stat(p); err != nil || fi.IsDir() {
+	if l.Results == testreport.LaneResultsMissing {
 		return ""
 	}
-	return p
+	return testreport.LaneResultsFile
+}
+
+// ResultsPath is the lane's results file, or "" when it has none or
+// capture.json names one outside the lane directory ([Lane.ResultsProblem]
+// says so). Read it with [Lane.OpenResults], never by this path.
+func (l *Lane) ResultsPath() string {
+	name := l.resultsName()
+	if name == "" {
+		return ""
+	}
+	fi, err := l.Stat(name)
+	if err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
+	rel, _ := lanePath(name)
+	return filepath.Join(l.Dir, rel)
+}
+
+// ResultsProblem says why the results file capture.json names is refused,
+// or "" when it is not: a path outside the lane directory is never read.
+func (l *Lane) ResultsProblem() string {
+	name := l.resultsName()
+	if name == "" {
+		return ""
+	}
+	if _, err := l.Stat(name); errors.Is(err, ErrOutsideLane) {
+		return fmt.Sprintf("the results file is outside the lane directory and was not read (%q)", name)
+	}
+	return ""
+}
+
+// OpenResults opens the lane's results file through the lane directory.
+func (l *Lane) OpenResults() (*os.File, error) {
+	name := l.resultsName()
+	if name == "" {
+		return nil, fs.ErrNotExist
+	}
+	return l.Open(name)
 }
 
 // CoverageInputs are the lane's coverage inputs: the ones capture.json
@@ -83,7 +116,7 @@ func (l *Lane) CoverageInputs() []testreport.LaneCoverageInput {
 		{Path: "cobertura-coverage.xml", Format: testreport.CoverageCobertura},
 	}
 	for _, c := range probe {
-		fi, err := os.Stat(filepath.Join(l.Dir, filepath.FromSlash(strings.TrimSuffix(c.Path, "/"))))
+		fi, err := l.Stat(c.Path)
 		if err != nil || fi.IsDir() != strings.HasSuffix(c.Path, "/") {
 			continue
 		}
@@ -106,6 +139,12 @@ func Open(dir string) (*Run, error) {
 	}
 	r := &Run{Dir: abs}
 	m, err := testreport.ReadRunManifest(abs)
+	if ok, lerr := regularNotLink(filepath.Join(abs, testreport.RunManifestFile)); lerr == nil && !ok {
+		// A run.json that is a symbolic link is not forge's writing, and
+		// may point anywhere: it is not read.
+		m, err = testreport.RunManifest{}, nil
+		r.Problems = append(r.Problems, "run.json is not a regular file and was not read: commit, tree and CI identity are unknown")
+	}
 	switch {
 	case err == nil:
 		r.RunManifest = m
@@ -122,6 +161,17 @@ func Open(dir string) (*Run, error) {
 		return nil, err
 	}
 	for _, name := range lanes {
+		// CapturedLanes lists only real directories; their capture.json
+		// must be a real file too, not a link to one elsewhere.
+		dir := testreport.LaneDir(abs, name)
+		if ok, err := regularNotLink(filepath.Join(dir, testreport.LaneManifestFile)); err != nil || !ok {
+			r.Problems = append(r.Problems, fmt.Sprintf("lane %s: %s is not a regular file and was not read", name, testreport.LaneManifestFile))
+			continue
+		}
+		if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
+			r.Problems = append(r.Problems, fmt.Sprintf("lane %s: the lane is not a directory and was not read", name))
+			continue
+		}
 		lm, err := testreport.ReadLaneManifest(abs, name)
 		if err != nil {
 			r.Problems = append(r.Problems, fmt.Sprintf("lane %s: %v", name, err))

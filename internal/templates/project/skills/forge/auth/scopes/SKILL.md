@@ -15,7 +15,7 @@ Beside its constant, each scope has ONE catalog row (`pkg/accesstoken/catalog.go
 |---|---|---|
 | `personal` | every signed-in person, over their OWN resources; no org grant names it | `reliant:api`, `llm:invoke`, `runs:start`, `inbox:read`, `daemon:manage` |
 | `member` | every member of an org, without a grant, and every credential acting as one (their daemon too) | `obs:read`, `obs:triage`, `tests:write` |
-| `standard` | org authority held by grant, directly or through a bundle | `deploy:write`, `secret:read`, `domain:write`, `tests:read` |
+| `standard` | org authority held by grant, directly or through a bundle | `deploy:write`, `secret:read`, `domain:write`, `tests:read`, `sbom:write` |
 | `sensitive` | org authority held ONLY by a grant naming the scope | `secret:write`, `db:query`, `storage:read`, `deploy:config:read`, `identity:manage`, `token:read`, `token:write`, `changes:launch` |
 
 A sensitive scope is one whose leak revoking the token does not undo: it reads secrets or users' data, issues credentials or passwords, or shifts production traffic. A future `billing:write` (changing what an org pays, or how) is sensitive from the day it is added; no such scope exists yet.
@@ -28,7 +28,7 @@ A bundle is a reviewed set of scopes for one kind of holder. A grant row or a to
 
 | Bundle | For | Holds |
 |---|---|---|
-| `ci` | an org's CI, acting as no person | `deploy:read`, `deploy:write`, `vuln:read`, `tests:write` |
+| `ci` | an org's CI, acting as no person | `deploy:read`, `deploy:write`, `vuln:read`, `tests:write`, `sbom:write` |
 | `developer` | a person building and shipping | `ci`'s scopes, their own API, runs, triggers, inbox and questions, `domain:read`, `obs:*`, `changes:read`, `changes:write`, `tests:read`. Not `secret:read`: secrets are the highest-value thing a leaked developer token could reach, so a developer is granted it explicitly |
 | `admin` | a person administering the org | every member and standard scope that is not a whole credential of its own, `secret:read` included; no personal scope (a person holds those already) |
 
@@ -59,11 +59,23 @@ Use it for STORED grants only. A list a caller is about to mint still goes throu
 - `accesstoken.NeverOnDaemon(scope)`: `token:read`, `token:write` and `approvals:decide` never ride a daemon's credential, even when its person holds them. Remove them after resolving a daemon's wildcard (`Grant.Admissible`, which already leaves out person-only and whole-credential scopes).
 - `accesstoken.Elevatable(scope)`: whether an on-demand exchange (a session trading up for an hour when a refusal names the scope) may produce it. Org authority minus `deploy:write` (it authorizes the exchange), `token:read`, `token:write`, `sourcemaps:write` and `changes:launch`. Elevation is a separate, explicit path: a sensitive scope may be elevatable (`identity:manage`, `db:query`) and is still never reachable through a bundle, and an exchange yields a scope only while the person holds it by grant.
 
+## CI identities: the federation class
+
+A control plane may exchange a CI job's own identity (a GitHub Actions OIDC token) for a short-lived token, with no secret stored in the CI. Which scopes such a token may carry is one more column on the catalog row, `accesstoken.FederationOf(scope)`:
+
+| Federation | Minted for a CI identity | Scopes |
+|---|---|---|
+| `FederationNone` (the default) | never | everything else, `deploy:write` and `token:*` included |
+| `FederationAnyRef` | on any admitted ref | `tests:write` (append-only evidence about the run) |
+| `FederationProtectedRef` | only when the identity's ref is protected, and never for a `workflow_run` event | `sbom:write` (write-once: the first SBOM recorded stands) |
+
+`accesstoken.Federatable(scope, refProtected)` and `accesstoken.FederatableScopes(refProtected)` are what an exchange derives its list from. A `workflow_run` job carries the base branch's ref but may process a fork's artifacts, so the exchange passes `refProtected && event != "workflow_run"`. A federatable scope is always in `ci`, so a federated token never exceeds an org CI token; forge's tests hold that, and keep every sensitive, personal, acting-user and registry-only scope at `FederationNone`.
+
 ## Adding a scope is one catalog row
 
 1. The constant, in `pkg/accesstoken/scope.go`, with a doc comment saying what it authorizes and what it does NOT imply.
 2. Append it to `AllScopes`: last, never in the middle, because a store's CHECK may list the set in order.
-3. One catalog row: its class, its bundles, its flags.
+3. One catalog row: its class, its bundles, its flags, and its federation class (none unless a CI identity must carry it).
 
 forge's tests fail a scope with no row, a sensitive scope in a bundle, and a standard scope `admin` misses, so a consumer's pin bump needs no code: its lists derive from `ClassOf`, its bundles expand at check time.
 

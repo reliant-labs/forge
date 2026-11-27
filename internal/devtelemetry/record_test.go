@@ -80,3 +80,14 @@ func TestReadRefusesACorruptRecord(t *testing.T) {
 		t.Errorf("a corrupt record read as ok=%v err=%v", ok, err)
 	}
 }
+
+// A record is not reported written when its directory cannot be created.
+func TestWriteFailsWhenTheDirectoryCannotBeCreated(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".forge"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Write(dir, Record{Env: "dev", Backend: "local"}); err == nil {
+		t.Fatal("Write succeeded under a .forge that is a file")
+	}
+}

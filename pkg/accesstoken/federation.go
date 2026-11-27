@@ -30,8 +30,18 @@ import "slices"
 //   - FederationProtectedRef: minted only when the identity's ref is
 //     protected (GitHub's ref_protected claim). For writes that are
 //     PERMANENT — the first one wins and is never replaced, such as a
-//     release's SBOM — so a run on an unprotected branch, which anyone with
-//     push access controls, cannot write first.
+//     release's SBOM (sbom:write) — so a run on an unprotected branch, which
+//     anyone with push access controls, cannot write first.
+//
+// ── workflow_run NEVER GETS A PROTECTED-REF SCOPE ─────────────────────
+//
+// A workflow_run job's identity carries the BASE branch's ref (main, usually
+// protected), but the artifacts it processes may come from a fork's pull
+// request. So the exchange treats a workflow_run identity as unprotected:
+// it computes FederatableScopes(refProtected && event != "workflow_run"),
+// and a protected-ref scope is refused there whatever the ref_protected
+// claim says. That rule is the exchange's (it sees the event; this package
+// does not), and it is part of what FederationProtectedRef means.
 //
 // A federatable scope is always in BundleCI (the tests hold that), so a
 // federated token is a subset of what an org's CI token may already hold.
@@ -43,7 +53,7 @@ const (
 	// FederationAnyRef is minted for a CI identity on any admitted ref.
 	FederationAnyRef
 	// FederationProtectedRef is minted for a CI identity only when its ref
-	// is protected.
+	// is protected, and never for a workflow_run event (see Federation).
 	FederationProtectedRef
 )
 

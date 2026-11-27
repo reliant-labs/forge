@@ -11,6 +11,11 @@ const RulesVersion = "1"
 // every other fact that is absent leaves the rules that need it unjudged
 // (never failed).
 type Input struct {
+	// Release is the release whose served site the audit judges, when the
+	// caller knows it (a control plane's promotion audit); "" otherwise. It
+	// is copied into Report.Release, so a stored report says what it
+	// audited and is never compared as another release's.
+	Release string
 	// Site is the base URL the audit crawled: scheme, host and base path
 	// ("https://example.com", "https://acme.sites.example.dev/docs/").
 	Site string
@@ -168,6 +173,9 @@ type RouteScore struct {
 type Report struct {
 	// RulesVersion is the [RulesVersion] that produced the report.
 	RulesVersion string `json:"rules_version"`
+	// Release is Input.Release: the release the audit judged; "" when the
+	// caller did not say.
+	Release string `json:"release,omitempty"`
 	// Site is the site-wide summary.
 	Site SiteSummary `json:"site"`
 	// Routes are the judged pages, sorted by route.

@@ -70,7 +70,7 @@ type Bundle string
 
 const (
 	// BundleCI is an org's CI: record and promote releases, upload test
-	// runs, read vulnerability findings to gate on them. It acts as no
+	// runs and SBOMs, read vulnerability findings to gate on them. It acts as no
 	// person, so it holds no scope that needs an acting user: an org
 	// automation token has nobody to clip its authority against. It holds no
 	// registry-only scope either (sourcemaps:write is a whole credential of
@@ -210,6 +210,11 @@ var catalog = []scopeEntry{
 	// developer or an admin holds it, and an app's own token is minted
 	// with it alone.
 	{scope: ScopeChangesRead, class: ClassStandard, bundles: inDeveloperAndUp},
+	// Records a release's SBOM and nothing else; never promotes. An org's
+	// CI token holds it through the ci bundle. A recorded SBOM is
+	// write-once (the first one stands), so a CI identity is minted it only
+	// on a protected ref. Unbindable: it has no scopeResourceRules entry.
+	{scope: ScopeSBOMWrite, class: ClassStandard, bundles: inCIAndUp, federation: FederationProtectedRef},
 }
 
 // entryOf returns scope's catalog row.

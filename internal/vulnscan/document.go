@@ -41,6 +41,10 @@ type Document struct {
 	// could be rescanned (no scanner, no database, a stale database), and
 	// why the verdict is undetermined.
 	Notes []string `json:"notes,omitempty"`
+	// SBOMs are the SBOM files the scan wrote to its output directory, one
+	// per artifact that has one (`forge vuln gate --out`); absent from
+	// every other verb's document.
+	SBOMs []SBOMFile `json:"sboms,omitempty"`
 }
 
 // DocumentDB is the freshness of a document's findings.
@@ -100,6 +104,10 @@ type DocumentFinding struct {
 	Exemption *Exemption `json:"exemption,omitempty"`
 	// Action is what the vuln_gate rule makes of it: block, warn or none.
 	Action Action `json:"action"`
+	// Rule is what decided Action: block_kev, block_severity,
+	// warn_severity, or exemption. Absent when nothing fired, or when an
+	// authoritative ledger blocked it without saying which field fired.
+	Rule Rule `json:"rule,omitempty"`
 	// Occurrences are each place it was found: an artifact, and a path of
 	// the package inside it, one per pair. What a scoped exemption's
 	// artifacts and locations are matched against (forge.VulnExemption).
@@ -112,6 +120,24 @@ type DocumentFinding struct {
 type Occurrence struct {
 	Artifact string `json:"artifact,omitempty"`
 	Location string `json:"location,omitempty"`
+}
+
+// SBOMFile is an SBOM a scan wrote to its output directory (`forge vuln gate
+// --out`), or copied there from the SBOM it was given.
+type SBOMFile struct {
+	// Artifact is the artifact the SBOM describes, as the findings name it.
+	Artifact string `json:"artifact"`
+	// Path is the file, relative to the output directory.
+	Path string `json:"path"`
+	// Digest is the sha256 of the file's bytes (`sha256:<hex>`).
+	Digest string `json:"digest"`
+	// Format is the SBOM's format (`cyclonedx-json@1.6`, `spdx-json@2.3`).
+	Format string `json:"format"`
+	// Generator is the tool that wrote it (`syft@v1.57.2`), when known.
+	Generator string `json:"generator,omitempty"`
+	// Source is what was described: image, binary, lockfile (a directory),
+	// or ci-provided (an SBOM the caller supplied).
+	Source string `json:"source"`
 }
 
 // ArtifactScan is one artifact of a release and what is known of it.
@@ -332,7 +358,7 @@ func BuildDocument(in DocumentInput) Document {
 	}
 	for i, j := range ev.Findings {
 		d := byKey[order[i]]
-		d.Action, d.Exemption = j.Action, j.Exemption
+		d.Action, d.Rule, d.Exemption = j.Action, j.Rule, j.Exemption
 		sort.Strings(d.Artifacts)
 		d.Occurrences = documentOccurrences(occ[order[i]])
 		if in.Filter.keep(*d) {

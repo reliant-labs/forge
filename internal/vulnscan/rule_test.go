@@ -151,3 +151,77 @@ func TestEvaluateWithAnAuthoritativeJudgement(t *testing.T) {
 		t.Fatalf("authoritative exemption: gate %+v, exemption %+v", ev.Gate, ev.Findings[0].Exemption)
 	}
 }
+
+func TestJudgeRuleNamesWhatDecided(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	exempt := defaultGate()
+	exempt.Exemptions = []release.ShapeVulnExempt{{ID: "CVE-2026-9", Reason: "unreachable", Expires: "2026-12-31"}}
+	cases := []struct {
+		name string
+		gate release.ShapeVulnGate
+		f    Finding
+		want Rule
+	}{
+		{"KEV", defaultGate(), Finding{ID: "CVE-2026-1", Severity: SeverityLow, KEV: true}, RuleBlockKEV},
+		{"fixable critical", defaultGate(), Finding{ID: "CVE-2026-2", Severity: SeverityCritical, FixState: FixStateFixed}, RuleBlockSeverity},
+		{"high", defaultGate(), Finding{ID: "CVE-2026-3", Severity: SeverityHigh, FixState: FixStateFixed}, RuleWarnSeverity},
+		{"medium", defaultGate(), Finding{ID: "CVE-2026-4", Severity: SeverityMedium}, RuleNone},
+		{"exempt", exempt, Finding{ID: "CVE-2026-9", Severity: SeverityCritical, FixState: FixStateFixed, KEV: true}, RuleExemption},
+	}
+	for _, tc := range cases {
+		a, rule, _ := JudgeRule(tc.gate, tc.f, now)
+		if rule != tc.want {
+			t.Errorf("%s: rule = %q (action %s), want %q", tc.name, rule, a, tc.want)
+		}
+		if b, _ := Judge(tc.gate, tc.f, now); b != a {
+			t.Errorf("%s: Judge = %s, JudgeRule = %s", tc.name, b, a)
+		}
+	}
+}
+
+func TestEvaluateRecordsReasonAndExemptionsApplied(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	gate := defaultGate()
+	gate.Exemptions = []release.ShapeVulnExempt{
+		{ID: "CVE-2026-9", Reason: "unreachable", Expires: "2026-12-31"},
+		{ID: "CVE-2026-8", Reason: "matches nothing", Expires: "2026-12-31"},
+	}
+	full := Coverage{Artifacts: 1, WithSBOM: 1, Scanned: 1}
+	exemptOnly := []Finding{
+		{ID: "CVE-2026-9", Severity: SeverityCritical, FixState: FixStateFixed, Package: Package{Name: "a"}},
+		{ID: "CVE-2026-9", Severity: SeverityCritical, FixState: FixStateFixed, Package: Package{Name: "b"}},
+	}
+	ev := Evaluate(EvaluateInput{Gate: gate, Findings: exemptOnly, Coverage: full, Now: now})
+	if ev.Gate.Verdict != VerdictPass || ev.Gate.Reason != "" {
+		t.Fatalf("gate = %+v, want pass with no reason", ev.Gate)
+	}
+	if got := ev.Gate.ExemptionsApplied; len(got) != 1 || got[0].ID != "CVE-2026-9" {
+		t.Errorf("exemptions applied = %+v, want CVE-2026-9 once", got)
+	}
+	for _, j := range ev.Findings {
+		if j.Rule != RuleExemption {
+			t.Errorf("finding %s rule = %q, want exemption", j.ID, j.Rule)
+		}
+	}
+
+	block := Evaluate(EvaluateInput{Gate: gate, Findings: []Finding{{ID: "CVE-2026-1", Severity: SeverityLow, KEV: true}}, Coverage: full, Now: now})
+	if block.Gate.Verdict != VerdictBlock || block.Gate.Reason != release.RefusalVulnGateBlocked || block.Gate.ExemptionsApplied != nil {
+		t.Errorf("KEV gate = %+v", block.Gate)
+	}
+	unscanned := Evaluate(EvaluateInput{Gate: gate, Coverage: Coverage{Artifacts: 1, Unscanned: []UnscannedArtifact{{Artifact: "x", Reason: "no SBOM"}}}, Now: now})
+	if unscanned.Gate.Verdict != VerdictUnscanned || unscanned.Gate.Reason != release.RefusalVulnGateUnscanned {
+		t.Errorf("unscanned gate = %+v", unscanned.Gate)
+	}
+	stale := Evaluate(EvaluateInput{Gate: gate, Coverage: full, Stale: true, Now: now})
+	if stale.Gate.Verdict != VerdictStale || stale.Gate.Reason != release.RefusalVulnGateUnscanned {
+		t.Errorf("stale gate = %+v", stale.Gate)
+	}
+	off := gate
+	off.Mode = release.DeliveryOff
+	offEv := Evaluate(EvaluateInput{Gate: off, Findings: exemptOnly, Coverage: full, Now: now})
+	if offEv.Gate.Verdict != VerdictOff || offEv.Gate.Reason != "" || offEv.Gate.ExemptionsApplied != nil {
+		t.Errorf("off gate = %+v", offEv.Gate)
+	}
+}

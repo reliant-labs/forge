@@ -33,6 +33,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -544,8 +545,17 @@ func mergeSegments(srcs []string) (map[string]jsValue, map[string]bool) {
 func nextHead(srcs []string, site string) (string, map[string]bool) {
 	meta, dynamic := mergeSegments(srcs)
 	src := srcs[0]
-	if src == ambiguousSegment {
-		dynamic["lang"] = true // the root layout writes <html lang>
+	// A segment with competing candidate files may be either file, so
+	// nothing its candidates could write is judged — not even a field a
+	// later segment sets, since which file Next.js resolves decides what
+	// the head is built from. The root layout also writes <html lang>.
+	if slices.Contains(srcs, ambiguousSegment) {
+		for _, tags := range metadataTags {
+			for _, t := range tags {
+				dynamic[t] = true
+			}
+		}
+		dynamic["lang"] = src == ambiguousSegment || dynamic["lang"]
 	}
 	base, _ := url.Parse(site)
 	if mb, ok := meta["metadataBase"]; ok {

@@ -435,3 +435,35 @@ export default function L({children}) { return <html lang="en">{children}</html>
 		t.Errorf("a root app/ beside src/app: file %q, warnings %q, head %s", p.File, p.Warnings, p.HTML)
 	}
 }
+
+// An ambiguous segment leaves every metadata field it could write unknown,
+// whatever a later segment sets: candidate layouts that disagree on
+// robots.index or Open Graph never gate.
+func TestNextAmbiguousRootLayoutLeavesEveryFieldUnknown(t *testing.T) {
+	t.Parallel()
+	noindex := `export const metadata = {
+  title: "Acme Rockets — rockets for everyone",
+  robots: { index: false },
+  openGraph: { title: "Acme", description: "Rockets.", type: "website", url: "https://acme.example/", images: ["https://acme.example/og.png"] },
+};
+export default function L({children}) { return <html lang="en">{children}</html>; }`
+	plain := `export default function L({children}) { return <html>{children}</html>; }`
+	dir := t.TempDir()
+	write(t, dir, map[string]string{
+		"app/layout.tsx": noindex,
+		"app/layout.js":  plain,
+		"app/page.tsx":   `export const metadata = { openGraph: { title: "Home" } }; export default function P() { return null; }`,
+	})
+	p, ok := NextLayout(dir, "web", "https://acme.example/")
+	if !ok {
+		t.Fatal("no layout found")
+	}
+	for _, tag := range []string{"title", "description", "canonical", "robots", "og:title", "og:description", "og:type", "og:url", "og:image", "twitter:card", "lang"} {
+		if !p.Dynamic[tag] {
+			t.Errorf("%s is judged although the root layout is ambiguous", tag)
+		}
+	}
+	if fs := Judge("https://acme.example/", []Page{p}); len(fs) != 0 {
+		t.Errorf("an ambiguous root layout produced findings: %v", codes(fs))
+	}
+}

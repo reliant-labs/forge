@@ -116,19 +116,19 @@ type AccountToolsOptions struct {
 // hostedToolInfos is every hosted tool, in registration order.
 var hostedToolInfos = []AccountToolInfo{
 	{Name: "obs_status", Title: "Monitoring status", NeedsTarget: true,
-		Description: "What is wrong in an env now: per-service traffic, errors and latency, open issues, firing alerts, telemetry freshness, the release in force (`forge obs status <env> --json`)."},
+		Description: "What is wrong in an environment right now: per-service requests, error rate and latency, the open issues, firing alerts, telemetry freshness and the release in force. The `forge obs status <env> --json` document."},
 	{Name: "obs_issues", Title: "Error issues", NeedsTarget: true,
-		Description: "The env's error issues by fingerprint: what fails, how often, since which release (`forge obs issues <env> --json`)."},
+		Description: "The environment's error issues, grouped by fingerprint: what is failing, how often, since which release. The `forge obs issues <env> --json` document."},
 	{Name: "obs_issue", Title: "One error issue", NeedsTarget: true,
-		Description: "One issue in full: latest event and call site, events per version, related issues, first release, timeline (`forge obs issue <id> <env> --json`; suspect commits need the CLI in the repo)."},
+		Description: "Everything known about one issue: the latest event and call site, events per version, related issues, the release it first appeared in, and its timeline. The `forge obs issue <id> <env> --json` document (suspect commits need the repo: run the CLI there)."},
 	{Name: "obs_logs", Title: "Search logs", NeedsTarget: true,
-		Description: "Search the env's logs with the log query language, e.g. service:api severity:error \"connection refused\" (`forge obs logs <env> <query> --json`)."},
+		Description: "Search the environment's logs with the log query language (service:api severity:error \"connection refused\", trace_id:…, attr.http.route:/v1/jobs). The `forge obs logs <env> <query> --json` document."},
 	{Name: "obs_traces", Title: "Find traces", NeedsTarget: true,
 		Description: "The environment's traces, newest first or slowest first, failing only or by route, with a rate / errors / duration summary. The `forge obs traces <env> --json` document."},
 	{Name: "obs_ops", Title: "Ops by traffic and latency", NeedsTarget: true,
 		Description: "Every component op (<pkg>.<Method> spans from forge's generated component decorators) and RPC: calls, error ratio, p50/p95/p99 weighted for tail sampling, with the op's code location. The `forge obs ops <env> --json` document."},
 	{Name: "obs_check", Title: "Release health verdict", NeedsTarget: true,
-		Description: "Judge the env's current (or named) promotion by its before and after windows (`forge obs check <env> --json`). exit_code 0 good, 1 regressed (see findings, suggested), 2 not proven good, 8 not enough data yet: check later."},
+		Description: "Judge a release: PASS, FAIL or INCONCLUSIVE for the env's current promotion (or the one named), comparing the windows before and after it. exit_code 0 good, 1 regressed (see findings and suggested), 2 not proven good, 8 not enough data yet: check again later. The `forge obs check <env> --json` document."},
 	{Name: "obs_changes", Title: "What changed", NeedsTarget: true,
 		Description: "What changed in the environment, newest first: releases promoted or rolled back, deploys that failed, and the activity feed. The `forge obs changes <env> --json` document."},
 	{Name: "releases_list", Title: "Release timeline", NeedsTarget: true,
@@ -147,7 +147,8 @@ var hostedToolInfos = []AccountToolInfo{
 	{Name: "skill_list", Title: "Skill catalog", Description: mcpDescSkillList},
 	{Name: "skill_search", Title: "Find a skill", Description: mcpDescSkillSearch},
 	{Name: "skill_load", Title: "Load a skill", Description: mcpDescSkillLoad},
-	{Name: "explain_error", Title: "Explain a forge error", Description: mcpDescExplainError},
+	{Name: "explain_error", Title: "Explain a forge error",
+		Description: "Turn a forge failure into what it means and the exact command to run next. Pass error_reason and exit_code from a --json document when you have them, else the error text."},
 }
 
 // HostedTools lists every tool AddHostedTools can register, in order.
@@ -210,9 +211,9 @@ type hostedTarget struct {
 
 // hostedRange is the time range and services of a read.
 type hostedRange struct {
-	Since    string   `json:"since,omitempty" jsonschema:"how far back, e.g. 2h, 7d"`
-	From     string   `json:"from,omitempty" jsonschema:"range start, RFC 3339"`
-	To       string   `json:"to,omitempty" jsonschema:"range end, RFC 3339"`
+	Since    string   `json:"since,omitempty" jsonschema:"how far back to read: 15m, 2h, 7d (default: the tool's own window)"`
+	From     string   `json:"from,omitempty" jsonschema:"range start, RFC 3339 (overrides since)"`
+	To       string   `json:"to,omitempty" jsonschema:"range end, RFC 3339 (default now)"`
 	Services []string `json:"services,omitempty" jsonschema:"only these service.name values"`
 }
 
@@ -230,7 +231,7 @@ func (r hostedRange) args() []string {
 // hostedWindow is the time range and page size of a read.
 type hostedWindow struct {
 	hostedRange
-	Limit int `json:"limit,omitempty" jsonschema:"page size"`
+	Limit int `json:"limit,omitempty" jsonschema:"most items to return (default: the tool's own page size)"`
 }
 
 func (w hostedWindow) args() []string {
@@ -265,8 +266,8 @@ type hostedObsIssuesInput struct {
 
 type obsIssuesArgs struct {
 	hostedWindow
-	Status       []string `json:"status,omitempty" jsonschema:"only these states (default: open)"`
-	SinceRelease string   `json:"since_release,omitempty" jsonschema:"only issues first seen in this release"`
+	Status       []string `json:"status,omitempty" jsonschema:"only issues in these states (default: the open ones)"`
+	SinceRelease string   `json:"since_release,omitempty" jsonschema:"only issues first seen in this release version"`
 	Sort         string   `json:"sort,omitempty" jsonschema:"last | first | events (default last)"`
 	PageToken    string   `json:"page_token,omitempty" jsonschema:"resume from a next_page_token"`
 }
@@ -306,9 +307,9 @@ type hostedObsLogsInput struct {
 
 type obsLogsArgs struct {
 	hostedWindow
-	Query     string   `json:"query,omitempty" jsonschema:"the log query, e.g. service:api body:timeout OR body:deadline"`
-	Severity  []string `json:"severity,omitempty" jsonschema:"only these: trace, debug, info, warn, error, fatal"`
-	Trace     string   `json:"trace,omitempty" jsonschema:"only this trace id's logs"`
+	Query     string   `json:"query,omitempty" jsonschema:"the log query: service:api severity:error \"connection refused\", body:timeout OR body:deadline, trace_id:…"`
+	Severity  []string `json:"severity,omitempty" jsonschema:"only these severities: trace, debug, info, warn, error, fatal"`
+	Trace     string   `json:"trace,omitempty" jsonschema:"only the logs of this trace id"`
 	Oldest    bool     `json:"oldest,omitempty" jsonschema:"oldest first"`
 	PageToken string   `json:"page_token,omitempty" jsonschema:"resume from a next_page_token"`
 }
@@ -354,9 +355,9 @@ type hostedObsCheckInput struct {
 }
 
 type obsCheckArgs struct {
-	Release   string `json:"release,omitempty" jsonschema:"judge this release's promotion (default: the current one)"`
+	Release   string `json:"release,omitempty" jsonschema:"judge the promotion of this release version (default: the env's current one)"`
 	Promotion string `json:"promotion,omitempty" jsonschema:"judge this promotion id"`
-	Window    string `json:"window,omitempty" jsonschema:"each window's width (default release_health.window; max 6h)"`
+	Window    string `json:"window,omitempty" jsonschema:"width of each window (default the env's release_health.window, 15m; max 6h)"`
 }
 
 func (in obsCheckArgs) args() []string {

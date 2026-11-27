@@ -25,23 +25,6 @@ except that a local tool also takes `dir` (the repo to act on). Hosted results
 are the CLI's `--json` documents plus `console_url`, the page at
 https://forge.reliantlabs.io that shows the same thing.
 
-### A leaner local server: `--tools core`
-
-A client resends every listed tool to the model on every call, so tools an
-agent never calls still cost it tokens each turn. `forge mcp --tools core`
-lists six (`audit`, `shapes`, `skill_search`, `skill_load`, `lint`,
-`generate`) plus `forge_tools`, which enables the other groups mid-session:
-`catalog` (`benefits`, `why`, `capabilities`, `schema`, `annotations`,
-`libraries`, `skill_list`), `support` (`explain_error`, `report_bug`), `ops`
-(`blast_radius`, `db_query`, `obs_*`) and `deploy` (`deploy_claimable`,
-`deploy_status`). Name groups up front with a comma list, `--tools core,ops`.
-The default is `all`; it is planned to become `core` in a later minor, and
-`--tools all` stays.
-
-```bash
-claude mcp add forge -- npx -y @reliantlabs/forge mcp --tools core
-```
-
 Rules of thumb: working in a repo, add the local server. Asking "what is broken
 in prod", "did that release regress", "record this deploy" from anywhere,
 including a phone, add the hosted connector.

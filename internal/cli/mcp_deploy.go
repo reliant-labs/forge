@@ -64,9 +64,9 @@ var directLLMHosts = []struct {
 
 type deployClaimableInput struct {
 	dirInput
-	Env    string `json:"env,omitempty" jsonschema:"env to deploy (default prod)"`
-	Name   string `json:"name,omitempty" jsonschema:"project name when adopting an app with no forge.yaml (default: the directory's name)"`
-	NoWait bool   `json:"no_wait,omitempty" jsonschema:"return once the deploy is accepted, before it is live"`
+	Env    string `json:"env,omitempty" jsonschema:"env to deploy (default prod: the env an adopted site and a forge project new --claimable project size for the claimable plan)"`
+	Name   string `json:"name,omitempty" jsonschema:"project name to adopt the app under when the directory has no forge.yaml (default: the directory's name)"`
+	NoWait bool   `json:"no_wait,omitempty" jsonschema:"return once the control plane accepted the deploy instead of waiting until it is live"`
 }
 
 type deployStatusInput struct {
@@ -75,10 +75,10 @@ type deployStatusInput struct {
 }
 
 type explainErrorInput struct {
-	ExitCode    *int   `json:"exit_code,omitempty" jsonschema:"forge's exit code, or exit_code from its --json document"`
-	ErrorReason string `json:"error_reason,omitempty" jsonschema:"error_reason from the --json document, e.g. claimable_throttled"`
-	Error       string `json:"error,omitempty" jsonschema:"the error text, when there is no error_reason"`
-	Env         string `json:"env,omitempty" jsonschema:"env the failing command acted on (default prod)"`
+	ExitCode    *int   `json:"exit_code,omitempty" jsonschema:"the exit code forge exited with (or exit_code from its --json document)"`
+	ErrorReason string `json:"error_reason,omitempty" jsonschema:"error_reason from the --json document, the field to branch on (e.g. claimable_throttled)"`
+	Error       string `json:"error,omitempty" jsonschema:"the error text forge printed, when there is no error_reason"`
+	Env         string `json:"env,omitempty" jsonschema:"the env the failing command acted on, so the next command names it (default prod)"`
 }
 
 // claimableDeployResult is deploy_claimable's and deploy_status's structured
@@ -146,9 +146,13 @@ type deployDocument struct {
 func addDeployTools(srv *mcp.Server, r *mcpRunner) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "deploy_claimable",
-		Description: "Put this app live on Reliant with no account: a public URL plus a claim link to give your user. " +
-			"An app with no forge.yaml (a Vite or Next.js site, or any app with a Dockerfile) is adopted in place first. " +
-			"Unclaimed: live 72h; one static site, or one service plus Postgres with no outbound internet.",
+		Description: "Put this app live on Reliant with no account: returns a public URL and a claim link for your user. " +
+			"Works on a forge project, or on an existing app with no forge.yaml — a Vite or Next.js site, or an app in any " +
+			"language with its own Dockerfile (and compose file) — which it adopts in place first (adds forge.yaml and " +
+			"deploy/kcl/; never changes the app's files). The deploy builds and publishes, " +
+			"streams progress, and can be cancelled. Unclaimed: live 72h, then deleted after 7 more days; one static site, " +
+			"or one service plus one Postgres database; a service has no outbound internet until claimed. Give the claim " +
+			"link to your user: opening it signs them up free and makes the deploy theirs.",
 		Annotations: &mcp.ToolAnnotations{Title: "Deploy (no account)", ReadOnlyHint: false, DestructiveHint: ptr(false), IdempotentHint: true, OpenWorldHint: ptr(true)},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in deployClaimableInput) (*mcp.CallToolResult, any, error) {
 		res, err := r.deployClaimable(ctx, newProgressSink(ctx, req), in)
@@ -160,7 +164,7 @@ func addDeployTools(srv *mcp.Server, r *mcpRunner) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "deploy_status",
-		Description: "The claimable deploy this machine made of an env: URL, claim link, state and expiry. Use it to show the claim link again.",
+		Description: "The claimable deploy this machine made of an env: its URL, claim link, state (live, suspended, claimed, expired) and expiry, with no account. Use it to show the claim link again.",
 		Annotations: &mcp.ToolAnnotations{Title: "Claimable deploy status", ReadOnlyHint: true, OpenWorldHint: ptr(true)},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in deployStatusInput) (*mcp.CallToolResult, any, error) {
 		res, err := r.deployStatus(ctx, in)
@@ -169,17 +173,16 @@ func addDeployTools(srv *mcp.Server, r *mcpRunner) {
 		}
 		return claimableToolResult(res), nil, nil
 	})
-}
 
-// mcpDescExplainError is explain_error's description on both servers.
-const mcpDescExplainError = "Turn a forge failure into what it means and the exact next command. Pass error_reason and exit_code from a --json document, else the error text."
+	addExplainErrorTool(srv)
+}
 
 // addExplainErrorTool registers explain_error; the hosted connector serves
 // the same tool (mcp_hosted.go).
 func addExplainErrorTool(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "explain_error",
-		Description: mcpDescExplainError,
+		Description: "Turn a forge failure into what it means and the exact command to run next. Pass error_reason and exit_code from a --json document when you have them, else the error text.",
 		Annotations: &mcp.ToolAnnotations{Title: "Explain a forge error", ReadOnlyHint: true, OpenWorldHint: ptr(false)},
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in explainErrorInput) (*mcp.CallToolResult, any, error) {
 		code := -1

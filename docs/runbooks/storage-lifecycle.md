@@ -71,6 +71,10 @@ minute budget so a first trim of a very large cache can make progress; a pass
 cut off by the deadline stops cleanly and resumes next time. Dry-run
 (`forge storage gc`) prints each candidate and its bytes.
 
+A machine can also split its Go build cache into a trusted tier, which only
+main's builds write, and an overlay per untrusted context, with `forge cache`:
+see [go-cache.md](../go-cache.md). Both tiers are plain Go cache directories.
+
 `forge storage gocache --apply` is the Go-cache layer alone, with the whole of
 its budget (`--budget`, default 10m) instead of the slice of a larger pass.
 Schedule it every few minutes on a machine that builds a lot: under agent load

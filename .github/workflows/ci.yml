@@ -36,6 +36,13 @@ on:
 permissions:
   contents: read
 
+# -trimpath on every go command: one set of cache keys across agents, the
+# self-hosted runners and the gate, so they can share the machine's trusted Go
+# build cache (docs/go-cache.md). The Taskfile already merges -trimpath into
+# task runs; the raw `go test` and `go vet` steps here had none.
+env:
+  GOFLAGS: -trimpath
+
 # ── SELF-HOSTED RUNNERS ON cicd, FOR THE MERGE QUEUE ONLY ──────────────────
 #
 # Owner, 2026-11-26: "The cicd machine is supposed to be exactly for this." A

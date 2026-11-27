@@ -32,10 +32,16 @@ var uploadJobPermissions = map[string]string{"actions": "read", "contents": "rea
 //
 // The trust boundary: no job runs code that is not on main. The push job
 // checks out the pushed commit (main's own, merged) and alone reaches the
-// tests-upload environment's secret. The merge-queue job checks out main's
-// tip (github.sha, the default branch in a workflow_run) and treats the
-// entry, which may never merge, as data: it gets no environment and no
-// secret, only the job's OIDC identity, as the push job also has.
+// tests-upload environment. The merge-queue job checks out main's tip
+// (github.sha, the default branch in a workflow_run) and treats the entry,
+// which may never merge, as data: it gets no environment.
+//
+// Neither job is handed a stored secret: both authorize with the job's own
+// OIDC identity, which the control plane exchanges for a tests:write token
+// that lives 15 minutes, bounded by the exchange's event policy and the
+// scope's federation class. The tests-upload environment keeps
+// FORGE_CONTROL_PLANE_TOKEN only as the rollback, which re-adds it to the
+// push job's upload step and this guard's expectation together.
 func testUploadSecurity(raw []byte) error {
 	type step struct {
 		Uses string            `yaml:"uses"`
@@ -111,9 +117,6 @@ func testUploadSecurity(raw []byte) error {
 			if s.Run == `scripts/ci-test-upload.sh "$HEAD_SHA"` {
 				upload++
 				want := map[string]string{"HEAD_SHA": "${{ github.event.workflow_run.head_sha }}"}
-				if push {
-					want["FORGE_CONTROL_PLANE_TOKEN"] = "${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}"
-				}
 				if !maps.Equal(s.Env, want) {
 					return fmt.Errorf("%s's upload step env %v, want exactly %v", name, s.Env, want)
 				}
@@ -133,8 +136,8 @@ func testUploadSecurity(raw []byte) error {
 			return fmt.Errorf("%s: expected one checkout and one upload step", name)
 		}
 	}
-	if strings.Count(string(raw), "secrets.") != 1 {
-		return fmt.Errorf("expected one step-local secret exposure")
+	if strings.Contains(string(raw), "secrets.") {
+		return fmt.Errorf("no step may be handed a stored secret: the upload authorizes with the job's OIDC identity")
 	}
 	return nil
 }
@@ -178,7 +181,10 @@ func TestTestUploadTrustBoundary(t *testing.T) {
 		{"job secret exposure", "    environment: tests-upload", "    environment: tests-upload\n    env:\n      TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}", 1},
 		{"setup secret exposure", "      - uses: actions/setup-go@v7", "      - uses: actions/setup-go@v7\n        env:\n          TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}", 1},
 		{"merge queue secret exposure", "          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}", "          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}\n          FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}", 2},
-		{"missing upload secret", "FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}", "FORGE_CONTROL_PLANE_TOKEN: ''", 1},
+		{"upload secret exposure", "          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}", "          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}\n          FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}", 1},
+		{"upload env credential", "          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}", "          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}\n          FORGE_CONTROL_PLANE_TOKEN: ${{ vars.TOKEN }}", 1},
+		{"no OIDC grant", "      id-token: write\n", "", 1},
+		{"no OIDC grant (merge queue)", "      id-token: write\n", "", 2},
 		{"write permission", "      id-token: write", "      id-token: write\n      contents: write", 1},
 		{"write permission (merge queue)", "      id-token: write", "      id-token: write\n      pull-requests: write", 2},
 		{"workflow-level grant", "permissions:\n  contents: read", "permissions:\n  contents: read\n  id-token: write", 1},

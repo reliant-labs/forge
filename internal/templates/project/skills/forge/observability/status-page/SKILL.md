@@ -14,6 +14,14 @@ It is **opt-in only**. An env that does not declare `forge.StatusPage` gets no
 page: nothing is rendered, recorded or published, and no scaffold adds one.
 Declaring a page does not publish it either (see below).
 
+**What exists (v1.12.0 and later):** the declaration and its render checks, the
+`status_page` field of the release shape, and the `forge/pkg/statuspage`
+document and renderer. **Not built:** hosting a public page for a customer's own
+app, publishing incidents and maintenance, and serving it from a hostname. The
+"going public" and "incidents" paragraphs below describe the design; do not
+promise them to a user. Reliant's own page (status.reliantlabs.io) uses the same
+document format from its own control-plane endpoint.
+
 ## Declaring the components
 
 ```python

@@ -291,7 +291,9 @@ every request to the storage service is a traced client span. A missing object
 (`ErrNotFound`) is logged as an expected outcome, not as an error.
 
 The consumer depends on the 5-method interface `blobstore.Store`, or on a
-narrower one it declares itself, and never on `*blobstore.S3`.
+narrower one it declares itself, and never on `*blobstore.S3`. The
+server-side byte calls (section 6) are package functions over that same
+`Store`: `blobstore.Open` and `blobstore.PutObject`.
 
 ## 4. Presign the upload in the handler
 
@@ -364,23 +366,108 @@ case obj.Size != pending.Size || obj.ContentType != pending.ContentType:
 // mark the row complete
 ```
 
+The type the browser declared is only a claim. When it matters (anything you
+will preview inline, anything you index by content), read the bytes on the
+server: `blobstore.Open` streams the object, or one range of it.
+
+```go
+r, obj, err := blobstore.Open(ctx, store, key, blobstore.OpenOptions{Length: 512})
+if err != nil {
+    return err // ErrNotFound when nothing is there
+}
+head, err := io.ReadAll(r)
+r.Close()
+if err != nil {
+    return err
+}
+sniffed := http.DetectContentType(head) // obj.Size is the whole object's size
+
+// A content hash needs every byte: stream the whole object once.
+r, _, err = blobstore.Open(ctx, store, key, blobstore.OpenOptions{})
+if err != nil {
+    return err
+}
+defer r.Close()
+h := sha256.New()
+if _, err := io.Copy(h, r); err != nil {
+    return err
+}
+```
+
+`OpenOptions{Offset, Length}`: zero values read everything; a range past the
+end stops there, and an offset past the end is `ErrInvalidOptions`. The
+stream outlives the `Open` call (its trace span covers only opening it), so
+keep `ctx` live until you have read it, and don't give a custom `Chain` a
+timeout middleware: it would cancel the stream once `Open` returns. Stat,
+List and Open report no `Object.SHA256`: the services do not all keep one, so
+hash it yourself as above.
+
 Downloads: `store.PresignGet(ctx, key, blobstore.GetOptions{TTL: 5 * time.Minute, DownloadName: row.FileName})`.
 `DownloadName` makes it an attachment saved under that name. `List(ctx,
 prefix, ListOptions{After, Limit})` pages a prefix in key order (1000 max per
 page), and `Delete` is idempotent. Clean up pending rows whose upload never
 completed with a worker: list or delete their keys.
 
+**Inline previews.** A plain `PresignGet` serves the object with the type it
+was stored with, which the uploader chose. To show an image or a video in the
+page, force the type you sniffed:
+
+```go
+if !blobstore.InlineSafe(sniffed) {
+    // anything else is served as a download (PresignDownload), never inline
+}
+req, err := store.PresignGet(ctx, key, blobstore.GetOptions{
+    TTL:                 5 * time.Minute,
+    Inline:              true,      // Content-Disposition: inline
+    ResponseContentType: sniffed,   // forced on the response, whatever was stored
+})
+```
+
+Only `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `video/mp4` and
+`video/webm` are accepted (`blobstore.InlineSafe`); any other type, and
+`Inline` without a type, is `ErrInvalidOptions`. So a stored HTML or SVG file
+can never render on the bucket's origin through this URL. For "save this
+file", use `blobstore.PresignDownload`, which always forces
+`application/octet-stream` and an attachment.
+
+**Writing from the server.** Bytes that have no browser behind them (a job
+that copies an attachment it already holds, a generated image) go in with
+`blobstore.PutObject`:
+
+```go
+obj, err := blobstore.PutObject(ctx, store, "generated/"+uuid.NewString(), body, blobstore.PutObjectOptions{
+    ContentType:   "image/png",
+    ContentLength: n,         // exact size when you know it; 0 reads to the end
+    MaxBytes:      25 << 20,  // ErrTooLarge past it
+})
+// obj.SHA256 is the hex SHA-256 of what was stored, hashed as it streamed
+```
+
+The body is held to `ContentLength` and `MaxBytes` while it streams. One that
+breaks either fails the call before the service commits anything, so no
+partial object is ever stored and an object already at that key is left as it
+was. A body past 16 MiB goes up as an S3 multipart upload; when it fails, the
+upload is aborted on a best-effort basis, so its parts can be left behind
+(invisible, but billed). On a `forge.BucketOnS3` bucket, add a lifecycle rule
+that aborts incomplete multipart uploads after a day
+(`AbortIncompleteMultipartUpload`).
+
 ## 7. Test without a bucket
 
 `blobstore.NewMemory()` is a `Store` with the S3 backend's key and option
 validation. Its presigned URLs are `memory://` URLs nothing fetches. Play the
 browser with `mem.Put(key, data, contentType)` and assert with `Stat`, `List`
-or `mem.Get`. forge's own S3 backend is tested against a real MinIO; your
+or `mem.Get`. `blobstore.Open` and `blobstore.PutObject` work on it as on the
+real stores. forge's own S3 backend is tested against a real MinIO; your
 service tests need only the fake.
 
 ## Rules
 
-- The API never proxies upload bytes. Presign and confirm.
+- The API never proxies a browser's upload. Presign and confirm. Read on the
+  server (`Open`) to check what landed; write on the server (`PutObject`)
+  only bytes the server itself holds.
+- Preview inline only with a forced, sniffed type (`Inline` +
+  `ResponseContentType`); download everything else with `PresignDownload`.
 - Keys are server-generated and tenant-scoped (`Scoped`). A user's file name
   goes in your row, and in `DownloadName`, never in the key.
 - Always `Stat` before you trust an upload, and compare it with what you

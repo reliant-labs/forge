@@ -15,9 +15,10 @@ const testkitImportPath = "github.com/reliant-labs/forge/pkg/testkit"
 // TestMemoryTemplateTeachesTestkit: the guide loaded into every session
 // names testkit's import path beside testkit.Slow, says a Slow test does not
 // run in the -short tier (a green `task test:short` was taken for coverage of
-// one), points at testkit's event waits instead of sleeps, and shows the -v
-// passthrough that lists what the inner loop ran and skipped. Both variants:
-// with a Taskfile and without.
+// one), and points at testkit's event waits instead of sleeps. Both variants:
+// with a Taskfile and without. The -v passthrough that lists what the inner
+// loop ran and skipped moved to the testing skill, which the guide names
+// (TestTestingSkillTeachesTestkit holds it there).
 func TestMemoryTemplateTeachesTestkit(t *testing.T) {
 	t.Parallel()
 	for name, data := range map[string]ProjectMemoryData{
@@ -31,9 +32,9 @@ func TestMemoryTemplateTeachesTestkit(t *testing.T) {
 				t.Fatalf("render reliant.md.tmpl: %v", err)
 			}
 			body := string(out)
-			wants := []string{"`testkit.Slow(", "(`" + testkitImportPath + "`)", "skips under", "`testkit.Eventually`", "`testkit.Receive`"}
+			wants := []string{"`testkit.Slow(", "(`" + testkitImportPath + "`)", "skips under", "`testkit.Eventually`", "`testkit.Receive`", "(`testing`)"}
 			if name == "taskfile" {
-				wants = append(wants, "`task test:short -- -v ", "a green `test:short` never ran it")
+				wants = append(wants, "a green `test:short` never ran it")
 			} else {
 				wants = append(wants, "This project has no Taskfile")
 			}

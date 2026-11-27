@@ -17,11 +17,12 @@
 # so the runs go to Reliant cloud, forge's default control plane.
 #
 # THE CREDENTIAL IS FORGE'S TO FIND. The script always asks for the upload, and
-# forge resolves it in its own order: FORGE_CONTROL_PLANE_TOKEN (a `tests:write`
-# token, a secret of the `tests-upload` environment, which only the push-to-main
-# job reaches), else the job's GitHub OIDC identity (`permissions: id-token:
-# write`), exchanged at the control plane. When neither works, forge says why,
-# as a `Test results not uploaded` warning on the run's summary.
+# forge resolves it in its own order: FORGE_CONTROL_PLANE_TOKEN when it is set
+# (test-upload.yml passes none today; the `tests-upload` environment keeps the
+# secret as the rollback), else the job's GitHub OIDC identity (`permissions:
+# id-token: write`, ACTIONS_ID_TOKEN_REQUEST_URL in the job), exchanged at the
+# control plane for a short-lived `tests:write` token. When neither works,
+# forge says why, as a `Test results not uploaded` warning on the run's summary.
 #
 # A merge-queue entry's commit is on no branch of this checkout (the job runs
 # main's own code, and the entry is data): it is fetched by sha first.

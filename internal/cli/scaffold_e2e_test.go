@@ -13,12 +13,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/internal/testdocker"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
@@ -674,6 +676,11 @@ func requireTool(t *testing.T, names ...string) {
 		return
 	}
 	list := strings.Join(missing, ", ")
+	// A Reliant merge queue gate has no docker engine: a test that needs it
+	// skips there as testdocker.Unavailable does, counted by the gate.
+	if slices.Contains(missing, "docker") && testdocker.InGate() {
+		testdocker.Unavailable(t, "%s not on PATH", list)
+	}
 	// The skip is written as the guarded branch and the failure as the
 	// fall-through on purpose: internal/vacuousguard's dead-skip rule reads
 	// the AST, and a t.Skip with no enclosing conditional is — correctly —
@@ -710,7 +717,9 @@ func e2eToolsRequired() bool {
 // then failed deep inside `k3d cluster create` with a message about networks.
 // Same contract as requireTool: a named skip on a laptop, a hard failure
 // under CI (or FORGE_E2E_REQUIRE_TOOLS=1), where a dead daemon is a
-// provisioning bug rather than a property of the machine.
+// provisioning bug rather than a property of the machine. In a Reliant gate
+// (RELIANT_GATE=1), which has no docker engine, both skip as
+// testdocker.Unavailable does, and the gate counts the skip.
 //
 // The probe is `docker version`, NOT `docker info --format`: with no daemon,
 // `docker info --format '{{.ServerVersion}}'` prints the error, an empty
@@ -724,6 +733,9 @@ func requireDockerDaemon(t *testing.T) {
 	out, err := exec.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Version}}").CombinedOutput()
 	if err == nil && strings.TrimSpace(string(out)) != "" {
 		return
+	}
+	if testdocker.InGate() {
+		testdocker.Unavailable(t, "no docker daemon answers (`docker version`: %v)\n%s", err, out)
 	}
 	if !e2eToolsRequired() {
 		t.Skipf("no docker daemon answers (`docker version`: %v) — skipped locally. This is a HARD FAILURE in CI; "+

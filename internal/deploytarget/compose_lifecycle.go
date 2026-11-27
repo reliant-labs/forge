@@ -210,12 +210,8 @@ func (p ComposeProvider) OwnedRunning(ctx context.Context, env string) (bool, er
 // unproven) and stays in its record, so the next env down retries exactly
 // that ID; a record whose every ID was settled is deleted.
 //
-// Once every record of a compose project is settled, the project's empty
-// networks go too (removeEmptyProjectNetworks). Compose creates one per
-// declared network on up, and removing the containers alone left each of them
-// behind: 31 empty forge-*-dev networks built up on one shared host in six
-// days and exhausted docker's predefined address pools, after which every
-// `docker network create` on the machine failed.
+// Networks with unproven exclusivity are retained: Compose's own labels and
+// network IDs do not distinguish creation from reuse by another stack.
 func (p ComposeProvider) StopOwned(ctx context.Context, env string) error {
 	pattern := filepath.Join(filepath.Dir(composeOwnedPath(p.projectDir(), env, "_")), "*.json")
 	paths, err := filepath.Glob(pattern)
@@ -223,93 +219,12 @@ func (p ComposeProvider) StopOwned(ctx context.Context, env string) error {
 		return err
 	}
 	var errs []error
-	// settled maps each compose project seen to whether every one of its
-	// records was settled: one unsettled record keeps the project's networks.
-	settled := map[string]bool{}
-	networks := map[string][]string{}
 	for _, path := range paths {
-		rec, readErr := statefile.Read[composeOwned](path, "compose ownership")
-		if readErr == nil && rec != nil && rec.Env == env && sameDirectory(rec.Checkout, p.projectDir()) {
-			networks[rec.Project] = append(networks[rec.Project], rec.Networks...)
-		}
-		project, done, err := p.stopRecord(ctx, env, path)
-		if err != nil {
+		if _, _, err := p.stopRecord(ctx, env, path); err != nil {
 			errs = append(errs, err)
 		}
-		if project != "" {
-			prev, seen := settled[project]
-			settled[project] = done && (!seen || prev)
-		}
-	}
-	projects := make([]string, 0, len(settled))
-	for project, done := range settled {
-		if done {
-			projects = append(projects, project)
-		}
-	}
-	slices.Sort(projects)
-	for _, project := range projects {
-		p.removeEmptyProjectNetworks(ctx, project, networks[project])
 	}
 	return errors.Join(errs...)
-}
-
-// removeEmptyProjectNetworks considers only concrete network IDs recorded from
-// this stack's verified containers at up. A project label is not an ownership
-// discriminator: unrelated Compose invocations can share it. Older records
-// without network IDs safely leave their networks behind.
-//
-// A network is removed only when it carries that project label and a compose
-// network label (an external network is never one compose created), has no
-// container attached in any state, and no container of the project is left at
-// all: a stopped container still references its networks, and removing one
-// would make `docker start` on it fail. Removal is one `docker network rm` per
-// network, never a prune; volumes are untouched.
-//
-// Nothing here fails env down. The containers are already gone, which is what
-// env down promises; a network still in use (a shared stack, a container
-// started meanwhile) is kept, a network already gone needs nothing, and a
-// docker failure (daemon down, permission) keeps the network. The settled
-// records are deleted by then, so env down does not come back for a network
-// kept here; that is the price of never removing what is unproven.
-func (p ComposeProvider) removeEmptyProjectNetworks(ctx context.Context, project string, networks []string) {
-	runner := p.runner()
-	filter := "label=com.docker.compose.project=" + project
-	out, err := runner.Output(ctx, "docker", "container", "ls", "--all", "--quiet", "--filter", filter)
-	if err != nil || len(composeContainerIDs(out)) > 0 {
-		return
-	}
-	for _, id := range networks {
-		if !networkUnused(ctx, runner, id, project) {
-			continue
-		}
-		_ = runner.Run(ctx, "docker", "network", "rm", id) // in use, gone or unreachable: kept, see above
-	}
-}
-
-// networkUnused reports whether network id is compose's network for project
-// with no container attached, running or stopped. Anything it cannot
-// establish counts as in use.
-func networkUnused(ctx context.Context, runner commandRunner, id, project string) bool {
-	out, err := runner.Output(ctx, "docker", "network", "inspect", id)
-	if err != nil {
-		return false
-	}
-	var rows []struct {
-		Labels     map[string]string
-		Containers map[string]json.RawMessage // attached endpoints: running containers only
-	}
-	if err := json.Unmarshal(out, &rows); err != nil || len(rows) != 1 {
-		return false
-	}
-	net := rows[0]
-	if net.Labels["com.docker.compose.project"] != project || net.Labels["com.docker.compose.network"] == "" || len(net.Containers) > 0 {
-		return false
-	}
-	// A stopped container has no endpoint, so inspect does not list it; the
-	// network filter matches on the container's own configuration.
-	out, err = runner.Output(ctx, "docker", "container", "ls", "--all", "--quiet", "--filter", "network="+id)
-	return err == nil && len(composeContainerIDs(out)) == 0
 }
 
 // stopRecord settles one ownership record: each recorded ID is removed when

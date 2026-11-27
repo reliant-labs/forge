@@ -164,12 +164,9 @@ func networksRemoved(r *fakeRunner) map[string]bool {
 	return removed
 }
 
-// TestComposeDownRemovesTheProjectsEmptyNetworks pins the leak that exhausted
-// a shared host's address pools: env down removed every container and left
-// each `<project>_<net>` network compose had created. Only an unused network
-// of the stack's own project goes; one in use, by a running or a stopped
-// container, stays, as does anything not provably compose's for the project.
-func TestComposeDownRemovesTheProjectsEmptyNetworks(t *testing.T) {
+// Even an empty network with matching Compose labels and a recorded ID
+// lacks proof that it is exclusive to this stack.
+func TestComposeDownKeepsNetworksWithoutExclusiveOwnership(t *testing.T) {
 	const project = "forge-abc-dev"
 	dir, r := composeNetworkFixture(t, project)
 	r.outputs["docker network ls --quiet --filter label=com.docker.compose.project="+project] = "net-empty\nnet-running\nnet-stopped\nnet-foreign\nnet-external\nnet-gone\n"
@@ -187,10 +184,7 @@ func TestComposeDownRemovesTheProjectsEmptyNetworks(t *testing.T) {
 		t.Fatal(err)
 	}
 	removed := networksRemoved(r)
-	if !removed["net-empty"] {
-		t.Errorf("the project's empty network leaked; calls:\n%s", strings.Join(r.calls, "\n"))
-	}
-	for _, id := range []string{"net-running", "net-stopped", "net-foreign", "net-external", "net-gone"} {
+	for _, id := range []string{"net-empty", "net-running", "net-stopped", "net-foreign", "net-external", "net-gone"} {
 		if removed[id] {
 			t.Errorf("removed network %s, which is in use or not provably the project's", id)
 		}
@@ -255,8 +249,8 @@ func TestComposeDownNetworkFailuresDoNotFailEnvDown(t *testing.T) {
 			if err := (ComposeProvider{ProjectDir: dir, Runner: r}).StopOwned(context.Background(), "dev"); err != nil {
 				t.Fatalf("a network failure failed env down: %v", err)
 			}
-			if name == "rm refused" && !networksRemoved(r)["net-b"] {
-				t.Errorf("one refused rm stopped the rest; calls:\n%s", strings.Join(r.calls, "\n"))
+			if len(networksRemoved(r)) != 0 {
+				t.Errorf("removed a network without exclusive ownership; calls:\n%s", strings.Join(r.calls, "\n"))
 			}
 		})
 	}
@@ -272,8 +266,62 @@ func TestComposeDownKeepsUnrecordedNetworksWithTheSameProjectLabel(t *testing.T)
 		t.Fatal(err)
 	}
 	removed := networksRemoved(r)
-	if !removed["net-empty"] || removed["other-checkout-net"] {
-		t.Fatalf("must remove only the recorded network identity: %v", removed)
+	if len(removed) != 0 {
+		t.Fatalf("neither recorded nor unrecorded identity proves exclusivity: %v", removed)
+	}
+}
+
+func TestComposeDownPreservesNetworkReusedByTwoInvocations(t *testing.T) {
+	const project = "shared-name"
+	const network = "concrete-network-id"
+	r := &fakeRunner{outputs: map[string]string{
+		"docker network inspect " + network: networkJSON(project, "default"),
+	}}
+	var providers []ComposeProvider
+	for _, service := range []string{"app", "worker"} {
+		dir := t.TempDir()
+		spec := &ComposeSpec{ProjectDirectory: dir}
+		id := service + "-container"
+		inspect, err := json.Marshal([]map[string]any{{
+			"Config": map[string]any{"Labels": map[string]string{
+				"com.docker.compose.project":             project,
+				"com.docker.compose.project.working_dir": dir,
+				"com.docker.compose.service":             service,
+			}},
+			"NetworkSettings": map[string]any{"Networks": map[string]any{
+				"shared-name_default": map[string]string{"NetworkID": network},
+			}},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.outputs["docker inspect "+id] = string(inspect)
+		ps := "docker " + strings.Join(append(composeArgs(spec), "ps", "--all", "--quiet"), " ")
+		r.outputs[ps] = id + "\n"
+		p := ComposeProvider{ProjectDir: dir, Runner: r}
+		if err := p.recordOwned(context.Background(), r, nil, spec, "dev", service, nil); err != nil {
+			t.Fatal(err)
+		}
+		rec, err := statefile.Read[composeOwned](composeOwnedPath(dir, "dev", service), "compose ownership")
+		if err != nil || rec == nil || !slices.Equal(rec.Networks, []string{network}) {
+			t.Fatalf("both invocations must record the same network: %+v, %v", rec, err)
+		}
+		providers = append(providers, p)
+	}
+	// Both invocations stop; the now-empty network must survive for either
+	// invocation to start again. Matching labels and IDs are insufficient.
+	for _, p := range providers {
+		if err := p.StopOwned(context.Background(), "dev"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"app-container", "worker-container"} {
+		if !slices.Contains(r.calls, "docker rm -f "+id) {
+			t.Errorf("owned container %s was not removed", id)
+		}
+	}
+	if len(networksRemoved(r)) != 0 {
+		t.Fatalf("deleted a network reused by another invocation: %v", r.calls)
 	}
 }
 

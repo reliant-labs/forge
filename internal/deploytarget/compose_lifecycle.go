@@ -31,6 +31,27 @@ func composeOwnedPath(dir, env, service string) string {
 	return statefile.Path(dir, filepath.Join("compose-owned", statefile.SafeSegment(env), statefile.SafeSegment(service)+".json"))
 }
 
+// composeNetworkEnv supplies the scaffold's network declaration. Never opt a
+// borrowed stack into cleanup, even if the caller exported these variables.
+func (p ComposeProvider) composeNetworkEnv(spec *ComposeSpec, env string) (map[string]string, error) {
+	labels := map[string]string{
+		"FORGE_NETWORK_EXCLUSIVE": "false",
+		"FORGE_NETWORK_CHECKOUT":  "",
+		"FORGE_NETWORK_ENV":       "",
+	}
+	if spec.Shared {
+		return labels, nil
+	}
+	checkout, err := filepath.Abs(p.projectDir())
+	if err != nil {
+		return nil, err
+	}
+	labels["FORGE_NETWORK_EXCLUSIVE"] = "true"
+	labels["FORGE_NETWORK_CHECKOUT"] = checkout
+	labels["FORGE_NETWORK_ENV"] = env
+	return labels, nil
+}
+
 func (p ComposeProvider) recordOwned(ctx context.Context, runner commandRunner, overlay map[string]string, spec *ComposeSpec, env, service string, before []string) error {
 	if spec.Shared {
 		return nil

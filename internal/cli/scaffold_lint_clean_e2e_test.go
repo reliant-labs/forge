@@ -68,7 +68,11 @@ func TestE2EFreshScaffoldLintExitsZero(t *testing.T) {
 	proto := readFileE2E(t, protoPath)
 	proto = strings.Replace(proto, "  // TODO: Add your RPC methods here.",
 		// Custom mutations declare their activity event (or none), as
-		// forgeconv-activity-declared requires.
+		// forgeconv-activity-declared requires — except CompleteOrder,
+		// declared bare the way an author first writes an rpc: its handler
+		// is forge's unwired stub after `forge scaffold`, so the rule holds
+		// it at a "pending: implement" warning rather than failing the
+		// scaffold's own output (asserted below).
 		"  rpc ArchiveOrder(ArchiveOrderRequest) returns (ArchiveOrderResponse) {\n"+
 			"    option (forge.v1.method) = {\n"+
 			"      activity: {\n"+
@@ -84,7 +88,8 @@ func TestE2EFreshScaffoldLintExitsZero(t *testing.T) {
 			"    option (forge.v1.method) = {\n"+
 			"      activity: {none: \"fixture: the key is not persisted\"}\n"+
 			"    };\n"+
-			"  }", 1)
+			"  }\n"+
+			"  rpc CompleteOrder(CompleteOrderRequest) returns (CompleteOrderResponse);", 1)
 	proto += `
 // forge:entity
 message Order {
@@ -110,6 +115,14 @@ message ArchiveOrderResponse {
 
 message CreateApiKeyRequest {}
 message CreateApiKeyResponse {}
+
+message CompleteOrderRequest {
+  string id = 1;
+}
+
+message CompleteOrderResponse {
+  Order order = 1;
+}
 `
 	if err := os.WriteFile(protoPath, []byte(proto), 0o644); err != nil {
 		t.Fatalf("author catalog proto: %v", err)
@@ -184,6 +197,13 @@ message CreateApiKeyResponse {}
 	}
 	if strings.Contains(out, "❌ [scaffold-not-customized]") {
 		t.Errorf("scaffold-not-customized fired at error severity:\n%s", out)
+	}
+
+	// The bare CompleteOrder is still forge's unwired stub: its missing
+	// activity declaration is surfaced as pending work, not a gate (the
+	// exit-0 and no-❌ assertions above hold the "not a gate" half).
+	if !strings.Contains(out, "pending: implement CompleteOrder") {
+		t.Errorf("the stubbed, undeclared CompleteOrder must be reported as a pending activity declaration:\n%s", out)
 	}
 }
 

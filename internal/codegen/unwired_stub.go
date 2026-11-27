@@ -20,6 +20,8 @@
 //   - CRUD gen's stub→shim excision (unwired_stub_excise.go), which
 //     removes a PRISTINE marked stub when its RPC becomes entity-backed,
 //   - `forge project audit` (orphan-stub category),
+//   - forgeconv-activity-declared, which holds an undeclared mutation at
+//     a "pending: implement" warning while its handler is still the stub,
 //   - out-of-tree orchestrators, which grep the marker to build the list
 //     of handlers still awaiting an implementation.
 //

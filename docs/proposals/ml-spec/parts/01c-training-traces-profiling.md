@@ -291,6 +291,16 @@ as listed in §1, `scalars` only.
 
 ## 6. Proposed `ml.train.*` conventions (extends PR #2884)
 
+> **Narrowed (owner direction "simpler is better", 2026-11-26):** only the run, attempt, step and
+> checkpoint names below are forge conventions: `ml.run.id`, `ml.attempt`, `ml.world_size`, `ml.rank`
+> (per-rank instruments only), `ml.train.step`, `ml.train.steps.total`, `ml.train.step.duration`
+> (attribute `ml.step.phase`), `ml.train.rank.step.duration`, `ml.train.tokens`, `ml.train.samples`,
+> `ml.checkpoint.duration`, `ml.checkpoint.bytes`, `ml.checkpoint.step`, and the spans `ml.train.step`,
+> `ml.checkpoint.save` and `ml.checkpoint.load`. The other rows are user-named step scalars ingested
+> MLflow-compatibly, or existing OTel names; see
+> [01-metrics-inventory.md](../01-metrics-inventory.md#attribute-mapping). The table below is the
+> research as written.
+
 Resource attributes (every series): `ml.run.id`, `ml.training.name`, `ml.attempt` (int),
 `ml.phase.kind` ∈ {pretrain, midtrain, sft, preference, rl, distill, qat, eval, other},
 `ml.world_size`, `ml.parallel.dp|tp|pp|cp|ep` (ints), `ml.framework` ∈ {hf, lightning, megatron,

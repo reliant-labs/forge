@@ -146,8 +146,9 @@ classify_license() {
   # so a substring match on the name classifies plain GPL as AGPL. Both are
   # blocked either way, but reporting the wrong one sends the reader chasing
   # the wrong obligation. The title appears in the first ~3 lines of the file.
+  # Consume the whole prefix so printf cannot hit a broken pipe on long licenses.
   local title_block
-  title_block="$(printf '%s' "${head_text}" | head -5)"
+  title_block="$(printf '%s' "${head_text}" | sed -n '1,5p')"
   case "${title_block}" in
   *"AFFERO GENERAL PUBLIC LICENSE"* | *"Affero General Public License"*)
     echo "AGPL-3.0"

@@ -158,6 +158,11 @@ func TestLintHelpSurface(t *testing.T) {
 		"install",
 		"json",
 		"migration-safety",
+		// Visible: the frontend lint lane replays its last pass when its
+		// inputs are unchanged, and every cached line names this flag as
+		// the way to run it anyway — a hint pointing at a hidden flag is no
+		// hint.
+		"no-cache",
 		"no-fix",
 		"optional-deps-guard",
 		// The pre-commit buf-format hook's own check; visible so the lane a

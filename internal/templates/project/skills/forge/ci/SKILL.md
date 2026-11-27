@@ -272,6 +272,22 @@ job says so with `--skip-frontends`, or accepts the gap by name with
 older than its lockfile is linted as it stands, with a note naming the
 command that refreshes it.
 
+The frontend lint lane (`npm run lint`, usually most of a full lint's wall
+time) remembers its passes. Its key covers every file under the frontend
+(minus `node_modules` and build output), the package manager's install stamp,
+the full content of every package in the runtime dependency closure of what
+eslint loads (eslint, `typescript`, its config's imports, the eslint-shaped
+packages package.json lists, and everything they depend on, so a dependency
+patched in place without a reinstall counts), a hoisting workspace's
+membership, and the forge, node and npm binaries. When all of it is
+byte-identical to what its last pass judged, the lane prints `unchanged since
+its last pass, cached pass` instead of running, and the verdict names it,
+`--quiet` included. Only passes are recorded, in
+`.forge/lint-cache.json`; a failure runs again next time. `--no-cache` (or
+`FORGE_LINT_NO_CACHE=1`) runs it anyway, and so does any run with `CI` set, so
+a CI job always lints the tree in front of it. `forge ci gate`'s `lint-<fe>`
+rows run the script themselves and do not read this cache.
+
 The refusal rolls out warn-first (`ci/lint-rollout`) as rule
 `forge-frontend-no-install`: while your pin is below its gates-from release,
 lint still installs a missing `node_modules` (output on stderr, none under

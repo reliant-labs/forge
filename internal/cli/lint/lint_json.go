@@ -18,7 +18,8 @@
 //	      "rule": "forge-config-deps",         // rule id; "external" for raw sub-tool lines
 //	      "message": "...",
 //	      "fix_hint": "...",                   // omitted when the rule has none
-//	      "lane": "golangci-lint"              // the lane that reported it; omitted by single-lane drivers
+//	      "lane": "golangci-lint",             // the lane that reported it; omitted by single-lane drivers
+//	      "cached": true                       // on a "ran" note: the lane's inputs are unchanged since its last pass, so it was not re-run; omitted otherwise
 //	    }
 //	  ],
 //	  "summary": { "errors": 1, "warnings": 3, "infos": 0, "total": 4 },
@@ -86,6 +87,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -132,6 +134,14 @@ type lintJSONFinding struct {
 	// snippet, diff or summary — so a consumer grouping findings into
 	// issues needs the boundary. Omitted where a driver runs one lane.
 	Lane string `json:"lane,omitempty"`
+	// Cached is set on a lane's "ran" note when the lane did not run its
+	// tool because its inputs are byte-identical to the ones its last pass
+	// judged (the frontend lint lane, lint_frontend_cache.go). Additive:
+	// the finding is the same info note a run that linted would carry.
+	Cached bool `json:"cached,omitempty"`
+	// cachedFor names what the cached note covers (the frontend), for the
+	// verdict. Internal.
+	cachedFor string
 	// rollout is the pseudo-rule key of a pass whose findings carry another
 	// tool's rule IDs (the golangci-lint build-tag passes). Internal.
 	rollout string
@@ -319,6 +329,7 @@ func jsonRunOptions(flags lintFlags, allow skipAllowances, off map[string]bool, 
 		paths:               paths,
 		cfg:                 cfg,
 		scope:               scope,
+		noCache:             flags.noCache,
 	}
 }
 
@@ -486,6 +497,8 @@ func collectAllLintersJSON(ctx context.Context, opts lintRunOptions, cwd string)
 		cfg:           opts.cfg,
 		cwd:           cwd,
 		scope:         opts.scope,
+
+		frontendLintCache: newFrontendLintCache(cwd, opts.noCache, os.Getenv),
 	})
 	switch {
 	case opts.lanesOff[formatLaneName]:
@@ -1429,11 +1442,21 @@ func collectFrontendLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 	// fixers to those Go packages (a --scope run skips this lane outright).
 	fix := rc.fix && formatWithFrontends(rc.scope, rc.paths, false)
 	for _, f := range frontends {
-		fs, g := collectFrontendDirJSON(ctx, deps, f.name, f.dir, cssHealth, fix)
+		fs, g := collectFrontendDirJSON(ctx, deps, f.name, f.dir, cssHealth, fix, rc.frontendLintCache)
 		out = append(out, fs...)
 		gated = gated || g
 	}
 	return out, gated
+}
+
+// runFrontendScript runs `npm <args>` in dir with its output in out. A
+// variable so tests drive the lane without npm.
+var runFrontendScript = func(ctx context.Context, dir string, args []string, out io.Writer) error {
+	cmd := exec.CommandContext(ctx, "npm", args...)
+	cmd.Dir = dir
+	cmd.Stdout = out
+	cmd.Stderr = out
+	return cmd.Run()
 }
 
 // collectFrontendDirJSON lints one frontend: its npm lint script (and
@@ -1441,7 +1464,11 @@ func collectFrontendLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 // frontend with no node_modules is a lane that could not run — lint installs
 // nothing unless the run passed --install (lint_frontend_deps.go) — and so is
 // a missing directory: each is a `-unavailable` finding the gap policy grades.
-func collectFrontendDirJSON(ctx context.Context, deps frontendDepsPolicy, name, dir string, cssHealth, fix bool) ([]lintJSONFinding, bool) {
+//
+// cache, when non-nil, is the run's pass cache (lint_frontend_cache.go): a
+// frontend whose lint inputs are unchanged since its last pass is not linted
+// again, and a pass is recorded for the next run.
+func collectFrontendDirJSON(ctx context.Context, deps frontendDepsPolicy, name, dir string, cssHealth, fix bool, cache *frontendLintCache) ([]lintJSONFinding, bool) {
 	var out []lintJSONFinding
 	gated := false
 	// Graded by applyGapPolicy (lint_skip.go): this lane gates, so a
@@ -1472,6 +1499,13 @@ func collectFrontendDirJSON(ctx context.Context, deps frontendDepsPolicy, name, 
 	}
 	hasLint := hasPackageScript(scripts, "lint")
 	hasStyles := cssHealth && hasPackageScript(scripts, "lint:styles")
+	var run frontendLintRun
+	if hasLint {
+		run.scripts = append(run.scripts, "lint")
+	}
+	if hasStyles {
+		run.scripts = append(run.scripts, "lint:styles")
+	}
 	// Dependencies matter only to a script that will run: a frontend with
 	// none to run needs no node_modules, installed or not.
 	if hasLint || hasStyles {
@@ -1492,6 +1526,29 @@ func collectFrontendDirJSON(ctx context.Context, deps frontendDepsPolicy, name, 
 		if state.warning != nil {
 			out = append(out, *state.warning)
 		}
+		run.nmDir, _ = nearestNodeModulesDir(dir, ".")
+	}
+
+	// The pass cache: key the inputs before the run, skip on a recorded
+	// pass of exactly these inputs (never under --fix, which exists to run
+	// eslint --fix), and record a pass only through recordPass, which can
+	// never leave a record for inputs that changed after the run started.
+	var cacheKey string
+	if cache != nil && len(run.scripts) > 0 {
+		key, _, err := cache.fingerprint(dir, run)
+		if err == nil {
+			cacheKey = key
+			if p, ok := cache.hit(dir, key); ok && !fix {
+				return append(out, cachedPassNote(name, p, run.scripts)), gated
+			}
+			defer func() {
+				if gated {
+					cache.forget(dir)
+					return
+				}
+				cache.recordPass(dir, run, cacheKey)
+			}()
+		}
 	}
 
 	runScript := func(script string) {
@@ -1501,12 +1558,8 @@ func collectFrontendDirJSON(ctx context.Context, deps frontendDepsPolicy, name, 
 		if fix && script == "lint" {
 			args = append(args, "--", "--fix")
 		}
-		cmd := exec.CommandContext(ctx, "npm", args...)
-		cmd.Dir = dir
 		var buf strings.Builder
-		cmd.Stdout = &buf
-		cmd.Stderr = &buf
-		err := cmd.Run()
+		err := runFrontendScript(ctx, dir, args, &buf)
 		if err == nil {
 			out = append(out, ranNote(fmt.Sprintf("%s: npm run %s passed", name, script)))
 		}

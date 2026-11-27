@@ -107,6 +107,11 @@ type lintRunCtx struct {
 	// the per-step scoped copies the structured driver makes share it; the
 	// run's constructor sets it.
 	golangciMemo *golangciMemo
+
+	// frontendLintCache is the frontend lint lane's pass cache
+	// (lint_frontend_cache.go). nil — every driver but the whole-project
+	// sweep, and every test that builds a run by hand — lints every time.
+	frontendLintCache *frontendLintCache
 }
 
 // emitOutcome hands o to rc.emit, when there is one.

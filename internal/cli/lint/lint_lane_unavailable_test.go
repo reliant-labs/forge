@@ -256,7 +256,7 @@ func TestFrontendLintDirUnavailableWhenDepsMissing(t *testing.T) {
 		t.Fatalf("write package.json: %v", err)
 	}
 
-	fs, _ := collectFrontendDirJSON(context.Background(), frontendDepsPolicy{}, "dashboard", feDir, false, false)
+	fs, _ := collectFrontendDirJSON(context.Background(), frontendDepsPolicy{}, "dashboard", feDir, false, false, nil)
 	if len(fs) != 1 || fs[0].Rule != ruleFrontendLintUnavailable {
 		t.Fatalf("eslint lane returned %+v for a frontend with no node_modules; want its could-not-run finding "+
 			"(this lane gates, so no finding counts it as a gating linter that passed)", fs)

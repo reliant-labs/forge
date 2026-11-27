@@ -124,6 +124,13 @@ const config = [
       // named exports and grouped/sorted imports. Errors on the cycle
       // case because cycles silently break code-splitting + cause subtle
       // initialisation bugs; warn-only on the others so users can ratchet.
+      //
+      // maxDepth does not bound no-cycle's cost: 1, 2, 3, 5, 10 and no
+      // limit, with or without ignoreExternal, measured the same. The cost
+      // is building the import graph (resolving and re-parsing each
+      // imported module), which every depth pays. So the depth stays where
+      // it catches long cycles too; `forge lint` skips the whole lane when
+      // nothing it reads changed since its last pass.
       "import/no-cycle": ["error", { maxDepth: 10 }],
       "import/no-default-export": "warn",
       "import/order": [

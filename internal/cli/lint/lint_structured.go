@@ -694,6 +694,8 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 			progress:      progress,
 			emit:          render.add,
 			golangciMemo:  newGolangciMemo(productionGolangciToolchain()),
+
+			frontendLintCache: newFrontendLintCache(cwd, flags.noCache, os.Getenv),
 		})
 		var last lintStepOutcome
 		switch {
@@ -836,6 +838,11 @@ func (r *lintRenderer) add(o lintStepOutcome) {
 	}
 	if o.failedBeyondGap() {
 		v.failed = append(v.failed, o.name)
+	}
+	for _, f := range o.findings {
+		if f.Cached {
+			v.cached = append(v.cached, fmt.Sprintf("%s (%s)", o.name, f.cachedFor))
+		}
 	}
 
 	switch {

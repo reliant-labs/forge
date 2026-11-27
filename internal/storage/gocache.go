@@ -843,6 +843,29 @@ func streamTrimGoCache(ctx context.Context, root string, shards []string, start 
 		mu.Unlock()
 		halted.Store(true)
 	}
+	// remove deletes one entry: ok when it is gone, stop when the error ends
+	// the pass (the deadline, the delete cap, a back-off). An entry that
+	// could not be removed for another reason than its being gone already is
+	// counted, so a cache this user cannot write is never a clean pass.
+	remove := func(e goCacheEntry) (ok, stop bool) {
+		err := e.remove(ctx, del, root)
+		switch {
+		case err == nil:
+			return true, false
+		case stopsPass(err):
+			if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+				halt(err)
+			}
+			return false, true
+		case !errors.Is(err, fs.ErrNotExist):
+			mu.Lock()
+			if pass.unremovable++; pass.unremovableErr == nil {
+				pass.unremovableErr = err
+			}
+			mu.Unlock()
+		}
+		return false, false
+	}
 	var wg sync.WaitGroup
 	for w := 0; w < goCacheWorkers; w++ {
 		wg.Add(1)
@@ -879,21 +902,12 @@ func streamTrimGoCache(ctx context.Context, root string, shards []string, start 
 						continue
 					}
 					if apply {
-						if err := e.remove(ctx, del, root); err != nil {
-							if stopsPass(err) {
-								if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-									halt(err)
-								}
-								complete = false
-								break
-							}
-							if !errors.Is(err, fs.ErrNotExist) {
-								mu.Lock()
-								if pass.unremovable++; pass.unremovableErr == nil {
-									pass.unremovableErr = err
-								}
-								mu.Unlock()
-							}
+						ok, stop := remove(e)
+						if stop {
+							complete = false
+							break
+						}
+						if !ok {
 							continue // this entry could not be removed; the rest can
 						}
 					}

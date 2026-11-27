@@ -56,12 +56,12 @@ type localObsCheckInput struct {
 
 type dbQueryInput struct {
 	envInput
-	SQL        string `json:"sql" jsonschema:"one read-only SQL statement; writes, nextval() and a second statement are refused"`
-	Workload   string `json:"workload,omitempty" jsonschema:"the workload whose database to read (default api)"`
-	Database   string `json:"database,omitempty" jsonschema:"a declared database by name, when the env has several"`
-	MaxRows    int    `json:"max_rows,omitempty" jsonschema:"most rows to return (default the command's cap)"`
-	ConfirmEnv string `json:"confirm_env,omitempty" jsonschema:"the env name again: required on an audited (real) env, so nobody reads one by a typo"`
-	Reason     string `json:"reason,omitempty" jsonschema:"why this read is needed, e.g. an issue id: required on an audited env and kept in its audit record"`
+	SQL        string `json:"sql" jsonschema:"one read-only SQL statement"`
+	Workload   string `json:"workload,omitempty" jsonschema:"workload whose database to read (default api)"`
+	Database   string `json:"database,omitempty" jsonschema:"a declared database, when there are several"`
+	MaxRows    int    `json:"max_rows,omitempty" jsonschema:"row cap (default: the command's)"`
+	ConfirmEnv string `json:"confirm_env,omitempty" jsonschema:"the env name again; required on an audited env"`
+	Reason     string `json:"reason,omitempty" jsonschema:"why you need this read, e.g. an issue id; required on an audited env"`
 }
 
 // dbQueryArgs is the command line a db_query call runs.
@@ -85,16 +85,14 @@ func addAccountReadTools(srv *mcp.Server, r *mcpRunner) {
 	desc := func(name string) string {
 		for _, t := range hostedToolInfos {
 			if t.Name == name {
-				return t.Description + " The env and project are this repo's."
+				return t.Description
 			}
 		}
 		return ""
 	}
 	addJSONTool(srv, r, &mcp.Tool{
 		Name: "db_query", Annotations: read("Query an env's database"),
-		Description: "Run one read-only SQL statement against an environment's app database and return the rows as JSON (forge db query <env> --json). " +
-			"Every query runs in a READ ONLY transaction with a statement timeout and row and size caps, as the env's read-only role where it has one (forge:secret columns are not readable), and is recorded in the env's audit log. " +
-			"A real env's policy is audited: pass confirm_env (the env name again) and reason, or the read is refused (exit_code 1); a deny policy refuses it. Pass the error_reason and exit_code of a refusal to explain_error.",
+		Description: "Run one read-only SQL statement against an env's app database, rows as JSON (forge db query <env> --json): read-only role, capped and audited. A real env needs confirm_env and reason.",
 	}, func(in dbQueryInput) []string {
 		if strings.TrimSpace(in.SQL) == "" {
 			return nil

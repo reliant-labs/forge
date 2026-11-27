@@ -2,8 +2,11 @@ package cigate
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // readerGit is fakeGit plus `git ls-files --cached`: the tracked files.
@@ -87,6 +90,52 @@ func TestAffectedReaders(t *testing.T) {
 			}
 			if len(a.Selections) != 1 || !strings.Contains(a.Selections[0], tc.wantSel) {
 				t.Errorf("selections = %q, want one containing %q", a.Selections, tc.wantSel)
+			}
+		})
+	}
+}
+
+// A package can read Go source without importing its owner. Keep that
+// reader even past a zero transitive cap, without changing ignore or fallback.
+func TestAffectedReaders_GoSourceWithoutImport(t *testing.T) {
+	for _, tc := range []struct {
+		name, changed string
+		readers       bool
+		ignore        []string
+		want          []string
+		deferred      []string
+		full          bool
+	}{
+		{name: "reader is a direct root", changed: "a/a.go", readers: true,
+			want: []string{"ex.com/m/a", "ex.com/m/c"}, deferred: []string{"ex.com/m/b"}},
+		{name: "opt in still required", changed: "a/a.go",
+			want: []string{"ex.com/m/a"}, deferred: []string{"ex.com/m/b"}},
+		{name: "ignore still wins", changed: "a/a.go", readers: true, ignore: []string{"a/a.go"}},
+		{name: "unplaced Go still falls back", changed: "outside/source.go", readers: true, full: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			write(t, root, "c/c_test.go", `package c
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestSource(t *testing.T) {
+	_, _ = os.ReadFile(filepath.Join("..", "a", "a.go"))
+	_, _ = os.ReadFile(filepath.Join("..", "outside", "source.go"))
+}
+`)
+			write(t, root, "a/a.go", "package a\n")
+			write(t, root, "outside/source.go", "package outside\n")
+			git := readerGit{fakeGit: fakeGit{branch: "f", changed: []string{tc.changed}}, tracked: []string{"a/a.go", "c/c_test.go", "outside/source.go"}}
+			a := ComputeAffected(context.Background(), AffectedInput{Root: root, Git: git.run, GoList: listed(root),
+				Readers: tc.readers, Ignore: tc.ignore, Reach: &config.CIGateAffectedReach{Mode: ReachDirect}})
+			if a.Full != tc.full || !slices.Equal(a.Packages, tc.want) || !slices.Equal(a.Deferred, tc.deferred) {
+				t.Fatalf("full=%v (%s), packages=%v, deferred=%v; want full=%v, packages=%v, deferred=%v",
+					a.Full, a.Reason, a.Packages, a.Deferred, tc.full, tc.want, tc.deferred)
 			}
 		})
 	}

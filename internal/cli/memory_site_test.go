@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // memoryFor renders the framework memory for a minimal project: forge.yaml,
@@ -40,7 +42,7 @@ func TestProjectMemoryForASiteIsFrontendOnly(t *testing.T) {
 	for _, banned := range []string{
 		"This is a Go project",
 		"gopls",
-		"## Architecture in one screen",
+		"## Use forge skills to guide your work",
 		"## Where logic goes",
 		"## Schema and proto conventions",
 		"internal/handlers/",
@@ -80,11 +82,13 @@ func TestProjectMemoryForASiteIsFrontendOnly(t *testing.T) {
 }
 
 // A Go project keeps the Go memory, and its billing line is the precise one:
-// free static hosting in one organization per person, with no site limit;
-// everything else needs hosting billing and queues.
+// a backend without hosting billing queues (exit 7). What is free — static
+// hosting in one organization per person, with no site limit — is the
+// deploy/hosted-capacity skill's, which the line names and
+// TestHostedCapacitySkillCarriesTheFreeTier holds.
 func TestProjectMemoryForAGoProjectKeepsTheGoGuide(t *testing.T) {
 	memory := memoryFor(t, true)
-	for _, want := range []string{"This is a Go project", "## Architecture in one screen", "Free static hosting covers one organization per person", "with no limit on", "site is one", "exits 7"} {
+	for _, want := range []string{"This is a Go project", "## Where logic goes", "exits 7", "`deploy/hosted-capacity`"} {
 		if !strings.Contains(memory, want) {
 			t.Errorf("Go project memory lacks %q", want)
 		}
@@ -92,6 +96,19 @@ func TestProjectMemoryForAGoProjectKeepsTheGoGuide(t *testing.T) {
 	for _, banned := range []string{"static sites included, needs billing", "## Adding an API later"} {
 		if strings.Contains(memory, banned) {
 			t.Errorf("Go project memory contains %q", banned)
+		}
+	}
+}
+
+// The free tier the Go guide points at is stated precisely where it points.
+func TestHostedCapacitySkillCarriesTheFreeTier(t *testing.T) {
+	body, err := templates.ProjectTemplates().Get("skills/forge/deploy/hosted-capacity/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"free static hosting\ncovers one organization per person", "with no limit on its", "site is one", "exits 7"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("deploy/hosted-capacity lacks %q", want)
 		}
 	}
 }

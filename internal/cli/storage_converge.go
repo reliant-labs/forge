@@ -247,13 +247,16 @@ func reportEnvRegistryRetention(out io.Writer, path string, policy storage.Polic
 // failure and not an attempt. The pass yields to a waiting writer (a release
 // cut pinning its images): it does not start while one waits, and stops at its
 // next safe point when one starts to (storage.WithMaintenance).
-func runAutoGC(ctx context.Context, path string, out io.Writer) error {
-	return runAutoGCWith(ctx, path, out, false)
+//
+// extraGoCaches are Go build caches the pass trims beyond the shared one and
+// the policy's go_caches (`--go-cache`).
+func runAutoGC(ctx context.Context, path string, out io.Writer, extraGoCaches ...string) error {
+	return runAutoGCWith(ctx, path, out, false, extraGoCaches...)
 }
 
 // runAutoGCWith is runAutoGC with the pass's pressure: true prunes each
 // builder's cache toward half of build_cache_gib (storage.Runner.Pressure).
-func runAutoGCWith(ctx context.Context, path string, out io.Writer, pressure bool) error {
+func runAutoGCWith(ctx context.Context, path string, out io.Writer, pressure bool, extraGoCaches ...string) error {
 	policy, err := storage.Load(path)
 	if err != nil {
 		return err
@@ -263,6 +266,7 @@ func runAutoGCWith(ctx context.Context, path string, out io.Writer, pressure boo
 	err = storage.WithMaintenance(ctx, path, out, func(ctx context.Context) error {
 		r, trims := recordingGoCacheTrims(maintenanceRunner(policy, path, out))
 		r.Pressure = pressure
+		r.ExtraGoCacheRoots = extraGoCaches
 		gcErr := nonDisruptiveGCFn(ctx, r)
 		// Recorded whether or not it succeeded: the interval rate-limits
 		// ATTEMPTS, so a machine where this reliably fails (no Docker
@@ -292,6 +296,7 @@ func runAutoGCWith(ctx context.Context, path string, out io.Writer, pressure boo
 // and recorded as an opportunistic attempt rather than a full GC.
 func newStorageAutoGCCmd(policyPath *string) *cobra.Command {
 	var pressure bool
+	var goCaches []string
 	cmd := &cobra.Command{
 		Use:    "auto-gc",
 		Short:  "Run the bounded, non-disruptive maintenance pass forge env up starts in the background",
@@ -303,11 +308,20 @@ func newStorageAutoGCCmd(policyPath *string) *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			return runAutoGCWith(ctx, *policyPath, cmd.OutOrStdout(), pressure)
+			return runAutoGCWith(ctx, *policyPath, cmd.OutOrStdout(), pressure, goCaches...)
 		},
 	}
 	cmd.Flags().BoolVar(&pressure, "pressure", false, "the disk is short of room: prune each builder's cache toward half of build_cache_gib (still never cache used inside build_cache_floor)")
+	addGoCacheFlag(cmd, &goCaches)
 	return cmd
+}
+
+// addGoCacheFlag declares --go-cache: a Go build cache this pass trims beyond
+// the shared `go env GOCACHE` and the policy's go_caches, under the same rules
+// and its own go_cache_gib budget. The Reliant daemon passes the caches it saw
+// the machine's builds use.
+func addGoCacheFlag(cmd *cobra.Command, into *[]string) {
+	cmd.Flags().StringArrayVar(into, "go-cache", nil, "also trim this Go build cache (an absolute path; repeatable), like the policy's go_caches")
 }
 
 // recordingGoCacheTrims returns r set to collect what each Go-cache trim did,
@@ -334,7 +348,10 @@ var goCacheGCFn = func(ctx context.Context, r storage.Runner, apply bool) error 
 // alone, under the maintenance lock, recorded in last-gocache-gc.json when it
 // applied. A busy lock means another pass — which trims the Go caches first —
 // is running, and is reported as such by WithLock.
-func runGoCacheGC(ctx context.Context, p storage.Policy, path string, out io.Writer, apply bool, budget time.Duration) error {
+//
+// extraGoCaches are Go build caches the pass trims beyond the shared one and
+// the policy's go_caches (`--go-cache`).
+func runGoCacheGC(ctx context.Context, p storage.Policy, path string, out io.Writer, apply bool, budget time.Duration, extraGoCaches ...string) error {
 	if budget <= 0 {
 		budget = goCacheGCBudget
 	}
@@ -342,6 +359,7 @@ func runGoCacheGC(ctx context.Context, p storage.Policy, path string, out io.Wri
 	defer cancel()
 	err := storage.WithMaintenance(ctx, path, out, func(ctx context.Context) error {
 		r, trims := recordingGoCacheTrims(maintenanceRunner(p, path, out))
+		r.ExtraGoCacheRoots = extraGoCaches
 		gcErr := goCacheGCFn(ctx, r, apply)
 		result := storage.NewGCResult(time.Now(), gcErr)
 		result.GoCaches = *trims
@@ -366,12 +384,14 @@ func runGoCacheGC(ctx context.Context, p storage.Policy, path string, out io.Wri
 func newStorageGoCacheCmd(policyPath *string) *cobra.Command {
 	var apply, dryRun bool
 	var budget time.Duration
+	var goCaches []string
 	cmd := &cobra.Command{
 		Use:   "gocache",
 		Short: "Trim the Go build caches now (preview unless --apply); the bounded pass to run every few minutes",
-		Long: `Trim the shared Go build cache and the golangci-lint cache — the Go-cache
-layer of every other pass, alone, with the whole budget to itself. The module
-cache is left to Go.
+		Long: `Trim the shared Go build cache, every cache in the policy's go_caches (and
+each --go-cache), and the golangci-lint cache — the Go-cache layer of every
+other pass, alone, with the whole budget to itself. Each build cache is held
+to its own go_cache_gib. The module cache is left to Go.
 
 Entries used in the last 2h are never removed (a running build may be using
 them); past that, the cache is trimmed to go_cache_gib. Under agent load more
@@ -397,12 +417,13 @@ last-gocache-gc.json beside the policy.`,
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			return runGoCacheGC(ctx, p, path, cmd.OutOrStdout(), apply, budget)
+			return runGoCacheGC(ctx, p, path, cmd.OutOrStdout(), apply, budget, goCaches...)
 		},
 	}
 	cmd.Flags().BoolVar(&apply, "apply", false, "remove what the preview lists")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview only (the default)")
 	cmd.Flags().DurationVar(&budget, "budget", goCacheGCBudget, "wall time for the pass; what it does not reach is resumed by the next one")
+	addGoCacheFlag(cmd, &goCaches)
 	cmd.MarkFlagsMutuallyExclusive("apply", "dry-run")
 	return cmd
 }

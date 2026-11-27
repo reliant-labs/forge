@@ -214,6 +214,12 @@ _ttl = forge.observability_ttl(_observability_decl) if _observability_decl else 
 # Every env a workload runs in must declare the buckets it references
 # (staging and prod on forge.BucketOnS3). `forge skill load storage/blobstore`
 # walks through it, from the declaration to an upload from the browser.
+#
+# NO DOCKER? Run MinIO as a host process instead, like postgres below: add
+# `forge.HostInfra {name = "minio", engine = "minio", port = ...}` to `infra`,
+# bind the buckets to `forge.BucketOnMinIO {infra = "minio"}`, and drop the
+# minio_workload. forge generates its root credentials into the env's secret
+# store, and only host processes (forge.OnHost) can reach it.
 _object_storage = False
 _minio = forge.BucketOnMinIO {
     port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-minio", 9000)

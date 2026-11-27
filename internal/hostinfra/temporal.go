@@ -125,7 +125,7 @@ func temporalArgs(spec Spec, dataDir string) []string {
 // was declared serves its metrics on a port it picked, and the scrape pointed
 // at the declared one finds nothing; adopting the instance silently would make
 // that look like a telemetry bug.
-func temporalDrift(spec Spec) string {
+func temporalDrift(spec Spec, _ string) string {
 	if spec.TemporalMetricsPort > 0 && !portListening(spec.TemporalMetricsPort) {
 		return fmt.Sprintf("temporal_metrics_port :%d is declared, but the running server does not serve it (it was started before the port was declared); restart it: `forge env down`, then `forge env up`", spec.TemporalMetricsPort)
 	}

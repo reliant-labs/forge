@@ -18,6 +18,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/gocache"
 )
 
 // GiB is one gibibyte in bytes.
@@ -50,14 +52,24 @@ type Policy struct {
 	// $FORGE_STORAGE_BUILD_CACHE_FLOOR overrides it for one process.
 	BuildCacheFloor string `json:"build_cache_floor,omitempty"`
 	ImageUnused     string `json:"image_unused"`
-	// GoCacheUnused is how long a shared Go build cache entry (and the
-	// golangci-lint cache) may sit unused before it is trimmed. Minimum 2h:
-	// Go refreshes an entry's mtime on use once it is an hour stale, so that
-	// floor is what keeps the trim safe under running builds.
+	// GoCacheUnused is how long a Go build cache entry (in every Go-format
+	// cache the trim reaches) may sit unused before it is trimmed. The
+	// default is forge/pkg/gocache's DefaultUnused. The age rule never reaches
+	// inside gocache.Floor (2h): Go refreshes an entry's mtime on use once it
+	// is an hour stale, so that floor is what keeps the trim safe under
+	// running builds.
 	GoCacheUnused string `json:"go_cache_unused"`
-	// GoCacheGiB is the size the shared Go caches are trimmed down to,
-	// oldest first, when age alone leaves them larger.
+	// GoCacheGiB is the size each Go build cache is trimmed down to, oldest
+	// first, when age alone leaves it larger: the shared GOCACHE and every
+	// cache in go_caches, each on its own.
 	GoCacheGiB uint64 `json:"go_cache_gib"`
+	// GoCaches are Go build caches the trim reaches beyond the shared `go env
+	// GOCACHE`: caches other processes on the machine build into (a CI
+	// runner's per-repository cache, a container's mounted cache). Absolute
+	// paths. Each is trimmed like the shared cache, under the same age rule
+	// and its own go_cache_gib budget; a path that is absent or not a Go cache
+	// (no toolchain README) is skipped.
+	GoCaches []string `json:"go_caches,omitempty"`
 	// GoCacheVolumePercent caps that budget at this share of the volume the
 	// cache lives on, so the default works on a 40 GiB build volume as well as
 	// on a 1 TB laptop: the budget is the smaller of go_cache_gib and this
@@ -153,9 +165,20 @@ type Registry struct {
 	Contexts     []string `json:"contexts"`
 }
 
-// DefaultPolicy returns conservative local development budgets.
+// defaultGoCacheUnused is gocache.DefaultUnused as the policy writes it.
+var defaultGoCacheUnused = strconv.Itoa(int(gocache.DefaultUnused/time.Hour)) + "h"
+
+// legacyGoCacheUnused is go_cache_unused's default before it was lowered to a
+// day. Save writes every field, so every machine policy an older forge saved
+// carries it whether or not anyone chose it; Load reads it as the current
+// default, or the lower default would never reach those machines. To keep
+// two days on purpose, write it another way ("48h0m0s").
+const legacyGoCacheUnused = "48h"
+
+// DefaultPolicy returns conservative local development budgets. The Go build
+// cache rules are forge/pkg/gocache's, the one copy the Reliant daemon reads too.
 func DefaultPolicy() Policy {
-	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", GoCacheUnused: "48h", GoCacheGiB: 60, GolangciCacheGiB: 4, ImageUnused: "168h", SourceCacheUnused: "168h", SourceCacheKeep: 2, SourceCacheGiB: 6, SourceCacheSlimAfter: "24h", RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"},
+	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", GoCacheUnused: defaultGoCacheUnused, GoCacheGiB: gocache.DefaultBudgetGiB, GolangciCacheGiB: gocache.DefaultGolangciBudgetGiB, ImageUnused: "168h", SourceCacheUnused: "168h", SourceCacheKeep: 2, SourceCacheGiB: 6, SourceCacheSlimAfter: "24h", RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"},
 		MaxDeletesPerPass: defaultMaxDeletesPerPass, DeleteRatePerSec: defaultDeleteRatePerSec,
 		AnonymousVolumeUnused: "336h", MaxDockerRemovalsPerPass: defaultMaxDockerRemovalsPerPass}
 }
@@ -184,6 +207,9 @@ func Load(path string) (Policy, error) {
 	}
 	if err := json.Unmarshal(b, &p); err != nil {
 		return p, fmt.Errorf("storage policy: %w", err)
+	}
+	if p.GoCacheUnused == legacyGoCacheUnused {
+		p.GoCacheUnused = defaultGoCacheUnused
 	}
 	warnUnknownPolicyKeys(path, b)
 	return p, p.Validate()
@@ -243,6 +269,11 @@ func (p Policy) Validate() error {
 	}
 	if p.SourceCacheKeep < 1 {
 		return fmt.Errorf("storage: source_cache_keep must retain at least one clone per repository, got %d", p.SourceCacheKeep)
+	}
+	for _, c := range p.GoCaches {
+		if !filepath.IsAbs(c) {
+			return fmt.Errorf("storage: go_caches entries must be absolute paths, got %q", c)
+		}
 	}
 	if p.GoCacheVolumePercent < 0 || p.GoCacheVolumePercent > 100 {
 		return fmt.Errorf("storage: go_cache_volume_percent must be 1-100 (0 means the default %d), got %d", defaultGoCacheVolumePercent, p.GoCacheVolumePercent)

@@ -29,12 +29,19 @@
 #   apigate          an incompatible pkg/ change is declared (internal/apigate; PR=<n>
 #                    reads the pull request's labels and body, as CI does)
 #   verify-generated forge generate over this checkout changes nothing
-#   validate-kcl     the KCL manifests validate
-#   pre-commit       the pre-commit hooks over the changed files, in a scratch worktree
+#   validate-kcl     the KCL manifests validate, with the pinned kcl
+#   pre-commit       the pre-commit hooks over the changed files, in a scratch worktree,
+#                    with the pinned pre-commit
 #   licenses-go      the Go import graph's licenses (scripts/check-licenses.sh)
 #   licenses-npm     web-runtime's, when its package.json or lock changed
 #   golangci         golangci-lint on the changed packages (scripts/ci-golangci-changed.sh),
 #                    with the golangci-lint release CI pins (SKIP under any other)
+#
+# THE TOOLS. Before any step, ci-tools (scripts/ci-tools.sh) links the kcl and
+# pre-commit releases forge pins into .forge/tools/bin, from the machine's shared
+# tool cache (installing them there on a miss), and that directory goes first
+# on PATH: a host needs neither installed, and one on PATH at another version
+# never stands in for the pin.
 #
 # What it leaves to main, as ci.yml does: -race, full mode, tierguard's renders
 # and the remaining guards, golangci-lint over unchanged packages and go vet,
@@ -143,7 +150,7 @@ forge_tools() {
 }
 verify_generated() { PATH="$bin:$PATH" "$bin/forge" ci verify-generated; }
 validate_kcl() {
-  need kcl
+  command -v kcl >/dev/null 2>&1 || skip "kcl is not on PATH (ci-tools could not install it: see ci-tools.log)"
   PATH="$bin:$PATH" "$bin/forge" ci validate-kcl
 }
 pre_commit() {
@@ -153,7 +160,7 @@ pre_commit() {
   elif command -v uvx >/dev/null 2>&1; then
     pc=(uvx pre-commit)
   else
-    skip "neither pre-commit nor uvx is on PATH"
+    skip "neither pre-commit nor uvx is on PATH (ci-tools could not install it: see ci-tools.log)"
   fi
   # A scratch worktree: the hooks include fixers, and this checkout must not
   # change under the tests running beside them.
@@ -177,6 +184,12 @@ golangci() {
   golangci-lint version | grep -qE "version v?${pin//./\\.} " || skip "golangci-lint on PATH is not ${pin}, the release CI pins: forge tools install golangci-lint"
   scripts/ci-golangci-changed.sh "$base"
 }
+
+# The pinned kcl and pre-commit, first on PATH for every step (THE TOOLS above).
+# A failed install fails this row; the steps that need the tool then SKIP.
+tools_bin="$PWD/.forge/tools/bin"
+step ci-tools scripts/ci-tools.sh "$tools_bin"
+export PATH="$tools_bin:$PATH"
 
 step test-short test_short &
 step flake-gate flake_gate &
@@ -206,7 +219,7 @@ wait
 
 failed=0
 printf '\n%-17s %-7s %6s  %s\n' STEP RESULT SECONDS LOG
-for s in forge-tools "${order[@]}"; do
+for s in ci-tools forge-tools "${order[@]}"; do
   read -r status secs <"$logs/$s.status" 2>/dev/null || { status=FAIL secs=0; }
   printf '%-17s %-7s %6s  %s\n' "$s" "$status" "$secs" "$logs/$s.log"
   case $status in
@@ -216,7 +229,7 @@ for s in forge-tools "${order[@]}"; do
 done
 echo
 echo "wall: $((SECONDS - started))s"
-for s in forge-tools "${order[@]}"; do
+for s in ci-tools forge-tools "${order[@]}"; do
   read -r status _ <"$logs/$s.status" 2>/dev/null || status=FAIL
   case $status in
     FAIL | SKIP)

@@ -1067,6 +1067,33 @@ type HostInfraEntity struct {
 	// TemporalMetricsPort is the Prometheus port the server is started with
 	// (--metrics-port); 0 = a free port the server picks.
 	TemporalMetricsPort int `json:"temporal_metrics_port,omitempty"`
+
+	// engine = "minio" only.
+
+	// MinIOConsolePort is the web console's port; 0 = no console.
+	MinIOConsolePort int `json:"minio_console_port,omitempty"`
+	// MinIORegion is the region the server answers as.
+	MinIORegion string `json:"minio_region,omitempty"`
+	// MinIOBuckets are the env's buckets on this MinIO (forge.BucketOnMinIO
+	// {infra = <name>}), created at start, their anonymous access reconciled.
+	MinIOBuckets []HostInfraMinIOBucket `json:"minio_buckets,omitempty"`
+	// MinIOCORSAllowOrigin is the browser origins the S3 API allows: "*" or
+	// a comma-separated list.
+	MinIOCORSAllowOrigin string `json:"minio_cors_allow_origin,omitempty"`
+	// MinIORootUserSecret is the secret-store key holding the root user. A
+	// name, never a value: forge generates the value into the env's store.
+	MinIORootUserSecret string `json:"minio_root_user_secret,omitempty"`
+	// MinIORootPasswordSecret is the secret-store key holding the root
+	// password. A name, never a value.
+	MinIORootPasswordSecret string `json:"minio_root_password_secret,omitempty"`
+}
+
+// HostInfraMinIOBucket is one bucket a host MinIO creates.
+type HostInfraMinIOBucket struct {
+	// Name is the bucket's name.
+	Name string `json:"name"`
+	// PublicRead opens the bucket to anonymous downloads.
+	PublicRead bool `json:"public_read,omitempty"`
 }
 
 // BuildConfigEntity is the dispatched-by-type view of a workload's build
@@ -1403,11 +1430,17 @@ type FrontendEntity struct {
 	// true carries the Forge Changes the source's changes.yaml declares into
 	// the env's shape; false keeps them out. The render emits the key only
 	// when it is false, so every other frontend renders byte-identically.
-	ChangesFromSource *bool       `json:"changes_from_source,omitempty"`
-	DevRunner         string      `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
-	Port              int         `json:"port,omitempty"`
-	EnvFile           string      `json:"env_file,omitempty"`
-	EnvVars           []KCLEnvVar `json:"env_vars,omitempty"`
+	ChangesFromSource *bool `json:"changes_from_source,omitempty"`
+	// ReleaseURLs is the KCL `release_urls`: nil (unset) or true leaves the
+	// platform's per-release URLs on for an OnHosted frontend; false turns
+	// them off, recorded in the env's shape (release.Shape.HostedFrontends).
+	// The render emits the key only when it is false, so every other
+	// frontend renders byte-identically.
+	ReleaseURLs *bool       `json:"release_urls,omitempty"`
+	DevRunner   string      `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
+	Port        int         `json:"port,omitempty"`
+	EnvFile     string      `json:"env_file,omitempty"`
+	EnvVars     []KCLEnvVar `json:"env_vars,omitempty"`
 	// Config is the typed, well-known knobs block (kcl/schema.k
 	// FrontendConfig). nil when the frontend declares no `config`. forge
 	// expands it into the SAME env stream as EnvVars via frontendConfigEnv,
@@ -1667,6 +1700,19 @@ type KCLEnvVar struct {
 	// pre-flight. Set by config codegen from `optional: true` on a
 	// `sensitive` proto field — never hand-authored.
 	SecretOptional bool `json:"secret_optional,omitempty"`
+
+	// FrontendURL is a forge.FrontendURL the render KEPT: its target is a
+	// hosted frontend, whose hostname only the control plane knows, so a
+	// build resolves it into Value from the env's live status
+	// (resolveBuildFrontendURLs). nil for every other var, a FrontendURL to a
+	// dev server included (the render resolved that one into Value).
+	FrontendURL *KCLFrontendURL `json:"frontend_url,omitempty"`
+}
+
+// KCLFrontendURL mirrors kcl/schema.k FrontendURL as the render keeps it.
+type KCLFrontendURL struct {
+	// Frontend names the frontend whose public URL is the value.
+	Frontend string `json:"frontend"`
 }
 
 // ObservabilityEntity is the env's typed observability declaration

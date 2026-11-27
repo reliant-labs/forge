@@ -82,6 +82,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/pkg/schemadef"
@@ -183,6 +184,10 @@ func resolveFKTable(column string, known map[string]bool) (string, bool) {
 // no down migrations — it rolls forward only) plus the per-field notes
 // (skips, TODOs) the CLI prints.
 type EntityFromProtoMigration struct {
+	// UpSQL is the migration's text, carrying its birth checksum
+	// (checksums.StampSQLBirth): the evidence `forge lint`'s
+	// crud-table-unowned rule reads to tell a table still exactly as forge
+	// scaffolded it from one a person has edited.
 	UpSQL string
 	Notes []string
 	// PendingRefColumns are this table's `<x>_id` columns that resolve to a
@@ -858,10 +863,12 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 		b.WriteString("\n-- Ownership: not declared. Say whose rows these are (an owner declaration on\n")
 		b.WriteString("-- the table, which scopes every generated CRUD op to the caller) or why no caller\n")
 		b.WriteString("-- owns them, in a new migration; until then the crud-table-unowned lint flags this\n")
-		b.WriteString("-- table (see the forge `db/crud-overrides` skill).\n")
+		b.WriteString("-- table: a warning while the table is exactly as forge scaffolded it, an error\n")
+		b.WriteString("-- once it is edited (see the forge `db/crud-overrides` skill).\n")
 		notes = append(notes, fmt.Sprintf("table %s: whose rows it holds is not declared. In a new migration, declare the owner "+
 			"(COMMENT ON TABLE %s IS '%s=<column>') or why no caller owns them ('%s: <why>' or '%s: <why>'); "+
-			"until you do, the crud-table-unowned lint (`forge lint --crud-ownership`) flags it while authenticated CRUD serves it",
+			"until you do, the crud-table-unowned lint (`forge lint --crud-ownership`) flags it while authenticated CRUD serves it — "+
+			"a \"pending: choose an owner\" warning while the table is as forge scaffolded it, an error once you edit it",
 			spec.Table, spec.Table, schemadef.TableMarkerOwner, schemadef.TableMarkerUnscoped, schemadef.TableMarkerPublic))
 	}
 
@@ -938,7 +945,7 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 	}
 
 	return EntityFromProtoMigration{
-		UpSQL:                b.String(),
+		UpSQL:                checksums.StampSQLBirth(b.String()),
 		Notes:                notes,
 		PendingRefColumns:    fkPlan.pendingColumns(),
 		BackfilledRefColumns: fkPlan.backfilledColumns(),

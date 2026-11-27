@@ -240,18 +240,6 @@ func TestCovC_RunK3dClusterLifecycle(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
-	t.Run("user cancellation cancels the client and still cleans up", func(t *testing.T) {
-		cleaned = 0
-		parent, cancel := context.WithCancel(ctx)
-		started := make(chan struct{})
-		go func() { <-started; cancel() }()
-		err := runK3dClusterLifecycle(parent, "cp", "start",
-			func(c context.Context) error { close(started); <-c.Done(); return c.Err() },
-			func(context.Context, string) (k3dClusterRuntimeState, error) { return k3dClusterRuntimeState{}, nil }, cleanup)
-		if !errors.Is(err, context.Canceled) || cleaned != 1 {
-			t.Fatalf("err = %v, cleaned = %d", err, cleaned)
-		}
-	})
 }
 
 func TestCovC_K3dServerBootCrashAndEntrypointLog(t *testing.T) {

@@ -3,6 +3,7 @@
 package blobstore_test
 
 import (
+	"context"
 	"crypto/md5" //nolint:gosec // an ETag, as S3 computes it; not a security boundary
 	"encoding/hex"
 	"fmt"
@@ -58,6 +59,10 @@ func writeRange(w http.ResponseWriter, r *http.Request, data []byte) {
 type fakeS3Objects struct {
 	mu      sync.Mutex
 	objects map[string]fakeS3Object
+	// ignoreRange answers a ranged GET with 200 and the whole object, as
+	// a service that does not implement Range would. overlong answers it
+	// with 206 but the bytes from the offset to the end, past its end.
+	ignoreRange, overlong bool
 }
 
 type fakeS3Object struct {
@@ -97,6 +102,15 @@ func (f *fakeS3Objects) serve(t *testing.T) *httptest.Server {
 			w.Header().Set("ETag", etag(o.data))
 			w.Header().Set("Last-Modified", time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC).Format(http.TimeFormat))
 			w.Header().Set("Content-Type", o.contentType)
+			switch {
+			case f.ignoreRange:
+				r.Header.Del("Range")
+			case f.overlong:
+				if from, ok := strings.CutPrefix(r.Header.Get("Range"), "bytes="); ok {
+					from, _, _ = strings.Cut(from, "-")
+					r.Header.Set("Range", "bytes="+from+"-")
+				}
+			}
 			writeRange(w, r, o.data)
 		case http.MethodDelete:
 			delete(f.objects, key)
@@ -119,6 +133,12 @@ func etag(data []byte) string {
 // multipart uploads.
 func TestS3ObjectIO(t *testing.T) {
 	t.Parallel()
+	s, _ := newObjectS3(t)
+	checkObjectIO(t, s, "io")
+}
+
+func newObjectS3(t *testing.T) (*blobstore.S3, *fakeS3Objects) {
+	t.Helper()
 	fake := &fakeS3Objects{objects: map[string]fakeS3Object{}}
 	srv := fake.serve(t)
 	cfg := s3Config(srv.URL)
@@ -127,5 +147,35 @@ func TestS3ObjectIO(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkObjectIO(t, s, "io")
+	return s, fake
+}
+
+// A ranged Open trusts only a ranged answer: a service that ignores Range
+// (200, the whole object) is an error, not the wrong bytes, and one that
+// sends more than the range asked is cut at the range's length.
+func TestS3OpenHoldsTheServiceToTheRange(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, fake := newObjectS3(t)
+	if _, err := s.PutObject(ctx, "t/a", strings.NewReader("hello, world"), blobstore.PutObjectOptions{ContentType: "text/plain"}); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.ignoreRange = true
+	fake.mu.Unlock()
+	for _, opts := range []blobstore.OpenOptions{{Offset: 7}, {Length: 5}} {
+		if r, o, err := s.Open(ctx, "t/a", opts); err == nil {
+			r.Close()
+			t.Fatalf("Open %+v of a service ignoring Range = %+v, want an error", opts, o)
+		}
+	}
+	if got, _, err := readOpen(t, s, "t/a", blobstore.OpenOptions{}); err != nil || string(got) != "hello, world" {
+		t.Fatalf("an unranged Open = %q, %v", got, err)
+	}
+	fake.mu.Lock()
+	fake.ignoreRange, fake.overlong = false, true
+	fake.mu.Unlock()
+	if got, o, err := readOpen(t, s, "t/a", blobstore.OpenOptions{Offset: 7, Length: 3}); err != nil || string(got) != "wor" || o.Size != 12 {
+		t.Fatalf("Open of an overlong range = %q %+v %v, want \"wor\"", got, o, err)
+	}
 }

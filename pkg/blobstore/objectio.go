@@ -24,6 +24,12 @@ type ObjectReader interface {
 	// reports the whole object: Object.Size is the object's size, not the
 	// range's. The caller must close the reader. A key that holds no object
 	// is ErrNotFound, reported by Open itself rather than by the first Read.
+	//
+	// The stream outlives the call: the instrumentation's span, metrics and
+	// log record cover opening it, not reading it, and reading continues
+	// on ctx. So ctx must stay live until the stream is read, and a custom
+	// S3Config.Chain or GCSConfig.Chain whose middleware puts a timeout on
+	// the call's context would cancel the stream when the call returns.
 	Open(ctx context.Context, key string, opts OpenOptions) (io.ReadCloser, Object, error)
 }
 
@@ -54,7 +60,11 @@ type ObjectWriter interface {
 	// before the service commits it, so no object is stored and an object
 	// already at key is left as it was. Any other failure leaves it as it
 	// was too: a single PUT never commits a partial body, and a multipart
-	// upload that fails is aborted.
+	// upload that fails is never completed. Aborting it is best effort,
+	// though (a cancelled ctx or a failing service can leave its parts
+	// behind, invisible but billed), so give an S3 bucket a lifecycle rule
+	// that aborts incomplete multipart uploads (AbortIncompleteMultipartUpload,
+	// after a day). GCS discards an abandoned resumable upload after a week.
 	PutObject(ctx context.Context, key string, body io.Reader, opts PutObjectOptions) (Object, error)
 }
 

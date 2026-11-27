@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"sort"
 	"strings"
@@ -349,7 +350,10 @@ func TestS3AgainstMinIO(t *testing.T) {
 		if _, err := blobstore.PutObject(ctx, s, "t5/short.bin", bytes.NewReader(big), blobstore.PutObjectOptions{ContentType: "application/octet-stream", ContentLength: int64(len(big)) + 1}); !errors.Is(err, blobstore.ErrInvalidOptions) {
 			t.Fatalf("PutObject shorter than declared = %v, want ErrInvalidOptions", err)
 		}
-		for _, k := range []string{"t5/refused.bin", "t5/short.bin"} {
+		if _, err := blobstore.PutObject(ctx, s, "t5/long.bin", bytes.NewReader(big), blobstore.PutObjectOptions{ContentType: "application/octet-stream", ContentLength: int64(len(big)) - 1}); !errors.Is(err, blobstore.ErrInvalidOptions) {
+			t.Fatalf("PutObject longer than declared (multipart) = %v, want ErrInvalidOptions", err)
+		}
+		for _, k := range []string{"t5/refused.bin", "t5/short.bin", "t5/long.bin"} {
 			if _, err := s.Stat(ctx, k); !errors.Is(err, blobstore.ErrNotFound) {
 				t.Fatalf("a refused upload left %s: %v", k, err)
 			}
@@ -389,6 +393,30 @@ func TestS3AgainstMinIO(t *testing.T) {
 		}
 		if _, err := s.PresignGet(ctx, "t6/page.html", blobstore.GetOptions{Inline: true, ResponseContentType: "text/html"}); !errors.Is(err, blobstore.ErrInvalidOptions) {
 			t.Fatalf("inline text/html = %v, want ErrInvalidOptions", err)
+		}
+		// The forced type is signed: a URL edited to force text/html, or
+		// to drop the override and serve the stored type, is refused.
+		for _, edit := range []func(q url.Values){
+			func(q url.Values) { q.Set("response-content-type", "text/html") },
+			func(q url.Values) { q.Del("response-content-type") },
+			func(q url.Values) { q.Set("response-content-disposition", "attachment") },
+		} {
+			u, err := url.Parse(req.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			q := u.Query()
+			edit(q)
+			u.RawQuery = q.Encode()
+			resp, err := http.Get(u.String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("an edited inline URL (%s): %d %q, want 403", u.RawQuery, resp.StatusCode, body)
+			}
 		}
 	})
 

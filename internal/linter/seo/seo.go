@@ -169,7 +169,7 @@ func BuiltPages(publicDir, relDir, site string) (pages []Page, warnings []string
 	var ancestors []os.FileInfo
 	var walk func(dir string) error
 	walk = func(dir string) error {
-		if fi, err := root.Stat(filepath.FromSlash(dir)); err == nil {
+		if fi, err := rootStat(root, dir); err == nil {
 			for _, a := range ancestors {
 				if os.SameFile(a, fi) {
 					return nil
@@ -178,7 +178,7 @@ func BuiltPages(publicDir, relDir, site string) (pages []Page, warnings []string
 			ancestors = append(ancestors, fi)
 			defer func() { ancestors = ancestors[:len(ancestors)-1] }()
 		}
-		entries, err := fs.ReadDir(fsys, dir)
+		entries, err := rootReadDir(fsys, dir)
 		if err != nil {
 			return err
 		}
@@ -187,7 +187,7 @@ func BuiltPages(publicDir, relDir, site string) (pages []Page, warnings []string
 			rel := path.Join(dir, name)
 			isDir := e.IsDir()
 			if e.Type()&fs.ModeSymlink != 0 {
-				fi, err := root.Stat(filepath.FromSlash(rel))
+				fi, err := rootStat(root, rel)
 				if err != nil {
 					warnings = append(warnings, fmt.Sprintf("skipped %s: a symlink that does not resolve inside %s (%v)", path.Join(relDir, rel), relDir, err))
 					continue
@@ -213,7 +213,7 @@ func BuiltPages(publicDir, relDir, site string) (pages []Page, warnings []string
 				truncated = true
 				return nil
 			}
-			b, err := root.ReadFile(filepath.FromSlash(rel))
+			b, err := rootReadFile(root, rel)
 			if err != nil {
 				warnings = append(warnings, fmt.Sprintf("skipped %s: %v", path.Join(relDir, rel), err))
 				continue
@@ -235,7 +235,7 @@ func IsBuilt(publicDir string) bool {
 		return false
 	}
 	defer func() { _ = root.Close() }()
-	fi, err := root.Stat("index.html")
+	fi, err := rootStat(root, "index.html")
 	return err == nil && fi.Mode().IsRegular()
 }
 
@@ -244,12 +244,12 @@ func IsBuilt(publicDir string) bool {
 // resolves outside the root among them — is skipped with a warning naming
 // it as display.
 func readInRoot(root *os.Root, rel, display string, warnings *[]string) ([]byte, bool) {
-	b, err := root.ReadFile(filepath.FromSlash(rel))
+	b, err := rootReadFile(root, rel)
 	switch {
 	case err == nil:
 		return b, true
 	case errors.Is(err, fs.ErrNotExist):
-		if _, lerr := root.Lstat(filepath.FromSlash(rel)); lerr != nil {
+		if _, lerr := rootLstat(root, rel); lerr != nil {
 			return nil, false // truly absent
 		}
 	}
@@ -442,7 +442,7 @@ func NextLayout(feDir, relDir, site string) (Page, bool) {
 	}
 	defer func() { _ = fsRoot.Close() }()
 	for _, appRel := range nextAppDirs {
-		if fi, err := fsRoot.Stat(filepath.FromSlash(appRel)); err != nil || !fi.IsDir() {
+		if fi, err := rootStat(fsRoot, appRel); err != nil || !fi.IsDir() {
 			continue
 		}
 		var warnings []string
@@ -521,7 +521,7 @@ func (sr segmentReader) rootRouteSegments(appRel string, warnings *[]string) []s
 		if depth == 8 {
 			return nil, false
 		}
-		entries, err := fs.ReadDir(sr.root.FS(), dir)
+		entries, err := rootReadDir(sr.root.FS(), dir)
 		if err != nil {
 			return nil, false
 		}
@@ -969,4 +969,55 @@ func (p *jsParser) skipExpr() {
 
 func isIdent(c byte) bool {
 	return c == '_' || c == '$' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// rootName is a build- or frontend-relative path in the one form every
+// os.Root call here takes: slash-separated, cleaned, relative ("." for the
+// root itself). A backslash, a leading slash or a "." segment never reaches
+// the root.
+func rootName(rel string) string {
+	rel = strings.TrimLeft(filepath.ToSlash(rel), "/")
+	if rel == "" {
+		return "."
+	}
+	return path.Clean(rel)
+}
+
+// errRootPanic wraps a panic an os.Root call raised.
+var errRootPanic = errors.New("os.Root failed")
+
+// guardRoot runs one os.Root operation and turns a panic inside it into an
+// error. Go's os.Root on Windows (go1.27.4) indexes past its path parts while
+// following a symlink to "." in the middle of a path (os/root_openat.go:382,
+// reached from rootStat for docs\loop -> "."); the path is already clean, so
+// sanitizing cannot avoid it. A path the root cannot resolve is skipped like
+// any other unreadable one.
+func guardRoot[T any](op, name string, f func() (T, error)) (ret T, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			var zero T
+			ret, err = zero, fmt.Errorf("%w: %s %s: %v", errRootPanic, op, name, r)
+		}
+	}()
+	return f()
+}
+
+func rootStat(root *os.Root, rel string) (os.FileInfo, error) {
+	name := rootName(rel)
+	return guardRoot("stat", name, func() (os.FileInfo, error) { return root.Stat(name) })
+}
+
+func rootLstat(root *os.Root, rel string) (os.FileInfo, error) {
+	name := rootName(rel)
+	return guardRoot("lstat", name, func() (os.FileInfo, error) { return root.Lstat(name) })
+}
+
+func rootReadFile(root *os.Root, rel string) ([]byte, error) {
+	name := rootName(rel)
+	return guardRoot("read", name, func() ([]byte, error) { return root.ReadFile(name) })
+}
+
+func rootReadDir(fsys fs.FS, rel string) ([]fs.DirEntry, error) {
+	name := rootName(rel)
+	return guardRoot("readdir", name, func() ([]fs.DirEntry, error) { return fs.ReadDir(fsys, name) })
 }

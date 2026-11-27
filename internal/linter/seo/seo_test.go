@@ -1,6 +1,7 @@
 package seo
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -549,5 +550,37 @@ func TestSourceFallbackNeverReadsOutsideTheFrontend(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(p.Warnings, "\n"), "skipped web/app/layout.js") {
 		t.Errorf("warnings %q lack the escaping layout.js", p.Warnings)
+	}
+}
+
+func TestRootNameIsTheSlashFormOSRootTakes(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{
+		"":                 ".",
+		".":                ".",
+		"/":                ".",
+		"index.html":       "index.html",
+		"/docs/guide.html": "docs/guide.html",
+		`docs\loop`:        "docs/loop",
+		"./docs//loop/":    "docs/loop",
+		"docs/./a/../b":    "docs/b",
+	} {
+		got := rootName(in)
+		if filepath.Separator != '\\' && strings.Contains(in, `\`) {
+			continue // a backslash is a name character off Windows
+		}
+		if got != want {
+			t.Errorf("rootName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestGuardRootTurnsAPanicIntoAnError(t *testing.T) {
+	t.Parallel()
+	_, err := guardRoot("stat", "docs/loop", func() (os.FileInfo, error) {
+		panic("runtime error: index out of range [1] with length 1") // the os.Root panic on Windows
+	})
+	if !errors.Is(err, errRootPanic) || !strings.Contains(err.Error(), "docs/loop") {
+		t.Fatalf("err = %v, want errRootPanic naming the path", err)
 	}
 }

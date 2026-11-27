@@ -210,8 +210,9 @@ type ListenerDeps struct {
 	REST bool
 	// MCP serves the given rpcs as MCP tools on mcpkit.Path (and their
 	// resource metadata on mcpkit.MetadataPath), inside Edge, each tool call
-	// relayed in process through the chain. nil is off, and so are an empty
-	// Tools table and Config.MCPDisabled: then neither path nor the
+	// relayed in process through the chain. Only the tools of services this
+	// listener mounts are served. nil is off, and so are a table with none of
+	// this listener's tools and Config.MCPDisabled: then neither path nor the
 	// credential-check rpc is mounted.
 	MCP *mcpkit.Config
 	// Ready is the process's readiness handler, which the health rpc asks
@@ -327,13 +328,18 @@ func newListener(deps ListenerDeps) (*Listener, error) {
 				}
 			}
 		}
-		if deps.MCP != nil && len(deps.MCP.Tools) > 0 && !cfg.MCPDisabled {
+		var mcpTools []mcpkit.Tool
+		if deps.MCP != nil && !cfg.MCPDisabled {
+			mcpTools = toolsOfServices(deps.MCP.Tools, l.services)
+		}
+		if len(mcpTools) > 0 {
 			if deps.Chain == nil && deps.ChainV2 != nil {
 				mountAuthCheckV2(mux, deps.ChainV2.ServerInterceptors(), deps.ChainV2.HTTPOptions()...)
 			} else {
 				mcpkit.MountAuthCheck(mux, opts...)
 			}
 			mcpCfg := *deps.MCP
+			mcpCfg.Tools = mcpTools
 			if mcpCfg.Logger == nil {
 				mcpCfg.Logger = logger
 			}
@@ -376,6 +382,25 @@ func newListener(deps ListenerDeps) (*Listener, error) {
 
 	l.srv = newHTTPServer(cfg, top, l.streams)
 	return l, nil
+}
+
+// toolsOfServices keeps the tools whose procedure belongs to a service this
+// listener mounted: /mcp on a listener lists only that listener's services
+// (one audience), never an unmanaged or other-audience service the generated
+// table also names.
+func toolsOfServices(tools []mcpkit.Tool, services []string) []mcpkit.Tool {
+	mounted := make(map[string]bool, len(services))
+	for _, s := range services {
+		mounted[strings.Trim(s, "/")] = true
+	}
+	var out []mcpkit.Tool
+	for _, t := range tools {
+		svc, _, ok := strings.Cut(strings.TrimPrefix(t.Procedure, "/"), "/")
+		if ok && mounted[svc] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // handlerRoutes is a handler already mounted, with the proto services it

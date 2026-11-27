@@ -29,7 +29,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -92,13 +91,11 @@ type Config struct {
 
 	// AllowedOrigins are the browser origins (scheme://host[:port]) /mcp
 	// answers: the listener's CORS allowlist. A request carrying an Origin
-	// that is neither listed nor the request's own host is refused 403 — the
-	// DNS-rebinding defence MCP requires. A request with no Origin (a
-	// non-browser client) is unaffected.
+	// that is not listed is refused 403 — the DNS-rebinding defence MCP
+	// requires, which is why the request's own Host is no evidence (a
+	// rebound name arrives with matching Host and Origin). A request with no
+	// Origin (a non-browser MCP client) is unaffected.
 	AllowedOrigins []string
-	// AllowAnyOrigin skips the Origin check: development, where the CORS
-	// layer reflects every origin.
-	AllowAnyOrigin bool
 
 	// CredentialHeaders names headers beyond Authorization and Cookie that
 	// carry a credential the project's Authenticator reads (an API-key
@@ -241,16 +238,15 @@ func baseURL(r *http.Request) string {
 
 func (h *Handler) originAllowed(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
-	if origin == "" || h.cfg.AllowAnyOrigin {
+	if origin == "" {
 		return true
 	}
 	for _, o := range h.cfg.AllowedOrigins {
-		if o == "*" || strings.EqualFold(strings.TrimRight(o, "/"), origin) {
+		if strings.EqualFold(strings.TrimRight(o, "/"), origin) {
 			return true
 		}
 	}
-	u, err := url.Parse(origin)
-	return err == nil && strings.EqualFold(u.Host, r.Host)
+	return false
 }
 
 // credentialHeaders are the headers copied onto relayed calls.

@@ -166,7 +166,6 @@ func NewAPIListener(d APIListenerDeps) (*APIListener, error) {
 		MCP: &mcpkit.Config{
 			Tools:          middleware.MCPTools,
 			AllowedOrigins: d.ServerCfg.CORSOrigins,
-			AllowAnyOrigin: d.ServerCfg.IsDevelopment(),
 		},
 	})
 	if err != nil {

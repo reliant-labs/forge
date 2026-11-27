@@ -36,7 +36,9 @@
 //     disable caching rather than approximate package-manager membership.
 //   - the scripts the lane runs (and whether css_health adds lint:styles),
 //     the forge binary (version, path, size, mtime), node and npm (path,
-//     size, mtime, content) and the environment eslint reads (NODE_*, ESLINT_*).
+//     size, mtime, content) and the complete inherited environment: arbitrary
+//     project scripts and their child tools may read any variable. Environment
+//     values are hashed into the key, never stored in the cache record.
 //
 // Only passes are recorded, and only through recordPass: the key is taken
 // before the run, re-checked after it, written, and re-checked after the
@@ -85,7 +87,7 @@ const (
 	// frontendLintCacheVersion is part of every key. Bump it whenever the
 	// fingerprint's meaning changes, so a record written under the old rules
 	// never answers under the new ones.
-	frontendLintCacheVersion = 4
+	frontendLintCacheVersion = 5
 
 	// lintNoCacheEnv is --no-cache for runs nobody types (a gate script).
 	lintNoCacheEnv = "FORGE_LINT_NO_CACHE"
@@ -124,10 +126,6 @@ var installStamps = []string{
 	".yarn-state.yml",    // yarn berry (node-modules linker)
 	".yarn-integrity",    // yarn classic
 }
-
-// frontendLintCacheEnv are the environment variables, beyond the ESLINT_
-// prefix, that change what eslint or a Node script decides.
-var frontendLintCacheEnv = []string{"NODE_ENV", "NODE_OPTIONS", "NODE_PATH", "BROWSERSLIST_ENV"}
 
 // frontendLintCache is one run's view of the record.
 type frontendLintCache struct {
@@ -312,10 +310,7 @@ func (c *frontendLintCache) fingerprint(dir string, run frontendLintRun) (string
 		}
 	}
 	for _, kv := range lintCacheEnviron() {
-		k, _, _ := strings.Cut(kv, "=")
-		if strings.HasPrefix(k, "ESLINT_") || containsString(frontendLintCacheEnv, k) {
-			fmt.Fprintf(h, "env:%s\n", kv)
-		}
+		fmt.Fprintf(h, "env:%q\n", kv)
 	}
 
 	files := 0

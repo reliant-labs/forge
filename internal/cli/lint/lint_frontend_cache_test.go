@@ -127,9 +127,24 @@ func TestFrontendLintFingerprintCoversInputsOnly(t *testing.T) {
 	if got := mustKey(t, c, dir, run); got == prev {
 		t.Error("an ESLINT_ variable did not change the key")
 	}
-	stubCacheEnv(t, "HOME=/elsewhere")
-	if got := mustKey(t, c, dir, run); got != prev {
-		t.Error("an unrelated environment variable changed the key")
+	for _, name := range []string{"HOME", "LINT_STRICT", "PROJECT_LINT_CONFIG"} {
+		stubCacheEnv(t, name+"=first")
+		first := mustKey(t, c, dir, run)
+		if first == prev {
+			t.Errorf("adding %s did not change the key", name)
+		}
+		stubCacheEnv(t, name+"=second")
+		if got := mustKey(t, c, dir, run); got == first {
+			t.Errorf("changing %s did not change the key", name)
+		}
+		stubCacheEnv(t, name+"=")
+		if got := mustKey(t, c, dir, run); got == prev {
+			t.Errorf("empty %s was indistinguishable from unset", name)
+		}
+		stubCacheEnv(t)
+		if got := mustKey(t, c, dir, run); got != prev {
+			t.Errorf("removing %s did not restore the key", name)
+		}
 	}
 }
 

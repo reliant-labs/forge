@@ -262,6 +262,18 @@ missing either is not judged. When
 the commits are not in this checkout, or the backend cannot read per-op
 figures, not_evaluated says so (changed_op: ...) and nothing else changes.
 
+A hosted static frontend is audited for search and accessibility after each
+promotion (Site insights), and the control plane compares the audit with the
+same env's audit of the previous release: seo_regressed (the site's or a
+route's SEO score dropped by more than seo_max_score_drop points, or a new
+error-severity SEO finding appeared: noindex, robots.txt disallowing /, a
+canonical to another host, an internal link answering 404) and
+a11y_regressed (the same for accessibility, a11y_max_score_drop, and a new
+critical axe violation). Both warn unless --fail-on (or the env's fail_on)
+names them; a warning never changes the exit status. A release with no
+previous audit has neither, and one whose audit has not finished lists
+site_audit in not_evaluated, which changes nothing else.
+
 ` + obsCheckSchema.Help(),
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {

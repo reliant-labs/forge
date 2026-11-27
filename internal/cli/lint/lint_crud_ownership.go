@@ -449,7 +449,9 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 		}
 		if raw, err := os.ReadFile(path); err == nil {
 			_, pristineBirth = checksums.SQLBirthIsPristine(raw)
+			text = string(raw)
 		}
+		statements := ownershipStatementText(text)
 		// edited records a statement in this file that changes table name:
 		// a person's edit unless this file is the table's own CREATE or a
 		// pristine birth (forge back-filling a foreign key).
@@ -460,7 +462,7 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 		}
 		var evs []event
 		add := func(kind string, re *regexp.Regexp) {
-			for _, loc := range re.FindAllStringSubmatchIndex(text, -1) {
+			for _, loc := range re.FindAllStringSubmatchIndex(statements, -1) {
 				m := make([]string, len(loc)/2)
 				for i := range m {
 					if loc[2*i] >= 0 {
@@ -558,6 +560,91 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 	}
 	sort.Slice(out.Tables, func(i, j int) bool { return out.Tables[i].Name < out.Tables[j].Name })
 	return out, nil
+}
+
+// ownershipStatementText hides comments and literal bodies from statement
+// matching, preserving offsets for COMMENT value parsing against the original.
+// Scan the raw SQL: comment delimiters inside dollar/E strings are not comments.
+func ownershipStatementText(s string) string {
+	out := []byte(s)
+	blank := func(start, end int) {
+		for i := start; i < end; i++ {
+			if out[i] != '\n' && out[i] != '\r' {
+				out[i] = ' '
+			}
+		}
+	}
+	for i := 0; i < len(s); {
+		start := i
+		switch {
+		case strings.HasPrefix(s[i:], "--"):
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+		case strings.HasPrefix(s[i:], "/*"):
+			i += 2
+			for depth := 1; i < len(s) && depth > 0; {
+				switch {
+				case strings.HasPrefix(s[i:], "/*"):
+					depth++
+					i += 2
+				case strings.HasPrefix(s[i:], "*/"):
+					depth--
+					i += 2
+				default:
+					i++
+				}
+			}
+		case s[i] == '\'':
+			backslash := i > 0 && (s[i-1] == 'E' || s[i-1] == 'e') && (i < 2 || !isIdentByte(s[i-2]))
+			i++
+			for i < len(s) {
+				c := s[i]
+				i++
+				if c == '\\' && backslash && i < len(s) {
+					i++
+				} else if c == '\'' {
+					if i < len(s) && s[i] == '\'' {
+						i++
+					} else {
+						break
+					}
+				}
+			}
+		case s[i] == '$' && (i == 0 || !isIdentByte(s[i-1])):
+			tag := dollarTagRe.FindString(s[i:])
+			if tag == "" {
+				i++
+				continue
+			}
+			i += len(tag)
+			if end := strings.Index(s[i:], tag); end >= 0 {
+				i += end + len(tag)
+			} else {
+				i = len(s)
+			}
+		case s[i] == '"':
+			// Quoted identifiers remain available to sqlident's patterns.
+			i++
+			for i < len(s) {
+				c := s[i]
+				i++
+				if c == '"' {
+					if i < len(s) && s[i] == '"' {
+						i++
+					} else {
+						break
+					}
+				}
+			}
+			continue
+		default:
+			i++
+			continue
+		}
+		blank(start, i)
+	}
+	return string(out)
 }
 
 // dollarTagRe matches a dollar quote's opening tag: `$$` or `$tag$`.

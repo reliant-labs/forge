@@ -123,8 +123,10 @@ api = fw.Workload {
     build = forge.DockerBuild {dockerfile = "Dockerfile", context = "."}
     ports = [fw.Port {name = "http", port = 3000, expose = True}]
     env = {PORT = "3000"}
-    # The app serves no /readyz of forge's. Up once it accepts connections; with a
-    # health endpoint, probe it: tiers.Probes {readinessPath = "/health"}.
+    # The app serves no /readyz of forge's. Up once it accepts connections. With a
+    # health endpoint, probe it, naming both paths (liveness is the one whose failure
+    # restarts the pod):
+    # tiers.Probes {readinessPath = "/health", livenessPath = "/health"}.
     probes = tiers.Probes {tcp = True}
 }
 

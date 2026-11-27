@@ -65,8 +65,11 @@ func TestRenderNeverListsASecretColumnAsReadable(t *testing.T) {
 	}
 }
 
-// What the script can never do: no write privilege, no table-level SELECT, no
-// sequence privilege, no membership, no grant to anyone but the role.
+// What the script can never do: no write privilege, no table-level SELECT on a
+// table, no sequence privilege, no membership, no grant to anyone but the role.
+// The one relation-level SELECT is the views block's, which grants a view only
+// when every column it reads is already granted (converge_pg_test.go proves it
+// against Postgres).
 func TestRenderNeverGrantsMoreThanColumnSelect(t *testing.T) {
 	script, err := Render(fixture())
 	if err != nil {
@@ -80,7 +83,15 @@ func TestRenderNeverGrantsMoreThanColumnSelect(t *testing.T) {
 			t.Errorf("the script mentions %s:\n%s", bad, script)
 		}
 	}
+	const viewGrant = "      EXECUTE format('GRANT SELECT ON TABLE %I.%I TO %I', r.schema, r.tbl, 'forge_ro');"
+	views := strings.Index(script, "-- views: only those whose every column read is one the role may read itself")
+	if views < 0 || strings.Count(script, viewGrant) != 1 || strings.Index(script, viewGrant) < views {
+		t.Errorf("the view grant must appear exactly once, inside the views block:\n%s", script)
+	}
 	for _, l := range strings.Split(script, "\n") {
+		if l == viewGrant {
+			continue
+		}
 		if strings.Contains(l, "GRANT SELECT") && !strings.Contains(l, "GRANT SELECT (%s) ON TABLE") {
 			t.Errorf("a SELECT grant that is not column-scoped: %q", l)
 		}

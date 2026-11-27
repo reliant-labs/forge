@@ -116,7 +116,7 @@ There is no per-env config key: the address belongs to your machine and your rou
 
 ## The read-only role
 
-Every ManagedDatabase carries `forge_ro`, a role forge declares on the CNPG Cluster. Its password is in the `<name>-forge-ro` Secret. `forge generate` projects its grants from the applied schema into `db/grants/readonly_gen.sql` and one row file per table under `db/grants/readonly/`, and the migrator applies them after every run. The role may SELECT the columns somebody **decided** it may read, and nothing else: no writes, no sequences, no views.
+Every ManagedDatabase carries `forge_ro`, a role forge declares on the CNPG Cluster. Its password is in the `<name>-forge-ro` Secret. `forge generate` projects its grants from the applied schema into `db/grants/readonly_gen.sql` and one row file per table under `db/grants/readonly/`, and the migrator applies them after every run. The role may SELECT the columns somebody **decided** it may read, and nothing else: no writes, no sequences. A view runs as its owner, so it is granted only when the role may read every column it references (and no table under row-level security).
 
 The boundary is Postgres, not a redactor. `select upper(api_key) from …` is refused (`permission_denied`, exit 1) just like `select api_key`. A column added later is unreadable until a migration converges the grants. Don't grant the role more by hand; the next migration revokes it.
 

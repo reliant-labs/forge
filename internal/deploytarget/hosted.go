@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -93,6 +94,14 @@ type HostedWorkload struct {
 	// Static is the deployed half of a StaticSite: everything but the
 	// digest, which planHosted pins from the bound release as liveDigest.
 	Static *v1alpha1.StaticSiteSpec
+	// EdgeLogsOffIfHonoured is the IMPLICIT edge-log opt-out of a static
+	// site (its env disabled observability without naming edge logs): the
+	// spec gets `edgeLogs: false` only for a control plane that advertises
+	// release.CapabilityHonorsEdgeLogOptOut, and is sent as before to one
+	// that does not. That is still honoured: a control plane without the
+	// capability collects no per-env edge logs, and the control plane's
+	// edge worker ships only with it. Never a reason to refuse a deploy.
+	EdgeLogsOffIfHonoured bool
 }
 
 // HostedTarget is the env-level half of a hosted group.
@@ -608,6 +617,66 @@ func limitDeclaredShape(ctx context.Context, c HostedCaller, env string, declare
 	return reader.LimitShape(declared), nil
 }
 
+// applyStaticSiteCapabilities refuses the plan's static sites that ask for
+// Markdown negotiation or EXPLICITLY opt out of edge logs unless the control
+// plane honours each, and resolves the IMPLICIT opt-out
+// (EdgeLogsOffIfHonoured) in place: `edgeLogs: false` where it is honoured,
+// the spec unchanged where it is not (never refused). It asks the control
+// plane only when a site declares one of them, so every other deploy costs
+// no call.
+func applyStaticSiteCapabilities(ctx context.Context, c HostedCaller, plan []hostedPlanItem) error {
+	markdown, edgeOff := staticSitesNeedingCapabilities(plan)
+	implicit := slices.ContainsFunc(plan, func(i hostedPlanItem) bool { return i.EdgeLogsOffIfHonoured })
+	if len(markdown) == 0 && len(edgeOff) == 0 && !implicit {
+		return nil
+	}
+	reader, err := HostedBundleReader(ctx, c)
+	if err != nil {
+		return err
+	}
+	if err := errors.Join(reader.CheckMarkdownNegotiation(markdown), reader.CheckEdgeLogOptOut(edgeOff)); err != nil {
+		return err
+	}
+	applyImplicitEdgeLogOptOut(plan, reader.Supports(release.CapabilityHonorsEdgeLogOptOut))
+	return nil
+}
+
+// applyImplicitEdgeLogOptOut writes `edgeLogs: false` into every plan item
+// carrying the implicit opt-out when the reader honours it.
+func applyImplicitEdgeLogOptOut(plan []hostedPlanItem, honoured bool) {
+	if !honoured {
+		return
+	}
+	for i := range plan {
+		spec, ok := plan[i].Spec.(v1alpha1.StaticSiteSpec)
+		if !ok || !plan[i].EdgeLogsOffIfHonoured || spec.EdgeLogs != nil {
+			continue
+		}
+		off := false
+		spec.EdgeLogs = &off
+		plan[i].Spec = spec
+	}
+}
+
+// staticSitesNeedingCapabilities names the plan's static sites that ask for
+// Markdown negotiation, and those that explicitly opt out of edge logs, in
+// plan order.
+func staticSitesNeedingCapabilities(plan []hostedPlanItem) (markdown, edgeOff []string) {
+	for _, item := range plan {
+		spec, ok := item.Spec.(v1alpha1.StaticSiteSpec)
+		if !ok {
+			continue
+		}
+		if spec.MarkdownNegotiation {
+			markdown = append(markdown, item.Name)
+		}
+		if spec.EdgeLogs != nil && !*spec.EdgeLogs {
+			edgeOff = append(edgeOff, item.Name)
+		}
+	}
+	return markdown, edgeOff
+}
+
 // checkAutoscaleApplied refuses the plan's autoscaled workloads unless the
 // control plane applies them. An older control plane decodes the spec and
 // ignores the unknown field, so the workload would run at one replica with
@@ -878,6 +947,10 @@ type hostedPlanItem struct {
 	// differently from the client — exactly what sending the key from the
 	// client exists to prevent.
 	Artifact string
+	// EdgeLogsOffIfHonoured is HostedWorkload.EdgeLogsOffIfHonoured, carried
+	// so the deploy (applyStaticSiteCapabilities) and a bundle's records
+	// (EdgeLogsOffIfHonouredAnnotation) can resolve it against the reader.
+	EdgeLogsOffIfHonoured bool
 }
 
 // planHosted pins, validates and shape-checks every workload in a hosted
@@ -1023,7 +1096,8 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
 				continue
 			}
-			out = append(out, hostedPlanItem{Name: svc.Name, Tier: w.Tier, Spec: spec, DesiredDigest: digest, Artifact: artifact})
+			out = append(out, hostedPlanItem{Name: svc.Name, Tier: w.Tier, Spec: spec, DesiredDigest: digest, Artifact: artifact,
+				EdgeLogsOffIfHonoured: w.EdgeLogsOffIfHonoured})
 		case HostedTierDatabase:
 			if w.Database == nil {
 				errs = append(errs, fmt.Errorf("%s: database workload has no spec", svc.Name))
@@ -1438,6 +1512,11 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	// Before the environment is ensured or the bundle recorded: a control
 	// plane that predates autoscale would run the workload at one replica.
 	if err := checkAutoscaleApplied(ctx, c, plan); err != nil {
+		return err
+	}
+	// Likewise for a static site's markdown negotiation or edge-log opt-out:
+	// a control plane that predates either would ignore it.
+	if err := applyStaticSiteCapabilities(ctx, c, plan); err != nil {
 		return err
 	}
 	// The env's kind is the CLI's derivation over the WHOLE env, carried on

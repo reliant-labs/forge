@@ -1,6 +1,6 @@
 ---
 name: deploy/static-site/serving
-description: How Reliant hosted static hosting serves a site's build — how a path resolves to a file, 404.html versus the SPA fallback, response headers from `_headers`, path redirects from `_redirects` (Netlify-subset syntax, `:splat`, `!` force, what fails a deploy, unclaimed sites), and the asset cache policy.
+description: How Reliant hosted static hosting serves a site's build — how a path resolves to a file, 404.html versus the SPA fallback, Markdown negotiation of `.md` twins, response headers from `_headers`, path redirects from `_redirects` (Netlify-subset syntax, `:splat`, `!` force, what fails a deploy, unclaimed sites), and the asset cache policy.
 ---
 
 # How hosted static hosting serves a build
@@ -129,3 +129,26 @@ Unclaimed sites get none. Turn them off for one frontend in one env with
 `release_urls = False` on its `forge.Frontend` (an old release may hold what a
 newer one removed). forge refuses to deploy that opt-out to a control plane
 that serves the URLs but cannot read it (it lacks `shape-release-urls`).
+
+## Markdown negotiation
+
+An agent that sends `Accept: text/markdown` can be served a page's Markdown
+twin instead of its HTML. Opt in per frontend, per env, on Reliant hosting
+only:
+
+```kcl
+forge.Frontend {name = "web", type = "vite", public_dir = "dist", markdown_negotiation = True}
+```
+
+- **The twins come from your build.** A page's twin is `<route>.md` (or
+  `<dir>/index.md`) beside its HTML; the platform reads which pages have one
+  from the release itself. A page without a twin is served as HTML.
+- A request preferring `text/markdown` gets the twin; everything else gets
+  the page. Both carry `Vary: Accept` and `Link: <twin>; rel="alternate";
+  type="text/markdown"`.
+- A twin is always a file at its own URL too, negotiation or not, and a
+  missing `.md` is a **404**, never the SPA shell.
+- Only `forge.OnHosted` can vary on a header: the field on a frontend bound
+  to `OnBucket`, `OnFirebase` or a dev server is refused at render, naming
+  the runtime. forge refuses to deploy it to a control plane that does not
+  advertise `serves-markdown-negotiation`.

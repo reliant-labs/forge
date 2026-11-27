@@ -7,8 +7,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
+	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
+
+// EdgeLogsOffIfHonouredAnnotation marks a StaticSite record carrying the
+// IMPLICIT edge-log opt-out (HostedWorkload.EdgeLogsOffIfHonoured). It never
+// reaches a control plane: bundle.Build removes it and, for a reader that
+// advertises release.CapabilityHonorsEdgeLogOptOut, writes `edgeLogs: false`
+// into the spec instead.
+const EdgeLogsOffIfHonouredAnnotation = bundle.EdgeLogsOffIfHonouredAnnotation
 
 // HostedRecord is one hosted tier declaration as it rides a bundle: the
 // forge.dev CR the control plane applies, WITHOUT identity.
@@ -40,6 +48,9 @@ func hostedRecordsOf(plan []hostedPlanItem) ([]HostedRecord, error) {
 	for _, item := range plan {
 		tm := metav1.TypeMeta{APIVersion: v1alpha1.GroupVersion.String()}
 		om := metav1.ObjectMeta{Name: item.Name, Labels: map[string]string{"app.kubernetes.io/name": item.Name}}
+		if item.EdgeLogsOffIfHonoured {
+			om.Annotations = map[string]string{EdgeLogsOffIfHonouredAnnotation: "true"}
+		}
 		var doc any
 		switch spec := item.Spec.(type) {
 		case v1alpha1.WorkloadSpec:

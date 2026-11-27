@@ -564,6 +564,62 @@ func TestRenderContractEnvsDeclareNoStatusPage(t *testing.T) {
 	}
 }
 
+// TestRenderContractEnvsDeclareNoEdgeFields: markdown negotiation is opt-in
+// and edge logs are on unless an env opts out, so no contract fixture
+// declares either, and no golden (held byte for byte by
+// TestKCLModule_RenderContract) may carry `markdown_negotiation`,
+// `edge_logs` or `edge_days`. Together the two prove an env that declares
+// neither renders exactly as it did before the fields. At least one golden
+// must render a hosted frontend, or nothing here would prove it.
+func TestRenderContractEnvsDeclareNoEdgeFields(t *testing.T) {
+	dir := renderContractDir(t)
+	goldens, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(goldens) == 0 {
+		t.Fatalf("no render-contract goldens in %s", dir)
+	}
+	var withHostedFrontend int
+	for _, g := range goldens {
+		src, err := os.ReadFile(strings.TrimSuffix(g, ".json") + ".k")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range []string{"markdown_negotiation", "edge = ", "edge_days", "enabled = False"} {
+			if strings.Contains(string(src), field) {
+				t.Errorf("%s declares %q; this test needs every contract fixture to declare none", filepath.Base(g), field)
+			}
+		}
+		raw, err := os.ReadFile(g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{`"markdown_negotiation"`, `"edge_logs"`, `"edge_days"`} {
+			if strings.Contains(string(raw), key) {
+				t.Errorf("%s renders %s with nothing declared: the field is opt-in only", filepath.Base(g), key)
+			}
+		}
+		var doc struct {
+			Output struct {
+				Frontends []struct {
+					Runtime struct {
+						Type string `json:"type"`
+					} `json:"runtime"`
+				} `json:"frontends"`
+			} `json:"output"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("%s: %v", filepath.Base(g), err)
+		}
+		for _, f := range doc.Output.Frontends {
+			if f.Runtime.Type == "hosted" {
+				withHostedFrontend++
+			}
+		}
+	}
+	if withHostedFrontend == 0 {
+		t.Error("no contract golden renders a hosted frontend, so none proves one renders unchanged without the edge fields")
+	}
+}
+
 // firstDiff reports the first differing line of two renders with context,
 // so a drift names the key instead of dumping two whole documents.
 func firstDiff(got, want string) string {

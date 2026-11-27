@@ -5448,6 +5448,16 @@ schema Frontend:
     # bound per env.
     release_urls?: bool
 
+    # Markdown content negotiation, on forge.OnHosted: a request whose Accept
+    # header prefers text/markdown gets the page's Markdown twin (the build's
+    # `<route>.md`, or `<dir>/index.md`), every other request the HTML page,
+    # both with `Vary: Accept` and a `Link: <twin>; rel="alternate"`. Which
+    # pages have twins is read from the build; a page without one is served
+    # as HTML, and a missing `.md` URL is a 404. Opt-in, and refused on every
+    # other runtime: a bucket, Firebase or a dev server serves one file per
+    # URL and cannot vary on a header.
+    markdown_negotiation: bool = False
+
     check:
         name, "Frontend.name is required"
         all k, _v in apis { regex.match(k, "^[a-z][a-z0-9-]{0,30}$") }, \
@@ -7959,6 +7969,14 @@ schema ObservabilitySignals:
     # `False` renders FORGE_PRODUCT_EVENTS=off on every workload. Events the
     # app emits itself (observe.Track) are not affected.
     product_events: bool = True
+    # The edge (CDN) request log of every hosted static site (forge.OnHosted
+    # frontends): one row per request, cache hits included, kept as the env's
+    # observability data and billed as ingest. `False` renders
+    # `edgeLogs: false` into each hosted site's StaticSite spec and the
+    # platform drops the env's edge rows before they leave it.
+    # `Observability {enabled = False}` turns it off too. Reliant hosting only:
+    # no other runtime has an edge forge can read.
+    edge: bool = True
     # The env's default for which process and host resource metrics every Go
     # workload reports (forge/pkg/observe, FORGE_OBSERVE_RESOURCE_METRICS):
     # "auto", "all", "process", "host" or "off" (Workload.resource_metrics
@@ -8043,6 +8061,10 @@ schema ObservabilityRetention:
     replay_days: int = 14
     errors_days: int = 30
     product_events_days: int = 90
+    # Raw edge request rows (ObservabilitySignals.edge) on the hosted
+    # platform, in days. Unset: the env's info-log retention. Its daily rollup
+    # follows product_events_days.
+    edge_days?: int
 
     check:
         traces_days >= 0 and metrics_days >= 0 and logs_days >= 0 and browser_days >= 0, "ObservabilityRetention days must be >= 0"
@@ -8051,6 +8073,7 @@ schema ObservabilityRetention:
         replay_days >= 1 and replay_days <= 30, "ObservabilityRetention.replay_days must be 1..30 (session replay is retained at most 30 days)"
         errors_days >= 1 and errors_days <= 365, "ObservabilityRetention.errors_days must be 1..365"
         product_events_days >= 1 and product_events_days <= 400, "ObservabilityRetention.product_events_days must be 1..400"
+        edge_days == Undefined or edge_days == None or (edge_days >= 1 and edge_days <= 400), "ObservabilityRetention.edge_days must be 1..400 (omit it for the env's info-log retention)"
 
 schema ObservabilityAgent:
     """The per-node collector forge renders on cluster runtimes (a

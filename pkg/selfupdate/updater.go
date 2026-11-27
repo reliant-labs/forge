@@ -115,7 +115,10 @@ type Config struct {
 	// Managed is the app's own "something else runs me" predicate, passed to
 	// [Detect].
 	Managed func() (owner string, managed bool)
-	Logger  *slog.Logger
+	// Container replaces the container probe, passed to [Detect] as
+	// [DetectOptions.Container]; nil keeps the default probe.
+	Container func() (owner, hint, reason string, ok bool)
+	Logger    *slog.Logger
 }
 
 // Staged is a release verified, extracted and probed under StateDir.
@@ -252,7 +255,7 @@ func (u *Updater) Check(ctx context.Context) (Release, Decision, error) {
 
 // detect runs Detect against the binary this Updater replaces.
 func (u *Updater) detect() (Install, error) {
-	return detect(DetectOptions{Path: u.exePath, Managed: u.cfg.Managed}, u.detectEnv)
+	return detect(DetectOptions{Path: u.exePath, Managed: u.cfg.Managed, Container: u.cfg.Container}, u.detectEnv)
 }
 
 // requireSelfOwned refuses an install something else owns.

@@ -238,3 +238,87 @@ func TestDetectRefusesContainers(t *testing.T) {
 		t.Fatalf("got %+v, want the stamp to win", in)
 	}
 }
+
+// inContainerProbe and outsideContainerProbe stand in for the container
+// probe through the exported seam.
+func inContainerProbe() (string, string, string, bool) {
+	return "test-engine", "rebuild the image", "the test says this is a container", true
+}
+
+func outsideContainerProbe() (string, string, string, bool) { return "", "", "", false }
+
+func TestDetectOptionsContainerReplacesTheProbe(t *testing.T) {
+	t.Parallel()
+	p := writeExe(t, filepath.Join(t.TempDir(), "bin", "app"))
+
+	// The default probe says container; the option says not: self-owned.
+	in, err := detect(DetectOptions{Path: p, Container: outsideContainerProbe}, detectEnv{container: inContainerProbe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !in.SelfOwned() {
+		t.Fatalf("got %+v, want self-owned: the option must replace the default probe", in)
+	}
+	// The default probe says not; the option says container: refused.
+	in, err = detect(DetectOptions{Path: p, Container: inContainerProbe}, detectEnv{container: outsideContainerProbe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Kind != Managed || in.Owner != "test-engine" || in.Hint != "rebuild the image" || in.Reason != "the test says this is a container" {
+		t.Fatalf("got %+v, want managed by the option's owner, hint and reason", in)
+	}
+	// Nil keeps the default probe.
+	in, err = detect(DetectOptions{Path: p}, detectEnv{container: inContainerProbe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Kind != Managed || in.Owner != "test-engine" {
+		t.Fatalf("got %+v, want the default probe to decide when the option is nil", in)
+	}
+}
+
+// TestDetectContainerSeamIsDeterministicOnAnyHost goes through the exported
+// Detect, whose default probe stats the real container markers: with the
+// seam set, the verdict is the same inside a container as outside one.
+func TestDetectContainerSeamIsDeterministicOnAnyHost(t *testing.T) {
+	t.Parallel()
+	if v, ok := lookupManagedByEnv(); ok {
+		t.Skipf("%s=%q is set on this host; it decides Detect before the container probe", ManagedByEnv, v)
+	}
+	p := writeExe(t, filepath.Join(t.TempDir(), "bin", "app"))
+
+	in, err := Detect(DetectOptions{Path: p, Container: outsideContainerProbe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !in.SelfOwned() {
+		t.Fatalf("got %+v, want self-owned", in)
+	}
+	in, err = Detect(DetectOptions{Path: p, Container: inContainerProbe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Kind != Managed || in.Owner != "test-engine" {
+		t.Fatalf("got %+v, want managed by test-engine", in)
+	}
+}
+
+func TestConfigContainerReachesTheUpdatersDetect(t *testing.T) {
+	t.Parallel()
+	exe := writeExe(t, filepath.Join(t.TempDir(), "bin", "app"))
+
+	// A host the default probe calls a container, overridden to not one.
+	u := newTestUpdater(t, exe, nil, func(c *Config) { c.Container = outsideContainerProbe })
+	u.detectEnv.container = inContainerProbe
+	if in, err := u.requireSelfOwned(); err != nil || !in.SelfOwned() {
+		t.Fatalf("requireSelfOwned = %+v, %v; want self-owned", in, err)
+	}
+
+	// A host the default probe clears, overridden to a container.
+	u = newTestUpdater(t, exe, nil, func(c *Config) { c.Container = inContainerProbe })
+	u.detectEnv.container = outsideContainerProbe
+	in, err := u.requireSelfOwned()
+	if !errors.Is(err, ErrNotSelfOwned) || in.Kind != Managed || in.Owner != "test-engine" {
+		t.Fatalf("requireSelfOwned = %+v, %v; want refused as managed by test-engine", in, err)
+	}
+}

@@ -413,6 +413,28 @@ func TestNew(t *testing.T) {
 		}
 	})
 
+	t.Run("container probe reaches Detect and the config", func(t *testing.T) {
+		t.Parallel()
+		probe := func() (string, string, string, bool) { return "test-engine", "", "the test says so", true }
+		o := base(Settings{Enabled: true, Source: "acme/app", InsecureAllowUnsigned: true})
+		o.Container = probe
+		cfg, err := o.config()
+		if err != nil || cfg.Container == nil {
+			t.Fatalf("cfg.Container = nil (err=%v), want the option's probe", err)
+		}
+		if owner, _, _, ok := cfg.Container(); !ok || owner != "test-engine" {
+			t.Fatalf("cfg.Container() = %q, %v; want the option's probe", owner, ok)
+		}
+		u, err := New(o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in, err := u.detect()
+		if err != nil || in.Kind != selfupdate.Managed || in.Owner != "test-engine" {
+			t.Fatalf("detect = %+v, %v; want managed by test-engine", in, err)
+		}
+	})
+
 	t.Run("tune sees the built config", func(t *testing.T) {
 		t.Parallel()
 		o := base(Settings{Enabled: true, Source: "acme/app", InsecureAllowUnsigned: true})

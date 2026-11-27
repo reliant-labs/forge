@@ -3,7 +3,9 @@ Positive test — the service.name of an adopted component's scrape.
 
   * one stack: ml-<kind>;
   * several stacks: ml-<kind>-<cluster>, so two clusters' exporters stay apart;
-  * Adopt.service_name names it outright (two scraped adoptions of one kind);
+  * Adopt.service_name names it outright (two scraped adoptions of one kind),
+    and output.ml_stacks marks it service_name_declared, even when it equals
+    the derived default; a component that declares none has no such key;
   * a Telemetry the env declares itself with the derived name replaces the
     derived scrape (how a scrape gets an interval or dashboards of its own),
     and the component still projects that service_name.
@@ -52,6 +54,11 @@ _named = forge.render(_bundle([forge.MLStack {
     ]
 }], []))
 assert_explicit_names = _ml(_named) == ["ml-prometheus-team-a", "ml-prometheus-team-b"]
+assert_explicit_declared = all c in _named.ml_stacks[0].components { c.service_name_declared == True }
+assert_derived_not_declared = "service_name_declared" not in _one.ml_stacks[0].components[0]
+
+_default_named = forge.render(_bundle([forge.MLStack {cluster = _a, accelerators = [forge.Accelerators {vendor = "nvidia", metrics = forge.Adopt {kind = "dcgm-exporter", namespace = "gpu-operator", selector = {"app": "nvidia-dcgm-exporter"}, port = 9400, service_name = "ml-dcgm-exporter"}}]}], []))
+assert_default_name_declared = _default_named.ml_stacks[0].components[0].service_name == "ml-dcgm-exporter" and _default_named.ml_stacks[0].components[0].service_name_declared == True
 
 _replaced = forge.render(_bundle([forge.MLStack {cluster = _a, accelerators = [forge.Accelerators {vendor = "nvidia", metrics = _dcgm}]}], [
     forge.Telemetry {

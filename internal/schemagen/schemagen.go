@@ -49,7 +49,10 @@ type Schema struct {
 	ID          string
 	Title       string
 	Description string
-	Ref         string
+	// Deprecated is the `deprecated` annotation (draft 2020-12 meta-data):
+	// the property still validates, and editors and tools flag it.
+	Deprecated bool
+	Ref        string
 	// Types is the `type` keyword: one name, or several (["string","null"]).
 	Types []string
 	Const any
@@ -137,6 +140,7 @@ func (s *Schema) MarshalJSON() ([]byte, error) {
 		{"$ref", s.Ref, s.Ref != ""},
 		{"title", s.Title, s.Title != ""},
 		{"description", s.Description, s.Description != ""},
+		{"deprecated", s.Deprecated, s.Deprecated},
 		{"type", typ, typ != nil},
 		{"const", s.Const, s.Const != nil},
 		{"format", s.Format, s.Format != ""},
@@ -208,6 +212,9 @@ type Options struct {
 	// Describe returns the doc comment of a type (field == "") or of one of
 	// its fields (field is the Go field name), "" when there is none.
 	Describe func(t reflect.Type, field string) string
+	// Deprecated marks properties `deprecated: true`, keyed as Fields is (the
+	// struct type and the property's JSON name). They still validate.
+	Deprecated map[FieldKey]bool
 }
 
 // Generator builds one schema. Use [Generate]; a Generator is handed to the
@@ -457,6 +464,11 @@ func (g *Generator) structSchema(t reflect.Type) (*Schema, error) {
 			delete(required, f.name)
 		} else {
 			fs = nullable(fs)
+		}
+		if g.opts.Deprecated[FieldKey{Type: f.owner, Name: f.name}] {
+			c := *fs
+			c.Deprecated = true
+			fs = &c
 		}
 		s.Properties = append(s.Properties, Property{Name: f.name, Schema: fs})
 	}

@@ -16,13 +16,22 @@ import (
 // declare, a cluster the env does not declare, and the hosted rules. Nil when
 // the env declares none.
 // checkEnvTelemetry validates the env's declared telemetry and, when it is
-// valid, prints its notes (envTelemetryWarnings) on errOut.
+// valid, prints its notes (envTelemetryWarnings) and the deprecation
+// warnings of ML components scraped through their own fields
+// (mlScrapeDeprecations) and of cluster telemetry targets no node agent
+// collects (uncollectedTelemetryWarnings) on errOut.
 func checkEnvTelemetry(errOut io.Writer, envName string, entities *KCLEntities) error {
 	if err := validateEnvTelemetry(envName, entities); err != nil {
 		return err
 	}
 	for _, w := range envTelemetryWarnings(entities) {
 		fmt.Fprintln(errOut, w.Error())
+	}
+	for _, w := range mlScrapeDeprecations(entities) {
+		fmt.Fprintln(errOut, w)
+	}
+	for _, w := range uncollectedTelemetryWarnings(entities) {
+		fmt.Fprintln(errOut, w)
 	}
 	return nil
 }
@@ -57,8 +66,9 @@ func validateTelemetryDashboard(name string, raw []byte) error {
 
 // envKubeContexts is every kubectl context the env's declaration names: its
 // clusters, its primary target, its cluster-bound workloads, its manifest
-// groups and the clusters it connects to. Never nil, so an env that declares
-// no cluster refuses a target that names one.
+// groups, its HelmCharts' and NodeAgents' clusters and the clusters it
+// connects to. Never nil, so an env that declares no cluster refuses a target
+// that names one.
 func envKubeContexts(e *KCLEntities) []string {
 	set := map[string]bool{}
 	add := func(c string) {
@@ -81,8 +91,18 @@ func envKubeContexts(e *KCLEntities) []string {
 	for _, g := range e.ManifestOwners {
 		add(g.Cluster)
 	}
+	// A HelmChart installs into its cluster, so its pods are what an
+	// Observability.telemetry entry there scrapes, agent or not.
+	for _, h := range e.HelmCharts {
+		add(h.Cluster)
+	}
 	for _, m := range e.ManifestClusters {
 		add(m.Cluster)
+	}
+	// A forge.NodeAgent's cluster is one the env declares, agent rendered or
+	// not (an env with no destination renders none).
+	for _, n := range e.NodeAgents {
+		add(n.Cluster)
 	}
 	for name, ctx := range e.ConnectedClusters {
 		add(name)

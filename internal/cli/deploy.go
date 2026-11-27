@@ -3433,6 +3433,7 @@ func filterEntitiesToFrontendsOnly(e *KCLEntities) *KCLEntities {
 	// into the unscoped whole-stream cluster apply.
 	out.ClusterTarget = nil
 	out.ConnectedClusters = nil
+	out.NodeAgents = nil
 	out.RequiredDNS = nil
 	out.ControlPlaneSecrets = nil
 	out.ManifestNamespace = ""

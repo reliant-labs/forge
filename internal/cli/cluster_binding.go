@@ -114,6 +114,11 @@ func declaredBindings(e *KCLEntities) (map[string][]string, []string) {
 	for _, c := range e.ControlPlaneSecrets {
 		note(c.Cluster, c.ConnectedCluster)
 	}
+	// A forge.NodeAgent places the node agent through its ClusterTarget, so
+	// its connected cluster binds the context as a workload target's does.
+	for _, n := range e.NodeAgents {
+		note(n.Cluster, n.ConnectedCluster)
+	}
 	out := make(map[string][]string, len(seen))
 	var conflicts []string
 	for context, set := range seen {

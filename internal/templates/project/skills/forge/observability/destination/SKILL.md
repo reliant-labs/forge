@@ -65,6 +65,33 @@ Apps **push** traces, metrics and profiles over OTLP. The agent pulls only what 
 
 What `filelog` costs: a **read-only hostPath on `/var/log/pods`** (container logs are root-readable on the node), a hostPath for checkpoints and the exporter's persistent queue, root with every capability dropped and a read-only root filesystem. hostPath is forbidden by pod-security `baseline`, so the agent gets its **own namespace labelled `privileged`**. That is why it is never rendered by the Restricted (hosted) profile: its kinds (DaemonSet, ClusterRole) are outside `RestrictedKinds` on purpose.
 
+### forge.NodeAgent: the agent on a cluster you name
+
+The agent runs on every cluster a forge workload runs on, implicitly. `forge.NodeAgent` is the same agent as a building block, one per cluster, in `Observability.node_agents`:
+
+```kcl
+_gpu = forge.ClusterTarget {cluster = "gke_acme_us-central1_gpu", namespace = "forge-ml", connected_cluster = "gpu"}
+
+observability = forge.Observability {
+    destination = forge.ObservabilityDestination {endpoint = "https://otlp.example.com"}
+    node_agents = [forge.NodeAgent {
+        target = _gpu                                          # the cluster's own ClusterTarget, reused
+        memory_limit_mib = 512                                 # optional: overrides agent.memory_limit_mib here
+        kubernetes_inventory = forge.KubernetesInventory {}    # optional: replaces agent.kubernetes_inventory here
+    }]
+    telemetry = [forge.Telemetry {cluster = "gke_acme_us-central1_gpu", ...}]   # scrapes stay here
+}
+```
+
+- **Placement** is a `forge.ClusterTarget`: `cluster` is the kube context; `connected_cluster` delivers the `token_from_control_plane` credential and binds the cluster for a control-plane deploy. The agent runs in `agent.namespace` (every workload dials it there), not the target's namespace.
+- **One agent per cluster.** On a cluster with no forge workload (only a HelmChart, an operator, an ML stack) it places the agent; on one with a workload it configures the implicit agent, never a second. Two NodeAgents on one cluster are refused.
+- **Overrides**: `image`, `memory_limit_mib`, `kubernetes_inventory` override `agent`'s on that cluster; `forge.KubernetesInventory {enabled = False}` turns the env-wide inventory off there.
+- **Scrapes are not a NodeAgent field**: a `forge.Telemetry` naming the cluster is collected by whichever agent runs there.
+- It renders with a destination. With `telemetry_collector` it still renders, as the implicit agent does (that collector takes the scrapes).
+- The cluster becomes one the env deploys to: lifecycle, single-cluster Flux and credential-delivery checks apply to it.
+
+A cluster telemetry target on a cluster no agent runs on is listed in `output.uncollected_telemetry`, and `forge env render` warns that it is not collected, naming the NodeAgent that would collect it.
+
 ### Kubernetes inventory (opt-in)
 
 The node agent sees what each node sees. A cluster's own objects come from the API server, through one more collector that is off unless you declare it:
@@ -78,7 +105,7 @@ observability = forge.Observability {
 }
 ```
 
-On every cluster the agent runs on, that adds:
+On every cluster the agent runs on (a NodeAgent's own `kubernetes_inventory` replaces it on its cluster), that adds:
 
 - **The cluster collector**: a one-replica Deployment `cluster-collector` (with its ConfigMap and ServiceAccount of the same name) in `agent.namespace`, exporting to the agent's destination with the agent's credential. One replica on purpose: two would ship every row twice. Its `k8sobjects` receiver pulls `nodes` every `node_interval` and apps `daemonsets` and `deployments` every `workload_interval`, and watches events.k8s.io `events` (unless `events = False`). Each object is one log record: k8sobjects' `k8s.resource.name` attribute naming the kind, the resource attribute `k8s.cluster.name` (the cluster's kube context), and as the body the object projected onto an allowlist (an Event inside its watch envelope, `{type, object}`). It sets no `service.name`. A change to the config (events, an interval, the destination) rolls the collector: its pod template carries the config's SHA-256.
 - **Only inventory fields leave the cluster.** A whole Deployment carries credentials (env values, args, the last-applied annotation), so the collector wipes each body and copies back only: kind, apiVersion, the object's name, namespace, uid, creation and deletion times and generation; the labels `app.kubernetes.io/{name,instance,version,component,part-of,managed-by}`, `helm.sh/chart` and `forge.dev/component-owner`; container names and images (the first 8); replica and scheduling counts; a Node's capacity, allocatable, `nodeInfo` versions, `unschedulable` and `providerID`; condition `type`/`status`/`reason` (the first 16, never `message`); and an Event's type, reason, action, reporting controller, times, counts and `regarding` object. Annotations, env, args, commands, other labels, messages and an Event's `note` never ship.

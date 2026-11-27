@@ -170,6 +170,12 @@ const (
 	buildCacheFloorOff     = "off"
 )
 
+// Pressure trades warm-cache reuse for disk recovery. Keep a 10-minute
+// grace period for just-finished builds; BuildKit itself protects records
+// still in use by active builds, regardless of their age. The size target
+// remains bounded, and an explicit floor "off" retains the age-only policy.
+const pressureBuildCacheFloor = 10 * time.Minute
+
 // parseBuildCacheFloor reads a build_cache_floor value: the floor, whether the
 // size rule is on, or an error. Empty is the default floor.
 func parseBuildCacheFloor(v string) (time.Duration, bool, error) {
@@ -228,6 +234,9 @@ func (r Runner) buildCachePrune() buildCachePrune {
 	}
 	if !sizeRule {
 		return p
+	}
+	if r.Pressure {
+		floor = min(floor, pressureBuildCacheFloor)
 	}
 	// The floor never protects more than the age rule it replaces did.
 	if unused, err := time.ParseDuration(r.Policy.BuildCacheUnused); err == nil && unused < floor {

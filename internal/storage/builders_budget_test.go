@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // pruneArgs runs one builder's GC against a fake docker and returns the
@@ -51,12 +52,18 @@ func TestBuilderGCEnforcesTheBudgetBySize(t *testing.T) {
 	}{
 		{name: "default: size rule under the 2h floor",
 			wantArgs: []string{gib(20), "--filter until=2h"}, wantOut: "toward 20.0 GiB, never cache used in the last 2h"},
-		{name: "pressure: half the budget, same floor",
+		{name: "pressure: half the budget, shorter floor",
 			edit:     func(r *Runner) { r.Pressure = true },
-			wantArgs: []string{gib(10), "--filter until=2h"}, wantOut: "disk pressure: half of build_cache_gib"},
+			wantArgs: []string{gib(10), "--filter until=10m0s"}, wantOut: "never cache used in the last 10m0s"},
 		{name: "pressure never prunes below 1 GiB",
 			edit:     func(r *Runner) { r.Pressure = true; r.Policy.BuildCacheGiB = 1 },
-			wantArgs: []string{gib(1), "--filter until=2h"}},
+			wantArgs: []string{gib(1), "--filter until=10m0s"}},
+		{name: "pressure caps an env floor too",
+			edit: func(r *Runner) { r.Pressure = true }, env: "6h",
+			wantArgs: []string{gib(10), "--filter until=10m0s"}},
+		{name: "pressure still respects a shorter unused age",
+			edit:     func(r *Runner) { r.Pressure = true; r.Policy.BuildCacheUnused = "5m" },
+			wantArgs: []string{gib(10), "--filter until=5m0s"}},
 		{name: "policy floor",
 			edit:     func(r *Runner) { r.Policy.BuildCacheFloor = "6h" },
 			wantArgs: []string{gib(20), "--filter until=6h"}},
@@ -98,6 +105,45 @@ func TestBuilderGCEnforcesTheBudgetBySize(t *testing.T) {
 				t.Errorf("output %q does not contain %q", out, tc.wantOut)
 			}
 		})
+	}
+}
+
+// All reclaimable bulk is inside the normal floor: lowering only the size
+// target cannot free it. Model BuildKit's age and in-use eligibility gates.
+func TestBuilderGCPressureReclaimsInsideNormalFloor(t *testing.T) {
+	t.Setenv(BuildCacheFloorEnv, "")
+	for _, pressure := range []bool{false, true} {
+		r := Runner{Policy: DefaultPolicy(), Pressure: pressure}
+		prune, _ := pruneArgs(t, r, true)
+		_, age, ok := strings.Cut(prune, "--filter until=")
+		if !ok {
+			t.Fatalf("missing age filter: %q", prune)
+		}
+		floor, err := time.ParseDuration(age)
+		if err != nil {
+			t.Fatal(err)
+		}
+		remaining := uint64(30) * GiB
+		for _, record := range []struct {
+			size  uint64
+			age   time.Duration
+			inUse bool
+		}{
+			{20 * GiB, time.Hour, false},
+			{5 * GiB, time.Minute, false},
+			{5 * GiB, time.Hour, true},
+		} {
+			if remaining > r.buildCachePrune().MaxUsed && record.age > floor && !record.inUse {
+				remaining -= record.size
+			}
+		}
+		want := uint64(30) * GiB
+		if pressure {
+			want = 10 * GiB
+		}
+		if remaining != want {
+			t.Errorf("pressure=%v: remaining %d B, want %d B (prune %q)", pressure, remaining, want, prune)
+		}
 	}
 }
 

@@ -70,3 +70,24 @@ func TestRequirementsIgnoresIndirectPromotionAndComments(t *testing.T) {
 		t.Error("an unparseable go.mod must yield nil so the caller treats it as changed")
 	}
 }
+
+func TestReachSummaryNamesEveryReason(t *testing.T) {
+	cases := []struct {
+		name string
+		r    Reach
+		want string
+	}{
+		{"dependencies only", Reach{All: true}, "the module's dependencies changed"},
+		{"packages only", Reach{Packages: []string{"a", "b"}}, "2 package(s) a consumer imports"},
+		{"generated only", Reach{Generated: []string{"x"}}, "1 file(s) that change generated code"},
+		{"all three in a fixed order", Reach{All: true, Packages: []string{"a"}, Generated: []string{"x", "y"}},
+			"the module's dependencies changed, 1 package(s) a consumer imports, 2 file(s) that change generated code"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.r.Summary(); got != tc.want {
+				t.Errorf("Summary() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

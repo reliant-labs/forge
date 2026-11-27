@@ -30,13 +30,73 @@ import (
 // exists to run its smoke tests, and a skip there turns the lane green while
 // it ran nothing — how pkg/obsquery's ClickHouse tests went unrun for days
 // (forge#1870).
+//
+// A Reliant merge queue gate (RELIANT_GATE=1) is the exception, even though
+// scripts/gate.sh sets CI too: a gate has no docker engine (no nested engine
+// under runc), so the test skips with exactly [GateSkipMessage] and appends
+// its name to the stage's skip log (RELIANT_GATE_DOCKER_SKIPS). The gate
+// counts those lines into its verdict (reliant's
+// gaterun.StageResult.SkippedDockerTests), so the skip is reported as a skip,
+// never as a pass. A skip it cannot record (no log, an unwritable one) fails.
 func Unavailable(t testing.TB, format string, args ...any) {
 	t.Helper()
 	msg := fmt.Sprintf(format, args...)
+	if InGate() {
+		gateSkip(t, msg)
+	}
 	if os.Getenv("CI") != "" {
 		t.Fatalf("%s (CI is set, so this is a failure, not a skip: the lane must run this test)", msg)
 	}
 	t.Skip(msg)
+}
+
+// These equal reliant's gaterun.EnvDockerSkips and gaterun.DockerSkipMessage
+// (internal/mergequeue/gaterun/wire.go), the contract its gate counts skips by.
+const (
+	envGate        = "RELIANT_GATE"
+	envDockerSkips = "RELIANT_GATE_DOCKER_SKIPS"
+	// GateSkipMessage is the whole skip message of a container test that
+	// skipped in a Reliant gate.
+	GateSkipMessage = "skip: docker unavailable (gate)"
+)
+
+// InGate reports whether this test runs in a Reliant merge queue gate
+// (RELIANT_GATE=1, set by reliant's gaterun.GateEnv), which has no docker
+// engine.
+func InGate() bool {
+	return os.Getenv(envGate) == "1"
+}
+
+// gateSkip records t in the stage's skip log and skips it with
+// GateSkipMessage; why is logged on the line before. A skip the gate cannot
+// count is a failure: the gate's stage script sets the log for every stage,
+// so a missing log, or one that cannot be written, would otherwise let a
+// container test go unrun without the verdict saying so.
+func gateSkip(t testing.TB, why string) {
+	t.Helper()
+	log := os.Getenv(envDockerSkips)
+	if log == "" {
+		t.Fatalf("%s (RELIANT_GATE=1 but %s is not set, so this skip could not be counted in the gate's verdict: a failure, not a skip)", why, envDockerSkips)
+	}
+	if err := recordSkip(log, t.Name()); err != nil {
+		t.Fatalf("%s (could not record the skip in %s: %v; an uncounted skip in a gate is a failure)", why, log, err)
+	}
+	t.Logf("%s", why)
+	t.Skip(GateSkipMessage)
+}
+
+// recordSkip appends name to the skip log as one line, in one short O_APPEND
+// write, so concurrent test processes cannot interleave inside a line.
+func recordSkip(log, name string) error {
+	f, err := os.OpenFile(log, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	_, werr := fmt.Fprintln(f, name)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	return werr
 }
 
 // Publish is the `docker run` flag pair that publishes containerPort on a

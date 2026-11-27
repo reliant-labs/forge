@@ -881,6 +881,8 @@ parallel: **D**, demo fixtures and views; **R**, real ingestion.
 | F. Evals and models (R)                   | 4, 6               | Eval ingest, gates as `required_gates`, ModelPack push, signing, provenance, the pickle scan                                                            | —                                                                                                                      | `ml.eval.*` and the `ml.eval.regressed` trigger                                                    |
 | G. Breadth                                | 7, 8               | Private clusters, more vendors                                                                                                                          | In-job fault tolerance (tier A) as frameworks mature                                                                   | —                                                                                                  |
 
+Multi-cluster scheduling (forge#2994; step 4 of [ml-mvp.md §5](ml-mvp.md#5-build-order)) is **on hold (owner, 2026-11-26)**: a separate repository, hooking into what the customer already runs, or holding indefinitely, none chosen yet.
+
 Why this order:
 
 - **Measurement before action.** R0 (restart breakdown and goodput from

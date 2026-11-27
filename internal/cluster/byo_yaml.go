@@ -108,7 +108,7 @@ func expandBYOSources(ctx context.Context, projectDir string, out map[string]any
 		}
 		// helm already placed namespaced objects in the chart's namespace;
 		// only the cluster is defaulted.
-		items = append(items, placeBYO(docs, c.Name, firstNonEmpty(c.Cluster, primary.cluster), "")...)
+		items = append(items, stampLabels(placeBYO(docs, c.Name, firstNonEmpty(c.Cluster, primary.cluster), ""), c.Labels)...)
 	}
 	for _, g := range gens {
 		docs, err := runGenerated(ctx, projectDir, g)
@@ -221,6 +221,24 @@ func decodeObjectStream(stream string) ([]any, error) {
 // app.kubernetes.io name/managed-by labels are defaulted only where absent,
 // the cluster routing label is stamped, and — for the sources that ask — a
 // namespaced object that names no namespace gets one.
+// stampLabels sets labels on every object's metadata, over what the source
+// rendered: a bundled chart's declared labels are forge's stamp (an MLStack
+// Install's component owner), not a default. docs come from placeBYO, which
+// gave every object metadata.labels.
+func stampLabels(docs []any, labels map[string]string) []any {
+	if len(labels) == 0 {
+		return docs
+	}
+	for _, d := range docs {
+		meta := d.(map[string]any)["metadata"].(map[string]any)
+		l := meta["labels"].(map[string]any)
+		for k, v := range labels {
+			l[k] = v
+		}
+	}
+	return docs
+}
+
 func placeBYO(docs []any, name, cluster, namespace string) []any {
 	for _, d := range docs {
 		m := d.(map[string]any)

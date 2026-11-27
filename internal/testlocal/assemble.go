@@ -236,11 +236,13 @@ func readResults(projectRoot string, l *Lane) (*testreport.Results, string) {
 	if l.Error != "" {
 		return nil, "the command did not run: " + l.Error
 	}
-	p := l.ResultsPath()
-	if p == "" {
+	if why := l.ResultsProblem(); why != "" {
+		return nil, why
+	}
+	if l.ResultsPath() == "" {
 		return nil, "no results file was captured"
 	}
-	f, err := os.Open(p)
+	f, err := l.OpenResults()
 	if err != nil {
 		return nil, err.Error()
 	}
@@ -284,9 +286,20 @@ func readCoverage(ctx context.Context, opts Options, l *Lane, sourceKey string, 
 	)
 	base := testreport.CoverageOptions{Lane: testreport.Lane(l.Lane), Root: opts.ProjectRoot, Tree: sourceKey, Commit: a.Commit, Dirty: a.Dirty}
 	for _, in := range l.CoverageInputs() {
-		p := filepath.Join(l.Dir, filepath.FromSlash(strings.TrimSuffix(in.Path, "/")))
 		if in.Format == testreport.CoverageGoCovdata {
-			builds, err := opts.Covdata(ctx, "", p)
+			// `go tool covdata` reads the directory itself, so it is given
+			// a copy of the covdata files read through the lane directory.
+			dir, err := l.copyCovdata(in.Path)
+			if errors.Is(err, ErrOutsideLane) {
+				notes = append(notes, outsideLaneNote(l, "covdata", in.Path))
+				continue
+			}
+			if err != nil {
+				notes = append(notes, fmt.Sprintf("lane %s: covdata in %s not read: %v", l.Lane, in.Path, err))
+				continue
+			}
+			builds, err := opts.Covdata(ctx, "", dir)
+			_ = os.RemoveAll(dir)
 			if err != nil {
 				notes = append(notes, fmt.Sprintf("lane %s: covdata in %s not converted: %v", l.Lane, in.Path, err))
 				continue
@@ -306,7 +319,11 @@ func readCoverage(ctx context.Context, opts Options, l *Lane, sourceKey string, 
 			}
 			continue
 		}
-		f, err := os.Open(p)
+		f, err := l.Open(in.Path)
+		if errors.Is(err, ErrOutsideLane) {
+			notes = append(notes, outsideLaneNote(l, "coverage", in.Path))
+			continue
+		}
 		if err != nil {
 			notes = append(notes, fmt.Sprintf("lane %s: coverage %s unreadable: %v", l.Lane, in.Path, err))
 			continue
@@ -329,6 +346,12 @@ func readCoverage(ctx context.Context, opts Options, l *Lane, sourceKey string, 
 		docs = append(docs, d)
 	}
 	return docs, notes, nil
+}
+
+// outsideLaneNote says a coverage input was refused, the refusal first so
+// that a shortened note still carries it.
+func outsideLaneNote(l *Lane, what, name string) string {
+	return fmt.Sprintf("lane %s: a %s input outside the lane directory was not read (%q)", l.Lane, what, name)
 }
 
 // repoView is what the reader knows about the repository the runs were taken
@@ -635,7 +658,7 @@ func (a *Assembly) LaneStreams() []LaneStream {
 			continue
 		}
 		if p := l.ResultsPath(); p != "" {
-			out = append(out, LaneStream{Lane: l.Lane, Path: p})
+			out = append(out, LaneStream{Lane: l.Lane, Path: p, lane: l})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Lane < out[j].Lane })
@@ -646,7 +669,15 @@ func (a *Assembly) LaneStreams() []LaneStream {
 type LaneStream struct {
 	Lane string
 	Path string
+	// lane, when set, is where the stream was found: it is opened through
+	// the lane directory ([Lane.OpenResults]), never by Path.
+	lane *Lane
 }
 
 // Open opens the stream.
-func (s LaneStream) Open() (io.ReadCloser, error) { return os.Open(s.Path) }
+func (s LaneStream) Open() (io.ReadCloser, error) {
+	if s.lane != nil {
+		return s.lane.OpenResults()
+	}
+	return os.Open(s.Path)
+}

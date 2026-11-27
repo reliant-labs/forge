@@ -28,21 +28,27 @@ type recordJob struct {
 	If    string `yaml:"if"`
 	Steps []struct {
 		Name string            `yaml:"name"`
+		If   string            `yaml:"if"`
 		Run  string            `yaml:"run"`
 		Uses string            `yaml:"uses"`
 		With map[string]string `yaml:"with"`
 	} `yaml:"steps"`
 }
 
-// testUploadWorkflow sends main's recorded runs to the control plane.
+// testUploadWorkflow sends main's and the merge queue's recorded runs to the
+// control plane.
 var testUploadWorkflow = filepath.Join("..", "..", ".github", "workflows", "test-upload.yml")
 
+// keepRunsIf is when a recording job keeps its runs for test-upload.yml: a
+// merge-queue entry and a push to main, the two CI runs test-upload.yml
+// sends. Not a pull request labelled ci:run, which nothing uploads.
+const keepRunsIf = "${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}"
+
 // TestMainRecordingJobsKeepTheirRunsForUpload proves every ci.yml job that
-// records a test lane on main keeps .forge/tests/runs as a test-runs-*
-// artifact, and that test-upload.yml downloads exactly those from the CI run
-// of a push to main: a lane whose runs no artifact carries never reaches the
-// control plane. Merge-tier-only jobs (test-short) record for the runner
-// alone.
+// records a test lane on main or in the merge queue keeps .forge/tests/runs
+// as a test-runs-* artifact on both, and that test-upload.yml downloads
+// exactly those from the CI run of a push to main or of a merge-queue entry:
+// a lane whose runs no artifact carries never reaches the control plane.
 func TestMainRecordingJobsKeepTheirRunsForUpload(t *testing.T) {
 	raw, err := os.ReadFile(ciWorkflow)
 	if err != nil {
@@ -57,8 +63,8 @@ func TestMainRecordingJobsKeepTheirRunsForUpload(t *testing.T) {
 	var recorders []string
 	for name, j := range wf.Jobs {
 		cond := strings.TrimSpace(j.If)
-		if cond != mainTier && cond != notReviewFirst {
-			continue // not on main
+		if cond != mainTier && cond != notReviewFirst && cond != queueTier {
+			continue // neither on main nor in the merge queue
 		}
 		records, keeps := false, false
 		for _, s := range j.Steps {
@@ -71,6 +77,9 @@ func TestMainRecordingJobsKeepTheirRunsForUpload(t *testing.T) {
 				strings.HasPrefix(s.With["name"], "test-runs-") && s.With["path"] == ".forge/tests/runs" &&
 				s.With["include-hidden-files"] == "true" {
 				keeps = true
+				if strings.TrimSpace(s.If) != keepRunsIf {
+					t.Errorf("job %s keeps its test runs with if: %q, want %q: test-upload.yml sends both main's and the merge queue's", name, s.If, keepRunsIf)
+				}
 			}
 		}
 		if !records {
@@ -78,7 +87,7 @@ func TestMainRecordingJobsKeepTheirRunsForUpload(t *testing.T) {
 		}
 		recorders = append(recorders, name)
 		if !keeps {
-			t.Errorf("job %s records test lanes on main but keeps no test-runs-* artifact of .forge/tests/runs (include-hidden-files: true): test-upload.yml never sees them", name)
+			t.Errorf("job %s records test lanes on main or in the merge queue but keeps no test-runs-* artifact of .forge/tests/runs (include-hidden-files: true): test-upload.yml never sees them", name)
 		}
 	}
 	if len(recorders) == 0 {
@@ -102,14 +111,20 @@ func TestMainRecordingJobsKeepTheirRunsForUpload(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &up); err != nil {
 		t.Fatalf("parse %s: %v", testUploadWorkflow, err)
 	}
-	if wr := up.On.WorkflowRun; !slices.Equal(wr.Workflows, []string{"CI"}) || !slices.Equal(wr.Types, []string{"completed"}) || !slices.Equal(wr.Branches, []string{"main"}) {
-		t.Errorf("test-upload.yml must run when a CI run on main completes, got %+v", wr)
+	if wr := up.On.WorkflowRun; !slices.Equal(wr.Workflows, []string{"CI"}) || !slices.Equal(wr.Types, []string{"completed"}) ||
+		!slices.Equal(wr.Branches, []string{"main", "gh-readonly-queue/main/**"}) {
+		t.Errorf("test-upload.yml must run when a CI run on main or its merge queue completes, got %+v", wr)
 	}
-	downloads, uploads := false, false
-	for _, j := range up.Jobs {
-		if !strings.Contains(j.If, "github.event.workflow_run.event == 'push'") {
-			t.Errorf("test-upload.yml's job has if: %q; it must run only for a push to main, whose code is merged", j.If)
+	for name, event := range map[string]string{pushUploadJob: "push", mergeQueueUploadJob: "merge_group"} {
+		j, ok := up.Jobs[name]
+		if !ok {
+			t.Errorf("test-upload.yml has no %s job: the CI runs of a %s are never sent", name, event)
+			continue
 		}
+		if !strings.Contains(j.If, "github.event.workflow_run.event == '"+event+"'") {
+			t.Errorf("test-upload.yml's %s job has if: %q; it must run for the CI run of a %s", name, j.If, event)
+		}
+		downloads, uploads := false, false
 		for _, s := range j.Steps {
 			if strings.HasPrefix(s.Uses, "actions/download-artifact@") && s.With["pattern"] == "test-runs-*" &&
 				s.With["path"] == ".forge/tests/runs" && s.With["run-id"] == "${{ github.event.workflow_run.id }}" {
@@ -119,9 +134,9 @@ func TestMainRecordingJobsKeepTheirRunsForUpload(t *testing.T) {
 				uploads = true
 			}
 		}
-	}
-	if !downloads || !uploads {
-		t.Errorf("test-upload.yml must download the CI run's test-runs-* artifacts into .forge/tests/runs (downloads=%v) and run scripts/ci-test-upload.sh (uploads=%v)", downloads, uploads)
+		if !downloads || !uploads {
+			t.Errorf("test-upload.yml's %s job must download the CI run's test-runs-* artifacts into .forge/tests/runs (downloads=%v) and run scripts/ci-test-upload.sh (uploads=%v)", name, downloads, uploads)
+		}
 	}
 }
 
@@ -190,24 +205,40 @@ printf '%s\n' '{"Action":"pass","Package":"fixture/package","Test":"TestCheap","
 	}
 }
 
-// TestUploadNeverDecides pins scripts/ci-test-upload.sh: it reports the
-// commit's runs with --upload when the token is set and --upload=false when
-// it is not, says why, and exits 0 whatever forge does, including when there
-// is no run to report.
+// TestUploadNeverDecides pins scripts/ci-test-upload.sh: it always reports
+// the commit's runs with --upload, token or not (forge resolves the
+// credential, the job's OIDC identity included, and says why when it finds
+// none), and exits 0 whatever forge does, including when there is no run to
+// report or the commit cannot be fetched.
 func TestUploadNeverDecides(t *testing.T) {
 	testkit.Slow(t, "execs bash and git")
 	for _, tc := range []struct {
 		name, token, want string
-		runs              bool
+		runs, unknown     bool
 	}{
-		{name: "token", token: "tok", want: "test report --commit abc123 --upload\n", runs: true},
-		{name: "no token", want: "test report --commit abc123 --upload=false\n", runs: true},
+		{name: "token", token: "tok", want: "test report --commit SHA --upload\n", runs: true},
+		{name: "no token", want: "test report --commit SHA --upload\n", runs: true},
 		{name: "no runs", token: "tok", want: ""},
+		{name: "commit not fetchable", want: "", runs: true, unknown: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			if out, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
-				t.Fatalf("git init: %v\n%s", err, out)
+			git := func(args ...string) string {
+				t.Helper()
+				cmd := exec.Command("git", append([]string{"-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("git %v: %v\n%s", args, err, out)
+				}
+				return strings.TrimSpace(string(out))
+			}
+			git("init", "-q")
+			git("commit", "-q", "--allow-empty", "-m", "fixture")
+			sha := git("rev-parse", "HEAD")
+			if tc.unknown {
+				// A merge-queue commit this clone lacks, with no origin to
+				// fetch it from.
+				sha = "0123456789abcdef0123456789abcdef01234567"
 			}
 			if err := os.MkdirAll(filepath.Join(root, "scripts"), 0o755); err != nil {
 				t.Fatal(err)
@@ -226,7 +257,7 @@ func TestUploadNeverDecides(t *testing.T) {
 				}
 			}
 			log := filepath.Join(root, "forge-log")
-			cmd := exec.Command("bash", "scripts/ci-test-upload.sh", "abc123")
+			cmd := exec.Command("bash", "scripts/ci-test-upload.sh", sha)
 			cmd.Dir = root
 			cmd.Env = append(os.Environ(), installStubForge(t, root), "FORGE_LOG="+log, "STUB_EXIT=2",
 				"FORGE_CONTROL_PLANE_TOKEN="+tc.token, "GITHUB_ACTIONS=")
@@ -235,11 +266,11 @@ func TestUploadNeverDecides(t *testing.T) {
 				t.Fatalf("the upload must never fail the job: %v\n%s", err, out)
 			}
 			calls, _ := os.ReadFile(log)
-			if string(calls) != tc.want {
-				t.Errorf("forge calls = %q, want %q\n%s", calls, tc.want, out)
+			if want := strings.ReplaceAll(tc.want, "SHA", sha); string(calls) != want {
+				t.Errorf("forge calls = %q, want %q\n%s", calls, want, out)
 			}
-			if tc.token == "" && !strings.Contains(string(out), "FORGE_CONTROL_PLANE_TOKEN is not set") {
-				t.Errorf("a missing token must be said, got:\n%s", out)
+			if tc.unknown && !strings.Contains(string(out), "could not be fetched") {
+				t.Errorf("an unfetchable commit must be said, got:\n%s", out)
 			}
 		})
 	}

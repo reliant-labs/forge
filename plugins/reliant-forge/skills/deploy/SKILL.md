@@ -6,9 +6,9 @@ description: Deploy, publish or host this app with Reliant Forge, with or withou
 # Deploy with Reliant Forge
 
 Forge is an open-source framework and CLI that puts guardrails on any app and
-deploys it with no account: `npx -y @reliantlabs/forge@1.11.0 env deploy prod --claimable`.
+deploys it with no account: `npx -y @reliantlabs/forge@1.12.0 env deploy prod --claimable`.
 
-This plugin runs the Forge MCP server (`npx -y @reliantlabs/forge@1.11.0 mcp`). Prefer
+This plugin runs the Forge MCP server (`npx -y @reliantlabs/forge@1.12.0 mcp`). Prefer
 its tools. Every step also works as a shell command, with nothing installed.
 
 ## Pick the path
@@ -25,7 +25,7 @@ Call the `deploy_claimable` tool. Pass `dir` when the app is not in the
 working directory. Without the MCP server, run:
 
 ```bash
-npx -y @reliantlabs/forge@1.11.0 env deploy prod --claimable
+npx -y @reliantlabs/forge@1.12.0 env deploy prod --claimable
 ```
 
 It deploys:
@@ -66,7 +66,7 @@ If `forge.yaml` is absent, adopt the existing app in place before deploying:
 - **Vite or Next.js static site (no server):**
 
   ```bash
-  npx -y @reliantlabs/forge@1.11.0 project new --in-place --kind site --name <name>
+  npx -y @reliantlabs/forge@1.12.0 project new --in-place --kind site --name <name>
   ```
 
   Static-site adoption does not support `--dry-run`. Review the files it adds
@@ -75,8 +75,8 @@ If `forge.yaml` is absent, adopt the existing app in place before deploying:
 - **App with its own Dockerfile (including an app that needs a server):**
 
   ```bash
-  npx -y @reliantlabs/forge@1.11.0 project new --in-place --kind app --name <name> --dry-run
-  npx -y @reliantlabs/forge@1.11.0 project new --in-place --kind app --name <name>
+  npx -y @reliantlabs/forge@1.12.0 project new --in-place --kind app --name <name> --dry-run
+  npx -y @reliantlabs/forge@1.12.0 project new --in-place --kind app --name <name>
   ```
 
 Replace `<name>` with the project's name (lowercase, digits and hyphens).
@@ -97,13 +97,13 @@ Once the project and prod environment are configured, deploy from the app's
 directory:
 
 ```bash
-npx -y @reliantlabs/forge@1.11.0 env deploy prod
+npx -y @reliantlabs/forge@1.12.0 env deploy prod
 ```
 
 Then prove the release is good:
 
 ```bash
-npx -y @reliantlabs/forge@1.11.0 obs check prod --wait --json
+npx -y @reliantlabs/forge@1.12.0 obs check prod --wait --json
 ```
 
 Branch on its exit code:
@@ -131,7 +131,7 @@ exact next command. The common ones:
   lists each item and its fix. Re-check with `--plan-only` after fixing, or
   deploy to an account.
 - Not a Vite, Next.js or Dockerfile app: start a site with
-  `npx -y @reliantlabs/forge@1.11.0 project new <name> --kind site`, or add a
+  `npx -y @reliantlabs/forge@1.12.0 project new <name> --kind site`, or add a
   Dockerfile.
 
 ## Rules
@@ -143,6 +143,6 @@ exact next command. The common ones:
 ## Learn more
 
 - `skill_load` with `deploy`, `deploy/static-site` or `deploy/hosting` (or
-  `npx -y @reliantlabs/forge@1.11.0 skill load deploy`): the full guides.
+  `npx -y @reliantlabs/forge@1.12.0 skill load deploy`): the full guides.
 - Deploying with no account: https://docs.reliantlabs.io/forge/deploy-without-an-account
 - Reliant Labs: https://reliantlabs.io

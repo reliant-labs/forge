@@ -32,7 +32,7 @@ The server binary's cobra surface is real, owned Go — one symbol per command y
 - The server's `serve` command applies a typed `(*app.Components).Mount<Svc>` method expression (or `MountAll`) onto a `serverkit.Server`; named subsets compose the typed `app.MountByName` function values.
 - **`cmd/<binary>/main.go`** (yours, from `forge scaffold binary`) — a separate thin `package main` cobra root for each standalone binary, NOT a subcommand under the server root. It loads config, constructs the binary's `Service` via `internal/<package>.New(Deps{...})`, and calls `svc.Run(ctx)`.
 
-There is **no** `cmd/services_gen.go` string-projection and **no** `RegisteredServices` constructor table; an admin or report command of the project binary goes in its `commands.go` (`binaries/commands`). A data-only `Inventory` registry survives for introspection (`forge project map`/`audit`, CLI listing) — names there are for display, never a construction lookup key.
+There is **no** `cmd/services_gen.go` string-projection and **no** `RegisteredServices` constructor table; admin and reporting commands go in the independent `cmd/<bin>/usercmd` package (`binaries/commands`). A data-only `Inventory` registry survives for introspection (`forge project map`/`audit`, CLI listing) — names there are for display, never a construction lookup key.
 
 ## Adding a binary
 

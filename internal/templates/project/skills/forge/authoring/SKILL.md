@@ -5,6 +5,8 @@ description: Authoring a service proto — mark entities with `// forge:entity` 
 
 # Authoring a service proto
 
+Wire package defaults and overrides: `forge skill load proto/package`.
+
 ## Authoring a service proto
 
 Three rules cover what agents get wrong.

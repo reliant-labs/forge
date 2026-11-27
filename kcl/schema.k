@@ -8055,17 +8055,52 @@ schema ObservabilityRetention:
 schema ObservabilityAgent:
     """The per-node collector forge renders on cluster runtimes (a
     DaemonSet plus a node-local Service). Not rendered for forge.OnHosted:
-    the platform runs its own."""
+    the platform runs its own.
+
+    It runs on every cluster a forge workload runs on, and on each cluster
+    `clusters` names, which may run no forge workload at all: one that
+    runs only a HelmChart, an operator or an ML stack whose
+    `Observability.telemetry` scrapes the agent should collect.
+
+        observability = forge.Observability {
+            destination = forge.ObservabilityDestination {endpoint = "https://otlp.example.com"}
+            agent = forge.ObservabilityAgent {clusters = ["gke_acme_us-central1_gpu"]}
+            telemetry = [forge.Telemetry {
+                service_name = "dcgm-exporter", scope = "platform", cluster = "gke_acme_us-central1_gpu"
+                namespaces = ["gpu-operator"], selector = {"app": "nvidia-dcgm-exporter"}
+                metrics = [forge.MetricsScrape {port = 9400}]
+            }]
+        }
+
+    `forge env render` warns for a cluster telemetry target on a cluster
+    no agent runs on (output.uncollected_telemetry): it is not collected.
+    """
     namespace: str = "forge-observability"
     image: str = OTEL_COLLECTOR_IMAGE
     memory_limit_mib: int = 256
     # Opt-in: each agent cluster's Kubernetes inventory and events (see
     # KubernetesInventory). Unset, the default, renders none.
     kubernetes_inventory?: KubernetesInventory
+    # Kube contexts (forge.ClusterTarget.cluster) the agent also runs on,
+    # beside every cluster a forge workload runs on, with its destination
+    # credential, so the telemetry that scrapes them is collected (and
+    # kubernetes_inventory ships them). It takes effect when observability
+    # is on with a destination and forge owns collection (no
+    # telemetry_collector). Each one becomes a cluster the env deploys to,
+    # so a local or ephemeral lifecycle needs it to be a cluster forge
+    # creates, applier = "flux" needs it to be the env's one cluster, and
+    # token_from_control_plane needs a connected cluster for it (the
+    # ClusterTarget.connected_cluster of an MLStack on it, or
+    # Bundle.connected_clusters). Empty, the default, adds none.
+    clusters: [str] = []
 
     check:
         regex.match(namespace, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "ObservabilityAgent.namespace must be an RFC-1123 label"
         memory_limit_mib >= 64, "ObservabilityAgent.memory_limit_mib must be >= 64"
+        all c in clusters { c }, \
+            "ObservabilityAgent.clusters has an empty entry: each is a kube context (forge.ClusterTarget.cluster)"
+        len({c: 0 for c in clusters}) == len(clusters), \
+            "ObservabilityAgent.clusters names ${sorted([c for i, c in clusters if c in clusters[:i]])} twice: list each cluster once"
 
 schema KubernetesInventory:
     """Opt-in: a cluster's own Kubernetes objects, shipped beside the node
@@ -8078,8 +8113,10 @@ schema KubernetesInventory:
             }
         }
 
-    On every cluster forge's node agent runs on (a cluster the env deploys
-    to or scrapes, with an observability destination), it renders:
+    On every cluster forge's node agent runs on (a cluster a forge
+    workload runs on, one ObservabilityAgent.clusters names, or an ML
+    stack's cluster scraped through the deprecated Adopt/Install fields,
+    with an observability destination), it renders:
 
       * the cluster collector: one single-replica Deployment
         `cluster-collector` (with its ConfigMap and ServiceAccount) in the

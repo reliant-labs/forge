@@ -18,8 +18,8 @@ import (
 // checkEnvTelemetry validates the env's declared telemetry and, when it is
 // valid, prints its notes (envTelemetryWarnings) and the deprecation
 // warnings of ML components scraped through their own fields
-// (mlScrapeDeprecations) and of scrapes of an ML stack's cluster no node agent
-// collects (mlUncollectedTelemetry) on errOut.
+// (mlScrapeDeprecations) and of cluster telemetry targets no node agent
+// collects (uncollectedTelemetryWarnings) on errOut.
 func checkEnvTelemetry(errOut io.Writer, envName string, entities *KCLEntities) error {
 	if err := validateEnvTelemetry(envName, entities); err != nil {
 		return err
@@ -30,7 +30,7 @@ func checkEnvTelemetry(errOut io.Writer, envName string, entities *KCLEntities) 
 	for _, w := range mlScrapeDeprecations(entities) {
 		fmt.Fprintln(errOut, w)
 	}
-	for _, w := range mlUncollectedTelemetry(entities) {
+	for _, w := range uncollectedTelemetryWarnings(entities) {
 		fmt.Fprintln(errOut, w)
 	}
 	return nil
@@ -66,7 +66,7 @@ func validateTelemetryDashboard(name string, raw []byte) error {
 
 // envKubeContexts is every kubectl context the env's declaration names: its
 // clusters, its primary target, its cluster-bound workloads, its manifest
-// groups and the clusters it connects to. Never nil, so an env that declares
+// groups, its HelmCharts' clusters and the clusters it connects to. Never nil, so an env that declares
 // no cluster refuses a target that names one.
 func envKubeContexts(e *KCLEntities) []string {
 	set := map[string]bool{}
@@ -89,6 +89,11 @@ func envKubeContexts(e *KCLEntities) []string {
 	}
 	for _, g := range e.ManifestOwners {
 		add(g.Cluster)
+	}
+	// A HelmChart installs into its cluster, so its pods are what an
+	// Observability.telemetry entry there scrapes, agent or not.
+	for _, h := range e.HelmCharts {
+		add(h.Cluster)
 	}
 	for _, m := range e.ManifestClusters {
 		add(m.Cluster)

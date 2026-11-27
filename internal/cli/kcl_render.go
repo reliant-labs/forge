@@ -243,6 +243,10 @@ type KCLEntities struct {
 	// the render's deprecation warnings (mlScrapeDeprecations). The env
 	// document schema describes the key through envDocumentWire.
 	MLStacks []MLStackOutput `json:"-"`
+	// UncollectedTelemetry is output.uncollected_telemetry: each cluster
+	// telemetry target no node agent collects, read for the render's
+	// warning (uncollectedTelemetryWarnings). Nil when there is none.
+	UncollectedTelemetry []UncollectedTelemetryOutput `json:"-"`
 	// Identity is Bundle.identity, resolved by the render: the applications
 	// and consumers derived, the deliveries and reserved managed-secret names
 	// listed. Nil when the env declares none. See release.ShapeIdentity: the
@@ -1882,6 +1886,11 @@ type kclRenderRaw struct {
 	// NetworkPolicy rules; it is declared here so the env document schema
 	// carries it.
 	TelemetryCollector *kclTelemetryCollectorRaw `json:"telemetry_collector,omitempty"`
+	// UncollectedTelemetry is each cluster telemetry target no collector
+	// collects (forge's node agent runs on no cluster of the target's), for
+	// forge env render's warning (uncollectedTelemetryWarnings). Absent when
+	// there is none.
+	UncollectedTelemetry []UncollectedTelemetryOutput `json:"uncollected_telemetry,omitempty"`
 	// Manifests is the applyable stream. Parsed loosely: only kind, name
 	// and namespace are read here (see rawManifest).
 	Manifests []rawManifest `json:"manifests,omitempty"`
@@ -2338,6 +2347,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		return nil, fmt.Errorf("parse kcl json: ml_stacks: %w", err)
 	}
 	out.MLStacks = ml.MLStacks
+	out.UncollectedTelemetry = raw.UncollectedTelemetry
 	for _, c := range raw.BundledCharts {
 		out.ClusterWork = append(out.ClusterWork, "HelmChart/"+c.Name)
 	}

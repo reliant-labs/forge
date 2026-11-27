@@ -65,6 +65,19 @@ Apps **push** traces, metrics and profiles over OTLP. The agent pulls only what 
 
 What `filelog` costs: a **read-only hostPath on `/var/log/pods`** (container logs are root-readable on the node), a hostPath for checkpoints and the exporter's persistent queue, root with every capability dropped and a read-only root filesystem. hostPath is forbidden by pod-security `baseline`, so the agent gets its **own namespace labelled `privileged`**. That is why it is never rendered by the Restricted (hosted) profile: its kinds (DaemonSet, ClusterRole) are outside `RestrictedKinds` on purpose.
 
+### Clusters with no forge workload (opt-in)
+
+The agent runs on every cluster a forge workload runs on. A cluster that runs none — one with only a HelmChart, an operator or an ML stack — gets it only when you name it:
+
+```kcl
+observability = forge.Observability {
+    destination = forge.ObservabilityDestination {endpoint = "https://otlp.example.com"}
+    agent = forge.ObservabilityAgent {clusters = ["gke_acme_us-central1_gpu"]}   # kube contexts
+}
+```
+
+Each named cluster gets the agent and its destination credential, so the `Observability.telemetry` entries that scrape it are collected, and `kubernetes_inventory` covers it too. It takes effect when forge owns collection (no `telemetry_collector`). Naming a cluster makes it one the env deploys to: a local or ephemeral lifecycle needs it to be a cluster forge creates, `applier = "flux"` needs it to be the env's one cluster, and `token_from_control_plane` needs a connected cluster for it (`Bundle.connected_clusters`, or the `connected_cluster` of an MLStack on it). Entries must be non-empty and unique. A cluster telemetry target on a cluster no agent runs on is listed in `output.uncollected_telemetry`, and `forge env render` warns that it is not collected, naming the setting.
+
 ### Kubernetes inventory (opt-in)
 
 The node agent sees what each node sees. A cluster's own objects come from the API server, through one more collector that is off unless you declare it:

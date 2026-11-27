@@ -213,9 +213,9 @@ _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: 
     _from_manifests = [m.cluster for m in manifests if m.cluster]
     _from_generated = [g.cluster for g in generated if g.cluster]
     _from_secrets = [s.cluster for s in rendered_secrets if s.cluster]
-    # Installs apply charts; ML-only clusters also receive an agent (a
-    # deprecated component scrape, or MLStack.node_agent) when forge owns
-    # collection and has a destination. Use the same placement
+    # Installs apply charts; clusters with no forge workload also receive an
+    # agent (a deprecated ML component scrape, or Observability.agent.clusters)
+    # when forge owns collection and has a destination. Use the same placement
     # helper as agent rendering so lifecycle and Flux validate actual targets.
     _from_agents = [t.cluster for t in _cluster_targets(_obs_workloads([], ml_stacks, observability))] \
         if observability and observability.enabled and observability.destination else []
@@ -2323,17 +2323,47 @@ _stamp_cluster = lambda manifest: any, context: str -> any {
     manifest | {metadata = _meta | {labels = {k: v for k, v in _labels if k != "forge.dev/cluster"} | {"forge.dev/cluster" = context}}}
 }
 
-# Include ML clusters in the agent's placement and credential planning, even
-# when they run no forge workloads: a stack with a component scraped through
-# its (deprecated) own fields, as in v1.13.0, or one that opts in with
-# node_agent (kcl/ml.k _ml_agent_stacks). An Observability.telemetry entry
-# alone never places the agent: kcl/ml.k _ml_uncollected reports it instead.
-# An external collector owns those scrapes when telemetry_collector is
-# declared.
+# The agent's placement and credential planning: every cluster a forge
+# workload runs on, plus clusters that run none: an ML stack's cluster with a
+# component scraped through its (deprecated) own fields, as in v1.13.0, and
+# each cluster Observability.agent.clusters names. Opt-in, never derived from
+# a telemetry target: the agent makes the cluster a target of the env, and a
+# v1.13.0 env that scrapes a cluster it does not deploy to (a local or Flux
+# env, or one whose credential delivery has no connected cluster there) must
+# still render. A telemetry target alone never places the agent:
+# _uncollected_telemetry reports it instead. An external collector owns
+# collection when telemetry_collector is declared, and then neither extra
+# kind is placed.
 _obs_workloads = lambda agent_workloads: [any], agent_stacks: [any], agent_obs: any -> [any] {
-    _scraped = ([x.cluster for x in _ml_scrapes(agent_stacks)] + [s.cluster.cluster for s in _ml_agent_stacks(agent_stacks)]) \
-        if agent_obs and agent_obs.enabled and not agent_obs.telemetry_collector else []
-    agent_workloads + [{kind = "service", runtime = {type = "cluster", target = s.cluster}} for s in agent_stacks if s.cluster.cluster in _scraped]
+    _owned = bool(agent_obs and agent_obs.enabled and not agent_obs.telemetry_collector)
+    _scraped = [x.cluster for x in _ml_scrapes(agent_stacks)] if _owned else []
+    _placed = agent_workloads + [{kind = "service", runtime = {type = "cluster", target = s.cluster}} for s in agent_stacks if s.cluster.cluster in _scraped]
+    _have = [t.cluster for t in _cluster_targets(_placed)]
+    _placed + [{kind = "service", runtime = {type = "cluster", target = _agent_cluster_target(c, agent_stacks, agent_obs)}} \
+        for c in agent_obs.agent.clusters if c not in _have] if _owned else _placed
+}
+
+# The ClusterTarget the agent is placed on for an Observability.agent.clusters
+# entry: the env's own target of that kube context when an MLStack declares
+# one (its connected_cluster delivers the agent's credential), else the
+# context in the agent's namespace.
+_agent_cluster_target = lambda ctx: str, agent_stacks: [any], agent_obs: any -> any {
+    _declared = [s.cluster for s in agent_stacks if s.cluster.cluster == ctx]
+    _declared[0] if _declared else ClusterTarget {cluster = ctx, namespace = agent_obs.agent.namespace}
+}
+
+# Each cluster telemetry target the project declared that nothing collects:
+# forge owns collection with a destination, and forge's node agent runs on no
+# cluster of the target's (no forge workload there, and
+# Observability.agent.clusters does not name it). {service_name, cluster},
+# in render order; empty otherwise. A target forge renders on its own (origin
+# "default") is not reported: nobody asked for it. forge env render warns for
+# each cluster (output.uncollected_telemetry).
+_uncollected_telemetry = lambda b: Bundle -> [any] {
+    _owned = bool(_obs_on(b) and b.observability.destination and not b.observability.telemetry_collector)
+    _agents = [t.cluster for t in _cluster_targets(_obs_workloads(b.workloads, b.ml_stacks, b.observability))] if _owned else []
+    [{"service_name": x["service_name"], "cluster": x["cluster"]} for x in _render_telemetry(b) \
+        if x["runtime"] == "cluster" and "origin" not in x and x["cluster"] and x["cluster"] not in _agents] if _owned else []
 }
 
 # One ObservabilityAgent record per workload or scraped ML cluster, when the
@@ -3430,9 +3460,13 @@ render = lambda bundle: Bundle -> any {
         # The declared ML stacks (kcl/ml.k MLStack documents the shape), for
         # tools that read the stack and its decisions without parsing KCL.
         # Absent when none is declared, so an env without renders as before.
+        # Each cluster telemetry target no node agent collects
+        # (_uncollected_telemetry), which forge env render warns for. Absent
+        # when there is none, so an env without renders as before.
+        if _uncollected_telemetry(bundle):
+            "uncollected_telemetry": _uncollected_telemetry(bundle)
         if bundle.ml_stacks:
-            "ml_stacks": _ml_render(bundle.ml_stacks, _obs_on(bundle), bundle.observability, \
-                [t.cluster for t in _cluster_targets(_obs_workloads(bundle.workloads, bundle.ml_stacks, bundle.observability))])
+            "ml_stacks": _ml_render(bundle.ml_stacks, _obs_on(bundle))
         # The env's own collector, which pulls its cluster targets instead of
         # forge's node agent: the peer the targets' NetworkPolicy rules admit
         # (internal/cluster/telemetry.go). Only beside declared telemetry.

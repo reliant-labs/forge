@@ -6,7 +6,7 @@ input is v1.13.0's shape exactly, in each topology that refuses an extra
 target: a local and an ephemeral lifecycle (the cluster is not one forge
 creates), a single-cluster Flux applier (it would be a second cluster), and
 control-plane credential delivery (it names no connected cluster). The scrape
-is reported as uncollected (output.ml_stacks uncollected_telemetry), which
+is reported as uncollected (output.uncollected_telemetry), which
 `forge env render` prints as a warning.
 """
 # kcl-args: policy=local | policy=ephemeral | policy=flux | policy=token
@@ -42,4 +42,6 @@ output = forge.render(forge.Bundle {
 assert_no_agent_on_stack_cluster = len([m for m in output.manifests if m.kind == "ObservabilityAgent" and m.metadata.labels["forge.dev/cluster"] == _gpu]) == 0
 assert_no_credential_on_stack_cluster = len([s for s in output.control_plane_secrets if s.cluster == _gpu]) == 0
 assert_scrape_still_declared = [t.service_name for t in output.telemetry] == ["prometheus"]
-assert_reported_uncollected = output.ml_stacks[0].uncollected_telemetry == ["prometheus"]
+assert_reported_uncollected = output.uncollected_telemetry == [{"service_name": "prometheus", "cluster": _gpu}]
+# The stack document is v1.13.0's: nothing is added to it.
+assert_stack_unchanged = "uncollected_telemetry" not in output.ml_stacks[0]

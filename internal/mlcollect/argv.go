@@ -23,7 +23,10 @@ package mlcollect
 //     vendor format (sk-…, hf_…, ghp_…, AKIA…, a JWT).
 //
 // A shell script in one argument (`sh -c "…"`) is split into words and
-// commands and redacted by the same rules.
+// commands and redacted by the same rules, and so is a script quoted inside
+// one (`sh -c "bash -lc 'agent --token v'"`), to any depth: a word whose
+// unquoted text is itself a script is redacted as one, and a script nested
+// deeper than maxScriptDepth is replaced whole.
 
 import (
 	"path"
@@ -50,35 +53,49 @@ func RedactArgv(command, args []string) ([]string, []string) {
 
 // RedactArgs is one argv with every credential in it replaced by Redacted.
 func RedactArgs(argv []string) []string {
+	out, _ := redactArgs(argv)
+	return out
+}
+
+// redactArgs is RedactArgs, and which arguments it replaced whole because
+// they are a credential flag's value. A caller that redacts an argument
+// another way too (a document, redact.go) must keep that decision.
+func redactArgs(argv []string) (out []string, whole []bool) {
 	if argv == nil {
-		return nil
+		return nil, nil
 	}
 	toks := make([]argTok, len(argv))
 	for i, a := range argv {
 		toks[i] = argTok{val: a}
 	}
 	markCredentialValues(toks)
-	out := make([]string, len(argv))
+	out, whole = make([]string, len(argv)), make([]bool, len(argv))
 	for i, t := range toks {
-		switch {
-		case t.redact:
-			out[i] = Redacted
-		case isScript(t.val):
-			out[i] = redactScript(t.val)
-		default:
-			out[i] = redactWord(t.val, t.program)
+		if t.redact {
+			out[i], whole[i] = Redacted, true
+			continue
 		}
+		out[i] = redactArg(t.val, t.program)
 	}
-	return out
+	return out, whole
 }
 
 // RedactArgText is one string — an argument, a script, a URL — with its
 // credentials replaced by the rules RedactArgs applies to one argument.
-func RedactArgText(a string) string {
-	if isScript(a) {
-		return redactScript(a)
+func RedactArgText(a string) string { return redactArg(a, "") }
+
+// redactArg is one argument that is not a credential flag's value: an
+// attached credential (`--token=v w`) takes the whole rest of the argument,
+// spaces and all; else a script is redacted word by word; else a word by
+// the substring rules.
+func redactArg(a, program string) string {
+	if r, ok := redactAttached(a, program); ok {
+		return r
 	}
-	return redactWord(a, "")
+	if isScript(a) {
+		return redactScript(a, 0)
+	}
+	return argText(a)
 }
 
 // argTok is one word of an argv or a script.
@@ -168,30 +185,31 @@ func takesCredential(flag, program, value string) bool {
 var keepableValue = regexp.MustCompile(`^(?:[0-9]+(?:[:.\-][0-9]+)*(?:/(?:tcp|udp|sctp))?|[.~]{0,2}/.*|[a-z][a-z0-9+.-]*://.*)$`).MatchString
 
 var (
-	// --token=v, -passin=v
-	wordFlagAssign = regexp.MustCompile(`^(-{1,2}([A-Za-z0-9_.-]+)=)(.+)$`)
+	// --token=v, -passin=v (a quoted value may span lines)
+	wordFlagAssign = regexp.MustCompile(`(?s)^(-{1,2}([A-Za-z0-9_.-]+)=)(.+)$`)
 	// -uuser:pass, -Uuser%pass
 	wordUserAttached = regexp.MustCompile(`^(-[uU])(\S*[:%]\S*)$`)
 )
 
-// redactWord is one word with its attached credentials replaced: a
-// credential flag's `=value`, an attached user:password or mysql password,
-// then the substring rules of argText.
-func redactWord(w, program string) string {
+// redactAttached is w with an attached credential replaced — a credential
+// flag's `=value`, an attached user:password or mysql password — and true,
+// or false when w attaches none. The value replaced is everything after the
+// flag, so a quoted value with spaces in it goes whole.
+func redactAttached(w, program string) (string, bool) {
 	if m := wordFlagAssign.FindStringSubmatch(w); m != nil {
 		name := m[2]
 		if credentialName.MatchString(name) || credentialShortNames[strings.ToLower(name)] ||
 			((name == "user" || name == "proxy-user") && strings.ContainsAny(m[3], ":%")) {
-			return m[1] + Redacted
+			return m[1] + Redacted, true
 		}
 	}
 	if m := wordUserAttached.FindStringSubmatch(w); m != nil {
-		return m[1] + Redacted
+		return m[1] + Redacted, true
 	}
 	if mysqlLike[program] && len(w) > 2 && strings.HasPrefix(w, "-p") {
-		return "-p" + Redacted
+		return "-p" + Redacted, true
 	}
-	return argText(w)
+	return "", false
 }
 
 // sensitiveArg names what an argument must never carry a value for:
@@ -221,16 +239,26 @@ func argText(a string) string {
 	return argKnownSecret.ReplaceAllString(a, Redacted)
 }
 
-func isScript(s string) bool { return strings.ContainsAny(s, " \t\n") }
+func isScript(s string) bool { return strings.ContainsAny(s, " \t\r\n") }
+
+// maxScriptDepth bounds how many quoting levels of nested scripts are
+// redacted word by word; a script nested deeper is replaced whole.
+const maxScriptDepth = 8
 
 // redactScript redacts a shell script: split into words and commands, each
 // word redacted as an argv's would be, then the substring rules over the
 // whole text for what spans words (an unquoted `Authorization: Bearer v`).
-func redactScript(s string) string {
+// A word whose unquoted text is a script of its own (the `'…'` of
+// `sh -c '…'`) is redacted as one, one level deeper, and written back
+// single-quoted.
+func redactScript(s string, depth int) string {
+	if depth > maxScriptDepth {
+		return Redacted
+	}
 	spans := scriptWords(s)
 	toks := make([]argTok, len(spans))
 	for i, sp := range spans {
-		toks[i] = argTok{val: unquote(s[sp.start:sp.end]), sep: sp.sep}
+		toks[i] = argTok{val: shellUnquote(s[sp.start:sp.end]), sep: sp.sep}
 	}
 	markCredentialValues(toks)
 	var b strings.Builder
@@ -238,18 +266,30 @@ func redactScript(s string) string {
 	for i, sp := range spans {
 		b.WriteString(s[last:sp.start])
 		raw := s[sp.start:sp.end]
-		switch {
-		case sp.sep:
-			b.WriteString(raw)
-		case toks[i].redact:
-			b.WriteString(Redacted)
-		default:
-			b.WriteString(redactWord(raw, toks[i].program))
-		}
+		b.WriteString(redactScriptWord(raw, toks[i], depth))
 		last = sp.end
 	}
 	b.WriteString(s[last:])
 	return argText(b.String())
+}
+
+// redactScriptWord is one word of a script at depth, redacted.
+func redactScriptWord(raw string, t argTok, depth int) string {
+	switch {
+	case t.sep:
+		return raw
+	case t.redact:
+		return Redacted
+	}
+	if r, ok := redactAttached(raw, t.program); ok {
+		return r
+	}
+	if isScript(t.val) {
+		if r := redactScript(t.val, depth+1); r != t.val {
+			return shellQuote(r)
+		}
+	}
+	return argText(raw)
 }
 
 type wordSpan struct {
@@ -258,7 +298,8 @@ type wordSpan struct {
 }
 
 // scriptWords splits a shell script into words (quotes and backslash
-// escapes kept inside a word) and command separators (; | & and newline).
+// escapes kept inside a word, a backslash escaping inside "…" as well) and
+// command separators (; | & and newline).
 func scriptWords(s string) []wordSpan {
 	isSep := func(c byte) bool { return c == ';' || c == '|' || c == '&' }
 	var out []wordSpan
@@ -287,6 +328,8 @@ func scriptWords(s string) []wordSpan {
 		for j < len(s) {
 			ch := s[j]
 			switch {
+			case quote == '"' && ch == '\\' && j+1 < len(s):
+				j++ // \" inside "…" does not close it
 			case quote != 0:
 				if ch == quote {
 					quote = 0
@@ -306,6 +349,43 @@ func scriptWords(s string) []wordSpan {
 	return out
 }
 
-var unquoter = strings.NewReplacer(`"`, "", `'`, "", `\`, "")
+// shellUnquote is a shell word's text with one level of quoting removed, as
+// sh reads it: '…' is literal, "…" keeps its contents with \" \\ \$ and \`
+// unescaped, and a backslash outside quotes escapes the next byte. An
+// unterminated quote runs to the end of the word.
+func shellUnquote(w string) string {
+	var b strings.Builder
+	var quote byte
+	for i := 0; i < len(w); i++ {
+		c := w[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+				continue
+			}
+		case quote == '"':
+			if c == '"' {
+				quote = 0
+				continue
+			}
+			if c == '\\' && i+1 < len(w) && strings.IndexByte("\"\\$`\n", w[i+1]) >= 0 {
+				i++
+				c = w[i]
+			}
+		case c == '\'' || c == '"':
+			quote = c
+			continue
+		case c == '\\' && i+1 < len(w):
+			i++
+			c = w[i]
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
 
-func unquote(w string) string { return unquoter.Replace(w) }
+// shellQuote is s as one single-quoted shell word.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}

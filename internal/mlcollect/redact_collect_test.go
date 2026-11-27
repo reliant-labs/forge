@@ -46,6 +46,11 @@ func credentialPod() corev1.PodSpec {
 			Command: []string{"sh", "-c"},
 			Args:    []string{"sshpass -p sshpass-secret ssh host; mysql -h db -pmysql-secret; redis-cli -a redis-secret ping"},
 		}, {
+			// Scripts quoted inside a script.
+			Name: "nested", Image: "busybox",
+			Command: []string{"sh", "-c"},
+			Args:    []string{`bash -lc 'agent --token nested-sh-secret'; sh -c "agent --password nested-pw-secret --token=nested-eq-secret"`},
+		}, {
 			Name: "vllm", Image: "vllm/vllm-openai:v0.6",
 			Args: []string{"--model=meta-llama/Llama-3-8B", "--hf-token=arg-eq-secret", "--api-key", "arg-next-secret"},
 			LivenessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
@@ -62,6 +67,7 @@ var credentialSecrets = []string{
 	"script-var-secret", "script-hdr-secret", "script-url-secret", "arg-eq-secret", "arg-next-secret",
 	"probe-hdr-secret", "tenant-hdr-secret", "probe-path-secret", "exec-probe-secret", "hook-hdr-secret",
 	"split-argv-secret", "curl-user-secret", "curl-hdr-secret", "sshpass-secret", "mysql-secret", "redis-secret",
+	"nested-sh-secret", "nested-pw-secret", "nested-eq-secret",
 }
 
 // TestCollectRedactsArgsAndProbeHeaders: a live read keeps no credential a
@@ -232,6 +238,12 @@ func TestCollectRedactsCustomObjectArgs(t *testing.T) {
 			"dcgmExporter": map[string]any{"enabled": true, "args": []any{"--token", "cr-list-secret", "-f", "/etc/dcgm-exporter/dcgm-metrics.csv"}},
 			"driver":       map[string]any{"command": []any{"/bin/driver", "--password"}, "args": []any{"cr-split-secret"}},
 			"toolkit":      map[string]any{"args": []any{"curl", "-u", "u:cr-curl-secret"}},
+			// A credential flag's value that is a document of its own, in
+			// one list and across command and args; and a nested script.
+			"validator": map[string]any{"args": []any{"--token", "opaque: cr-doc-secret\nother: value\n"}},
+			"devicePlugin": map[string]any{"command": []any{"/bin/plugin", "--password"},
+				"args": []any{"opaque: cr-doc-split-secret\nother: value\n"}},
+			"migManager": map[string]any{"args": []any{"sh", "-c", `bash -lc 'agent --token cr-nested-secret'`}},
 		},
 	}}
 	c.Dynamic = dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
@@ -247,7 +259,7 @@ func TestCollectRedactsCustomObjectArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"cr-list-secret", "cr-split-secret", "cr-curl-secret"} {
+	for _, secret := range []string{"cr-list-secret", "cr-split-secret", "cr-curl-secret", "cr-doc-secret", "cr-doc-split-secret", "cr-nested-secret"} {
 		if strings.Contains(string(raw), secret) {
 			t.Errorf("the snapshot carries %q", secret)
 		}

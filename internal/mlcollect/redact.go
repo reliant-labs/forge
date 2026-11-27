@@ -163,24 +163,15 @@ func redactValue(v any, sensitive bool) any {
 		// in args is caught.
 		if cmd, ok := stringList(t["command"]); ok && !sensitive {
 			if args, ok := stringList(t["args"]); ok {
-				c, a := RedactArgv(cmd, args)
-				out["command"], out["args"] = anyList(c), anyList(a)
+				argv := redactArgList(append(append([]string{}, cmd...), args...))
+				out["command"], out["args"] = argv[:len(cmd)], argv[len(cmd):]
 			}
 		}
 		redactEnvList(out)
 		return out
 	case []any:
 		if strs, ok := stringList(t); ok && !sensitive {
-			// A list of strings is redacted as an argv: `["--token", "v"]`
-			// keeps neither half of the pair apart. A string that is a
-			// document of its own is redacted as one.
-			out := anyList(RedactArgs(strs))
-			for i, x := range strs {
-				if isDocument(x) {
-					out[i] = redactValue(x, false)
-				}
-			}
-			return out
+			return redactArgList(strs)
 		}
 		out := make([]any, len(t))
 		for i, x := range t {
@@ -210,6 +201,23 @@ func redactValue(v any, sensitive bool) any {
 		}
 		return t
 	}
+}
+
+// redactArgList is a custom object's list of strings redacted as an argv:
+// `["--token", "v"]` keeps neither half of the pair apart. A string that is
+// a document of its own (`["--config", "receivers: …"]`) is redacted as one
+// instead, unless the argv pass replaced it whole as a credential flag's
+// value: `["--token", "opaque: v\n"]` stays Redacted, since the document
+// pass would keep a scalar under a key that is not sensitive.
+func redactArgList(strs []string) []any {
+	red, whole := redactArgs(strs)
+	out := anyList(red)
+	for i, x := range strs {
+		if !whole[i] && isDocument(x) {
+			out[i] = redactValue(x, false)
+		}
+	}
+	return out
 }
 
 // isDocument reports whether s is a multi-line YAML/JSON document of its own

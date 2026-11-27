@@ -218,9 +218,11 @@ func lintDependencies(dir string) (deps []lintDep, absent []string) {
 // returns the number of files it read. A name nothing installed is keyed as
 // absent, so installing it is a change.
 func hashLintDeps(h io.Writer, dir string) (int, error) {
-	// A local config import can lead outside the hashed trees, directly or
-	// through further imports. Do not emulate Node's module resolution here:
-	// conservatively leave these configs uncached, even for an in-tree import.
+	// Regex import discovery cannot prove a JavaScript dependency graph:
+	// computed loads, environment branches and transitive helpers can all
+	// escape it. Only cache flat configs exporting a JSON literal, with no
+	// executable code. Legacy configs have implicit extends/plugin resolution
+	// too, so leave them uncached rather than emulate ESLint.
 	for _, f := range eslintConfigFiles {
 		data, err := os.ReadFile(filepath.Join(dir, f))
 		if os.IsNotExist(err) {
@@ -229,11 +231,22 @@ func hashLintDeps(h io.Writer, dir string) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		for _, m := range configImportRe.FindAllStringSubmatch(string(data), -1) {
-			if strings.HasPrefix(m[1], ".") || strings.HasPrefix(m[1], "/") {
-				return 0, fmt.Errorf("lint cache: %s imports local config %q", f, m[1])
-			}
+		body := strings.TrimSpace(string(data))
+		literal, flat := strings.CutPrefix(body, "export default ")
+		literal = strings.TrimSpace(strings.TrimSuffix(literal, ";"))
+		if !strings.HasPrefix(f, "eslint.config.") || !flat || !json.Valid([]byte(literal)) {
+			return 0, fmt.Errorf("lint cache: %s has config dependencies that cannot be proven complete", f)
 		}
+	}
+	// Legacy package.json config has the same implicit resolution rules.
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return 0, err
+	}
+	var manifest map[string]json.RawMessage
+	_ = json.Unmarshal(data, &manifest)
+	if _, ok := manifest["eslintConfig"]; ok {
+		return 0, fmt.Errorf("lint cache: package.json contains legacy eslintConfig")
 	}
 	deps, absent := lintDependencies(dir)
 	files := 0

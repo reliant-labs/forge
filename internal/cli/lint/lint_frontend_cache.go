@@ -22,9 +22,9 @@
 //     typescript, its config's imports, the eslint-shaped packages
 //     package.json lists, and everything they depend on) by the content of
 //     every file, so a dependency patched in place without a reinstall is a
-//     change too (lint_frontend_cache_deps.go). Configs with local module
-//     imports are left uncached: those imports can escape the hashed trees,
-//     directly or through another local module.
+//     change too (lint_frontend_cache_deps.go). Executable and legacy
+//     configs are left uncached: their dependencies cannot be proven complete
+//     by static import discovery.
 //   - for a workspace member whose dependencies are hoisted to an ancestor:
 //     that workspace root's own files (manifests, lockfile, shared configs),
 //     its membership — the normalized pnpm-workspace.yaml / package.json
@@ -34,7 +34,7 @@
 //     member's files. Directories are keyed as well as files throughout.
 //   - the scripts the lane runs (and whether css_health adds lint:styles),
 //     the forge binary (version, path, size, mtime), node and npm (path,
-//     size, mtime) and the environment eslint reads (NODE_*, ESLINT_*).
+//     size, mtime, content) and the environment eslint reads (NODE_*, ESLINT_*).
 //
 // Only passes are recorded, and only through recordPass: the key is taken
 // before the run, re-checked after it, written, and re-checked after the
@@ -83,7 +83,7 @@ const (
 	// frontendLintCacheVersion is part of every key. Bump it whenever the
 	// fingerprint's meaning changes, so a record written under the old rules
 	// never answers under the new ones.
-	frontendLintCacheVersion = 2
+	frontendLintCacheVersion = 3
 
 	// lintNoCacheEnv is --no-cache for runs nobody types (a gate script).
 	lintNoCacheEnv = "FORGE_LINT_NO_CACHE"
@@ -305,6 +305,9 @@ func (c *frontendLintCache) fingerprint(dir string, run frontendLintRun) (string
 			continue
 		}
 		fmt.Fprintf(h, "tool:%s=%s\n", tool, fileStamp(p))
+		if err := hashFile(h, "tool:"+tool, p); err != nil {
+			return "", 0, err
+		}
 	}
 	for _, kv := range lintCacheEnviron() {
 		k, _, _ := strings.Cut(kv, "=")

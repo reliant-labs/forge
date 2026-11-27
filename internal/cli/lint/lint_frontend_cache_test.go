@@ -108,7 +108,11 @@ func TestFrontendLintFingerprintCoversInputsOnly(t *testing.T) {
 	}
 	prev := base
 	for _, rel := range inputs {
-		writeCacheFile(t, filepath.Join(dir, rel), "changed "+rel+"\n")
+		body := "changed " + rel + "\n"
+		if rel == "eslint.config.mjs" {
+			body = "export default [{}];\n"
+		}
+		writeCacheFile(t, filepath.Join(dir, rel), body)
 		got := mustKey(t, c, dir, run)
 		if got == prev {
 			t.Errorf("editing %s (a lint input) did not change the key", rel)

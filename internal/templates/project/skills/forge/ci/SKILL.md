@@ -273,11 +273,16 @@ older than its lockfile is linted as it stands, with a note naming the
 command that refreshes it.
 
 The frontend lint lane (`npm run lint`, usually most of a full lint's wall
-time) remembers its passes. When a frontend's lint inputs (its files, minus
-`node_modules` and build output; its installed dependencies; the forge, node
-and npm binaries) are byte-identical to the ones its last pass judged, the lane
-prints `unchanged since its last pass, cached pass` instead of running, and the
-verdict names it, `--quiet` included. Only passes are recorded, in
+time) remembers its passes. Its key covers every file under the frontend
+(minus `node_modules` and build output), the package manager's install stamp,
+the full content of the packages eslint loads (its config's imports, the
+eslint-shaped packages package.json lists and their eslint-shaped
+dependencies, and `typescript`), a hoisting workspace's membership, and the
+forge, node and npm binaries. When all of it is byte-identical to what its last
+pass judged, the lane prints `unchanged since its last pass, cached pass`
+instead of running, and the verdict names it, `--quiet` included. A package
+eslint does not load directly, patched in place without a reinstall, is not
+seen: run with `--no-cache` after such an edit. Only passes are recorded, in
 `.forge/lint-cache.json`; a failure runs again next time. `--no-cache` (or
 `FORGE_LINT_NO_CACHE=1`) runs it anyway, and so does any run with `CI` set, so
 a CI job always lints the tree in front of it. `forge ci gate`'s `lint-<fe>`

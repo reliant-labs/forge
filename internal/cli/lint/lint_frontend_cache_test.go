@@ -25,7 +25,7 @@ func cacheFrontend(t *testing.T) string {
 		"src/app.ts":                      "export const a = 1;\n",
 		"src/gen/client_pb.ts":            "export const g = 1;\n",
 		"node_modules/.package-lock.json": `{"lockfileVersion":3}`,
-		"node_modules/eslint/index.js":    "module.exports = {};\n",
+		"node_modules/left-pad/index.js":  "module.exports = {};\n",
 		".next/cache/x":                   "build\n",
 		".next-prod/x":                    "build\n",
 		"out/index.html":                  "<html></html>\n",
@@ -91,7 +91,7 @@ func TestFrontendLintFingerprintCoversInputsOnly(t *testing.T) {
 	}
 
 	ignored := []string{
-		"node_modules/eslint/index.js", ".next/cache/x", ".next-prod/x", "out/index.html",
+		"node_modules/left-pad/index.js", ".next/cache/x", ".next-prod/x", "out/index.html",
 		"dist/a.js", "coverage/lcov.info", "tsconfig.tsbuildinfo", ".eslintcache",
 		"src/node_modules/nested/x.js",
 	}

@@ -17,7 +17,11 @@
 //     (generated code a project chose not to commit) must still invalidate.
 //   - the installed dependencies, through the stamp each package manager
 //     rewrites on every install (node_modules/.package-lock.json,
-//     .modules.yaml, …) in the node_modules the frontend resolves from.
+//     .modules.yaml, …) in the node_modules the frontend resolves from, and
+//     the packages eslint itself loads (its config's imports, the
+//     eslint-shaped packages package.json lists and theirs, typescript) by
+//     the content of every file, so a dependency patched in place without
+//     a reinstall is a change too (lint_frontend_cache_deps.go).
 //   - for a workspace member whose dependencies are hoisted to an ancestor:
 //     that workspace root's own files (manifests, lockfile, shared configs),
 //     its membership — the normalized pnpm-workspace.yaml / package.json
@@ -308,6 +312,14 @@ func (c *frontendLintCache) fingerprint(dir string, run frontendLintRun) (string
 
 	files := 0
 	n, err := hashTree(h, "fe", dir)
+	if err != nil {
+		return "", 0, err
+	}
+	files += n
+
+	// The packages eslint loads, by content: an in-place edit of a resolved
+	// plugin moves no install stamp (lint_frontend_cache_deps.go).
+	n, err = hashLintDeps(h, dir)
 	if err != nil {
 		return "", 0, err
 	}

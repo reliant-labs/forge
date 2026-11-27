@@ -374,33 +374,24 @@ func TestCIRunsSendNothing(t *testing.T) {
 	}
 }
 
-// A run that is mid-Flush when another run turns telemetry off must not write
-// its stale copy of the state file back over the opt-out: the next run stays
-// opted out.
-func TestFlushKeepsAnOptOutMadeByAnotherRunDuringThePost(t *testing.T) {
-	var cfg Config
+// An in-process transport makes the opt-out happen during the post without
+// depending on a loopback dial completing within FlushTimeout.
+func TestFlushPreservesOptOutDuringSynchronousPost(t *testing.T) {
+	cfg := testConfig(t, "http://telemetry.test/v1/logs", nil, &bytes.Buffer{})
+	posted := false
 	var offErr error
-	posted := make(chan struct{}, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg.HTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		_, _ = io.ReadAll(r.Body)
-		// Another run of the program (its own Client over the same file)
-		// runs `telemetry off` while this run's batch is in flight.
 		offErr = New(cfg).SetEnabled(false)
-		posted <- struct{}{}
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(srv.Close)
-	cfg = testConfig(t, srv.URL, nil, &bytes.Buffer{})
-
+		posted = true
+		rec := httptest.NewRecorder()
+		rec.WriteHeader(http.StatusOK)
+		return rec.Result(), nil
+	})}
 	c := New(cfg)
 	c.Track(context.Background(), "forge_cli_command")
 	c.Flush(context.Background())
-	// Wait for the handler rather than assume it finished inside Flush: on a
-	// slow host (Windows CI) the other run's SetEnabled can outlast
-	// FlushTimeout, so Flush returns while the handler is still writing.
-	select {
-	case <-posted:
-	case <-time.After(10 * time.Second):
+	if !posted {
 		t.Fatal("the batch was never posted")
 	}
 	if offErr != nil {

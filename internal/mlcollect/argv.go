@@ -281,8 +281,15 @@ func redactScriptWord(raw string, t argTok, depth int) string {
 	case t.redact:
 		return Redacted
 	}
-	if r, ok := redactAttached(raw, t.program); ok {
-		return r
+	// Detect attached values before interpreting spaces inside a quoted word
+	// as a nested script. Flag names may themselves be quoted or escaped.
+	if r, ok := redactAttached(t.val, t.program); ok {
+		// Preserve the existing spelling for plain flags with quoted values;
+		// their sanitized prefix contains no shell quoting to retain.
+		if plain, ok := redactAttached(raw, t.program); ok {
+			return plain
+		}
+		return shellQuote(r)
 	}
 	if isScript(t.val) {
 		if r := redactScript(t.val, depth+1); r != t.val {

@@ -118,12 +118,7 @@ func checkMCP(rootDir string, protoFiles []string) map[string][]Finding {
 	}
 
 	recorded := false
-	type served struct {
-		svc  codegen.ServiceDef
-		m    codegen.Method
-		name string
-	}
-	var tools []served
+	var tools []mcpServed
 	byName := map[string]string{}
 	for _, svc := range services {
 		file := filepath.ToSlash(svc.ProtoFile)
@@ -184,7 +179,7 @@ func checkMCP(rootDir string, protoFiles []string) map[string][]Finding {
 				continue
 			}
 			byName[name] = rpc
-			tools = append(tools, served{svc, m, name})
+			tools = append(tools, mcpServed{svc, m, name})
 		}
 	}
 
@@ -197,9 +192,25 @@ func checkMCP(rootDir string, protoFiles []string) map[string][]Finding {
 		})
 	}
 
-	// forgeconv-mcp-shape: tools per listener. A listener mounts the
-	// services of one audience, so tools are counted per audience.
-	byAudience := map[string][]served{}
+	for _, f := range checkMCPToolCount(tools, lines) {
+		add(f.File, f)
+	}
+	return out
+}
+
+// mcpServed is one rpc lint counts as a served tool.
+type mcpServed struct {
+	svc  codegen.ServiceDef
+	m    codegen.Method
+	name string
+}
+
+// checkMCPToolCount warns for each listener serving more than
+// mcpMaxToolsPerListener tools. A listener mounts the services of one
+// audience, so tools are counted per audience. File is slash-separated.
+func checkMCPToolCount(tools []mcpServed, lines map[string]int) []Finding {
+	var out []Finding
+	byAudience := map[string][]mcpServed{}
 	for _, t := range tools {
 		aud := t.svc.Audience
 		if aud == "" {
@@ -219,7 +230,8 @@ func checkMCP(rootDir string, protoFiles []string) map[string][]Finding {
 		}
 		first := ts[mcpMaxToolsPerListener]
 		file := filepath.ToSlash(first.svc.ProtoFile)
-		add(file, Finding{
+		out = append(out, Finding{
+			File:     file,
 			Rule:     ruleMCPShape,
 			Severity: SeverityWarning,
 			Line:     lines[file+"|"+first.svc.Name+"|"+first.m.Name],

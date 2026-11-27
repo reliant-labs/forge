@@ -287,29 +287,39 @@ func resolveMCPAppAPI(ctx context.Context, env string) (mcpAppAPI, error) {
 			}
 		}
 	} else if read.entities != nil {
-		hosted := false
-		for _, w := range read.entities.Workloads {
-			hosted = hosted || w.OnRuntime(RuntimeHosted)
-		}
-		if hosted {
-			if st, herr := readHostedStatusFromDeclaration(ctx, env, read.entities); herr == nil {
-				for _, w := range st.Workloads {
-					if deploytarget.HostedTier(w.Tier) == deploytarget.HostedTierWorkload && w.URL != "" {
-						api.URL, api.Source = w.URL, "hosted"
-						return api, nil
-					}
-				}
-			} else if !errors.Is(herr, deploytarget.ErrHostedEnvironmentNotFound) {
-				return api, fmt.Errorf("read env %s's status from Reliant hosting: %w (or pass --url)", env, herr)
-			}
-		}
-		for _, u := range buildIngressURLs(read.entities) {
-			if u.Kind == "HTTPRoute" && u.URL != "" {
-				api.URL, api.Source = u.URL, "ingress"
-				return api, nil
-			}
+		if err := resolveRemoteMCPAppAPI(ctx, env, read.entities, &api); err != nil || api.URL != "" {
+			return api, err
 		}
 	}
 	return api, fmt.Errorf("could not resolve env %s's API URL: no host service with a port, hosted workload with a URL or gateway route "+
 		"(start it with `forge env up %s` or deploy it, or pass --url)", env, env)
+}
+
+// resolveRemoteMCPAppAPI sets api.URL for an env that runs off this machine:
+// a hosted workload's URL, else the first gateway route. It leaves it empty
+// when the env has neither.
+func resolveRemoteMCPAppAPI(ctx context.Context, env string, e *KCLEntities, api *mcpAppAPI) error {
+	hosted := false
+	for _, w := range e.Workloads {
+		hosted = hosted || w.OnRuntime(RuntimeHosted)
+	}
+	if hosted {
+		if st, herr := readHostedStatusFromDeclaration(ctx, env, e); herr == nil {
+			for _, w := range st.Workloads {
+				if deploytarget.HostedTier(w.Tier) == deploytarget.HostedTierWorkload && w.URL != "" {
+					api.URL, api.Source = w.URL, "hosted"
+					return nil
+				}
+			}
+		} else if !errors.Is(herr, deploytarget.ErrHostedEnvironmentNotFound) {
+			return fmt.Errorf("read env %s's status from Reliant hosting: %w (or pass --url)", env, herr)
+		}
+	}
+	for _, u := range buildIngressURLs(e) {
+		if u.Kind == "HTTPRoute" && u.URL != "" {
+			api.URL, api.Source = u.URL, "ingress"
+			return nil
+		}
+	}
+	return nil
 }

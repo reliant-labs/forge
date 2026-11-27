@@ -715,8 +715,11 @@ func lintPipeline() []linterStep {
 		// CRUD on an authenticated rpc must say whose rows it holds
 		// (forge:owner=), or why nobody owns them (forge:public /
 		// forge:unscoped with a reason). Gates through the warn-first
-		// rollout (lint_crud_ownership.go). Reads migration text and the
-		// generated ops files, so it needs no shadow postgres.
+		// rollout (lint_crud_ownership.go), except a table still exactly as
+		// forge scaffolded it, which warns "pending: choose an owner" — so
+		// the lane gates on its error findings, not on any finding. Reads
+		// migration text and the generated ops files, so it needs no
+		// shadow postgres.
 		{
 			name:      "crud-ownership lint",
 			gates:     true,
@@ -724,7 +727,7 @@ func lintPipeline() []linterStep {
 			shouldRun: crudOwnershipShouldRun,
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectCRUDOwnershipJSON(rc.cwd, rc.cfg)
-				return fs, len(fs) > 0, err
+				return fs, anyErrorFinding(fs), err
 			},
 		},
 

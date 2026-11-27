@@ -131,8 +131,8 @@ COMMENT ON TABLE plan_catalog IS 'forge:public: the pricing page lists every pla
 COMMENT ON TABLE feature_flags IS 'forge:unscoped: admin service only; scoped in its handler';
 ```
 
-The reason is required. These markers change no codegen. Forge writes none
-for you, scaffolded tables included.
+The reason is required. These markers change no codegen. Forge writes none;
+an unedited born table only warns (`db/birth`).
 
 The column form, `COMMENT ON COLUMN t.c IS 'forge:owner'`, is unchanged. It
 arms the `unscoped_auth` audit and scaffolds a wrapper you finish by hand

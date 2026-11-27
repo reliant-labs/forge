@@ -80,7 +80,7 @@ func TestProjectMemoryForAnAdoptedApp(t *testing.T) {
 			t.Errorf("adopted-app memory lacks %q", want)
 		}
 	}
-	for _, banned := range []string{"This is a Go project", "## Architecture in one screen", "static site", "--kind container"} {
+	for _, banned := range []string{"This is a Go project", "## Where logic goes", "static site", "--kind container"} {
 		if strings.Contains(memory, banned) {
 			t.Errorf("adopted-app memory contains %q", banned)
 		}

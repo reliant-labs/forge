@@ -239,6 +239,10 @@ type KCLEntities struct {
 	// decoded and normalized: what a collector consumes. Nil when none is
 	// declared. Validate it with telemetry.Validate (forge env render does).
 	Telemetry []telemetry.Target `json:"telemetry,omitempty"`
+	// MLStacks are the env's declared ML stacks (output.ml_stacks), read for
+	// the render's deprecation warnings (mlScrapeDeprecations). The env
+	// document schema describes the key through envDocumentWire.
+	MLStacks []MLStackOutput `json:"-"`
 	// Identity is Bundle.identity, resolved by the render: the applications
 	// and consumers derived, the deliveries and reserved managed-secret names
 	// listed. Nil when the env declares none. See release.ShapeIdentity: the
@@ -2285,6 +2289,15 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 	if len(targets) > 0 {
 		out.Telemetry = telemetry.Normalize(targets)
 	}
+	// A key of its own, decoded apart from kclRenderRaw, so the env schema
+	// (envDocumentWire, which embeds kclRenderRaw) keeps describing it once.
+	var ml struct {
+		MLStacks []MLStackOutput `json:"ml_stacks"`
+	}
+	if err := json.Unmarshal(data, &ml); err != nil {
+		return nil, fmt.Errorf("parse kcl json: ml_stacks: %w", err)
+	}
+	out.MLStacks = ml.MLStacks
 	for _, c := range raw.BundledCharts {
 		out.ClusterWork = append(out.ClusterWork, "HelmChart/"+c.Name)
 	}

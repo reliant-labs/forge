@@ -221,8 +221,8 @@
               "selector": {
                 "app": "nvidia-dcgm-exporter"
               },
-              "service_name": "ml-dcgm-exporter",
-              "source": "ml-stack:gke_acme_us-central1_gpu"
+              "service_name": "dcgm-exporter",
+              "source": "observability"
             }
           ],
           "tokenSecret": null
@@ -241,22 +241,16 @@
         "cluster": "gke_acme_us-central1_gpu",
         "components": [
           {
-            "allow": [
-              "DCGM_FI_DEV_GPU_UTIL",
-              "DCGM_FI_DEV_FB_USED",
-              "DCGM_FI_DEV_XID_ERRORS"
-            ],
+            "allow": [],
             "chart": "",
             "kind": "dcgm-exporter",
             "mode": "adopt",
             "namespace": "gpu-operator",
             "note": "",
-            "port": 9400,
+            "port": 0,
             "reason": "",
-            "selector": {
-              "app": "nvidia-dcgm-exporter"
-            },
-            "service_name": "ml-dcgm-exporter",
+            "selector": {},
+            "service_name": "",
             "slot": "accelerators",
             "vendor": "nvidia",
             "version": "3.3.9"
@@ -428,8 +422,8 @@
         "selector": {
           "app": "nvidia-dcgm-exporter"
         },
-        "service_name": "ml-dcgm-exporter",
-        "source": "ml-stack:gke_acme_us-central1_gpu"
+        "service_name": "dcgm-exporter",
+        "source": "observability"
       }
     ],
     "workloads": [

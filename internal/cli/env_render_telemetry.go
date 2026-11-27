@@ -16,13 +16,18 @@ import (
 // declare, a cluster the env does not declare, and the hosted rules. Nil when
 // the env declares none.
 // checkEnvTelemetry validates the env's declared telemetry and, when it is
-// valid, prints its notes (envTelemetryWarnings) on errOut.
+// valid, prints its notes (envTelemetryWarnings) and the deprecation
+// warnings of ML components scraped through their own fields
+// (mlScrapeDeprecations) on errOut.
 func checkEnvTelemetry(errOut io.Writer, envName string, entities *KCLEntities) error {
 	if err := validateEnvTelemetry(envName, entities); err != nil {
 		return err
 	}
 	for _, w := range envTelemetryWarnings(entities) {
 		fmt.Fprintln(errOut, w.Error())
+	}
+	for _, w := range mlScrapeDeprecations(entities) {
+		fmt.Fprintln(errOut, w)
 	}
 	return nil
 }

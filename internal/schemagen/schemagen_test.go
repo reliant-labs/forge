@@ -160,3 +160,35 @@ func TestDecodeJSONTakesExactlyOneDocument(t *testing.T) {
 		}
 	}
 }
+
+type withOld struct {
+	Old string `json:"old"`
+	New string `json:"new"`
+}
+
+// A deprecated property is annotated, not refused: a document that still
+// carries it validates.
+func TestDeprecatedPropertyIsAnnotatedAndStillValidates(t *testing.T) {
+	s, err := Generate(reflect.TypeOf(withOld{}), Options{Deprecated: map[FieldKey]bool{{Type: reflect.TypeOf(withOld{}), Name: "old"}: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"old":{"deprecated":true,`) || strings.Contains(string(raw), `"new":{"deprecated"`) {
+		t.Fatalf("schema = %s, want old (only) deprecated", raw)
+	}
+	c, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	doc, err := DecodeJSON([]byte(`{"old":"x","new":"y"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if errs := c.Validate(doc); len(errs) != 0 {
+		t.Fatalf("a document with the deprecated property was refused: %v", errs)
+	}
+}

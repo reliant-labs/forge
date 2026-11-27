@@ -46,7 +46,7 @@ func runtimesOf(e *KCLEntities) map[string][]string {
 // Every golden decodes, strictly, and every workload's runtime block carries
 // exactly the variant its type names — nothing guessed, nothing dropped.
 func TestRenderContract_EveryGoldenDecodes(t *testing.T) {
-	for _, name := range []string{"host", "compose", "cluster", "hosted", "build-only", "build-outputs", "mixed", "unit-split", "flux-delivery", "ml-stack"} {
+	for _, name := range []string{"host", "compose", "cluster", "hosted", "build-only", "build-outputs", "mixed", "unit-split", "flux-delivery", "ml-stack", "ml-stack-v1.13.0"} {
 		t.Run(name, func(t *testing.T) {
 			e, _ := loadContract(t, name)
 			if len(e.Workloads) == 0 {
@@ -568,7 +568,19 @@ func TestRenderContract_FluxDelivery(t *testing.T) {
 // deploy applies, a bundle Install's reach the chart internal/cluster expands,
 // and the declared stack decodes as the env schema describes it.
 func TestRenderContract_MLStack(t *testing.T) {
-	e, raw := loadContract(t, "ml-stack")
+	// ml-stack scrapes the exporter through Observability.telemetry;
+	// ml-stack-v1.13.0 through the Adopt's (deprecated) own fields, which
+	// lower to a derived ml-dcgm-exporter Telemetry and project its name.
+	for _, c := range []struct{ golden, scrape, projected string }{
+		{"ml-stack", "dcgm-exporter", ""},
+		{"ml-stack-v1.13.0", "ml-dcgm-exporter", "ml-dcgm-exporter"},
+	} {
+		t.Run(c.golden, func(t *testing.T) { checkMLStackContract(t, c.golden, c.scrape, c.projected) })
+	}
+}
+
+func checkMLStackContract(t *testing.T, golden, scrape, projected string) {
+	e, raw := loadContract(t, golden)
 	want := map[string]string{"forge.dev/component-owner": "acme.prod", "forge.dev/component": "ml-jobset"}
 	if len(e.HelmCharts) != 1 || !reflect.DeepEqual(e.HelmCharts[0].Labels, want) || !e.HelmCharts[0].ClusterTarget {
 		t.Fatalf("bootstrap Install chart = %+v, want jobset on its ClusterTarget with labels %v", e.HelmCharts, want)
@@ -600,7 +612,13 @@ func TestRenderContract_MLStack(t *testing.T) {
 	if got := strings.Join(modes, " "); got != "accelerators:adopt:dcgm-exporter node_health:install:node-problem-detector queue:adopt:kueue training:install:jobset" {
 		t.Errorf("components = %s", got)
 	}
-	if m[0].Components[0].ServiceName != "ml-dcgm-exporter" {
-		t.Errorf("scraped adoption's service_name = %q", m[0].Components[0].ServiceName)
+	if m[0].Components[0].ServiceName != projected {
+		t.Errorf("adoption's projected service_name = %q, want %q", m[0].Components[0].ServiceName, projected)
+	}
+	if len(e.Telemetry) != 1 || e.Telemetry[0].ServiceName != scrape || e.Telemetry[0].Cluster != "gke_acme_us-central1_gpu" {
+		t.Errorf("telemetry = %+v, want one scrape %q on the GPU cluster", e.Telemetry, scrape)
+	}
+	if len(e.MLStacks) != 1 {
+		t.Errorf("KCLEntities.MLStacks = %+v, want the one stack", e.MLStacks)
 	}
 }

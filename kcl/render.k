@@ -2318,10 +2318,14 @@ _stamp_cluster = lambda manifest: any, context: str -> any {
 }
 
 # Include scraped ML clusters in the agent's placement and credential planning,
-# even when they run no forge workloads. An external collector owns those
-# scrapes instead when telemetry_collector is declared.
+# even when they run no forge workloads: a stack with a component scraped
+# through its (deprecated) own fields, or one whose kube context an
+# Observability.telemetry entry scrapes (kcl/ml.k _ml_telemetry_stacks). An
+# external collector owns those scrapes instead when telemetry_collector is
+# declared.
 _obs_workloads = lambda agent_workloads: [any], agent_stacks: [any], agent_obs: any -> [any] {
-    _scraped = [x.cluster for x in _ml_scrapes(agent_stacks)] if agent_obs and agent_obs.enabled and not agent_obs.telemetry_collector else []
+    _scraped = ([x.cluster for x in _ml_scrapes(agent_stacks)] + [s.cluster.cluster for s in _ml_telemetry_stacks(agent_stacks, agent_obs)]) \
+        if agent_obs and agent_obs.enabled and not agent_obs.telemetry_collector else []
     agent_workloads + [{kind = "service", runtime = {type = "cluster", target = s.cluster}} for s in agent_stacks if s.cluster.cluster in _scraped]
 }
 

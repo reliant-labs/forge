@@ -18,7 +18,7 @@ import (
 // together.
 var Keywords = map[string]bool{
 	"$schema": true, "$id": true, "$ref": true, "$defs": true,
-	"title": true, "description": true, "format": true,
+	"title": true, "description": true, "deprecated": true, "format": true,
 	"type": true, "const": true, "enum": true, "minimum": true,
 	"properties": true, "required": true, "additionalProperties": true,
 	"items": true, "oneOf": true, "anyOf": true,

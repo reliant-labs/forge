@@ -11,13 +11,33 @@ Forge KCL — the ML stack of a cluster you run
 The policy the types encode: discover, then adopt, then install only what is
 missing. `forge ml discover` reads the cluster with your kube context
 (read-only) and proposes this declaration; you review it and commit it.
-Every component slot is `forge.Adopt` (a selector over what already runs,
-never touched), `forge.Install` (a pinned chart forge delivers, in the env's
-bundle or as a bootstrap chart, and labels as its own), or absent. Every
-slot is optional: a stack declares any subset, one component included, and
-renders only what it declares. A kind is never both, never installed
-twice, and never installed when discovery found one running: two DCGM
-exporters on one node break each other's profiling counters.
+Every component slot is `forge.Adopt` (an inventory assertion about what
+already runs, never touched), `forge.Install` (a pinned chart forge
+delivers, in the env's bundle or as a bootstrap chart, and labels as its
+own), or absent. Every slot is optional: a stack declares any subset, one
+component included, and renders only what it declares. A kind is never
+both, never installed twice, and never installed when discovery found one
+running: two DCGM exporters on one node break each other's profiling
+counters.
+
+A stack declares what runs, not how it is scraped. Scraping a component,
+adopted or installed, is a plain `Observability.telemetry` entry
+(kcl/telemetry.k), like any system forge did not build:
+
+    observability = forge.Observability {telemetry = [forge.Telemetry {
+        service_name = "dcgm-exporter", scope = "platform", cluster = "<kube context>"
+        namespaces = ["gpu-operator"], selector = {"app": "nvidia-dcgm-exporter"}
+        metrics = [forge.MetricsScrape {port = 9400, allow = "DCGM_FI_DEV_GPU_UTIL|DCGM_FI_DEV_FB_USED"}]
+    }]}
+
+A stack's cluster gets forge's node agent when such an entry scrapes it,
+even if no forge workload runs there.
+
+The scrape fields of forge.Adopt and forge.Install (`selector`, `port`,
+`allow`, `service_name`) are deprecated in v1.14.0 and still work exactly
+as in v1.13.0: they lower to a derived Telemetry named ml-<kind>, and
+`forge env render` warns for each component that sets them. Removal only
+in a future major.
 
 forge ships no per-vendor preset here. Every vendor fact (the DCGM metric
 allow list, an exporter's port and labels) is the author's data, which
@@ -73,7 +93,8 @@ ML_ACCELERATOR_RESOURCES: {str:str} = {
     "gaudi": "habana.ai/gaudi"
 }
 
-# The service.name prefix of a component's scrape.
+# The service.name prefix of a component's derived scrape (the deprecated
+# Adopt/Install scrape fields).
 ML_SERVICE_PREFIX: str = "ml-"
 # The label value forge stamps as forge.dev/component on every object an
 # Install renders: ML_COMPONENT_PREFIX + kind.
@@ -86,14 +107,18 @@ schema Adopt:
     never touches: no upgrade, no reconfiguration, no ownership.
 
         # found by forge ml discover, 2026-11-25: dcgm-exporter 3.3.9 via GPU Operator v24.9
-        metrics = forge.Adopt {
-            kind = "dcgm-exporter", namespace = "gpu-operator", version = "3.3.9"
-            selector = {"app": "nvidia-dcgm-exporter"}, port = 9400
-            allow = ["DCGM_FI_DEV_GPU_UTIL", "DCGM_FI_DEV_FB_USED", "DCGM_FI_DEV_XID_ERRORS"]
-        }
+        metrics = forge.Adopt {kind = "dcgm-exporter", namespace = "gpu-operator", version = "3.3.9"}
         queue = forge.Adopt {kind = "kueue", namespace = "kueue-system"}
 
-    With a `selector` and a `port` it lowers to a forge.Telemetry scrape in
+    It is an inventory assertion, which tools compare against what the
+    cluster runs, and it lowers to nothing in the cluster. Scraping it is
+    an `Observability.telemetry` entry of its own (see the module header).
+
+    Deprecated (v1.14.0): `selector`, `port`, `allow` and `service_name`.
+    Declare the scrape as a forge.Telemetry entry in Observability.telemetry
+    instead; removal only in a future major. Until then they work as in
+    v1.13.0, and `forge env render` warns for each component that sets them:
+    with a `selector` and a `port` it lowers to a forge.Telemetry scrape in
     the env's observability (the Observability.telemetry semantics:
     service_name `ml-<kind>`, suffixed with the cluster when the env has
     several stacks, scope "platform", the stack's cluster, `namespaces =
@@ -101,9 +126,6 @@ schema Adopt:
     happens only when the env's observability is on. A Telemetry the env
     declares itself with the same service_name replaces it: that is how a
     scrape gets a path, an interval or dashboards of your own.
-
-    Without a port it lowers to nothing in the cluster: it is an inventory
-    assertion, which tools compare against what the cluster runs.
 
     `allow` is the author's data, never a forge preset: the names you draw
     and alert on, which `forge ml discover` writes from the exporter version
@@ -116,18 +138,23 @@ schema Adopt:
     # to None, not left Undefined: an unset attribute would resolve to the
     # package's `namespace` helper (base.k) inside the check block.
     namespace?: str = None
-    # Pod labels that must ALL match: what to scrape.
+    # Deprecated (v1.14.0): declare the scrape as a forge.Telemetry entry in
+    # Observability.telemetry; removal only in a future major. Pod labels
+    # that must ALL match: what to scrape.
     selector?: {str:str}
-    # The metrics port on the matched pods (needs `selector`).
+    # Deprecated (v1.14.0), as selector. The metrics port on the matched
+    # pods (needs `selector`).
     port?: int
-    # The exposition names the scrape keeps (needs `port`).
+    # Deprecated (v1.14.0), as selector. The exposition names the scrape
+    # keeps (needs `port`).
     allow: [str] = []
     # What discovery found running. Informational.
     version?: str
     # A note for reviewers.
     note?: str
-    # The scrape's service.name, instead of ml-<kind>[-<cluster>]: for two
-    # scraped adoptions of one kind (two Prometheus installs).
+    # Deprecated (v1.14.0), as selector. The scrape's service.name, instead
+    # of ml-<kind>[-<cluster>]: for two scraped adoptions of one kind (two
+    # Prometheus installs).
     service_name?: str
 
     check:
@@ -195,9 +222,12 @@ schema Install:
     `forge.dev/component = ml-<kind>`, so discovery tells forge's installs
     from the cluster's own.
 
-    `selector`, `port` and `allow` scrape what it installed, exactly as on a
-    forge.Adopt (`namespaces = [chart.namespace]`): an exporter forge
-    installs is scraped like one it adopts.
+    Scraping what it installed is an `Observability.telemetry` entry, as
+    for an adopted component (`namespaces = [<chart namespace>]`).
+    Deprecated (v1.14.0), still working: `selector`, `port` and `allow`
+    scrape what it installed exactly as on a forge.Adopt (`namespaces =
+    [chart.namespace]`), and `forge env render` warns; removal only in a
+    future major.
 
     Kinds in the adopt-only set (KubeRay) are refused unless `reason` says
     why this cluster needs forge to install one.
@@ -206,13 +236,18 @@ schema Install:
     chart: HelmChart
     # Why forge installs it: required for an adopt-only kind (kuberay).
     reason?: str
-    # Pod labels that must ALL match: what to scrape (as on forge.Adopt).
+    # Deprecated (v1.14.0): declare the scrape as a forge.Telemetry entry in
+    # Observability.telemetry; removal only in a future major. Pod labels
+    # that must ALL match: what to scrape (as on forge.Adopt).
     selector?: {str:str}
-    # The metrics port on the matched pods (needs `selector`).
+    # Deprecated (v1.14.0), as selector. The metrics port on the matched
+    # pods (needs `selector`).
     port?: int
-    # The exposition names the scrape keeps (needs `port`).
+    # Deprecated (v1.14.0), as selector. The exposition names the scrape
+    # keeps (needs `port`).
     allow: [str] = []
-    # The scrape's service.name, instead of ml-<kind>[-<cluster>].
+    # Deprecated (v1.14.0), as selector. The scrape's service.name, instead
+    # of ml-<kind>[-<cluster>].
     service_name?: str
 
     check:
@@ -242,7 +277,7 @@ schema Accelerators:
 
         accelerators = [forge.Accelerators {
             vendor = "nvidia"
-            metrics = forge.Adopt {kind = "dcgm-exporter", namespace = "gpu-operator", selector = {"app": "nvidia-dcgm-exporter"}, port = 9400}
+            metrics = forge.Adopt {kind = "dcgm-exporter", namespace = "gpu-operator"}
         }]
 
     `resource` is the extended resource the vendor's device plugin
@@ -308,11 +343,7 @@ schema MLStack:
             observed_at = "2026-11-25"
             accelerators = [forge.Accelerators {
                 vendor = "nvidia"
-                metrics = forge.Adopt {
-                    kind = "dcgm-exporter", namespace = "gpu-operator"
-                    selector = {"app": "nvidia-dcgm-exporter"}, port = 9400
-                    allow = _DCGM_ALLOW   # written by forge ml discover
-                }
+                metrics = forge.Adopt {kind = "dcgm-exporter", namespace = "gpu-operator", version = "3.3.9"}
             }]
             node_health = forge.Install {
                 kind = "node-problem-detector"
@@ -329,6 +360,11 @@ schema MLStack:
             }]
         }]
 
+    Scraping a component is not a field of the stack: the DCGM exporter
+    above is scraped by an `Observability.telemetry` entry beside it (the
+    module header shows one), and that entry's cluster gets forge's node
+    agent.
+
     The refusals, each naming the kind and the fix: a kind both adopted and
     installed; a kind installed twice; an Install of a kind in `observed`
     (adopt the running one instead); two Accelerators of one vendor; a
@@ -341,9 +377,15 @@ schema MLStack:
         with the `labels` forge stamps on every object the chart renders;
       * each bundle Install's namespace: a Namespace in `manifests`, unless
         the env already renders or declares it;
-      * each scraped component (an Adopt or an Install with selector and
-        port): a `telemetry` target (attachment "observability", source
-        `ml-stack:<cluster>`), when observability is on;
+      * the stack's cluster: forge's node agent (and its destination
+        credential), when observability is on with a destination, forge
+        owns collection, and an `Observability.telemetry` entry with a
+        selector scrapes that kube context;
+      * deprecated (v1.14.0), still rendered: each component scraped through
+        its own fields (an Adopt or an Install with selector and port): a
+        `telemetry` target (attachment "observability", source
+        `ml-stack:<cluster>`) when observability is on, unless the env
+        declares a Telemetry of the same service_name, which replaces it;
       * `output.ml_stacks`, the declared stack for tools to read without
         parsing KCL (forge ml discover, the control plane), one entry per
         stack:
@@ -358,9 +400,10 @@ schema MLStack:
                 "vendor": "<the Accelerators vendor, slot accelerators only, else empty>",
                 "mode": "adopt" | "install", "kind", "namespace",
                 "version": "<Adopt.version, or the Install chart's version>",
-                "selector", "port" (0 when unset), "allow" (the scrape, either mode),
+                "selector", "port" (0 when unset), "allow" (the deprecated
+                  scrape fields, either mode),
                 "note",
-                "service_name": "<the scrape's service.name when it renders, else empty>",
+                "service_name": "<the deprecated derived scrape's service.name when it renders, else empty>",
                 "chart": "<the Install chart's name, else empty>", "reason"
               }],
               "decisions": [{"id", "decision", "reason", "expires"}]
@@ -473,6 +516,14 @@ _ml_telemetry = lambda stacks: [any], obs_on: bool, taken: [str] -> [Telemetry] 
             allow = "|".join(x.c.allow) if x.c.allow else Undefined
         }]
     } for x in _ml_scrapes(stacks) if x.svc not in taken] if obs_on else []
+}
+
+# The stacks whose cluster an Observability.telemetry entry scrapes: a
+# selector on that kube context. Each gets forge's node agent, which is what
+# collects a cluster scrape, even when no forge workload runs there.
+_ml_telemetry_stacks = lambda stacks: [any], obs: any -> [any] {
+    _ctxs = [t.cluster for t in obs.telemetry if t.cluster and t.selector] if obs else []
+    [s for s in stacks if s.cluster.cluster in _ctxs]
 }
 
 # The HelmChart each Install lowers to, on its stack's cluster: {kind, chart}.

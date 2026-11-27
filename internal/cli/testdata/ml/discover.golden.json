@@ -1,0 +1,751 @@
+{
+  "schema": "forge.dev/ml-discover/v1",
+  "context": "gke_acme_us-central1_gpu",
+  "server_version": "v1.31.2-gke.1000",
+  "collected_at": "2026-11-25T09:30:00Z",
+  "cloud": "gke",
+  "provider": "gcp",
+  "accelerators": [
+    {
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "NVIDIA-H100-80GB-HBM3",
+      "pool": "h100",
+      "nodes": 1,
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 2,
+      "driver_versions": [
+        "550.127.05"
+      ],
+      "detected_by": "extended-resource"
+    }
+  ],
+  "machines": [
+    {
+      "name": "gke-gpu-h100-0",
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "NVIDIA-H100-80GB-HBM3",
+      "pool": "h100",
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 2,
+      "ready": true,
+      "container_runtime": "containerd://1.7.24",
+      "kubelet_version": "v1.31.2-gke.1000",
+      "driver_version": "550.127.05",
+      "detected_by": "extended-resource"
+    }
+  ],
+  "components": [
+    {
+      "kind": "dcgm-exporter",
+      "category": "accel-metrics",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "version": "3.3.9-3.6.1-ubuntu22.04",
+      "namespace": "gpu-operator",
+      "workload": "DaemonSet/nvidia-dcgm-exporter",
+      "via": "gpu-operator",
+      "selector": {
+        "app": "nvidia-dcgm-exporter"
+      },
+      "metrics_port": 9400,
+      "pods": 1,
+      "matched_by": [
+        "clusterpolicy:spec.dcgmExporter.enabled",
+        "container:nvidia-dcgm-exporter",
+        "image:*dcgm-exporter*",
+        "label:app=nvidia-dcgm-exporter"
+      ],
+      "config": {
+        "determined_by": "version-default",
+        "source": "dcgm-exporter 3.3.9-3.6.1 etc/dcp-metrics-included.csv (default of 3.3.9-3.6.1-ubuntu22.04)",
+        "fields": [
+          "DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS",
+          "DCGM_FI_DEV_DEC_UTIL",
+          "DCGM_FI_DEV_ENC_UTIL",
+          "DCGM_FI_DEV_FB_FREE",
+          "DCGM_FI_DEV_FB_USED",
+          "DCGM_FI_DEV_GPU_TEMP",
+          "DCGM_FI_DEV_GPU_UTIL",
+          "DCGM_FI_DEV_MEMORY_TEMP",
+          "DCGM_FI_DEV_MEM_CLOCK",
+          "DCGM_FI_DEV_MEM_COPY_UTIL",
+          "DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL",
+          "DCGM_FI_DEV_PCIE_REPLAY_COUNTER",
+          "DCGM_FI_DEV_POWER_USAGE",
+          "DCGM_FI_DEV_ROW_REMAP_FAILURE",
+          "DCGM_FI_DEV_SM_CLOCK",
+          "DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION",
+          "DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS",
+          "DCGM_FI_DEV_VGPU_LICENSE_STATUS",
+          "DCGM_FI_DEV_XID_ERRORS",
+          "DCGM_FI_DRIVER_VERSION",
+          "DCGM_FI_PROF_DRAM_ACTIVE",
+          "DCGM_FI_PROF_GR_ENGINE_ACTIVE",
+          "DCGM_FI_PROF_PCIE_RX_BYTES",
+          "DCGM_FI_PROF_PCIE_TX_BYTES",
+          "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE"
+        ],
+        "settings": [
+          "kubernetes-attribution.determined-by=version-default",
+          "kubernetes-attribution=true"
+        ]
+      }
+    },
+    {
+      "kind": "nvidia-device-plugin",
+      "category": "device-plugin",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.17.0",
+      "namespace": "gpu-operator",
+      "workload": "DaemonSet/nvidia-device-plugin-daemonset",
+      "via": "gpu-operator",
+      "selector": {
+        "app": "nvidia-device-plugin-daemonset"
+      },
+      "pods": 1,
+      "matched_by": [
+        "image:*k8s-device-plugin"
+      ]
+    },
+    {
+      "kind": "gpu-operator",
+      "category": "operator",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v24.9.0",
+      "namespace": "gpu-operator",
+      "workload": "Deployment/gpu-operator",
+      "selector": {
+        "app": "gpu-operator"
+      },
+      "pods": 1,
+      "resources": 1,
+      "matched_by": [
+        "crd:clusterpolicies.nvidia.com",
+        "image:*/gpu-operator"
+      ]
+    },
+    {
+      "kind": "kueue",
+      "category": "queue",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.10.1",
+      "namespace": "kueue-system",
+      "workload": "Deployment/kueue-controller-manager",
+      "selector": {
+        "app.kubernetes.io/name": "kueue"
+      },
+      "pods": 1,
+      "resources": 5,
+      "matched_by": [
+        "crd:clusterqueues.kueue.x-k8s.io",
+        "crd:localqueues.kueue.x-k8s.io",
+        "crd:workloads.kueue.x-k8s.io",
+        "image:*kueue*"
+      ]
+    }
+  ],
+  "coverage": [
+    {
+      "signal": "accel.utilisation",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "version-default",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "GPU_UTIL"
+      ],
+      "present": [
+        "GPU_UTIL"
+      ],
+      "nodes_covered": 1,
+      "nodes_total": 1,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ],
+      "note": "the field set is the found release's default counters file; a custom file would change it"
+    },
+    {
+      "signal": "accel.profiling",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "partial",
+      "determined_by": "version-default",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "PROF_GR_ENGINE_ACTIVE",
+        "PROF_SM_ACTIVE",
+        "PROF_SM_OCCUPANCY",
+        "PROF_PIPE_TENSOR_ACTIVE",
+        "PROF_DRAM_ACTIVE"
+      ],
+      "present": [
+        "PROF_GR_ENGINE_ACTIVE",
+        "PROF_PIPE_TENSOR_ACTIVE",
+        "PROF_DRAM_ACTIVE"
+      ],
+      "missing": [
+        "PROF_SM_ACTIVE",
+        "PROF_SM_OCCUPANCY"
+      ],
+      "nodes_covered": 1,
+      "nodes_total": 1,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ],
+      "note": "the field set is the found release's default counters file; a custom file would change it",
+      "findings": [
+        "dcgm-profiling-off"
+      ]
+    },
+    {
+      "signal": "accel.memory",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "version-default",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "FB_USED",
+        "FB_FREE"
+      ],
+      "present": [
+        "FB_USED",
+        "FB_FREE"
+      ],
+      "nodes_covered": 1,
+      "nodes_total": 1,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ],
+      "note": "the field set is the found release's default counters file; a custom file would change it"
+    },
+    {
+      "signal": "accel.xid",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "version-default",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "XID_ERRORS"
+      ],
+      "present": [
+        "XID_ERRORS"
+      ],
+      "nodes_covered": 1,
+      "nodes_total": 1,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ],
+      "note": "the field set is the found release's default counters file; a custom file would change it"
+    },
+    {
+      "signal": "accel.ecc",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "version-default",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "ECC_SBE",
+        "ECC_DBE"
+      ],
+      "missing": [
+        "ECC_SBE",
+        "ECC_DBE"
+      ],
+      "nodes_total": 1,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ],
+      "note": "the field set is the found release's default counters file; a custom file would change it",
+      "findings": [
+        "accel-error-counters-off"
+      ]
+    },
+    {
+      "signal": "accel.retired-pages",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "version-default",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "RETIRED_SBE",
+        "RETIRED_DBE",
+        "RETIRED_PENDING"
+      ],
+      "missing": [
+        "RETIRED_SBE",
+        "RETIRED_DBE",
+        "RETIRED_PENDING"
+      ],
+      "nodes_total": 1,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ],
+      "note": "the field set is the found release's default counters file; a custom file would change it"
+    },
+    {
+      "signal": "accel.row-remap",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "version-default",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "UNCORRECTABLE_REMAPPED_ROWS",
+        "ROW_REMAP_FAILURE"
+      ],
+      "present": [
+        "UNCORRECTABLE_REMAPPED_ROWS",
+        "ROW_REMAP_FAILURE"
+      ],
+      "nodes_covered": 1,
+      "nodes_total": 1,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ],
+      "note": "the field set is the found release's default counters file; a custom file would change it"
+    },
+    {
+      "signal": "accel.nvlink",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "partial",
+      "determined_by": "version-default",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "NVLINK_BANDWIDTH",
+        "NVLINK_ERRORS"
+      ],
+      "present": [
+        "NVLINK_BANDWIDTH"
+      ],
+      "missing": [
+        "NVLINK_ERRORS"
+      ],
+      "nodes_covered": 1,
+      "nodes_total": 1,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ],
+      "note": "the field set is the found release's default counters file; a custom file would change it",
+      "findings": [
+        "dcgm-nvlink-off"
+      ]
+    },
+    {
+      "signal": "accel.pcie",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "version-default",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "PCIE_REPLAY",
+        "PCIE_BYTES"
+      ],
+      "present": [
+        "PCIE_REPLAY",
+        "PCIE_BYTES"
+      ],
+      "nodes_covered": 1,
+      "nodes_total": 1,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ],
+      "note": "the field set is the found release's default counters file; a custom file would change it"
+    },
+    {
+      "signal": "accel.throttle",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "version-default",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "CLOCK_EVENT_REASONS"
+      ],
+      "missing": [
+        "CLOCK_EVENT_REASONS"
+      ],
+      "nodes_total": 1,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ],
+      "note": "the field set is the found release's default counters file; a custom file would change it"
+    },
+    {
+      "signal": "accel.power-thermal",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "partial",
+      "determined_by": "version-default",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "POWER_USAGE",
+        "GPU_TEMP",
+        "POWER_VIOLATION",
+        "THERMAL_VIOLATION"
+      ],
+      "present": [
+        "POWER_USAGE",
+        "GPU_TEMP"
+      ],
+      "missing": [
+        "POWER_VIOLATION",
+        "THERMAL_VIOLATION"
+      ],
+      "nodes_covered": 1,
+      "nodes_total": 1,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ],
+      "note": "the field set is the found release's default counters file; a custom file would change it"
+    },
+    {
+      "signal": "accel.pod-attribution",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "version-default",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "pod-labels"
+      ],
+      "present": [
+        "pod-labels"
+      ],
+      "nodes_covered": 1,
+      "nodes_total": 1,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ],
+      "note": "the field set is the found release's default counters file; a custom file would change it"
+    },
+    {
+      "signal": "node.health",
+      "category": "node-health",
+      "status": "missing",
+      "determined_by": "presence",
+      "nodes_total": 1,
+      "note": "no node-problem-detector, no EKS node monitoring agent, and no node condition a health source sets",
+      "findings": [
+        "no-node-health"
+      ]
+    },
+    {
+      "signal": "node.health.gpu-rules",
+      "category": "node-health",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "xid-rule"
+      ],
+      "missing": [
+        "xid-rule"
+      ],
+      "nodes_total": 1,
+      "note": "no node health source turns GPU (Xid) errors into a node condition"
+    },
+    {
+      "signal": "kubelet.tracing",
+      "category": "tracing",
+      "status": "unknown",
+      "determined_by": "unreadable",
+      "expected": [
+        "tracing"
+      ],
+      "note": "GKE manages the kubelet configuration; it is not readable from the Kubernetes API"
+    },
+    {
+      "signal": "apiserver.tracing",
+      "category": "tracing",
+      "status": "unknown",
+      "determined_by": "unreadable",
+      "expected": [
+        "tracing-config-file"
+      ],
+      "note": "GKE runs the control plane; its API server flags are not readable"
+    },
+    {
+      "signal": "telemetry.collector",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "note": "no OpenTelemetry Collector, Grafana Alloy or Datadog agent runs"
+    },
+    {
+      "signal": "telemetry.otlp",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "otlp"
+      ],
+      "missing": [
+        "otlp"
+      ],
+      "note": "no collector runs",
+      "findings": [
+        "no-otlp-receiver"
+      ]
+    },
+    {
+      "signal": "telemetry.k8s-events",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "k8s_events"
+      ],
+      "missing": [
+        "k8s_events"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "telemetry.kubeletstats",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "kubeletstats"
+      ],
+      "missing": [
+        "kubeletstats"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "telemetry.container-logs",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "container-logs"
+      ],
+      "missing": [
+        "container-logs"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "profiling.continuous",
+      "category": "profiling",
+      "status": "missing",
+      "determined_by": "presence",
+      "nodes_total": 1,
+      "note": "no continuous profiler (Parca, Pyroscope via Alloy, OTel eBPF profiler, Elastic, Coroot, Pixie) runs",
+      "findings": [
+        "no-continuous-profiling"
+      ]
+    },
+    {
+      "signal": "profiling.gpu",
+      "category": "profiling",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "CUDA, Nsight and PyTorch profiler hooks live inside workloads; discovery recognises no GPU profiling operator"
+    },
+    {
+      "signal": "tracing.training",
+      "category": "tracing",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no unfinished accelerator Jobs"
+    },
+    {
+      "signal": "tracing.inference",
+      "category": "tracing",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no vLLM or Triton servers"
+    },
+    {
+      "signal": "metrics.inference",
+      "category": "inference",
+      "status": "not-applicable",
+      "determined_by": "presence",
+      "note": "no vLLM or Triton servers"
+    }
+  ],
+  "findings": [
+    {
+      "id": "accel-error-counters-off",
+      "severity": "medium",
+      "confidence": "likely",
+      "title": "Xid, ECC or row-remap counters are not collected: failing GPUs go unnoticed",
+      "vendor": "nvidia",
+      "evidence": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter (3.3.9-3.6.1-ubuntu22.04): no ECC_SBE, ECC_DBE; field set from dcgm-exporter 3.3.9-3.6.1 etc/dcp-metrics-included.csv (default of 3.3.9-3.6.1-ubuntu22.04)"
+      ],
+      "fix": {
+        "kind": "manual",
+        "summary": "DaemonSet/gpu-operator/nvidia-dcgm-exporter uses the GPU Operator's built-in counters file (dcgm-exporter 3.3.9-3.6.1 etc/dcp-metrics-included.csv (default of 3.3.9-3.6.1-ubuntu22.04)). Copy that file, add these lines, store it in a ConfigMap in namespace gpu-operator under key dcgm-metrics.csv, and set ClusterPolicy spec.dcgmExporter.config.name to the ConfigMap's name:\nDCGM_FI_DEV_ECC_SBE_VOL_TOTAL, counter, Total number of single-bit volatile ECC errors.\nDCGM_FI_DEV_ECC_DBE_VOL_TOTAL, counter, Total number of double-bit volatile ECC errors.\nforge never edits an exporter it did not install.",
+        "docs": "https://github.com/NVIDIA/dcgm-exporter"
+      },
+      "signals": [
+        "accel.ecc"
+      ]
+    },
+    {
+      "id": "dcgm-profiling-off",
+      "severity": "medium",
+      "confidence": "likely",
+      "title": "The DCGM exporter exports only coarse utilisation: profiling counters (SM, tensor, DRAM activity) are off",
+      "vendor": "nvidia",
+      "evidence": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter (3.3.9-3.6.1-ubuntu22.04): no PROF_SM_ACTIVE, PROF_SM_OCCUPANCY; field set from dcgm-exporter 3.3.9-3.6.1 etc/dcp-metrics-included.csv (default of 3.3.9-3.6.1-ubuntu22.04)"
+      ],
+      "fix": {
+        "kind": "manual",
+        "summary": "DaemonSet/gpu-operator/nvidia-dcgm-exporter uses the GPU Operator's built-in counters file (dcgm-exporter 3.3.9-3.6.1 etc/dcp-metrics-included.csv (default of 3.3.9-3.6.1-ubuntu22.04)). Copy that file, add these lines, store it in a ConfigMap in namespace gpu-operator under key dcgm-metrics.csv, and set ClusterPolicy spec.dcgmExporter.config.name to the ConfigMap's name:\nDCGM_FI_PROF_SM_ACTIVE, gauge, The ratio of cycles an SM has at least 1 warp assigned.\nDCGM_FI_PROF_SM_OCCUPANCY, gauge, The ratio of number of warps resident on an SM.\nforge never edits an exporter it did not install.",
+        "docs": "https://github.com/NVIDIA/dcgm-exporter"
+      },
+      "signals": [
+        "accel.profiling"
+      ]
+    },
+    {
+      "id": "no-node-health",
+      "severity": "medium",
+      "confidence": "likely",
+      "title": "1 accelerator node has no node health detection: bad nodes keep getting work",
+      "evidence": [
+        "no node-problem-detector, no EKS node monitoring agent, and no node condition a health source sets"
+      ],
+      "fix": {
+        "kind": "kcl",
+        "summary": "First option: keep GKE node auto-repair on for the accelerator pools (it repairs nodes whose GPU device or driver fails). Otherwise install node-problem-detector as the stack's node_health, with a kernel-log rule that sets GPUProblem on a fatal NVIDIA Xid.",
+        "kcl_diff": "--- a/ml.k\n+++ b/ml.k\n@@ -32,43 +32,42 @@\n             metrics = forge.Adopt {kind = \"dcgm-exporter\", namespace = \"gpu-operator\", version = \"3.3.9-3.6.1-ubuntu22.04\", note = \"managed by the GPU Operator\"}\n         }\n     ]\n-    # Suggested for finding no-node-health: uncomment to install.\n-    # node_health = forge.Install {\n-    #     kind = \"node-problem-detector\"\n-    #     chart = forge.HelmChart {\n-    #         name = \"node-problem-detector\"\n-    #         repo = \"https://charts.deliveryhero.io/\"\n-    #         chart = \"node-problem-detector\"\n-    #         version = \"2.3.14\"\n-    #         namespace = \"forge-ml\"\n-    #         delivery = \"bundle\"\n-    #         values = {\n-    #             \"settings\": {\n-    #                 \"custom_monitor_definitions\": {\n-    #                     \"gpu-xid-monitor.json\": \"\"\"{\n-    #   \"plugin\": \"kmsg\",\n-    #   \"logPath\": \"/dev/kmsg\",\n-    #   \"lookback\": \"5m\",\n-    #   \"bufferSize\": 10,\n-    #   \"source\": \"gpu-xid-monitor\",\n-    #   \"conditions\": [\n-    #     {\"type\": \"GPUProblem\", \"reason\": \"NoGPUXid\", \"message\": \"no fatal NVIDIA Xid in the kernel log\"}\n-    #   ],\n-    #   \"rules\": [\n-    #     {\"type\": \"permanent\", \"condition\": \"GPUProblem\", \"reason\": \"NVIDIAXid\", \"pattern\": \"NVRM: Xid [(][^)]*[)]: (48|64|74|79|94|95|119|120|140),.*\"}\n-    #   ]\n-    # }\n-    # \"\"\"\n-    #                 }\n-    #                 \"log_monitors\": [\n-    #                     \"/config/kernel-monitor.json\"\n-    #                     \"/config/docker-monitor.json\"\n-    #                     \"/custom-config/gpu-xid-monitor.json\"\n-    #                 ]\n-    #             }\n-    #         }\n-    #     }\n-    # }\n+    node_health = forge.Install {\n+        kind = \"node-problem-detector\"\n+        chart = forge.HelmChart {\n+            name = \"node-problem-detector\"\n+            repo = \"https://charts.deliveryhero.io/\"\n+            chart = \"node-problem-detector\"\n+            version = \"2.3.14\"\n+            namespace = \"forge-ml\"\n+            delivery = \"bundle\"\n+            values = {\n+                \"settings\": {\n+                    \"custom_monitor_definitions\": {\n+                        \"gpu-xid-monitor.json\": \"\"\"{\n+      \"plugin\": \"kmsg\",\n+      \"logPath\": \"/dev/kmsg\",\n+      \"lookback\": \"5m\",\n+      \"bufferSize\": 10,\n+      \"source\": \"gpu-xid-monitor\",\n+      \"conditions\": [\n+        {\"type\": \"GPUProblem\", \"reason\": \"NoGPUXid\", \"message\": \"no fatal NVIDIA Xid in the kernel log\"}\n+      ],\n+      \"rules\": [\n+        {\"type\": \"permanent\", \"condition\": \"GPUProblem\", \"reason\": \"NVIDIAXid\", \"pattern\": \"NVRM: Xid [(][^)]*[)]: (48|64|74|79|94|95|119|120|140),.*\"}\n+      ]\n+    }\n+    \"\"\"\n+                    }\n+                    \"log_monitors\": [\n+                        \"/config/kernel-monitor.json\"\n+                        \"/config/docker-monitor.json\"\n+                        \"/custom-config/gpu-xid-monitor.json\"\n+                    ]\n+                }\n+            }\n+        }\n+    }\n     queue = forge.Adopt {kind = \"kueue\", namespace = \"kueue-system\", version = \"v0.10.1\"}\n     # Dismiss a finding until a date:\n     # decisions = [forge.RecommendationDecision {id = \"\u003cfinding id\u003e\", reason = \"\u003cwhy\u003e\", expires = \"YYYY-MM-DD\"}]\n",
+        "docs": "https://github.com/kubernetes/node-problem-detector"
+      },
+      "signals": [
+        "node.health"
+      ]
+    },
+    {
+      "id": "shm-too-small",
+      "severity": "medium",
+      "confidence": "certain",
+      "title": "1 workload runs accelerators with the 64 MiB /dev/shm default",
+      "evidence": [
+        "Job/research/train: 1 pod, container trainer mounts no memory emptyDir at /dev/shm"
+      ],
+      "fix": {
+        "kind": "manual",
+        "summary": "Mount an emptyDir {medium: Memory} (with a sizeLimit) at /dev/shm in each accelerator container: NCCL, PyTorch DataLoader workers and vLLM's tensor parallelism need more than 64 MiB."
+      }
+    },
+    {
+      "id": "dcgm-nvlink-off",
+      "severity": "low",
+      "confidence": "likely",
+      "title": "NVLink counters are not collected on 1 multi-GPU node",
+      "vendor": "nvidia",
+      "evidence": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter (3.3.9-3.6.1-ubuntu22.04): no NVLINK_ERRORS; field set from dcgm-exporter 3.3.9-3.6.1 etc/dcp-metrics-included.csv (default of 3.3.9-3.6.1-ubuntu22.04)"
+      ],
+      "fix": {
+        "kind": "manual",
+        "summary": "DaemonSet/gpu-operator/nvidia-dcgm-exporter uses the GPU Operator's built-in counters file (dcgm-exporter 3.3.9-3.6.1 etc/dcp-metrics-included.csv (default of 3.3.9-3.6.1-ubuntu22.04)). Copy that file, add these lines, store it in a ConfigMap in namespace gpu-operator under key dcgm-metrics.csv, and set ClusterPolicy spec.dcgmExporter.config.name to the ConfigMap's name:\nDCGM_FI_DEV_NVLINK_CRC_FLIT_ERROR_COUNT_TOTAL, counter, Total number of NVLink flow-control CRC errors.\nforge never edits an exporter it did not install.",
+        "docs": "https://github.com/NVIDIA/dcgm-exporter"
+      },
+      "signals": [
+        "accel.nvlink"
+      ]
+    },
+    {
+      "id": "no-continuous-profiling",
+      "severity": "low",
+      "confidence": "unverified",
+      "title": "No continuous profiling on the accelerator nodes",
+      "evidence": [
+        "profilers reach 0 of 1 accelerator nodes"
+      ],
+      "fix": {
+        "kind": "manual",
+        "summary": "Run one continuous eBPF profiler as a DaemonSet on the accelerator nodes: Parca agent, Grafana Alloy with pyroscope.ebpf, or the OpenTelemetry eBPF profiler (otel/opentelemetry-collector-ebpf-profiler). It shows where CPU time goes in data loaders and serving code with no code change.",
+        "docs": "https://www.parca.dev/docs/parca-agent"
+      },
+      "signals": [
+        "profiling.continuous"
+      ]
+    },
+    {
+      "id": "no-otlp-receiver",
+      "severity": "low",
+      "confidence": "unverified",
+      "title": "Nothing accepts OTLP from workloads",
+      "evidence": [
+        "no collector runs"
+      ],
+      "fix": {
+        "kind": "manual",
+        "summary": "Install an OpenTelemetry Collector with an otlp receiver (grpc :4317, http :4318) so vLLM, Triton and training jobs can export traces and metrics.",
+        "docs": "https://github.com/open-telemetry/opentelemetry-collector/tree/main/receiver/otlpreceiver"
+      },
+      "signals": [
+        "telemetry.otlp"
+      ]
+    },
+    {
+      "id": "image-volumes-unavailable",
+      "severity": "info",
+      "confidence": "certain",
+      "title": "Image volumes are unavailable: weights cannot be mounted from an OCI artifact without a sidecar",
+      "evidence": [
+        "API server v1.31.2-gke.1000: the ImageVolume feature gate is on by default from Kubernetes 1.35",
+        "Node/gke-gpu-h100-0: containerd 1.7.24, image volumes need 2.1+"
+      ],
+      "fix": {
+        "kind": "manual",
+        "summary": "Upgrade to Kubernetes 1.35+ with containerd 2.1+ to mount weights as an image volume. Until then, KServe's modelcar sidecar or an init-container copy is the fallback.",
+        "docs": "https://kubernetes.io/docs/concepts/storage/volumes/#image"
+      }
+    }
+  ],
+  "proposal": {
+    "written": false,
+    "ml_k": "# ml.k: the ML stack of this env's cluster.\n#\n# Generated by `forge ml discover` on 2026-11-25 from kube context \"gke_acme_us-central1_gpu\".\n# This file is yours to edit. It adopts what discovery found running (forge never\n# upgrades, reconfigures or removes what it did not install) and writes each\n# suggested install commented out, under the id of the finding that suggests it.\n#\n# Wire it into this env's main.k:\n#\n#     import .ml\n#\n#     forge.Bundle {\n#         ml_stacks = ml.ml_stacks\n#     }\nimport forge\n\nml_stacks = [forge.MLStack {\n    cluster = forge.ClusterTarget {cluster = \"gke_acme_us-central1_gpu\", namespace = \"forge-ml\"}\n    # What discovery found running that forge did not install: the KCL refuses\n    # a forge.Install of any of these kinds.\n    observed = [\n        \"dcgm-exporter\"\n        \"gpu-operator\"\n        \"kueue\"\n        \"nvidia-device-plugin\"\n    ]\n    observed_at = \"2026-11-25\"\n    accelerators = [\n        # 8 × NVIDIA-H100-80GB-HBM3 (nvidia.com/gpu) on 1 node, pool h100\n        forge.Accelerators {\n            vendor = \"nvidia\"\n            metrics = forge.Adopt {kind = \"dcgm-exporter\", namespace = \"gpu-operator\", version = \"3.3.9-3.6.1-ubuntu22.04\", note = \"managed by the GPU Operator\"}\n        }\n    ]\n    # Suggested for finding no-node-health: uncomment to install.\n    # node_health = forge.Install {\n    #     kind = \"node-problem-detector\"\n    #     chart = forge.HelmChart {\n    #         name = \"node-problem-detector\"\n    #         repo = \"https://charts.deliveryhero.io/\"\n    #         chart = \"node-problem-detector\"\n    #         version = \"2.3.14\"\n    #         namespace = \"forge-ml\"\n    #         delivery = \"bundle\"\n    #         values = {\n    #             \"settings\": {\n    #                 \"custom_monitor_definitions\": {\n    #                     \"gpu-xid-monitor.json\": \"\"\"{\n    #   \"plugin\": \"kmsg\",\n    #   \"logPath\": \"/dev/kmsg\",\n    #   \"lookback\": \"5m\",\n    #   \"bufferSize\": 10,\n    #   \"source\": \"gpu-xid-monitor\",\n    #   \"conditions\": [\n    #     {\"type\": \"GPUProblem\", \"reason\": \"NoGPUXid\", \"message\": \"no fatal NVIDIA Xid in the kernel log\"}\n    #   ],\n    #   \"rules\": [\n    #     {\"type\": \"permanent\", \"condition\": \"GPUProblem\", \"reason\": \"NVIDIAXid\", \"pattern\": \"NVRM: Xid [(][^)]*[)]: (48|64|74|79|94|95|119|120|140),.*\"}\n    #   ]\n    # }\n    # \"\"\"\n    #                 }\n    #                 \"log_monitors\": [\n    #                     \"/config/kernel-monitor.json\"\n    #                     \"/config/docker-monitor.json\"\n    #                     \"/custom-config/gpu-xid-monitor.json\"\n    #                 ]\n    #             }\n    #         }\n    #     }\n    # }\n    queue = forge.Adopt {kind = \"kueue\", namespace = \"kueue-system\", version = \"v0.10.1\"}\n    # Dismiss a finding until a date:\n    # decisions = [forge.RecommendationDecision {id = \"\u003cfinding id\u003e\", reason = \"\u003cwhy\u003e\", expires = \"YYYY-MM-DD\"}]\n}]\n\n# The scrapes of the components above: forge.Adopt and forge.Install only\n# declare what runs, and the collector scrapes what this env's observability\n# lists. Add them to its main.k (beside any telemetry it already lists):\n#\n#     forge.Bundle {\n#         observability = forge.Observability {telemetry = ml.ml_telemetry}\n#     }\nml_telemetry = [\n    forge.Telemetry {\n        service_name = \"dcgm-exporter\", scope = \"platform\", cluster = \"gke_acme_us-central1_gpu\"\n        namespaces = [\"gpu-operator\"], selector = {\"app\": \"nvidia-dcgm-exporter\"}\n        # The fields discovery found it exporting (version-default: dcgm-exporter 3.3.9-3.6.1 etc/dcp-metrics-included.csv (default of 3.3.9-3.6.1-ubuntu22.04)).\n        metrics = [forge.MetricsScrape {port = 9400, allow = \"DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS|DCGM_FI_DEV_DEC_UTIL|DCGM_FI_DEV_ENC_UTIL|DCGM_FI_DEV_FB_FREE|DCGM_FI_DEV_FB_USED|DCGM_FI_DEV_GPU_TEMP|DCGM_FI_DEV_GPU_UTIL|DCGM_FI_DEV_MEMORY_TEMP|DCGM_FI_DEV_MEM_CLOCK|DCGM_FI_DEV_MEM_COPY_UTIL|DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL|DCGM_FI_DEV_PCIE_REPLAY_COUNTER|DCGM_FI_DEV_POWER_USAGE|DCGM_FI_DEV_ROW_REMAP_FAILURE|DCGM_FI_DEV_SM_CLOCK|DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION|DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS|DCGM_FI_DEV_VGPU_LICENSE_STATUS|DCGM_FI_DEV_XID_ERRORS|DCGM_FI_DRIVER_VERSION|DCGM_FI_PROF_DRAM_ACTIVE|DCGM_FI_PROF_GR_ENGINE_ACTIVE|DCGM_FI_PROF_PCIE_RX_BYTES|DCGM_FI_PROF_PCIE_TX_BYTES|DCGM_FI_PROF_PIPE_TENSOR_ACTIVE\"}]\n    }\n]\n"
+  },
+  "warnings": []
+}

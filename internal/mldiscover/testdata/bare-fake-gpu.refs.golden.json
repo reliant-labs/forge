@@ -1,0 +1,24 @@
+{
+  "config_refs": [
+    {
+      "namespace": "kube-system",
+      "name": "kubeadm-config",
+      "why": "kubeadm's ClusterConfiguration (API server tracing flags)"
+    },
+    {
+      "namespace": "kube-system",
+      "name": "kubelet-config",
+      "why": "kubeadm's KubeletConfiguration (kubelet tracing)"
+    }
+  ],
+  "probe_targets": [
+    {
+      "kind": "dcgm-exporter",
+      "namespace": "gpu-operator",
+      "pod": "nvidia-dcgm-exporter-aaaaa",
+      "node": "k3d-fake-gpu-agent-0",
+      "port": 9400,
+      "path": "/metrics"
+    }
+  ]
+}

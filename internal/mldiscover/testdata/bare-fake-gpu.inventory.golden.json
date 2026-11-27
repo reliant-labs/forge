@@ -1,0 +1,514 @@
+{
+  "context": "k3d-fake-gpu",
+  "server_version": "v1.33.1+k3s1",
+  "collected_at": "2026-11-25T10:00:00Z",
+  "cloud": "other",
+  "accelerators": [
+    {
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "Tesla-K80",
+      "nodes": 2,
+      "capacity": 16,
+      "allocatable": 16,
+      "allocated": 6,
+      "driver_versions": [
+        "535.104.05"
+      ],
+      "detected_by": "extended-resource"
+    }
+  ],
+  "machines": [
+    {
+      "name": "k3d-fake-gpu-agent-0",
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "Tesla-K80",
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 4,
+      "ready": true,
+      "container_runtime": "containerd://1.7.23-k3s2",
+      "kubelet_version": "v1.33.1+k3s1",
+      "driver_version": "535.104.05",
+      "detected_by": "extended-resource"
+    },
+    {
+      "name": "k3d-fake-gpu-agent-1",
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "Tesla-K80",
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 2,
+      "ready": true,
+      "container_runtime": "containerd://1.7.23-k3s2",
+      "kubelet_version": "v1.33.1+k3s1",
+      "driver_version": "535.104.05",
+      "detected_by": "extended-resource"
+    }
+  ],
+  "components": [
+    {
+      "kind": "dcgm-exporter",
+      "category": "accel-metrics",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "version": "0.2.1",
+      "namespace": "gpu-operator",
+      "workload": "DaemonSet/nvidia-dcgm-exporter",
+      "selector": {
+        "app": "nvidia-dcgm-exporter"
+      },
+      "metrics_port": 9400,
+      "pods": 2,
+      "matched_by": [
+        "container:nvidia-dcgm-exporter",
+        "label:app=nvidia-dcgm-exporter"
+      ],
+      "config": {
+        "determined_by": "presence",
+        "settings": [
+          "kubernetes-attribution.determined-by=presence",
+          "kubernetes-attribution=unknown"
+        ]
+      }
+    },
+    {
+      "kind": "nvidia-device-plugin",
+      "category": "device-plugin",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "matched_by": [
+        "capacity:nvidia.com/gpu"
+      ]
+    },
+    {
+      "kind": "kueue",
+      "category": "queue",
+      "status": "crd-only",
+      "owner": "theirs",
+      "matched_by": [
+        "crd:clusterqueues.kueue.x-k8s.io",
+        "crd:localqueues.kueue.x-k8s.io",
+        "crd:resourceflavors.kueue.x-k8s.io",
+        "crd:workloads.kueue.x-k8s.io"
+      ]
+    },
+    {
+      "kind": "vllm",
+      "category": "serving",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.7.3",
+      "namespace": "serving",
+      "workload": "Deployment/chat",
+      "selector": {
+        "app": "chat"
+      },
+      "pods": 4,
+      "matched_by": [
+        "args:vllm serve",
+        "image:*vllm*"
+      ]
+    }
+  ],
+  "coverage": [
+    {
+      "signal": "accel.utilisation",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "unknown",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "GPU_UTIL"
+      ],
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 0.2.1"
+      ],
+      "note": "the exporter's field set is not readable (a counters file discovery could not read, or not NVIDIA's dcgm-exporter image); --probe reads it from the endpoint"
+    },
+    {
+      "signal": "accel.profiling",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "unknown",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "PROF_GR_ENGINE_ACTIVE",
+        "PROF_SM_ACTIVE",
+        "PROF_SM_OCCUPANCY",
+        "PROF_PIPE_TENSOR_ACTIVE",
+        "PROF_DRAM_ACTIVE"
+      ],
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 0.2.1"
+      ],
+      "note": "the exporter's field set is not readable (a counters file discovery could not read, or not NVIDIA's dcgm-exporter image); --probe reads it from the endpoint"
+    },
+    {
+      "signal": "accel.memory",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "unknown",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "FB_USED",
+        "FB_FREE"
+      ],
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 0.2.1"
+      ],
+      "note": "the exporter's field set is not readable (a counters file discovery could not read, or not NVIDIA's dcgm-exporter image); --probe reads it from the endpoint"
+    },
+    {
+      "signal": "accel.xid",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "unknown",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "XID_ERRORS"
+      ],
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 0.2.1"
+      ],
+      "note": "the exporter's field set is not readable (a counters file discovery could not read, or not NVIDIA's dcgm-exporter image); --probe reads it from the endpoint"
+    },
+    {
+      "signal": "accel.ecc",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "unknown",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "ECC_SBE",
+        "ECC_DBE"
+      ],
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 0.2.1"
+      ],
+      "note": "the exporter's field set is not readable (a counters file discovery could not read, or not NVIDIA's dcgm-exporter image); --probe reads it from the endpoint"
+    },
+    {
+      "signal": "accel.retired-pages",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "unknown",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "RETIRED_SBE",
+        "RETIRED_DBE",
+        "RETIRED_PENDING"
+      ],
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 0.2.1"
+      ],
+      "note": "the exporter's field set is not readable (a counters file discovery could not read, or not NVIDIA's dcgm-exporter image); --probe reads it from the endpoint"
+    },
+    {
+      "signal": "accel.row-remap",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "unknown",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "UNCORRECTABLE_REMAPPED_ROWS",
+        "ROW_REMAP_FAILURE"
+      ],
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 0.2.1"
+      ],
+      "note": "the exporter's field set is not readable (a counters file discovery could not read, or not NVIDIA's dcgm-exporter image); --probe reads it from the endpoint"
+    },
+    {
+      "signal": "accel.nvlink",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "unknown",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "NVLINK_BANDWIDTH",
+        "NVLINK_ERRORS"
+      ],
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 0.2.1"
+      ],
+      "note": "the exporter's field set is not readable (a counters file discovery could not read, or not NVIDIA's dcgm-exporter image); --probe reads it from the endpoint"
+    },
+    {
+      "signal": "accel.pcie",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "unknown",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "PCIE_REPLAY",
+        "PCIE_BYTES"
+      ],
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 0.2.1"
+      ],
+      "note": "the exporter's field set is not readable (a counters file discovery could not read, or not NVIDIA's dcgm-exporter image); --probe reads it from the endpoint"
+    },
+    {
+      "signal": "accel.throttle",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "unknown",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "CLOCK_EVENT_REASONS"
+      ],
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 0.2.1"
+      ],
+      "note": "the exporter's field set is not readable (a counters file discovery could not read, or not NVIDIA's dcgm-exporter image); --probe reads it from the endpoint"
+    },
+    {
+      "signal": "accel.power-thermal",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "unknown",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "POWER_USAGE",
+        "GPU_TEMP",
+        "POWER_VIOLATION",
+        "THERMAL_VIOLATION"
+      ],
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 0.2.1"
+      ],
+      "note": "the exporter's field set is not readable (a counters file discovery could not read, or not NVIDIA's dcgm-exporter image); --probe reads it from the endpoint"
+    },
+    {
+      "signal": "accel.pod-attribution",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "unknown",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/gpu-operator/nvidia-dcgm-exporter"
+      ],
+      "expected": [
+        "pod-labels"
+      ],
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 0.2.1"
+      ],
+      "note": "whether the exporter adds pod labels is not readable; --probe reads its label keys"
+    },
+    {
+      "signal": "node.health",
+      "category": "node-health",
+      "status": "missing",
+      "determined_by": "presence",
+      "nodes_total": 2,
+      "note": "no node-problem-detector, no EKS node monitoring agent, and no node condition a health source sets"
+    },
+    {
+      "signal": "node.health.gpu-rules",
+      "category": "node-health",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "xid-rule"
+      ],
+      "missing": [
+        "xid-rule"
+      ],
+      "nodes_total": 2,
+      "note": "no node health source turns GPU (Xid) errors into a node condition"
+    },
+    {
+      "signal": "kubelet.tracing",
+      "category": "tracing",
+      "status": "unknown",
+      "determined_by": "unreadable",
+      "expected": [
+        "tracing"
+      ],
+      "note": "kube-system/kubelet-config was not read (not a kubeadm cluster, or the grant refused it); the kubelet's config file lives on each node, which discovery never reads"
+    },
+    {
+      "signal": "apiserver.tracing",
+      "category": "tracing",
+      "status": "unknown",
+      "determined_by": "unreadable",
+      "expected": [
+        "tracing-config-file"
+      ],
+      "note": "no kube-apiserver mirror pod and no kubeadm-config (an embedded control plane such as k3s, or one outside the cluster)"
+    },
+    {
+      "signal": "telemetry.collector",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "note": "no OpenTelemetry Collector, Grafana Alloy or Datadog agent runs"
+    },
+    {
+      "signal": "telemetry.otlp",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "otlp"
+      ],
+      "missing": [
+        "otlp"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "telemetry.k8s-events",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "k8s_events"
+      ],
+      "missing": [
+        "k8s_events"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "telemetry.kubeletstats",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "kubeletstats"
+      ],
+      "missing": [
+        "kubeletstats"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "telemetry.container-logs",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "presence",
+      "expected": [
+        "container-logs"
+      ],
+      "missing": [
+        "container-logs"
+      ],
+      "note": "no collector runs"
+    },
+    {
+      "signal": "profiling.continuous",
+      "category": "profiling",
+      "status": "missing",
+      "determined_by": "presence",
+      "nodes_total": 2,
+      "note": "no continuous profiler (Parca, Pyroscope via Alloy, OTel eBPF profiler, Elastic, Coroot, Pixie) runs"
+    },
+    {
+      "signal": "profiling.gpu",
+      "category": "profiling",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "CUDA, Nsight and PyTorch profiler hooks live inside workloads; discovery recognises no GPU profiling operator"
+    },
+    {
+      "signal": "tracing.training",
+      "category": "tracing",
+      "status": "missing",
+      "determined_by": "args",
+      "expected": [
+        "Job/serving/bench"
+      ],
+      "missing": [
+        "Job/serving/bench"
+      ],
+      "note": "OTEL_EXPORTER_OTLP_* / OTEL_TRACES_EXPORTER env names on the Job's containers; an Instrumentation injection annotation is not visible"
+    },
+    {
+      "signal": "tracing.inference",
+      "category": "tracing",
+      "status": "missing",
+      "determined_by": "args",
+      "sources": [
+        "Deployment/serving/chat"
+      ],
+      "expected": [
+        "Deployment/serving/chat"
+      ],
+      "missing": [
+        "Deployment/serving/chat"
+      ],
+      "versions": [
+        "vllm v0.7.3"
+      ]
+    },
+    {
+      "signal": "metrics.inference",
+      "category": "inference",
+      "status": "missing",
+      "determined_by": "presence",
+      "sources": [
+        "Deployment/serving/chat"
+      ],
+      "versions": [
+        "vllm v0.7.3"
+      ],
+      "note": "nothing in the cluster scrapes Prometheus metrics"
+    }
+  ],
+  "warnings": [
+    "kueue: CRDs clusterqueues.kueue.x-k8s.io, localqueues.kueue.x-k8s.io, resourceflavors.kueue.x-k8s.io, workloads.kueue.x-k8s.io are installed but no controller runs; forge treats it as absent (a leftover from an uninstall, or a controller in another cluster)"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "config_refs": [],
+  "probe_targets": [
+    {
+      "kind": "dcgm-exporter",
+      "namespace": "gke-managed-system",
+      "pod": "dcgm-exporter-m5n6b",
+      "node": "gke-inference-g2-pool-1",
+      "port": 9400,
+      "path": "/metrics"
+    },
+    {
+      "kind": "dcgm-exporter",
+      "namespace": "monitoring",
+      "pod": "dcgm-exporter-a1b2c",
+      "node": "gke-inference-g2-pool-1",
+      "port": 9400,
+      "path": "/metrics"
+    }
+  ]
+}

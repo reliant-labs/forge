@@ -1,0 +1,749 @@
+{
+  "context": "kubernetes-admin@gpu-lab",
+  "server_version": "v1.34.2",
+  "collected_at": "2026-11-26T09:00:00Z",
+  "cloud": "other",
+  "accelerators": [
+    {
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "NVIDIA-L40S",
+      "nodes": 2,
+      "capacity": 8,
+      "allocatable": 8,
+      "allocated": 4,
+      "driver_versions": [
+        "570.133.20"
+      ],
+      "detected_by": "extended-resource"
+    }
+  ],
+  "machines": [
+    {
+      "name": "gpu-1",
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "NVIDIA-L40S",
+      "capacity": 4,
+      "allocatable": 4,
+      "allocated": 3,
+      "ready": true,
+      "container_runtime": "containerd://2.1.4",
+      "kubelet_version": "v1.34.2",
+      "driver_version": "570.133.20",
+      "detected_by": "extended-resource"
+    },
+    {
+      "name": "gpu-2",
+      "vendor": "nvidia",
+      "resource": "nvidia.com/gpu",
+      "product": "NVIDIA-L40S",
+      "capacity": 4,
+      "allocatable": 4,
+      "allocated": 1,
+      "ready": true,
+      "container_runtime": "containerd://2.1.4",
+      "kubelet_version": "v1.34.2",
+      "driver_version": "570.133.20",
+      "detected_by": "extended-resource"
+    }
+  ],
+  "components": [
+    {
+      "kind": "dcgm-exporter",
+      "category": "accel-metrics",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "version": "3.3.9-3.6.1-ubuntu22.04",
+      "namespace": "monitoring",
+      "workload": "DaemonSet/dcgm-exporter",
+      "selector": {
+        "app.kubernetes.io/name": "dcgm-exporter"
+      },
+      "metrics_port": 9400,
+      "pods": 2,
+      "matched_by": [
+        "image:*dcgm-exporter*",
+        "label:app.kubernetes.io/name=dcgm-exporter"
+      ],
+      "config": {
+        "determined_by": "config",
+        "source": "ConfigMap/monitoring/dcgm-exporter-metrics key custom.csv",
+        "fields": [
+          "DCGM_EXP_CLOCK_EVENTS_COUNT",
+          "DCGM_FI_DEV_ECC_DBE_VOL_TOTAL",
+          "DCGM_FI_DEV_ECC_SBE_VOL_TOTAL",
+          "DCGM_FI_DEV_FB_FREE",
+          "DCGM_FI_DEV_FB_USED",
+          "DCGM_FI_DEV_GPU_TEMP",
+          "DCGM_FI_DEV_GPU_UTIL",
+          "DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL",
+          "DCGM_FI_DEV_NVLINK_CRC_FLIT_ERROR_COUNT_TOTAL",
+          "DCGM_FI_DEV_PCIE_REPLAY_COUNTER",
+          "DCGM_FI_DEV_POWER_USAGE",
+          "DCGM_FI_DEV_POWER_VIOLATION",
+          "DCGM_FI_DEV_ROW_REMAP_FAILURE",
+          "DCGM_FI_DEV_THERMAL_VIOLATION",
+          "DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS",
+          "DCGM_FI_DEV_XID_ERRORS",
+          "DCGM_FI_PROF_DRAM_ACTIVE",
+          "DCGM_FI_PROF_GR_ENGINE_ACTIVE",
+          "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE",
+          "DCGM_FI_PROF_SM_ACTIVE",
+          "DCGM_FI_PROF_SM_OCCUPANCY"
+        ],
+        "settings": [
+          "interval=15000ms",
+          "kubernetes-attribution.determined-by=args",
+          "kubernetes-attribution=true"
+        ]
+      }
+    },
+    {
+      "kind": "nvidia-device-plugin",
+      "category": "device-plugin",
+      "vendor": "nvidia",
+      "status": "present",
+      "owner": "theirs",
+      "matched_by": [
+        "capacity:nvidia.com/gpu"
+      ]
+    },
+    {
+      "kind": "otel-collector",
+      "category": "monitoring",
+      "status": "present",
+      "owner": "theirs",
+      "version": "0.115.0",
+      "namespace": "observability",
+      "workload": "Deployment/cluster-collector",
+      "selector": {
+        "app.kubernetes.io/component": "opentelemetry-collector",
+        "app.kubernetes.io/instance": "observability.cluster"
+      },
+      "pods": 1,
+      "resources": 1,
+      "matched_by": [
+        "cr:opentelemetrycollectors.opentelemetry.io",
+        "crd:opentelemetrycollectors.opentelemetry.io",
+        "image:*opentelemetry-collector*"
+      ],
+      "config": {
+        "determined_by": "config",
+        "source": "OpenTelemetryCollector/observability/cluster spec.config",
+        "receivers": [
+          "k8s_events",
+          "k8sobjects",
+          "otlp"
+        ],
+        "processors": [
+          "batch"
+        ],
+        "exporters": [
+          "otlphttp"
+        ],
+        "pipelines": [
+          "logs",
+          "metrics",
+          "traces"
+        ],
+        "settings": [
+          "k8sobjects.events=true"
+        ]
+      }
+    },
+    {
+      "kind": "node-problem-detector",
+      "category": "node-health",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.8.19",
+      "namespace": "kube-system",
+      "workload": "DaemonSet/node-problem-detector",
+      "selector": {
+        "app.kubernetes.io/name": "node-problem-detector"
+      },
+      "pods": 3,
+      "matched_by": [
+        "condition:KernelDeadlock",
+        "image:*node-problem-detector*"
+      ],
+      "chart_version": "2.3.14",
+      "config": {
+        "determined_by": "config",
+        "source": "ConfigMap/kube-system/npd-custom-config key gpu-xid.json",
+        "monitors": [
+          "gpu-xid",
+          "kernel-monitor"
+        ],
+        "conditions": [
+          "GPUProblem"
+        ],
+        "reasons": [
+          "NVIDIAXid"
+        ],
+        "settings": [
+          "gpu-rules=true",
+          "prometheus-port=20257"
+        ]
+      }
+    },
+    {
+      "kind": "parca-agent",
+      "category": "profiling",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.35.0",
+      "namespace": "parca",
+      "workload": "DaemonSet/parca-agent",
+      "selector": {
+        "app.kubernetes.io/name": "parca-agent"
+      },
+      "pods": 3,
+      "matched_by": [
+        "image:*parca-dev/parca-agent"
+      ]
+    },
+    {
+      "kind": "vllm",
+      "category": "serving",
+      "status": "present",
+      "owner": "theirs",
+      "version": "v0.8.5",
+      "namespace": "serving",
+      "workload": "Deployment/chat",
+      "selector": {
+        "app": "chat"
+      },
+      "pods": 2,
+      "matched_by": [
+        "image:*vllm*"
+      ]
+    },
+    {
+      "kind": "beyla",
+      "category": "tracing",
+      "status": "present",
+      "owner": "theirs",
+      "version": "2.1.0",
+      "namespace": "observability",
+      "workload": "DaemonSet/beyla",
+      "selector": {
+        "app.kubernetes.io/name": "beyla"
+      },
+      "pods": 2,
+      "matched_by": [
+        "image:*grafana/beyla"
+      ]
+    }
+  ],
+  "coverage": [
+    {
+      "signal": "accel.utilisation",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/monitoring/dcgm-exporter"
+      ],
+      "expected": [
+        "GPU_UTIL"
+      ],
+      "present": [
+        "GPU_UTIL"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ]
+    },
+    {
+      "signal": "accel.profiling",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/monitoring/dcgm-exporter"
+      ],
+      "expected": [
+        "PROF_GR_ENGINE_ACTIVE",
+        "PROF_SM_ACTIVE",
+        "PROF_SM_OCCUPANCY",
+        "PROF_PIPE_TENSOR_ACTIVE",
+        "PROF_DRAM_ACTIVE"
+      ],
+      "present": [
+        "PROF_GR_ENGINE_ACTIVE",
+        "PROF_SM_ACTIVE",
+        "PROF_SM_OCCUPANCY",
+        "PROF_PIPE_TENSOR_ACTIVE",
+        "PROF_DRAM_ACTIVE"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ]
+    },
+    {
+      "signal": "accel.memory",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/monitoring/dcgm-exporter"
+      ],
+      "expected": [
+        "FB_USED",
+        "FB_FREE"
+      ],
+      "present": [
+        "FB_USED",
+        "FB_FREE"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ]
+    },
+    {
+      "signal": "accel.xid",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/monitoring/dcgm-exporter"
+      ],
+      "expected": [
+        "XID_ERRORS"
+      ],
+      "present": [
+        "XID_ERRORS"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ]
+    },
+    {
+      "signal": "accel.ecc",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/monitoring/dcgm-exporter"
+      ],
+      "expected": [
+        "ECC_SBE",
+        "ECC_DBE"
+      ],
+      "present": [
+        "ECC_SBE",
+        "ECC_DBE"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ]
+    },
+    {
+      "signal": "accel.retired-pages",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "missing",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/monitoring/dcgm-exporter"
+      ],
+      "expected": [
+        "RETIRED_SBE",
+        "RETIRED_DBE",
+        "RETIRED_PENDING"
+      ],
+      "missing": [
+        "RETIRED_SBE",
+        "RETIRED_DBE",
+        "RETIRED_PENDING"
+      ],
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ]
+    },
+    {
+      "signal": "accel.row-remap",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/monitoring/dcgm-exporter"
+      ],
+      "expected": [
+        "UNCORRECTABLE_REMAPPED_ROWS",
+        "ROW_REMAP_FAILURE"
+      ],
+      "present": [
+        "UNCORRECTABLE_REMAPPED_ROWS",
+        "ROW_REMAP_FAILURE"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ]
+    },
+    {
+      "signal": "accel.nvlink",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/monitoring/dcgm-exporter"
+      ],
+      "expected": [
+        "NVLINK_BANDWIDTH",
+        "NVLINK_ERRORS"
+      ],
+      "present": [
+        "NVLINK_BANDWIDTH",
+        "NVLINK_ERRORS"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ]
+    },
+    {
+      "signal": "accel.pcie",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "partial",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/monitoring/dcgm-exporter"
+      ],
+      "expected": [
+        "PCIE_REPLAY",
+        "PCIE_BYTES"
+      ],
+      "present": [
+        "PCIE_REPLAY"
+      ],
+      "missing": [
+        "PCIE_BYTES"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ]
+    },
+    {
+      "signal": "accel.throttle",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/monitoring/dcgm-exporter"
+      ],
+      "expected": [
+        "CLOCK_EVENT_REASONS"
+      ],
+      "present": [
+        "CLOCK_EVENT_REASONS"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ]
+    },
+    {
+      "signal": "accel.power-thermal",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/monitoring/dcgm-exporter"
+      ],
+      "expected": [
+        "POWER_USAGE",
+        "GPU_TEMP",
+        "POWER_VIOLATION",
+        "THERMAL_VIOLATION"
+      ],
+      "present": [
+        "POWER_USAGE",
+        "GPU_TEMP",
+        "POWER_VIOLATION",
+        "THERMAL_VIOLATION"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ]
+    },
+    {
+      "signal": "accel.pod-attribution",
+      "category": "accelerator",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "args",
+      "sources": [
+        "DaemonSet/monitoring/dcgm-exporter"
+      ],
+      "expected": [
+        "pod-labels"
+      ],
+      "present": [
+        "pod-labels"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2,
+      "versions": [
+        "dcgm-exporter 3.3.9-3.6.1-ubuntu22.04"
+      ]
+    },
+    {
+      "signal": "node.health",
+      "category": "node-health",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/kube-system/node-problem-detector"
+      ],
+      "expected": [
+        "GPUProblem",
+        "KernelDeadlock"
+      ],
+      "present": [
+        "GPUProblem",
+        "KernelDeadlock"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2,
+      "versions": [
+        "node-problem-detector v0.8.19"
+      ]
+    },
+    {
+      "signal": "node.health.gpu-rules",
+      "category": "node-health",
+      "vendor": "nvidia",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "DaemonSet/kube-system/node-problem-detector"
+      ],
+      "expected": [
+        "xid-rule"
+      ],
+      "present": [
+        "xid-rule"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2,
+      "versions": [
+        "node-problem-detector v0.8.19"
+      ]
+    },
+    {
+      "signal": "kubelet.tracing",
+      "category": "tracing",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "ConfigMap/kube-system/kubelet-config key kubelet"
+      ],
+      "expected": [
+        "tracing"
+      ],
+      "present": [
+        "tracing"
+      ],
+      "note": "the kubeadm KubeletConfiguration exports spans to otel-cluster-collector.observability:4317 at 10000 per million; a node whose local config differs is not visible"
+    },
+    {
+      "signal": "apiserver.tracing",
+      "category": "tracing",
+      "status": "collected",
+      "determined_by": "args",
+      "sources": [
+        "ConfigMap/kube-system/kubeadm-config key ClusterConfiguration",
+        "Pod/kube-system/kube-apiserver-cp-1"
+      ],
+      "expected": [
+        "tracing-config-file"
+      ],
+      "present": [
+        "tracing-config-file"
+      ],
+      "note": "the tracing config file's endpoint lives on the control-plane node and is not read"
+    },
+    {
+      "signal": "telemetry.collector",
+      "category": "telemetry",
+      "status": "collected",
+      "determined_by": "presence",
+      "sources": [
+        "Deployment/observability/cluster-collector"
+      ],
+      "present": [
+        "otel-collector"
+      ],
+      "versions": [
+        "otel-collector 0.115.0"
+      ]
+    },
+    {
+      "signal": "telemetry.otlp",
+      "category": "telemetry",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "Deployment/observability/cluster-collector"
+      ],
+      "expected": [
+        "otlp"
+      ],
+      "present": [
+        "otlp"
+      ],
+      "versions": [
+        "otel-collector 0.115.0"
+      ],
+      "note": "2 OpenTelemetry Instrumentation object(s) inject OTLP SDKs into workloads"
+    },
+    {
+      "signal": "telemetry.k8s-events",
+      "category": "telemetry",
+      "status": "collected",
+      "determined_by": "config",
+      "sources": [
+        "Deployment/observability/cluster-collector"
+      ],
+      "expected": [
+        "k8s_events"
+      ],
+      "present": [
+        "k8s_events"
+      ],
+      "versions": [
+        "otel-collector 0.115.0"
+      ]
+    },
+    {
+      "signal": "telemetry.kubeletstats",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "config",
+      "sources": [
+        "Deployment/observability/cluster-collector"
+      ],
+      "expected": [
+        "kubeletstats"
+      ],
+      "missing": [
+        "kubeletstats"
+      ],
+      "note": "no collector config has a kubeletstats receiver in a pipeline"
+    },
+    {
+      "signal": "telemetry.container-logs",
+      "category": "telemetry",
+      "status": "missing",
+      "determined_by": "config",
+      "sources": [
+        "Deployment/observability/cluster-collector"
+      ],
+      "expected": [
+        "container-logs"
+      ],
+      "missing": [
+        "container-logs"
+      ],
+      "note": "no collector config has a container-logs receiver in a pipeline"
+    },
+    {
+      "signal": "profiling.continuous",
+      "category": "profiling",
+      "status": "collected",
+      "determined_by": "presence",
+      "sources": [
+        "DaemonSet/parca/parca-agent"
+      ],
+      "nodes_covered": 2,
+      "nodes_total": 2,
+      "versions": [
+        "parca-agent v0.35.0"
+      ]
+    },
+    {
+      "signal": "profiling.gpu",
+      "category": "profiling",
+      "status": "unknown",
+      "determined_by": "presence",
+      "note": "CUDA, Nsight and PyTorch profiler hooks live inside workloads; discovery recognises no GPU profiling operator"
+    },
+    {
+      "signal": "tracing.training",
+      "category": "tracing",
+      "status": "collected",
+      "determined_by": "args",
+      "expected": [
+        "Job/research/finetune"
+      ],
+      "present": [
+        "Job/research/finetune"
+      ],
+      "note": "OTEL_EXPORTER_OTLP_* / OTEL_TRACES_EXPORTER env names on the Job's containers; an Instrumentation injection annotation is not visible"
+    },
+    {
+      "signal": "tracing.inference",
+      "category": "tracing",
+      "status": "collected",
+      "determined_by": "args",
+      "sources": [
+        "Deployment/serving/chat"
+      ],
+      "expected": [
+        "Deployment/serving/chat"
+      ],
+      "present": [
+        "Deployment/serving/chat"
+      ],
+      "versions": [
+        "vllm v0.8.5"
+      ]
+    },
+    {
+      "signal": "metrics.inference",
+      "category": "inference",
+      "status": "missing",
+      "determined_by": "presence",
+      "sources": [
+        "Deployment/serving/chat"
+      ],
+      "versions": [
+        "vllm v0.8.5"
+      ],
+      "note": "nothing in the cluster scrapes Prometheus metrics"
+    }
+  ]
+}

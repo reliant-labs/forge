@@ -1,0 +1,135 @@
+{
+  "schema": "forge.dev/ml-snapshot/v1",
+  "context": "gke_acme_us-central1_gpu",
+  "server_version": "v1.31.2-gke.1000",
+  "collected_at": "2026-11-25T09:30:00Z",
+  "api_groups": ["apps", "batch", "kueue.x-k8s.io", "nvidia.com"],
+  "crds": [
+    "clusterpolicies.nvidia.com",
+    "clusterqueues.kueue.x-k8s.io",
+    "localqueues.kueue.x-k8s.io",
+    "workloads.kueue.x-k8s.io"
+  ],
+  "custom_resources": {
+    "clusterpolicies.nvidia.com": 1,
+    "clusterqueues.kueue.x-k8s.io": 2,
+    "localqueues.kueue.x-k8s.io": 3
+  },
+  "custom_objects": {
+    "clusterpolicies.nvidia.com": [
+      {
+        "apiVersion": "nvidia.com/v1",
+        "kind": "ClusterPolicy",
+        "metadata": {"name": "cluster-policy"},
+        "spec": {"dcgm": {"enabled": false}, "dcgmExporter": {"enabled": true}}
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "metadata": {
+        "name": "gke-gpu-h100-0",
+        "labels": {
+          "cloud.google.com/gke-nodepool": "h100",
+          "cloud.google.com/gke-accelerator": "nvidia-h100-80gb",
+          "nvidia.com/gpu.product": "NVIDIA-H100-80GB-HBM3",
+          "nvidia.com/gpu.count": "8",
+          "nvidia.com/cuda.driver.major": "550",
+          "nvidia.com/cuda.driver.minor": "127",
+          "nvidia.com/cuda.driver.rev": "05"
+        }
+      },
+      "spec": {"providerID": "gce://acme/us-central1-a/gke-gpu-h100-0"},
+      "status": {
+        "capacity": {"cpu": "208", "memory": "1843Gi", "nvidia.com/gpu": "8"},
+        "allocatable": {"cpu": "207", "memory": "1800Gi", "nvidia.com/gpu": "8"},
+        "conditions": [{"type": "Ready", "status": "True"}],
+        "nodeInfo": {
+          "machineID": "", "systemUUID": "", "bootID": "", "kernelVersion": "", "osImage": "",
+          "containerRuntimeVersion": "containerd://1.7.24", "kubeletVersion": "v1.31.2-gke.1000",
+          "kubeProxyVersion": "", "operatingSystem": "linux", "architecture": "amd64"
+        }
+      }
+    },
+    {
+      "metadata": {"name": "gke-gpu-default-0", "labels": {"cloud.google.com/gke-nodepool": "default"}},
+      "spec": {"providerID": "gce://acme/us-central1-a/gke-gpu-default-0"},
+      "status": {
+        "capacity": {"cpu": "8", "memory": "32Gi"},
+        "allocatable": {"cpu": "7", "memory": "30Gi"},
+        "conditions": [{"type": "Ready", "status": "True"}]
+      }
+    }
+  ],
+  "pods": [
+    {
+      "metadata": {"name": "nvidia-dcgm-exporter-x7k2p", "namespace": "gpu-operator", "labels": {"app": "nvidia-dcgm-exporter"},
+        "ownerReferences": [{"apiVersion": "apps/v1", "kind": "DaemonSet", "name": "nvidia-dcgm-exporter", "uid": "6f1c-ds", "controller": true}]},
+      "spec": {
+        "nodeName": "gke-gpu-h100-0",
+        "containers": [{"name": "nvidia-dcgm-exporter", "image": "nvcr.io/nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04",
+          "ports": [{"name": "metrics", "containerPort": 9400, "protocol": "TCP"}]}]
+      },
+      "status": {"phase": "Running"}
+    },
+    {
+      "metadata": {"name": "train-0", "namespace": "research", "labels": {"job-name": "train"},
+        "ownerReferences": [{"apiVersion": "batch/v1", "kind": "Job", "name": "train", "uid": "9a2b-job", "controller": true}]},
+      "spec": {
+        "nodeName": "gke-gpu-h100-0",
+        "containers": [{"name": "trainer", "image": "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime",
+          "resources": {"limits": {"nvidia.com/gpu": "2"}}}]
+      },
+      "status": {"phase": "Running"}
+    }
+  ],
+  "daemonsets": [
+    {
+      "metadata": {"name": "nvidia-dcgm-exporter", "namespace": "gpu-operator", "labels": {"app": "nvidia-dcgm-exporter"}},
+      "spec": {
+        "selector": {"matchLabels": {"app": "nvidia-dcgm-exporter"}},
+        "template": {
+          "metadata": {"labels": {"app": "nvidia-dcgm-exporter"}},
+          "spec": {"containers": [{"name": "nvidia-dcgm-exporter", "image": "nvcr.io/nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04",
+            "ports": [{"name": "metrics", "containerPort": 9400, "protocol": "TCP"}]}]}
+        }
+      },
+      "status": {"currentNumberScheduled": 1, "numberMisscheduled": 0, "desiredNumberScheduled": 1, "numberReady": 1}
+    },
+    {
+      "metadata": {"name": "nvidia-device-plugin-daemonset", "namespace": "gpu-operator", "labels": {"app": "nvidia-device-plugin-daemonset"}},
+      "spec": {
+        "selector": {"matchLabels": {"app": "nvidia-device-plugin-daemonset"}},
+        "template": {
+          "metadata": {"labels": {"app": "nvidia-device-plugin-daemonset"}},
+          "spec": {"containers": [{"name": "nvidia-device-plugin", "image": "nvcr.io/nvidia/k8s-device-plugin:v0.17.0"}]}
+        }
+      },
+      "status": {"currentNumberScheduled": 1, "numberMisscheduled": 0, "desiredNumberScheduled": 1, "numberReady": 1}
+    }
+  ],
+  "deployments": [
+    {
+      "metadata": {"name": "gpu-operator", "namespace": "gpu-operator", "labels": {"app": "gpu-operator"}},
+      "spec": {
+        "selector": {"matchLabels": {"app": "gpu-operator"}},
+        "template": {
+          "metadata": {"labels": {"app": "gpu-operator"}},
+          "spec": {"containers": [{"name": "gpu-operator", "image": "nvcr.io/nvidia/gpu-operator:v24.9.0"}]}
+        }
+      },
+      "status": {"replicas": 1, "readyReplicas": 1, "availableReplicas": 1}
+    },
+    {
+      "metadata": {"name": "kueue-controller-manager", "namespace": "kueue-system", "labels": {"app.kubernetes.io/name": "kueue"}},
+      "spec": {
+        "selector": {"matchLabels": {"app.kubernetes.io/name": "kueue"}},
+        "template": {
+          "metadata": {"labels": {"app.kubernetes.io/name": "kueue"}},
+          "spec": {"containers": [{"name": "manager", "image": "registry.k8s.io/kueue/kueue:v0.10.1"}]}
+        }
+      },
+      "status": {"replicas": 1, "readyReplicas": 1, "availableReplicas": 1}
+    }
+  ]
+}

@@ -60,6 +60,14 @@ func publishedSchemas() map[string]struct {
 			},
 			body: vulnListSchemaJSON,
 		},
+		"ml-discover": {
+			spec: SchemaSpec{
+				Name: "ml-discover", APIVersion: MLDiscoverDocumentSchema, ID: mlDiscoverSchemaID,
+				Command:   "forge project schema ml-discover",
+				Describes: "`forge ml discover --json`: a cluster's accelerators and ML components, the recommendations, and the proposed ml.k",
+			},
+			body: mlDiscoverSchemaJSON,
+		},
 		"test-results":       testDocumentSchema("test-results", testreport.SchemaResults, reflect.TypeOf(testreport.Results{}), "one lane run's test cases, normalised from go test -json, JUnit or Vitest JSON (.forge/tests/runs/<id>/<lane>/)"),
 		"test-coverage":      testDocumentSchema("test-coverage", testreport.SchemaCoverage, reflect.TypeOf(testreport.Coverage{}), "the stored per-commit coverage document: covered files, their statement blocks and hits per lane, each file's repo path and git blob id; embedded as `coverage` in `forge test coverage --json`"),
 		"test-report":        testDocumentSchema("test-report", testreport.SchemaReport, reflect.TypeOf(testreport.Report{}), "a summary of test runs on one tree: totals, coverage figures, failures and flake signals; `forge test report --json`"),
@@ -148,6 +156,11 @@ func newProjectSchemaCmd() *cobra.Command {
   vuln-list  forge.dev/vuln-list/v1: the document ` + "`forge vuln list|show|scan --json`" + `
         prints — a release's vulnerability findings and the env's vuln_gate
         verdict. Generated from the Go type forge encodes it with.
+
+  ml-discover  forge.dev/ml-discover/v1: the document ` + "`forge ml discover --json`" + `
+        prints — a cluster's accelerators and ML components, the
+        recommendations, and the proposed ml.k. Generated from the Go type
+        forge encodes it with.
 
   test-results, test-coverage, test-report, test-flakes
         forge.test.results/v1, forge.test.coverage/v1, forge.test.report/v1,

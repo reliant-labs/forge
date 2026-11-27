@@ -1,0 +1,127 @@
+{
+  "schema": "forge.dev/ml-snapshot/v1",
+  "context": "lab-mixed",
+  "server_version": "v1.35.0",
+  "collected_at": "2026-11-25T10:00:00Z",
+  "api_groups": ["amd.com", "apps", "batch", "kueue.x-k8s.io", "resource.k8s.io"],
+  "crds": ["deviceconfigs.amd.com", "clusterqueues.kueue.x-k8s.io", "localqueues.kueue.x-k8s.io", "workloads.kueue.x-k8s.io"],
+  "custom_resources": {"deviceconfigs.amd.com": 1, "clusterqueues.kueue.x-k8s.io": 2, "localqueues.kueue.x-k8s.io": 3, "workloads.kueue.x-k8s.io": 2, "resourceslices.resource.k8s.io": 0},
+  "nodes": [
+    {
+      "metadata": {"name": "amd-mi300-1", "labels": {"amd.com/gpu.product-name": "AMD_Instinct_MI300X_OAM", "amd.com/gpu.family": "AI", "amd.com/gpu.vram": "192G", "node.kubernetes.io/instance-type": "bm.gpu.mi300x.8"}},
+      "spec": {},
+      "status": {
+        "capacity": {"cpu": "224", "memory": "2113287888Ki", "amd.com/gpu": "8", "rdma/rdma_shared_device_a": "1k", "pods": "110"},
+        "allocatable": {"cpu": "224", "memory": "2113185488Ki", "amd.com/gpu": "8", "rdma/rdma_shared_device_a": "1k", "pods": "110"},
+        "conditions": [{"type": "KernelDeadlock", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.35.0", "containerRuntimeVersion": "containerd://2.1.4"}
+      }
+    },
+    {
+      "metadata": {"name": "trn1-1", "labels": {"node.kubernetes.io/instance-type": "trn1.32xlarge", "topology.kubernetes.io/region": "us-east-1"}},
+      "spec": {"providerID": "aws:///us-east-1a/i-0123456789abcdef1"},
+      "status": {
+        "capacity": {"cpu": "128", "memory": "527934164Ki", "aws.amazon.com/neuron": "16", "aws.amazon.com/neuroncore": "32", "vpc.amazonaws.com/efa": "8", "pods": "110"},
+        "allocatable": {"cpu": "127", "memory": "520000000Ki", "aws.amazon.com/neuron": "16", "aws.amazon.com/neuroncore": "32", "vpc.amazonaws.com/efa": "8", "pods": "110"},
+        "conditions": [{"type": "KernelDeadlock", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.35.0", "containerRuntimeVersion": "containerd://2.1.4"}
+      }
+    },
+    {
+      "metadata": {"name": "gaudi-1", "labels": {"node.kubernetes.io/instance-type": "dl1.24xlarge"}},
+      "spec": {},
+      "status": {
+        "capacity": {"cpu": "96", "memory": "790000000Ki", "habana.ai/gaudi": "8", "pods": "110"},
+        "allocatable": {"cpu": "96", "memory": "790000000Ki", "habana.ai/gaudi": "8", "pods": "110"},
+        "conditions": [{"type": "KernelDeadlock", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.35.0", "containerRuntimeVersion": "containerd://2.1.4"}
+      }
+    },
+    {
+      "metadata": {"name": "tpu-v5e-1", "labels": {"cloud.google.com/gke-tpu-accelerator": "tpu-v5-lite-podslice", "cloud.google.com/gke-tpu-topology": "2x2"}},
+      "spec": {},
+      "status": {
+        "capacity": {"cpu": "112", "memory": "197000000Ki", "google.com/tpu": "4", "pods": "110"},
+        "allocatable": {"cpu": "112", "memory": "197000000Ki", "google.com/tpu": "4", "pods": "110"},
+        "conditions": [{"type": "KernelDeadlock", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.35.0", "containerRuntimeVersion": "containerd://2.1.4"}
+      }
+    },
+    {
+      "metadata": {"name": "fpga-1", "labels": {}},
+      "spec": {},
+      "status": {
+        "capacity": {"cpu": "32", "memory": "131000000Ki", "example.com/fpga": "2", "pods": "110"},
+        "allocatable": {"cpu": "32", "memory": "131000000Ki", "example.com/fpga": "2", "pods": "110"},
+        "conditions": [{"type": "KernelDeadlock", "status": "False"}, {"type": "Ready", "status": "True"}],
+        "nodeInfo": {"kubeletVersion": "v1.35.0", "containerRuntimeVersion": "containerd://2.1.4"}
+      }
+    }
+  ],
+  "daemonsets": [
+    {
+      "metadata": {"name": "amd-metrics-exporter", "namespace": "kube-amd-gpu", "labels": {"app.kubernetes.io/name": "metrics-exporter"}},
+      "spec": {
+        "selector": {"matchLabels": {"app.kubernetes.io/name": "metrics-exporter"}},
+        "template": {"metadata": {"labels": {"app.kubernetes.io/name": "metrics-exporter"}}, "spec": {"containers": [{"name": "metrics-exporter", "image": "docker.io/rocm/device-metrics-exporter:v1.2.0", "ports": [{"name": "metrics", "containerPort": 5000}], "resources": {}}]}}
+      },
+      "status": {"currentNumberScheduled": 1, "numberMisscheduled": 0, "desiredNumberScheduled": 1, "numberReady": 1}
+    },
+    {
+      "metadata": {"name": "neuron-device-plugin-daemonset", "namespace": "kube-system", "labels": {"name": "neuron-device-plugin-ds"}},
+      "spec": {"selector": {"matchLabels": {"name": "neuron-device-plugin-ds"}}, "template": {"metadata": {"labels": {"name": "neuron-device-plugin-ds"}}, "spec": {"containers": [{"name": "neuron-device-plugin", "image": "public.ecr.aws/neuron/neuron-device-plugin:2.22.4.0", "resources": {}}]}}},
+      "status": {"currentNumberScheduled": 1, "numberMisscheduled": 0, "desiredNumberScheduled": 1, "numberReady": 1}
+    },
+    {
+      "metadata": {"name": "node-problem-detector", "namespace": "kube-system", "labels": {"app.kubernetes.io/name": "node-problem-detector", "helm.sh/chart": "node-problem-detector-2.3.14"}},
+      "spec": {"selector": {"matchLabels": {"app.kubernetes.io/name": "node-problem-detector"}}, "template": {"metadata": {"labels": {"app.kubernetes.io/name": "node-problem-detector"}}, "spec": {"containers": [{"name": "node-problem-detector", "image": "registry.k8s.io/node-problem-detector/node-problem-detector:v0.8.19", "command": ["/node-problem-detector", "--logtostderr", "--config.system-log-monitor=/config/kernel-monitor.json,/config/docker-monitor.json", "--prometheus-address=0.0.0.0", "--prometheus-port=20257"], "ports": [{"name": "exporter", "containerPort": 20257}], "resources": {}}]}}},
+      "status": {"currentNumberScheduled": 5, "numberMisscheduled": 0, "desiredNumberScheduled": 5, "numberReady": 5}
+    },
+    {
+      "metadata": {"name": "spegel", "namespace": "forge-ml", "labels": {"app.kubernetes.io/name": "spegel", "helm.sh/chart": "spegel-0.8.2", "forge.dev/component-owner": "lab.prod", "forge.dev/workload": "spegel"}},
+      "spec": {"selector": {"matchLabels": {"app.kubernetes.io/name": "spegel"}}, "template": {"metadata": {"labels": {"app.kubernetes.io/name": "spegel"}}, "spec": {"containers": [{"name": "registry", "image": "ghcr.io/spegel-org/spegel:v0.8.2", "resources": {}}]}}},
+      "status": {"currentNumberScheduled": 5, "numberMisscheduled": 0, "desiredNumberScheduled": 5, "numberReady": 5}
+    },
+    {
+      "metadata": {"name": "forge-node-agent", "namespace": "forge-system", "labels": {"forge.dev/workload": "node-agent"}},
+      "spec": {"selector": {"matchLabels": {"app": "forge-node-agent"}}, "template": {"metadata": {"labels": {"app": "forge-node-agent", "forge.dev/workload": "node-agent"}}, "spec": {"containers": [{"name": "otelcol", "image": "otel/opentelemetry-collector-contrib:0.115.0", "args": ["--config=/conf/collector.yaml"], "resources": {}, "volumeMounts": [{"name": "config", "mountPath": "/conf"}]}], "volumes": [{"name": "config", "configMap": {"name": "forge-node-agent-config"}}]}}},
+      "status": {"currentNumberScheduled": 5, "numberMisscheduled": 0, "desiredNumberScheduled": 5, "numberReady": 5}
+    }
+  ],
+  "deployments": [
+    {
+      "metadata": {"name": "amd-gpu-operator-gpu-operator-charts-controller-manager", "namespace": "kube-amd-gpu", "labels": {"app.kubernetes.io/name": "gpu-operator-charts"}},
+      "spec": {"selector": {"matchLabels": {"app.kubernetes.io/name": "gpu-operator-charts"}}, "template": {"metadata": {"labels": {"app.kubernetes.io/name": "gpu-operator-charts"}}, "spec": {"containers": [{"name": "manager", "image": "docker.io/rocm/gpu-operator:v1.2.0", "resources": {}}]}}},
+      "status": {"replicas": 1, "readyReplicas": 1}
+    },
+    {
+      "metadata": {"name": "kueue-controller-manager", "namespace": "forge-ml", "labels": {"app.kubernetes.io/name": "kueue", "helm.sh/chart": "kueue-0.20.7", "forge.dev/component-owner": "lab.prod", "forge.dev/workload": "kueue"}},
+      "spec": {"selector": {"matchLabels": {"control-plane": "controller-manager"}}, "template": {"metadata": {"labels": {"control-plane": "controller-manager"}}, "spec": {"containers": [{"name": "manager", "image": "registry.k8s.io/kueue/kueue:v0.20.7", "resources": {}}]}}},
+      "status": {"replicas": 1, "readyReplicas": 1}
+    }
+  ],
+  "configmaps": [
+    {"metadata": {"name": "forge-node-agent-config", "namespace": "forge-system", "labels": {"forge.dev/workload": "node-agent"}},
+     "data": {"collector.yaml": "receivers:\n  filelog:\n    include: [/var/log/pods/*/*/*.log]\n  kubeletstats:\n    auth_type: serviceAccount\n    endpoint: https://${env:K8S_NODE_NAME}:10250\n  otlp:\n    protocols:\n      grpc:\n        endpoint: 0.0.0.0:4317\nprocessors:\n  batch: {}\n  k8sattributes: {}\nexporters:\n  otlphttp:\n    endpoint: https://otel.reliant.example\n    headers:\n      authorization: REDACTED\nservice:\n  pipelines:\n    logs:\n      receivers: [filelog]\n      processors: [k8sattributes, batch]\n      exporters: [otlphttp]\n    metrics:\n      receivers: [kubeletstats, otlp]\n      processors: [batch]\n      exporters: [otlphttp]\n    traces:\n      receivers: [otlp]\n      processors: [batch]\n      exporters: [otlphttp]\n"}}
+  ],
+  "jobs": [
+    {
+      "metadata": {"name": "mi300-pretrain", "namespace": "research", "labels": {"kueue.x-k8s.io/queue-name": "amd"}},
+      "spec": {"template": {"spec": {"restartPolicy": "Never", "containers": [{"name": "train", "image": "rocm/pytorch:rocm6.3_ubuntu22.04_py3.10_pytorch_release_2.4.0", "resources": {"limits": {"amd.com/gpu": "8"}}, "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}]}], "volumes": [{"name": "dshm", "emptyDir": {"medium": "Memory"}}]}}},
+      "status": {"active": 1}
+    },
+    {
+      "metadata": {"name": "gaudi-smoke", "namespace": "research"},
+      "spec": {"template": {"spec": {"restartPolicy": "Never", "containers": [{"name": "smoke", "image": "vault.habana.ai/gaudi-docker/1.19.0/ubuntu22.04/habanalabs/pytorch-installer-2.5.1:latest", "resources": {"limits": {"habana.ai/gaudi": "1"}}, "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}]}], "volumes": [{"name": "dshm", "emptyDir": {"medium": "Memory"}}]}}},
+      "status": {}
+    }
+  ],
+  "pods": [
+    {"metadata": {"name": "mi300-pretrain-r4t5y", "namespace": "research", "labels": {"job-name": "mi300-pretrain", "kueue.x-k8s.io/queue-name": "amd"}, "ownerReferences": [{"apiVersion": "batch/v1", "kind": "Job", "name": "mi300-pretrain", "uid": "4444aaaa-0000-4000-8000-000000000001", "controller": true}]},
+     "spec": {"nodeName": "amd-mi300-1", "containers": [{"name": "train", "image": "rocm/pytorch:rocm6.3_ubuntu22.04_py3.10_pytorch_release_2.4.0", "resources": {"limits": {"amd.com/gpu": "8"}}, "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}]}], "volumes": [{"name": "dshm", "emptyDir": {"medium": "Memory"}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "neuron-serve-0", "namespace": "inference", "labels": {"app": "neuron-serve"}},
+     "spec": {"nodeName": "trn1-1", "containers": [{"name": "serve", "image": "public.ecr.aws/neuron/pytorch-inference-neuronx:2.1.2-neuronx-py310-sdk2.20.2-ubuntu20.04", "resources": {"limits": {"aws.amazon.com/neuroncore": "8"}}, "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}]}], "volumes": [{"name": "dshm", "emptyDir": {"medium": "Memory"}}]}, "status": {"phase": "Running"}},
+    {"metadata": {"name": "fpga-job-0", "namespace": "research", "labels": {"app": "fpga"}},
+     "spec": {"nodeName": "fpga-1", "containers": [{"name": "kernel", "image": "ghcr.io/acme/fpga-kernel:1.0", "resources": {"limits": {"example.com/fpga": "1"}}}]}, "status": {"phase": "Succeeded"}}
+  ]
+}

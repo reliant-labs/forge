@@ -19,12 +19,11 @@ func TestWriteSiteStarter(t *testing.T) {
 	}{
 		{"nextjs", []string{"package.json", "next.config.ts", "tsconfig.json", "postcss.config.mjs", ".gitignore",
 			"src/app/layout.tsx", "src/app/page.tsx", "src/app/globals.css", "src/app/dev-logging.tsx", "src/app/%5F_forge/log/route.ts",
-			"src/app/robots.ts", "src/app/sitemap.ts", "src/lib/site.ts", "eslint.config.mjs", "eslint.a11y.mjs"}},
+			"src/app/icon.svg"}},
 		// The Vite dev-log receiver comes from the runtime at the current floor;
 		// TestViteSiteStarterFollowsTheRuntimeFloor checks both receiver paths.
 		{"vite-spa", []string{"package.json", "vite.config.ts", "index.html", "tsconfig.json", ".gitignore",
-			"src/main.tsx", "src/App.tsx", "src/index.css", "src/vite-env.d.ts", "public/robots.txt",
-			"eslint.config.mjs", "eslint.a11y.mjs"}},
+			"src/main.tsx", "src/App.tsx", "src/index.css", "src/vite-env.d.ts", "public/icon.svg"}},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			fe, ok := SiteStarterFrontend(tc.kind, "web")
@@ -35,10 +34,9 @@ func TestWriteSiteStarter(t *testing.T) {
 			if err := WriteSiteStarter(dir, "landing", fe); err != nil {
 				t.Fatal(err)
 			}
-			// A fresh site answers /favicon.ico instead of a 404, and links the
-			// placeholder favicon.svg and og.png.
+			// A fresh site answers /favicon.ico and /robots.txt instead of 404s.
 			for _, rel := range append(tc.files, "src/lib/otel_gen.ts", "src/lib/apiurl_gen.ts", "public/config.js",
-				"public/favicon.ico", "public/favicon.svg", "public/og.png") {
+				"public/favicon.ico", "public/robots.txt") {
 				if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
 					t.Errorf("starter lacks %s: %v", rel, err)
 				}
@@ -83,9 +81,8 @@ func TestWriteSiteStarter(t *testing.T) {
 			}
 			checks := [][2]string{{entry, "initTelemetry();"}, {html, `src="/config.js"`}, {proxy, proxyWant}}
 			if tc.kind == "vite-spa" {
-				checks = append(checks, [2]string{html, `<link rel="icon" type="image/svg+xml" href="%BASE_URL%favicon.svg" />`})
-			} else {
-				checks = append(checks, [2]string{html, `icons: { icon: { url: "/favicon.svg", type: "image/svg+xml" } }`})
+				// Next.js links src/app/icon.svg itself; a Vite page must.
+				checks = append(checks, [2]string{html, `<link rel="icon" type="image/svg+xml" href="%BASE_URL%icon.svg" />`})
 			}
 			for _, c := range checks {
 				file, want := c[0], c[1]

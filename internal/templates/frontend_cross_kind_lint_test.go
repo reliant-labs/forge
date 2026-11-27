@@ -236,61 +236,60 @@ func TestViteESLintConfigStillLoadsOnlyTheSharedNamespaces(t *testing.T) {
 	}
 }
 
-// a11yBaseTemplate is the one jsx-a11y base every browser frontend's eslint
-// config imports. shared-web/ renders it into both app trees; the site
-// starters reuse it (generator.siteStarterReused).
-const a11yBaseTemplate = "shared-web/eslint.a11y.mjs"
+// a11yRulesBlock carves the `const a11yRules = { … };` literal out of a flat
+// eslint config. The terminator is a `};` at column 0, which is the only
+// place one can appear in this file: every nested object inside the literal
+// is indented.
+var a11yRulesBlock = regexp.MustCompile(`(?ms)^const a11yRules = \{.*?^\};`)
 
-// a11yBaseConfigs are the eslint configs that spread the shared base.
-var a11yBaseConfigs = []string{
-	"nextjs/eslint.config.mjs",
-	"vite-spa/eslint.config.mjs",
-	"site/nextjs/eslint.config.mjs",
-	"site/vite/eslint.config.mjs",
-}
-
-// TestEveryESLintConfigSharesOneA11yBase keeps the accessibility base ONE
-// file across the browser scaffolds (the Next.js and Vite app frontends and
-// both site starters), and it is the guard the extraction seam in
-// eslint.a11y.mjs names.
+// TestBothESLintConfigsShareOneA11yBlock keeps the accessibility base
+// IDENTICAL across the two browser scaffolds, and it is the guard the
+// extraction seam in both configs names.
 //
-// Two reasons it has to hold. First, correctness: the component library at
-// src/components/ui/**, and every file under shared-web/, ship the SAME
-// BYTES into both app trees. A rule enabled in one config and not the other
-// makes one file clean in the Next.js frontend and red in the Vite one — the
-// same defect shape TestSharedFrontendFilesCarryNoKindSpecificESLintDirectives
-// above was born on, one layer up. Second, the migration to a published
-// config package: one import per config is replaced mechanically; a copy
-// inlined in one config would have to be reconciled first.
-func TestEveryESLintConfigSharesOneA11yBase(t *testing.T) {
+// Two reasons it has to hold. First, correctness today: the component
+// library at src/components/ui/**, and every file under shared-web/, ship
+// the SAME BYTES into both trees. A rule enabled in one config and not the
+// other makes one file clean in the Next.js frontend and red in the Vite
+// one — the same defect shape TestSharedFrontendFilesCarryNoKindSpecificESLintDirectives
+// above was born on, one layer up.
+//
+// Second, the migration: this block is duplicated ONLY because
+// eslint.config.mjs is scaffold-once and there is no shared package for it
+// to import yet. Two copies that agree can be replaced by one import
+// mechanically; two copies that have drifted have to be reconciled first,
+// by someone who no longer remembers which difference was deliberate.
+func TestBothESLintConfigsShareOneA11yBlock(t *testing.T) {
 	t.Parallel()
 
-	base, err := FrontendTemplates().Get(a11yBaseTemplate)
-	if err != nil {
-		t.Fatalf("read %s: %v", a11yBaseTemplate, err)
-	}
-	if !strings.Contains(string(base), "export const a11yRules = {") {
-		t.Fatalf("%s must export the NAMED base `export const a11yRules = { … };`: that name is what makes swapping "+
-			"it for an import of a shared eslint config package a one-line change instead of a rewrite.", a11yBaseTemplate)
-	}
-	// A base that stopped naming any rule would satisfy every import check
-	// below while gating nothing.
-	if !strings.Contains(string(base), `"jsx-a11y/`) {
-		t.Fatalf("%s names no jsx-a11y rule — the checks below would be vacuous", a11yBaseTemplate)
-	}
-
-	for _, rel := range a11yBaseConfigs {
+	blocks := map[string]string{}
+	for _, kind := range []string{"nextjs", "vite-spa"} {
+		rel := filepath.Join(kind, "eslint.config.mjs")
 		raw, err := FrontendTemplates().Get(rel)
 		if err != nil {
 			t.Fatalf("read %s: %v", rel, err)
 		}
-		cfg := string(raw)
-		if !strings.Contains(cfg, `import { a11yRules } from "./eslint.a11y.mjs";`) || !strings.Contains(cfg, "...a11yRules,") {
-			t.Errorf("%s must import a11yRules from ./eslint.a11y.mjs and spread it into its rules", rel)
+		block := a11yRulesBlock.FindString(string(raw))
+		if block == "" {
+			t.Fatalf("%s: no `const a11yRules = { … };` literal.\n"+
+				"The accessibility base must stay a NAMED const spread into the rules object, not rules "+
+				"inlined among the rest — that name is what makes swapping it for an import of a shared "+
+				"eslint config package a one-line change instead of a rewrite.", rel)
 		}
-		if strings.Contains(cfg, "const a11yRules") {
-			t.Errorf("%s declares its own a11yRules; the base is %s, and a per-project deviation goes after the spread", rel, a11yBaseTemplate)
-		}
+		blocks[kind] = block
+	}
+
+	if blocks["nextjs"] != blocks["vite-spa"] {
+		t.Errorf("the a11yRules block differs between nextjs/eslint.config.mjs and vite-spa/eslint.config.mjs.\n"+
+			"Files under shared-web/ and the src/components/ui/** library ship byte-identical into BOTH trees, "+
+			"so a rule in one config and not the other makes the same file clean in one frontend and red in the "+
+			"other. Keep the two copies identical until they can be replaced by a single imported base.\n"+
+			"--- nextjs ---\n%s\n--- vite-spa ---\n%s", blocks["nextjs"], blocks["vite-spa"])
+	}
+
+	// A block that stopped naming any rule would satisfy the equality check
+	// while gating nothing.
+	if !strings.Contains(blocks["nextjs"], `"jsx-a11y/`) {
+		t.Errorf("the a11yRules block names no jsx-a11y rule — the equality assertion above is vacuous:\n%s", blocks["nextjs"])
 	}
 }
 

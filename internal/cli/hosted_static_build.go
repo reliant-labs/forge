@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
@@ -108,9 +107,7 @@ func pushHostedStaticSite(ctx context.Context, projectDir string, entities *KCLE
 	if err := checkDeployableFrontendMock(f); err != nil {
 		return "", "", err
 	}
-	// The preparation every frontend build shares: its forge.FrontendURL
-	// references are facts of the env this release is built for.
-	f = frontendForBuild(ctx, os.Stdout, opts.env, entities, f)
+	f.Project = entities.Project
 	fe := frontendToStaticSite(f)
 	// Environment-agnostic by construction: no document written, and
 	// any travelling in the built bundle removed.

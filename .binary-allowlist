@@ -22,7 +22,3 @@ plugins/reliant-forge/assets/*.png
 # browsers request at /favicon.ico whatever the page declares; the scaffold
 # copies it verbatim from these embedded templates.
 internal/templates/frontend/shared-web/public/favicon.ico
-
-# The site starters' placeholder social card (1200x630), carrying the
-# forge:placeholder-image marker the site audit flags (pkg/siteaudit).
-internal/templates/frontend/site/*/public/og.png

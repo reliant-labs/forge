@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/pkg/siteaudit"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -241,25 +240,6 @@ func TestGreenfieldSiteIsFrontendOnly(t *testing.T) {
 					}
 				}
 			}
-			// Each hosted env renders SITE_URL as a forge.FrontendURL the
-			// release build resolves from the env's live status.
-			for _, env := range []string{"staging", "prod"} {
-				e, err := RenderKCL(t.Context(), root, env)
-				if err != nil {
-					t.Fatalf("render %s: %v", env, err)
-				}
-				var site *KCLEnvVar
-				for _, f := range e.Frontends {
-					for i, ev := range f.EnvVars {
-						if f.Name == "web" && ev.Name == "SITE_URL" {
-							site = &f.EnvVars[i]
-						}
-					}
-				}
-				if site == nil || site.FrontendURL == nil || site.FrontendURL.Frontend != "web" || site.Value != "" {
-					t.Errorf("%s: SITE_URL = %+v, want the forge.FrontendURL to web kept for the build", env, site)
-				}
-			}
 			gi := readFile(t, filepath.Join(root, ".gitignore"))
 			if !strings.Contains(gi, "node_modules/") || !strings.Contains(gi, ".forge/*") {
 				t.Errorf(".gitignore must carry the app's entries and forge's:\n%s", gi)
@@ -412,22 +392,16 @@ func TestGenerateSkipsTheGoStepsForASite(t *testing.T) {
 // @bufbuild/protobuf and @opentelemetry/api, which it marks optional peers, so
 // a starter that omits them builds nowhere but a machine that has them hoisted.
 // Resolves the runtime from the registry (the starter's published range).
-//
-// It is also the first audit of a fresh site (Site insights, design D3): the
-// starter lints clean under its jsx-a11y base, builds with and without
-// SITE_URL, and the build's HTML, robots.txt and sitemap score SEO >= 90 with
-// no error finding under pkg/siteaudit, the rules hosted sites are audited
-// with after every promotion.
 func TestGreenfieldSiteProductionBuilds(t *testing.T) {
 	testkit.Slow(t, "scaffolds each site kind, runs npm install and its production build (network)")
 	if _, err := exec.LookPath("npm"); err != nil {
 		t.Skip("npm not on PATH")
 	}
-	for _, tc := range []struct{ kind, out string }{{"nextjs", "out"}, {"vite-spa", "dist"}} {
-		t.Run(tc.kind, func(t *testing.T) {
+	for _, kind := range []string{"nextjs", "vite-spa"} {
+		t.Run(kind, func(t *testing.T) {
 			parent := t.TempDir()
 			cmd := newNewCmd()
-			cmd.SetArgs([]string{"landing", "--kind", "site", "--path", parent, "--frontend-kind", tc.kind})
+			cmd.SetArgs([]string{"landing", "--kind", "site", "--path", parent, "--frontend-kind", kind})
 			if err := cmd.ExecuteContext(t.Context()); err != nil {
 				t.Fatalf("project new: %v", err)
 			}
@@ -435,101 +409,12 @@ func TestGreenfieldSiteProductionBuilds(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(root, "node_modules")); err != nil {
 				t.Fatalf("project new did not install dependencies: %v", err)
 			}
-			npm := func(env []string, args ...string) string {
-				t.Helper()
-				c := exec.CommandContext(t.Context(), "npm", args...)
-				c.Dir = root
-				c.Env = append(os.Environ(), env...)
-				out, err := c.CombinedOutput()
-				if err != nil {
-					t.Fatalf("npm %s failed for a fresh %s site: %v\n%s", strings.Join(args, " "), tc.kind, err, out)
-				}
-				return string(out)
+			build := exec.CommandContext(t.Context(), "npm", "run", "build")
+			build.Dir = root
+			if out, err := build.CombinedOutput(); err != nil {
+				t.Fatalf("npm run build failed for a fresh %s site: %v\n%s", kind, err, out)
 			}
-			// Clean as written, warnings included: eslint exits 0 on them.
-			if out := npm(nil, "run", "lint"); strings.Contains(out, "problem") {
-				t.Errorf("a fresh %s site is not eslint-clean:\n%s", tc.kind, out)
-			}
-
-			// A first release, built before the env has a hostname: it
-			// builds, and leaves out every tag that needs the origin rather
-			// than inventing one.
-			npm([]string{"SITE_URL="}, "run", "build")
-			if html := readFile(t, filepath.Join(root, tc.out, "index.html")); strings.Contains(html, `rel="canonical"`) ||
-				strings.Contains(html, `property="og:url"`) || strings.Contains(html, "localhost") {
-				t.Errorf("a build without SITE_URL wrote an origin into index.html:\n%s", html)
-			}
-
-			const site = "https://landing.example.com"
-			npm([]string{"SITE_URL=" + site}, "run", "build")
-			auditFreshSiteBuild(t, filepath.Join(root, tc.out), site, tc.kind == "nextjs")
 		})
-	}
-}
-
-// auditFreshSiteBuild judges a fresh site's build output as Site insights
-// would judge it served at site: the head tags D3 scaffolds, then
-// siteaudit.Evaluate over the home page, robots.txt and sitemap.
-func auditFreshSiteBuild(t *testing.T, out, site string, generatedRobots bool) {
-	t.Helper()
-	html := readFile(t, filepath.Join(out, "index.html"))
-	// The home page's canonical and og:url name the origin; Next.js writes
-	// it without the trailing slash, Vite with it.
-	for _, want := range []string{
-		`<link rel="canonical" href="` + site,
-		`property="og:url" content="` + site,
-		`property="og:image" content="` + site + `/og.png"`,
-		`property="og:title"`, `property="og:description"`, `property="og:type" content="website"`,
-		`name="twitter:card" content="summary_large_image"`,
-		`name="theme-color"`, `href="/favicon.svg"`,
-		`"@type":"WebSite"`,
-	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("index.html lacks %s:\n%s", want, html)
-		}
-	}
-	og, err := os.ReadFile(filepath.Join(out, "og.png"))
-	if err != nil {
-		t.Fatalf("the build has no og.png: %v", err)
-	}
-	in := siteaudit.Input{
-		Site:  site + "/",
-		Pages: []siteaudit.Page{{URL: site + "/", Status: 200, RawHTML: html}},
-		LinkResults: []siteaudit.LinkResult{
-			{URL: site + "/og.png", Status: 200, Placeholder: siteaudit.IsPlaceholderImage(og)},
-		},
-	}
-	robots := readFile(t, filepath.Join(out, "robots.txt"))
-	in.Robots = &siteaudit.Fetched{URL: site + "/robots.txt", Status: 200, Body: robots}
-	// The Vite starter's sitemap and Sitemap: line come with forgeSiteFiles;
-	// the Next.js export generates both from SITE_URL.
-	if generatedRobots {
-		if !strings.Contains(robots, "Sitemap: "+site+"/sitemap.xml") {
-			t.Errorf("robots.txt does not name the sitemap:\n%s", robots)
-		}
-		sitemap := readFile(t, filepath.Join(out, "sitemap.xml"))
-		if !strings.Contains(sitemap, "<loc>"+site+"/</loc>") {
-			t.Errorf("sitemap.xml does not list the home page:\n%s", sitemap)
-		}
-		in.Sitemaps = []siteaudit.Fetched{{URL: site + "/sitemap.xml", Status: 200, Body: sitemap}}
-	}
-	report := siteaudit.Evaluate(in)
-	placeholder := false
-	for _, f := range report.Findings {
-		t.Logf("finding: %s %s %s %s", f.Severity, f.Code, f.Route, f.Ref)
-		if f.Severity == siteaudit.SeverityError {
-			t.Errorf("error finding on a fresh site: %+v", f)
-		}
-		placeholder = placeholder || f.Code == "og_image_placeholder"
-	}
-	if !placeholder {
-		t.Errorf("the audit does not name the placeholder og.png; findings: %+v", report.Findings)
-	}
-	if s := report.Site.Score.SEO; s != nil {
-		t.Logf("SEO score %d", *s)
-	}
-	if s := report.Site.Score.SEO; s == nil || *s < 90 {
-		t.Errorf("SEO score = %v, want >= 90; findings: %+v", s, report.Findings)
 	}
 }
 

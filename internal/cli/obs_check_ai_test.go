@@ -28,6 +28,10 @@ func TestObsCheckHostedJudgesTheAICalls(t *testing.T) {
 	after := rowsReply(aiRow("agent", genai.OpChat, "", 400, 4, 2700), aiRow("agent", genai.OpExecuteTool, "search", 200, 80, 50))
 	run := func(t *testing.T, args ...string) (int, map[string]any, *seqCaller) {
 		caller := &seqCaller{replies: map[string][]string{procHealth: {reply}, procAIPanel: {before, after}}}
+		caller.replies[procPanel+"#ai-model-latency"] = []string{
+			rowsReply(`{"group":{"service.name":"agent"},"values":[900]}`),
+			rowsReply(`{"group":{"service.name":"agent"},"values":[2700]}`),
+		}
 		out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, append([]string{"check", "prod", "--json"}, args...)...)
 		return exitCodeForError(err), decode(t, out), caller
 	}

@@ -38,16 +38,16 @@ type AIServiceCalls struct {
 // The GenAI operations that are model calls (pkg/observe/genai).
 var aiModelOps = []string{genai.OpChat, genai.OpTextCompletion, genai.OpGenerateContent, genai.OpEmbeddings}
 
-// AIPanelID is the id of the one panel an AI read runs per window: what a
+// AIPanelID identifies the model and tool call counts panel: what a
 // test double tells it apart by.
 const AIPanelID = "ai-calls"
 
 // aiPanel is one window's model and tool calls, by service and tool name:
 // calls, failed calls (error status, a cancellation excepted: error.type
 // canceled is no failure, as the AI hub counts it) and the p95 duration. A
-// model call carries no tool name, so a service's model calls are its row
-// with an empty tool, and their p95 is the model calls' own; each tool row
-// is one tool's calls. One panel, so a window costs one query.
+// model call carries no tool name; each tool row is one tool's calls.
+// A separate service-only panel reads model latency
+// across all model operations.
 func aiPanel(version string) obsquery.Panel {
 	ops := append(slices.Clone(aiModelOps), genai.OpExecuteTool)
 	where := []obsquery.PanelPredicate{{Field: "span.attr." + genai.AttrOperationName, Op: "in", Values: ops}}
@@ -67,15 +67,28 @@ func aiPanel(version string) obsquery.Panel {
 		Limit:   obsquery.MaxTableRows}
 }
 
-// aiCalls runs the panel through run: Local and Cloud differ only in run.
-// Model calls of several operations (chat and embeddings, say) are summed,
-// and their p95 is the p95 of the operation with the most calls.
+// aiModelLatencyPanel computes p95 over all model-call spans per service,
+// without splitting the distribution by operation or tool attributes.
+func aiModelLatencyPanel(version string) obsquery.Panel {
+	p := aiPanel(version)
+	p.ID = "ai-model-latency"
+	p.Where[0].Values = slices.Clone(aiModelOps)
+	p.GroupBy = []string{"service.name"}
+	p.Series = []obsquery.PanelSeries{{Label: "p95", Agg: "quantile", Quantile: 0.95, Field: "span.duration"}}
+	return p
+}
+
+// aiCalls runs the panels through run: Local and Cloud differ only in run.
 func aiCalls(ctx context.Context, req AIRequest, run panelRun) (AIResult, error) {
 	var res AIResult
 	by := map[string]*AIServiceCalls{}
-	most := map[string]int64{}
 	count := func(v float64) int64 { return int64(finite(v) + 0.5) }
 	rows, st, err := run(ctx, "ai calls", aiPanel(req.Version))
+	res.Statements = append(res.Statements, st...)
+	if err != nil {
+		return res, err
+	}
+	latencies, st, err := run(ctx, "ai model latency", aiModelLatencyPanel(req.Version))
 	res.Statements = append(res.Statements, st...)
 	if err != nil || req.Explain {
 		return res, err
@@ -103,8 +116,13 @@ func aiCalls(ctx context.Context, req AIRequest, run panelRun) (AIResult, error)
 		}
 		s.Window.Model.Calls += c.Calls
 		s.Window.Model.Errors += c.Errors
-		if c.Calls > most[name] {
-			most[name], s.Window.ModelP95Ms = c.Calls, finite(r.values[2])
+	}
+	for _, r := range latencies {
+		if len(r.group) < 1 || len(r.values) < 1 {
+			continue
+		}
+		if s := by[r.group[0]]; s != nil {
+			s.Window.ModelP95Ms = finite(r.values[0])
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(by)) {

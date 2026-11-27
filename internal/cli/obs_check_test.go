@@ -86,6 +86,15 @@ func (s *seqCaller) Call(ctx context.Context, procedure string, req, out any) er
 	// AI panel (obsbackend.AIPanelID) on every check, and its calls are kept
 	// apart so a test counting another panel's reads is not moved by it
 	// (obs_check_ai_test.go tests them).
+	if b, _ := json.Marshal(req); procedure == procPanel && strings.Contains(string(b), `"id":"ai-model-latency"`) {
+		fc.replies[procedure] = `{"rows":[]}`
+		const key = procPanel + "#ai-model-latency"
+		if rs := s.replies[key]; len(rs) > 0 {
+			fc.replies[procedure] = rs[min(s.n[key], len(rs)-1)]
+			s.n[key]++
+		}
+		return fc.Call(ctx, procedure, req, out)
+	}
 	if b, _ := json.Marshal(req); procedure == procPanel && strings.Contains(string(b), `"id":"`+obsbackend.AIPanelID+`"`) {
 		fc.replies[procedure] = `{"rows":[]}`
 		if rs := s.replies[procAIPanel]; len(rs) > 0 {

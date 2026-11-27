@@ -7,14 +7,14 @@ import (
 )
 
 // TestChangedOpCodesAreFindings: the changed-op codes are finding codes a
-// policy may fail on, appended after the existing ones (the order findings
-// sort in), and the default policy fails on neither.
+// policy may fail on, appended after the codes before them (the order
+// findings sort in), and the default policy fails on neither.
 func TestChangedOpCodesAreFindings(t *testing.T) {
-	n := len(HealthFindings)
-	if !reflect.DeepEqual(HealthFindings[n-2:], []string{HealthChangedOpErrors, HealthChangedOpLatency}) || HealthFindings[n-3] != HealthProbeLatency {
-		t.Errorf("HealthFindings = %v: the changed-op codes must be appended at the end", HealthFindings)
+	i := slices.Index(HealthFindings, HealthProbeLatency) + 1
+	if i == 0 || i+2 > len(HealthFindings) || !reflect.DeepEqual(HealthFindings[i:i+2], []string{HealthChangedOpErrors, HealthChangedOpLatency}) {
+		t.Errorf("HealthFindings = %v: the changed-op codes must follow probe_latency", HealthFindings)
 	}
-	if !reflect.DeepEqual(ChangedOpFindings, HealthFindings[n-2:]) {
+	if !reflect.DeepEqual(ChangedOpFindings, HealthFindings[i:i+2]) {
 		t.Errorf("ChangedOpFindings = %v", ChangedOpFindings)
 	}
 	def := DefaultReleaseHealth()

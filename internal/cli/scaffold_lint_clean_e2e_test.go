@@ -29,9 +29,7 @@ import (
 // Scenario (mirrors TestE2EPbThroughCrudPlusCustomRpc): a fresh project
 // with a dashboard frontend and, in one service, BOTH a `// forge:entity`
 // CRUD entity (with an enum field and an optional field) AND a genuine
-// custom RPC. new → author proto → `forge scaffold` → build green → the
-// author declares whose rows the born table holds (the one decision the
-// scaffold asks for rather than makes; see the crud-ownership lane) →
+// custom RPC. new → author proto → `forge scaffold` → build green →
 // `forge lint --no-fix` and asserts:
 //
 //   - exit 0 with ZERO error findings (no "❌" anywhere) — covering the
@@ -45,6 +43,10 @@ import (
 //   - the scaffold-not-customized findings are still SURFACED, as
 //     warnings (fresh scaffold always carries FORGE_SCAFFOLD markers —
 //     pending work, not a defect);
+//   - the born orders table, which declares no owner (the one decision
+//     the scaffold asks for rather than makes), is surfaced as a
+//     "pending: choose an owner" warning; once the author edits the
+//     table, crud-table-unowned gates, and declaring the scope clears it;
 //   - the golangci and contractlint lanes actually RAN (a silently
 //     skipped lane would make the exit-0 assertion vacuous). The
 //     contractlint binary is built from THIS tree and prepended to PATH
@@ -68,7 +70,11 @@ func TestE2EFreshScaffoldLintExitsZero(t *testing.T) {
 	proto := readFileE2E(t, protoPath)
 	proto = strings.Replace(proto, "  // TODO: Add your RPC methods here.",
 		// Custom mutations declare their activity event (or none), as
-		// forgeconv-activity-declared requires.
+		// forgeconv-activity-declared requires — except CompleteOrder,
+		// declared bare the way an author first writes an rpc: its handler
+		// is forge's unwired stub after `forge scaffold`, so the rule holds
+		// it at a "pending: implement" warning rather than failing the
+		// scaffold's own output (asserted below).
 		"  rpc ArchiveOrder(ArchiveOrderRequest) returns (ArchiveOrderResponse) {\n"+
 			"    option (forge.v1.method) = {\n"+
 			"      activity: {\n"+
@@ -84,7 +90,8 @@ func TestE2EFreshScaffoldLintExitsZero(t *testing.T) {
 			"    option (forge.v1.method) = {\n"+
 			"      activity: {none: \"fixture: the key is not persisted\"}\n"+
 			"    };\n"+
-			"  }", 1)
+			"  }\n"+
+			"  rpc CompleteOrder(CompleteOrderRequest) returns (CompleteOrderResponse);", 1)
 	proto += `
 // forge:entity
 message Order {
@@ -110,6 +117,14 @@ message ArchiveOrderResponse {
 
 message CreateApiKeyRequest {}
 message CreateApiKeyResponse {}
+
+message CompleteOrderRequest {
+  string id = 1;
+}
+
+message CompleteOrderResponse {
+  Order order = 1;
+}
 `
 	if err := os.WriteFile(protoPath, []byte(proto), 0o644); err != nil {
 		t.Fatalf("author catalog proto: %v", err)
@@ -123,21 +138,6 @@ message CreateApiKeyResponse {}
 
 	runCmd(t, projectDir, forgeBin, "scaffold")
 	runCmd(t, projectDir, "go", "build", "./...")
-
-	// The one question the scaffold leaves to its author: whose rows the
-	// born orders table holds. Forge declares no owner and no exemption for
-	// them, so the crud-ownership lane names the table (a warning or an
-	// error by the pin's rollout; either way the decision is asked, not
-	// made). The author then answers in a new migration, which is the
-	// fresh project every later assertion judges.
-	ownOut, _ := runCmdAllowFail(t, projectDir, forgeBin, "lint", "--crud-ownership", "--no-fix")
-	if !strings.Contains(ownOut, "[crud-table-unowned]") || !strings.Contains(ownOut, "table orders") {
-		t.Errorf("an ownerless born table must be asked whose rows it holds, not exempted for its author:\n%s", ownOut)
-	}
-	writeFileE2E(t, nextMigrationPathE2E(t, projectDir, "declare_orders_scope"),
-		"-- forge:backward-compatible — a table comment only; no schema change\n"+
-			"COMMENT ON TABLE orders IS 'forge:unscoped: fixture; every caller of the catalog service is an operator';\n")
-	runCmd(t, projectDir, forgeBin, "generate")
 
 	// THE INVARIANT: `forge lint` exits 0 on the fresh scaffold. PATH is
 	// prepended with the tree-built contractlint so the contract lane runs
@@ -177,6 +177,16 @@ message CreateApiKeyResponse {}
 		t.Errorf("static-export lane did not judge the scaffolded frontend clean:\n%s", out)
 	}
 
+	// The one question the scaffold leaves to its author: whose rows the
+	// born orders table holds. Forge declares no owner and no exemption for
+	// them, so the crud-ownership lane asks — as a pending warning while the
+	// table is exactly as born (the exit-0 and no-❌ assertions above hold
+	// the "not a gate" half).
+	if !strings.Contains(out, "pending: choose an owner for Order") || !strings.Contains(out, "table orders") {
+		t.Errorf("the ownerless born orders table must be asked whose rows it holds, as a pending warning:\n%s", out)
+	}
+	assertEditedTableOwnershipGates(t, projectDir, forgeBin)
+
 	// The scaffold's expected FORGE_SCAFFOLD markers are surfaced as a
 	// WARNING — visible, but not gating.
 	if !strings.Contains(out, "[scaffold-not-customized]") {
@@ -184,6 +194,13 @@ message CreateApiKeyResponse {}
 	}
 	if strings.Contains(out, "❌ [scaffold-not-customized]") {
 		t.Errorf("scaffold-not-customized fired at error severity:\n%s", out)
+	}
+
+	// The bare CompleteOrder is still forge's unwired stub: its missing
+	// activity declaration is surfaced as pending work, not a gate (the
+	// exit-0 and no-❌ assertions above hold the "not a gate" half).
+	if !strings.Contains(out, "pending: implement CompleteOrder") {
+		t.Errorf("the stubbed, undeclared CompleteOrder must be reported as a pending activity declaration:\n%s", out)
 	}
 }
 
@@ -810,5 +827,27 @@ func assertScaffoldIsEslintCleanAsEmitted(t *testing.T, feDir string) {
 		t.Errorf("the emitted scaffold is not eslint-clean as written — every new project starts "+
 			"with findings its author did not create, and `forge lint`'s --fix pre-pass hides "+
 			"them by mutating the files:\n%s", out)
+	}
+}
+
+// assertEditedTableOwnershipGates edits the born orders table the way an
+// author evolves an entity (a new migration that alters it), and requires
+// crud-table-unowned to gate from then on; declaring the scope clears it.
+func assertEditedTableOwnershipGates(t *testing.T, projectDir, forgeBin string) {
+	t.Helper()
+	writeFileE2E(t, nextMigrationPathE2E(t, projectDir, "orders_add_carrier"),
+		"-- forge:backward-compatible — adds a nullable column\n"+
+			"ALTER TABLE orders ADD COLUMN carrier TEXT;\n")
+	ownOut, err := runCmdAllowFail(t, projectDir, forgeBin, "lint", "--crud-ownership", "--no-fix")
+	if err == nil || !strings.Contains(ownOut, "[crud-table-unowned]") || !strings.Contains(ownOut, "table orders") ||
+		strings.Contains(ownOut, "pending: choose an owner") {
+		t.Errorf("once the author edits the born table, crud-table-unowned must gate (err=%v):\n%s", err, ownOut)
+	}
+	writeFileE2E(t, nextMigrationPathE2E(t, projectDir, "declare_orders_scope"),
+		"-- forge:backward-compatible — a table comment only; no schema change\n"+
+			"COMMENT ON TABLE orders IS 'forge:unscoped: fixture; every caller of the catalog service is an operator';\n")
+	if ownOut, err := runCmdAllowFail(t, projectDir, forgeBin, "lint", "--crud-ownership", "--no-fix"); err != nil ||
+		strings.Contains(ownOut, "[crud-table-unowned]") {
+		t.Errorf("a declared scope must answer crud-table-unowned (err=%v):\n%s", err, ownOut)
 	}
 }

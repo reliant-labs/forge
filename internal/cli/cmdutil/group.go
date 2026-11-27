@@ -46,6 +46,12 @@ func suggestFor(cmd *cobra.Command, typed string) string {
 	if cmd.DisableSuggestions {
 		return ""
 	}
+	// cobra's findSuggestions defaults the edit distance to 2 before asking;
+	// SuggestionsFor alone treats an unset 0 as "exact match only", so a typo
+	// such as `contiune` got no hint.
+	if cmd.SuggestionsMinimumDistance <= 0 {
+		cmd.SuggestionsMinimumDistance = 2
+	}
 	suggestions := cmd.SuggestionsFor(typed)
 	if len(suggestions) == 0 {
 		return ""

@@ -25,6 +25,24 @@ except that a local tool also takes `dir` (the repo to act on). Hosted results
 are the CLI's `--json` documents plus `console_url`, the page at
 https://forge.reliantlabs.io that shows the same thing.
 
+### The local server lists its core tools: `--tools`
+
+A client resends every listed tool to the model on every call, so tools an
+agent never calls still cost it tokens each turn. So `forge mcp` lists six by
+default (`audit`, `shapes`, `skill_search`, `skill_load`, `lint`, `generate`)
+plus `forge_tools`, which enables the other groups mid-session: `catalog`
+(`benefits`, `why`, `capabilities`, `schema`, `annotations`, `libraries`,
+`skill_list`), `support` (`explain_error`, `report_bug`), `ops`
+(`blast_radius`, `db_query`, `obs_*`) and `deploy` (`deploy_claimable`,
+`deploy_status`). Every tool in the table above stays reachable that way. Name
+groups up front with a comma list, or list every tool with `--tools all`
+(what `forge mcp` listed before core became the default):
+
+```bash
+claude mcp add forge -- npx -y @reliantlabs/forge mcp --tools core,deploy,ops
+claude mcp add forge -- npx -y @reliantlabs/forge mcp --tools all
+```
+
 Rules of thumb: working in a repo, add the local server. Asking "what is broken
 in prod", "did that release regress", "record this deploy" from anywhere,
 including a phone, add the hosted connector.
@@ -122,7 +140,9 @@ connector is for clients outside Reliant.
 
 ## Check it works
 
-- Local: call `benefits`. It answers with what forge does for the repo.
+- Local: call `skill_load` with `adopt` (`forge` in a forge project), or
+  `forge_tools` with `enable: ["catalog"]` and then `benefits`, which answers
+  with what forge does for the repo.
 - Hosted: call `envs_list` with your project name (the `<project>` in
   `https://forge.reliantlabs.io/forge/p/<project>`), then `obs_status` for one
   of its envs. No project yet? `obs_init` registers envs and returns the

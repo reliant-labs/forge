@@ -132,6 +132,12 @@ type ObservabilityAgentSpec struct {
 	// A pointer, so the spec stays comparable (a slice field is not); on
 	// the wire it is the same JSON list.
 	Telemetry *[]telemetry.Target `json:"telemetry,omitempty"`
+	// KubernetesInventory opts the agent's cluster in to its Kubernetes
+	// inventory and events: the one-replica cluster collector beside the
+	// agent, and the cluster and node stamped on the agent's scrapes
+	// (kcl/schema.k KubernetesInventory; observability_kubernetes.go). Nil,
+	// the default, renders neither.
+	KubernetesInventory *KubernetesInventory `json:"kubernetesInventory,omitempty"`
 }
 
 // declaredTelemetry is s.Telemetry, nil when it declares none.
@@ -467,6 +473,7 @@ func (s ObservabilityAgentSpec) AgentConfigFor(ctx ObservabilityContext) (string
 		if err := tel.MergeInto(cfg); err != nil {
 			return "", err
 		}
+		s.stampScrapeCluster(cfg)
 	}
 	return marshalConfig(cfg)
 }
@@ -796,7 +803,15 @@ func RenderObservabilityAgent(s ObservabilityAgentSpec, ctx ObservabilityContext
 		},
 	}
 
-	out, err := toUnstructured([]runtime.Object{nsObj, sa, role, binding, cm, ds, svc})
+	objs := []runtime.Object{nsObj, sa, role, binding, cm, ds, svc}
+	if s.KubernetesInventory != nil {
+		inv, err := renderClusterCollector(s, *s.KubernetesInventory, ctx)
+		if err != nil {
+			return nil, err
+		}
+		objs = append(objs, inv...)
+	}
+	out, err := toUnstructured(objs)
 	if err != nil {
 		return nil, err
 	}

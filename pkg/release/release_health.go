@@ -56,19 +56,35 @@ const (
 	// HealthChangedOpLatency: a changed op's p95 grew by more than
 	// changed_op_max_p95_ratio. It warns by default, as latency does.
 	HealthChangedOpLatency = "changed_op_latency"
+	// HealthSEORegressed: a static frontend's site audit of the release
+	// (pkg/siteaudit) is worse for search than the same env's audit of the
+	// previous release: the site's or a route's SEO score dropped by more
+	// than seo_max_score_drop, or a new error-severity SEO finding appeared
+	// (the env became noindex, robots.txt disallows /, a canonical names
+	// another host, an internal link answers 404). It warns by default.
+	HealthSEORegressed = "seo_regressed"
+	// HealthA11yRegressed: likewise for accessibility: the accessibility
+	// score dropped by more than a11y_max_score_drop, or a new critical axe
+	// violation appeared. It warns by default.
+	HealthA11yRegressed = "a11y_regressed"
 )
 
 // HealthFindings is every finding code, in a stable order. A code added here
 // is a value a control plane that predates it refuses in a recorded fail_on,
 // so it needs a bundle feature that withholds it (bundle_features.go:
-// BundleFeatureReleaseProbes, BundleFeatureReleaseHealthChangedOps).
+// BundleFeatureReleaseProbes, BundleFeatureReleaseHealthChangedOps,
+// BundleFeatureReleaseHealthSiteAudit).
 var HealthFindings = []string{HealthErrorRate, HealthLatency, HealthNewIssue, HealthRegressedIssue, HealthAlertFiring, HealthWorkloadRestarts,
 	HealthBrowserErrors, HealthBrowserFailedRequests, HealthBrowserPageLoad, HealthProbeFailed, HealthProbeLatency,
-	HealthChangedOpErrors, HealthChangedOpLatency}
+	HealthChangedOpErrors, HealthChangedOpLatency, HealthSEORegressed, HealthA11yRegressed}
 
 // ChangedOpFindings are the codes judged per op the release changed
 // (HealthChangedOpErrors, HealthChangedOpLatency).
 var ChangedOpFindings = []string{HealthChangedOpErrors, HealthChangedOpLatency}
+
+// SiteAuditFindings are the codes judged from a static frontend's site audit
+// (HealthSEORegressed, HealthA11yRegressed).
+var SiteAuditFindings = []string{HealthSEORegressed, HealthA11yRegressed}
 
 // How many services a release needs a baseline for
 // (ShapeReleaseHealth.RequireBaseline). A service's baseline is its before
@@ -161,6 +177,17 @@ type ShapeReleaseHealth struct {
 	// a shape that keeps it encodes as it did before the field (a reader
 	// that predates it is sent none: BundleFeatureReleaseHealthAlertBaseline).
 	AlertBaselineMinFirings *int `json:"alert_baseline_min_firings,omitempty"`
+	// SEOMaxScoreDrop is how many points (0-100) a static frontend's SEO
+	// score, site-wide or on one route, may drop against the same env's
+	// audit of the previous release before seo_regressed fires; 0 fires on
+	// any drop. Nil means DefaultSiteAuditMaxScoreDrop, and is how the
+	// default is recorded, so a shape that keeps it encodes as it did before
+	// the field (a reader that predates it is sent none:
+	// BundleFeatureReleaseHealthSiteAudit).
+	SEOMaxScoreDrop *int `json:"seo_max_score_drop,omitempty"`
+	// A11yMaxScoreDrop is SEOMaxScoreDrop for the accessibility score and
+	// a11y_regressed.
+	A11yMaxScoreDrop *int `json:"a11y_max_score_drop,omitempty"`
 }
 
 // The defaults of the fields a shape records as 0.
@@ -173,7 +200,25 @@ const (
 	// DefaultAlertBaselineMinFirings: an alert that fired even once in the
 	// baseline window was already firing before the release.
 	DefaultAlertBaselineMinFirings = 1
+	// DefaultSiteAuditMaxScoreDrop is the default of SEOMaxScoreDrop and
+	// A11yMaxScoreDrop: a score drop of more than 10 points is a regression.
+	DefaultSiteAuditMaxScoreDrop = 10
+	// MaxSiteAuditScoreDrop bounds them: a score is 0-100.
+	MaxSiteAuditScoreDrop = 100
 )
+
+// SEOScoreDrop is SEOMaxScoreDrop with the default filled in.
+func (h ShapeReleaseHealth) SEOScoreDrop() int { return scoreDropOr(h.SEOMaxScoreDrop) }
+
+// A11yScoreDrop is A11yMaxScoreDrop with the default filled in.
+func (h ShapeReleaseHealth) A11yScoreDrop() int { return scoreDropOr(h.A11yMaxScoreDrop) }
+
+func scoreDropOr(p *int) int {
+	if p == nil {
+		return DefaultSiteAuditMaxScoreDrop
+	}
+	return *p
+}
 
 // AlertBaselineFirings is AlertBaselineMinFirings with the default filled
 // in; 0 counts every alert opened after the promotion.
@@ -276,6 +321,12 @@ func (h ShapeReleaseHealth) canonical() ShapeReleaseHealth {
 	if out.AlertBaselineMinFirings != nil && *out.AlertBaselineMinFirings == DefaultAlertBaselineMinFirings {
 		out.AlertBaselineMinFirings = nil
 	}
+	if out.SEOMaxScoreDrop != nil && *out.SEOMaxScoreDrop == DefaultSiteAuditMaxScoreDrop {
+		out.SEOMaxScoreDrop = nil
+	}
+	if out.A11yMaxScoreDrop != nil && *out.A11yMaxScoreDrop == DefaultSiteAuditMaxScoreDrop {
+		out.A11yMaxScoreDrop = nil
+	}
 	return out
 }
 
@@ -303,6 +354,15 @@ func (h ShapeReleaseHealth) validate() error {
 	}
 	if h.AlertBaselineMinFirings != nil && *h.AlertBaselineMinFirings < 0 {
 		return fmt.Errorf("%w: shape release_health alert_baseline_min_firings must be at least 0 (0 counts every alert; absent: %d)", ErrInvalid, DefaultAlertBaselineMinFirings)
+	}
+	for _, d := range []struct {
+		name string
+		p    *int
+	}{{"seo_max_score_drop", h.SEOMaxScoreDrop}, {"a11y_max_score_drop", h.A11yMaxScoreDrop}} {
+		if d.p != nil && (*d.p < 0 || *d.p > MaxSiteAuditScoreDrop) {
+			return fmt.Errorf("%w: shape release_health %s %d must be 0 to %d score points (0 fires on any drop; absent: %d)",
+				ErrInvalid, d.name, *d.p, MaxSiteAuditScoreDrop, DefaultSiteAuditMaxScoreDrop)
+		}
 	}
 	if h.BaselineWindowSeconds != 0 {
 		if b := h.BaselineWindow(); b < h.Window() || b > MaxHealthBaselineWindow {

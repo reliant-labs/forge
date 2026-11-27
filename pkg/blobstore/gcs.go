@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -77,6 +78,8 @@ var (
 	_ Store             = (*GCS)(nil)
 	_ LevelLister       = (*GCS)(nil)
 	_ DownloadPresigner = (*GCS)(nil)
+	_ ObjectReader      = (*GCS)(nil)
+	_ ObjectWriter      = (*GCS)(nil)
 )
 
 // NewGCS validates cfg and builds the store. Building the client resolves
@@ -220,13 +223,9 @@ func (g *GCS) PresignGet(ctx context.Context, key string, opts GetOptions) (Pres
 		if err := validateReadKey(key, g.allowOpaqueKeys); err != nil {
 			return PresignedRequest{}, err
 		}
-		d, err := ttl(opts.TTL)
+		d, params, err := getParams(opts)
 		if err != nil {
 			return PresignedRequest{}, err
-		}
-		var params url.Values
-		if opts.DownloadName != "" {
-			params = url.Values{"response-content-disposition": {contentDisposition(opts.DownloadName)}}
 		}
 		return g.signedURL(ctx, key, http.MethodGet, d, "", nil, params)
 	})
@@ -260,6 +259,83 @@ func (g *GCS) Stat(ctx context.Context, key string) (Object, error) {
 			return Object{}, fmt.Errorf("blobstore: stat %q in bucket %q: %w", key, g.name, err)
 		}
 		return gcsObject(attrs), nil
+	})
+}
+
+// Open implements ObjectReader: the object's attributes, then a range read
+// pinned to the generation they describe, so the bytes streamed are that
+// version's even if the object is replaced meanwhile. The bytes are read as
+// stored (ReadCompressed): a gzip-encoded object is not decompressed, so
+// offsets and Size count the same bytes.
+func (g *GCS) Open(ctx context.Context, key string, opts OpenOptions) (io.ReadCloser, Object, error) {
+	o, err := g.chain.Around(ctx, "blobstore.Open", func(ctx context.Context) (opened, error) {
+		if err := validateReadKey(key, g.allowOpaqueKeys); err != nil {
+			return opened{}, err
+		}
+		if err := validateOpen(opts); err != nil {
+			return opened{}, err
+		}
+		h := g.bucket.Object(key)
+		attrs, err := h.Attrs(ctx)
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return opened{}, errorf(ErrNotFound, "open %q in bucket %q", key, g.name)
+		}
+		if err != nil {
+			return opened{}, fmt.Errorf("blobstore: open %q in bucket %q: %w", key, g.name, err)
+		}
+		off, n, err := openRange(attrs.Size, opts)
+		if err != nil {
+			return opened{}, err
+		}
+		if n == 0 {
+			return opened{body: emptyBody(), obj: gcsObject(attrs)}, nil
+		}
+		r, err := h.Generation(attrs.Generation).ReadCompressed(true).NewRangeReader(ctx, off, n)
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			// Replaced or deleted since its attributes were read.
+			return opened{}, errorf(ErrNotFound, "open %q in bucket %q: generation %d is gone", key, g.name, attrs.Generation)
+		}
+		if err != nil {
+			return opened{}, fmt.Errorf("blobstore: open %q in bucket %q: %w", key, g.name, err)
+		}
+		return opened{body: r, obj: gcsObject(attrs)}, nil
+	})
+	if err != nil {
+		return nil, Object{}, err
+	}
+	return o.body, o.obj, nil
+}
+
+// PutObject implements ObjectWriter through the JSON API's upload: one
+// request for a body within the writer's chunk size, a resumable upload
+// past it. A body that fails cancels the upload's context before the writer
+// is closed, which abandons the upload uncommitted.
+func (g *GCS) PutObject(ctx context.Context, key string, body io.Reader, opts PutObjectOptions) (Object, error) {
+	return g.chain.Around(ctx, "blobstore.PutObject", func(ctx context.Context) (Object, error) {
+		if err := ValidateKey(key); err != nil {
+			return Object{}, err
+		}
+		if err := validatePutObject(opts); err != nil {
+			return Object{}, err
+		}
+		b := newPutBody(body, opts)
+		uctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		w := g.bucket.Object(key).NewWriter(uctx)
+		w.ContentType = opts.ContentType
+		if _, err := io.Copy(w, b); err != nil {
+			cancel()
+			_ = w.Close()
+			if b.err != nil {
+				return Object{}, fmt.Errorf("blobstore: put %q in bucket %q: %w", key, g.name, b.err)
+			}
+			return Object{}, fmt.Errorf("blobstore: put %q in bucket %q: %w", key, g.name, err)
+		}
+		if err := w.Close(); err != nil {
+			return Object{}, fmt.Errorf("blobstore: put %q in bucket %q: %w", key, g.name, err)
+		}
+		attrs := w.Attrs()
+		return b.object(key, attrs.ContentType, attrs.Etag, attrs.Updated), nil
 	})
 }
 

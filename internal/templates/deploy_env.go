@@ -70,6 +70,11 @@ type EnvTemplateData struct {
 	// listens on its vite.config `server.port`, or 5173). Zero keeps the
 	// resolved, per-checkout port `forge env up` passes as PORT.
 	FrontendDevPort int
+	// SiteURL declares the frontend's SITE_URL build variable as a
+	// forge.FrontendURL to itself: the origin a static site writes into its
+	// canonical link, og:url, robots.txt and sitemap. Set for a static site
+	// (WriteSiteScaffold); an app frontend does not read it.
+	SiteURL bool
 	// Bindings is the body of the env's `_workloads = [...]` list: one
 	// `        _<binder>(wl.<ident>)` line per workload. EnvBinding renders one.
 	Bindings string

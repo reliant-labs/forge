@@ -331,7 +331,8 @@ reliant-labs/forge`; reliant #1923). Never review, label or merge as `reliant-01
   `pkg/alerting`, and every other package's integration tests (db squash, OpenBao with
   envtest, docker builds, the scaffolded MinIO and ClickStack, pgstore, blobstore,
   migratekit; `-tags=integration`, throwaway containers; under `CI` a missing docker
-  fails them, `testdocker.Unavailable`). A step that narrows with `-run` must select
+  fails them, `testdocker.Unavailable`, except in a Reliant gate, `RELIANT_GATE=1`,
+  where they skip as `skip: docker unavailable (gate)` and the gate counts the skip). A step that narrows with `-run` must select
   every integration test of the packages it names. `internal/ciguard` fails a
   package with integration-tagged tests that no push-to-main step runs, unless
   `integrationNotInCI` says why.

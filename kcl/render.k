@@ -2358,8 +2358,21 @@ _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
             }
             "image": _o.agent.image
             "memoryLimitMiB": _o.agent.memory_limit_mib
-        } | _tel_agent_spec(b, t.cluster)
+        } | _tel_agent_spec(b, t.cluster) | _k8s_inventory_spec(_o.agent, t.cluster)
     } for _, t in _targets]
+}
+
+# The `kubernetesInventory` key of a cluster's agent record (kcl/schema.k
+# KubernetesInventory; pkg/deploy.KubernetesInventory): absent unless the env
+# opts in.
+_k8s_inventory_spec = lambda agent: ObservabilityAgent, cluster: str -> {str:} {
+    _k = agent.kubernetes_inventory
+    {"kubernetesInventory": {
+        "cluster": cluster
+        "nodeInterval": _k.node_interval
+        "workloadInterval": _k.workload_interval
+        "events": _k.events
+    }} if _k else {}
 }
 
 # ---------------------------------------------------------------------------
@@ -2478,8 +2491,9 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
 # regressed_issue_min_events only when it is set and differs from
 # new_issue_min_events (which it follows unset), and error_rate_min_errors
 # and baseline_window_seconds only when they are not the defaults (10, 24h),
-# and alert_baseline_min_firings only when it is not the default (1), so a
-# render that keeps them records the shape it always did.
+# and alert_baseline_min_firings only when it is not the default (1), and
+# seo_max_score_drop and a11y_max_score_drop only when they are not the
+# default (10), so a render that keeps them records the shape it always did.
 _render_release_health = lambda h: ReleaseHealth -> any {
     {
         "window_seconds": _release_health_seconds(h.window)
@@ -2498,6 +2512,10 @@ _render_release_health = lambda h: ReleaseHealth -> any {
             "baseline_window_seconds": _release_health_seconds(h.baseline_window)
         if h.alert_baseline_min_firings != 1:
             "alert_baseline_min_firings": h.alert_baseline_min_firings
+        if h.seo_max_score_drop != 10:
+            "seo_max_score_drop": h.seo_max_score_drop
+        if h.a11y_max_score_drop != 10:
+            "a11y_max_score_drop": h.a11y_max_score_drop
     }
 }
 
@@ -3951,7 +3969,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         "dev_runner": f.dev_runner
         "port": f.port
         "env_file": f.env_file if f.env_file else None
-        "env_vars": [_render_env_var(e) for e in f.env_vars if not (_obs_browser_off(bundle) and e.name == _otel_endpoint_var(f))] \
+        "env_vars": [_render_frontend_env_var(e, f, bundle) for e in f.env_vars if not (_obs_browser_off(bundle) and e.name == _otel_endpoint_var(f))] \
             + ([_render_env_var(EnvVar {name = _otel_endpoint_var(f), value = "off"})] if _obs_browser_off(bundle) else [])
         "config": _render_frontend_config(f.config) if f.config else None
         "runtime": _render_frontend_runtime(f.runtime)
@@ -3975,6 +3993,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
     } | ({"apis": _apis, "api_urls": _api_urls} if f.apis else {}) \
       | ({"routes": f.routes} if f.routes else {}) \
       | ({"changes_from_source": False} if f.changes_from_source == False else {}) \
+      | ({"release_urls": False} if f.release_urls == False else {}) \
       | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {}) \
       | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {})
 }
@@ -3984,6 +4003,44 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
 # `value`, which preserves an explicitly-set empty string (rendered as
 # `""`, not `null`). Empty-string `value` is a legal disable sentinel
 # downstream (e.g. RUNTIME_CLASS_NAME="" to skip runtimeClassName).
+#
+# A frontend's env var lowers a forge.FrontendURL by where its TARGET runs
+# (kcl/schema.k FrontendURL): a dev server's URL is known now, so it becomes
+# the value; a hosted frontend's hostname is the control plane's, so the
+# reference is kept for the build to resolve (`frontend_url`, value null);
+# every other runtime has no hostname forge knows, and is refused. Every
+# var that carries no FrontendURL renders exactly as _render_env_var does.
+_render_frontend_env_var = lambda ev: EnvVar, f: Frontend, bundle: Bundle -> any {
+    _r = _render_env_var(ev)
+    (_r | _frontend_url_lowered(ev.name, ev.frontend_url, f, bundle)) if ev.frontend_url else _r
+}
+
+_frontend_url_lowered = lambda name: str, ref: FrontendURL, f: Frontend, bundle: Bundle -> any {
+    _where = "frontend '${f.name}' env_vars ${name}"
+    _targets = [t for t in bundle.frontends if t.name == ref.frontend]
+    assert _targets, \
+        "${_where}: forge.FrontendURL names frontend '${ref.frontend}', which this environment does not declare. " \
+        + "Declared frontends: " + ", ".join([t.name for t in bundle.frontends]) + "."
+    _t = _targets[0]
+    _type = _t.runtime.type if _t.runtime else ""
+    assert _type in ["host", "hosted"], \
+        "${_where}: forge.FrontendURL '${ref.frontend}' runs on the ${_type} runtime, whose public hostname forge does not know " \
+        + "(it is your CDN's or your Firebase site's). Set ${name} to the site's URL as a literal: forge.EnvVar {name = \"${name}\", value = \"https://example.com\"}."
+    # A dev server's URL baked into a published build would ship localhost
+    # as the site's canonical origin.
+    assert not (_type == "host" and f.runtime and f.runtime.type != "host"), \
+        "${_where}: forge.FrontendURL '${ref.frontend}' is a dev server (forge.OnHost), and frontend '${f.name}' publishes a build on the ${f.runtime.type} runtime: " \
+        + "the build would carry http://localhost as its origin. Name a hosted frontend, or set ${name} to a literal value."
+    # A hosted target's hostname is resolved only by a build forge runs (a
+    # hosted release, a bucket/Firebase/BuildOnly deploy). A dev server is
+    # not one, so it would see the variable empty.
+    assert not (_type == "hosted" and f.runtime and f.runtime.type == "host"), \
+        "${_where}: forge.FrontendURL '${ref.frontend}' is a hosted site, and frontend '${f.name}' is a dev server (forge.OnHost), which forge does not build: " \
+        + "nothing would resolve the hosted hostname. Name a dev-served frontend of this env, or set ${name} to a literal value."
+    {"value": "http://localhost:" + str(_t.port) + (_t.base_path if _t.base_path else "")} if _type == "host" \
+        else {"frontend_url": {"frontend": ref.frontend}}
+}
+
 _render_env_var = lambda ev: EnvVar -> any {
     {
         "name": ev.name

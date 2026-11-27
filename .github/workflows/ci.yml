@@ -2,8 +2,13 @@
 name: CI
 
 on:
+  # reliant-queue/**: the Reliant merge queue's batch candidates
+  # (.reliant/pipeline.yaml). Such a push runs the `windows` job alone: its
+  # `Windows` check is the one part of the queue's gate a Linux gate machine
+  # cannot run. Every other job's `if:` names main (the spellings below), so a
+  # candidate push spends no other runner.
   push:
-    branches: [main]
+    branches: [main, "reliant-queue/**"]
   # NO PATH FILTER. `CI gate` is the main ruleset's required check, and a
   # workflow a path filter skips never reports it: a docs-only pull request
   # would wait on it forever. A job-level `if:` would keep the skip and still
@@ -125,9 +130,11 @@ permissions:
 # fixed. Jobs select when they run with exactly one of these spellings
 # (internal/ciguard holds every job to them; a job with no `if:` runs always):
 #   merge tier:   github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:run'))
-#   push-to-main: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+#   push-to-main: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+#   push-to-main + queue candidates (windows): github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+#                 (a push is to main or to reliant-queue/**, the only branches `on: push` names)
 #   all but an unlabelled pull request (checks, which also saves main's tools cache):
-#                 github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run')
+#                 (github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/heads/reliant-queue/')) || contains(github.event.pull_request.labels.*.name, 'ci:run')
 #   pull request only (pr-checks): github.event_name == 'pull_request'
 #   merge queue + `ci:windows` (windows-changed):
 #                 github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:windows'))
@@ -294,7 +301,7 @@ jobs:
   # `golangci-lint run`) locally to see a finding before main does.
   lint:
     name: Lint (golangci-lint, go vet, -tags e2e)
-    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -606,7 +613,7 @@ jobs:
   # lane splits; internal/ciguard holds every matrix to every index.
   test:
     name: Test (${{ matrix.label }})
-    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     strategy:
       # Every shard reports: one failure must not hide another shard's.
@@ -683,7 +690,7 @@ jobs:
           run=$(scripts/ci-forge.sh test begin)
           mkdir -p "$run/integration-storage"
           scripts/ci-forge.sh test capture --run "$run" --lane integration-storage -- \
-            scripts/ci-go-test.sh -race -tags=integration -count=1 -json -covermode=atomic -coverprofile="$run/integration-storage/cover.out" -timeout=5m ./internal/storage
+            scripts/ci-go-test.sh -race -tags=integration -json -covermode=atomic -coverprofile="$run/integration-storage/cover.out" -timeout=5m ./internal/storage
       # Main only: the runs the steps above recorded, for test-upload.yml.
       - name: Keep the recorded test runs (for test-upload.yml)
         if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
@@ -715,7 +722,7 @@ jobs:
 
   test-cli:
     name: Test (${{ matrix.label }})
-    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -802,7 +809,7 @@ jobs:
   # see the note above test-short.
   test-short-warm:
     name: Test (-short whole tier, then guards)
-    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -923,6 +930,12 @@ jobs:
   # cross-compile and vet from Linux, went too (2026-10-21): 1.5 minutes warm
   # and 5 cold, on a runner of its own, for a break that is rare and that this
   # job finds on main.
+  #
+  # AND ON A PUSH TO reliant-queue/** (the Reliant merge queue's candidates):
+  # the queue's gate waits for this job's `Windows` check on the candidate
+  # sha (.reliant/pipeline.yaml, `gate.checks`). It is the only job such a
+  # push runs. Its cache saves name refs/heads/main, so a candidate run
+  # restores main's cache and saves nothing.
   windows:
     name: Windows
     if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
@@ -1147,7 +1160,7 @@ jobs:
   # no data dependency.
   build:
     name: Build (-trimpath) + go-licenses + govulncheck
-    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1294,7 +1307,7 @@ jobs:
           run=$(scripts/ci-forge.sh test begin)
           mkdir -p "$run/integration-clickhouse"
           scripts/ci-forge.sh test capture --run "$run" --lane integration-clickhouse -- \
-            scripts/ci-go-test.sh -tags=integration -count=1 -json -coverprofile="$run/integration-clickhouse/cover.out" -timeout=20m ./pkg/obsquery ./pkg/alerting
+            scripts/ci-go-test.sh -tags=integration -json -coverprofile="$run/integration-clickhouse/cover.out" -timeout=20m ./pkg/obsquery ./pkg/alerting
       # The rest of forge's `integration`-tagged tests, which no lane ran
       # either until decision 17 of the 2026-11-10 triage: db squash against
       # real Postgres containers, OpenBao (the secret-store writer, and the
@@ -1321,7 +1334,7 @@ jobs:
           run=$(scripts/ci-forge.sh test begin)
           mkdir -p "$run/integration"
           scripts/ci-forge.sh test capture --run "$run" --lane integration -- \
-            scripts/ci-go-test.sh -tags=integration -count=1 -json -coverprofile="$run/integration/cover.out" -timeout=25m \
+            scripts/ci-go-test.sh -tags=integration -json -coverprofile="$run/integration/cover.out" -timeout=25m \
             -run '^(TestServiceDockerBuild_ReproducibleImageID|TestSmoke_UploadedJWKSLogsInToARealOpenBao|TestSmoke_WriterPathAgainstARealOpenBao|TestDBSquash_FromDSN_AdoptsTheGooseDatabaseItWasCutFrom|TestDBSquash_BaselineAndTheNextMigrationApplyInOneMigratekitRun|TestDBSquash_TheDatabaseItsHistoryBuiltAdoptsTheBaseline|TestDBSquash_IsByteForByteReproducible|TestGeneratedProjectDeliversTelemetryToClickStack|TestDockerfile_ProductionLoadLocation|TestScaffoldedMinIOReconcilesAnonymousAccess|TestWhyRoundTripsThroughInstancesAndEvents|TestMigrateAddsTheWhyColumnToAnOlderSchema|TestS3AgainstMinIO|TestConcurrentRunsBehindASessionModePgBouncer|TestConcurrentRunsOverCreateIndexConcurrentlyBehindASessionModePgBouncer|TestSlowSkipsInTheIntegrationLane)$' \
             ./internal/cli ./internal/templates ./pkg/alerting/pgstore ./pkg/blobstore ./pkg/migratekit ./pkg/testkit
       # Main only: the runs the integration steps recorded, for test-upload.yml.
@@ -1473,7 +1486,7 @@ jobs:
   # FIRST). On main it also saves the tools cache pr-checks and e2e restore.
   checks:
     name: Checks (generated code, KCL, pre-commit, licenses)
-    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') }}
+    if: ${{ (github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/heads/reliant-queue/')) || contains(github.event.pull_request.labels.*.name, 'ci:run') }}
     runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","cicd"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
@@ -1715,7 +1728,7 @@ jobs:
   # job to this shape and the script to its arithmetic.
   coverage-floor:
     name: Coverage floor
-    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
     needs:
       - test
       - test-cli

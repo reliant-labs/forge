@@ -2,7 +2,7 @@
 Forge KCL — the ML stack of a cluster you run
 (docs/proposals/ml-workloads.md §3.1).
 
-    forge.MLStack                 what one cluster runs for ML: one per cluster
+    forge.MLStack                 the ML components one cluster declares, any subset: one per cluster
     forge.Adopt                   a component that is already there: forge reads it
     forge.Install                 a component forge installs, from a pinned chart
     forge.Accelerators            one accelerator vendor on the cluster
@@ -13,7 +13,9 @@ missing. `forge ml discover` reads the cluster with your kube context
 (read-only) and proposes this declaration; you review it and commit it.
 Every component slot is `forge.Adopt` (a selector over what already runs,
 never touched), `forge.Install` (a pinned chart forge delivers, in the env's
-bundle or as a bootstrap chart, and labels as its own), or absent. A kind is never both, never installed
+bundle or as a bootstrap chart, and labels as its own), or absent. Every
+slot is optional: a stack declares any subset, one component included, and
+renders only what it declares. A kind is never both, never installed
 twice, and never installed when discovery found one running: two DCGM
 exporters on one node break each other's profiling counters.
 
@@ -289,8 +291,15 @@ schema RecommendationDecision:
             "RecommendationDecision '${id}'.expires '${expires}' must be a YYYY-MM-DD date: a dismissal is time-boxed, it cannot be open-ended"
 
 schema MLStack:
-    """What one cluster runs for ML, each component adopted or installed.
+    """The ML components one cluster declares, each adopted or installed.
     Set on `Bundle.ml_stacks`, one per cluster.
+
+    A stack declares any subset of components: only `cluster` is required
+    and every slot is optional, so a stack of one component is valid and
+    renders only that component. Adopt the DCGM exporter alone, or install
+    Kueue alone, and nothing else is rendered for a slot left unset; add
+    the next component when the cluster needs it. The example below fills
+    every slot to show each one:
 
         ml_stacks = [forge.MLStack {
             cluster = forge.ClusterTarget {cluster = "gke_acme_us-central1_gpu", namespace = "forge-ml"}

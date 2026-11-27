@@ -1,0 +1,62 @@
+syntax = "proto3";
+package shop.v1;
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/wrappers.proto";
+import "shared/v1/types.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/any.proto";
+option go_package = "example.com/x/gen/services/shop/v1;shopv1";
+
+// Status of an order.
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  // Open orders.
+  STATUS_OPEN = 1;
+  STATUS_SHIPPED = 2;
+}
+
+// An item.
+message Item {
+  string sku = 1;
+  Item parent = 2; // recursive
+}
+
+// ListOrdersRequest lists orders.
+message ListOrdersRequest {
+  // The page size.
+  int32 page_size = 1 [(buf.validate.field).int32 = {gte: 1, lte: 100}];
+  // Cursor.
+  string cursor = 2 [(buf.validate.field).string.pattern = "^[a-z]*$"];
+  optional Status status = 3 [(buf.validate.field).enum.defined_only = true];
+  int64 big = 4;
+  uint64 ubig = 5;
+  google.protobuf.Timestamp since = 6;
+  google.protobuf.Duration ttl = 7;
+  map<string, int64> counts = 8;
+  oneof sel {
+    string name = 9;
+    int32 num = 10;
+  }
+  google.protobuf.Struct meta = 11;
+  google.protobuf.StringValue sv = 12;
+  string id = 13 [(buf.validate.field).required = true, (buf.validate.field).string.min_len = 3];
+  repeated Item items = 14;
+  bytes blob = 15;
+  double d = 16;
+}
+message ListOrdersResponse { shared.v1.Page page = 3; repeated Item items = 1; Status status = 2; }
+// CancelOrderRequest names one open order.
+message CancelOrderRequest {
+  // The order to cancel.
+  string order_id = 1 [(buf.validate.field).string.uuid = true];
+  google.protobuf.Any extra = 2;
+}
+service OrdersService {
+  // ListOrders returns the caller's orders, newest first.
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse);
+  // CancelOrder cancels one open order and refunds its payment.
+  rpc CancelOrder(CancelOrderRequest) returns (google.protobuf.Empty);
+}

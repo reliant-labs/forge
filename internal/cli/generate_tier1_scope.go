@@ -114,6 +114,10 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	// step retires the on-disk copy — so there is no gate to register.
 	{exact: "db/embed_gen.go", gate: gateMigrateHasDriver},
 
+	// pkg/middleware/mcp_tools_gen.go is emitted by stepMCPTools, gated on
+	// the project declaring services, as procedures_gen.go is.
+	{exact: codegen.MCPToolsGenPath, gate: gateCodegenHasServices},
+
 	// pkg/app/app_gen.go (the minimal *App carrier) is emitted by
 	// stepAppSubstrate, gated on the project having at least one entrypoint
 	// (services, workers, operators). A pure-CLI project shouldn't see it

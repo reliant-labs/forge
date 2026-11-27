@@ -494,6 +494,7 @@ func generateSteps() []GenStep {
 		// scaffolded alongside providers.go in the internal/app composition
 		// step below — there is no auth-config codegen step.
 		{Name: "open-procedure set (pkg/middleware)", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepAuthProcedures, Tag: "codegen"},
+		{Name: "MCP tool table (pkg/middleware)", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepMCPTools, Tag: "codegen"},
 		{Name: "webhook routes", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.codegen=false", Run: stepWebhookRoutes, Tag: "codegen"},
 		{Name: "go mod tidy (pre-composition)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepGoModTidyPreComposition, Tag: "tools", Writes: writesBothTidies},
 		{Name: "internal/app composition (hybrid DI)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepInternalAppComposition, Tag: "codegen"},

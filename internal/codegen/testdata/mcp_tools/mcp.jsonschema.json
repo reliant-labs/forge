@@ -1,0 +1,286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "google.protobuf.Any": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string",
+          "description": "A URL identifying the type of the embedded message, e.g. `type.googleapis.com/google.rpc.ErrorInfo`."
+        }
+      },
+      "required": [
+        "@type"
+      ],
+      "additionalProperties": true,
+      "description": "An arbitrary message with a type URL identifying the encoded message type."
+    },
+    "google.protobuf.Duration": {
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]{1,9})?s$",
+      "description": "A signed duration in seconds, with up to nine fractional digits and an `s` suffix (for example, `3s` or `-0.001s`)."
+    },
+    "google.protobuf.Empty": {
+      "type": "object",
+      "description": "An empty JSON object."
+    },
+    "google.protobuf.ListValue": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/google.protobuf.Value"
+      },
+      "description": "A JSON array whose elements may be any JSON value."
+    },
+    "google.protobuf.NullValue": {
+      "type": "null",
+      "title": "NullValue",
+      "description": "The JSON `null` value."
+    },
+    "google.protobuf.StringValue": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "A string value; `null` is also accepted."
+    },
+    "google.protobuf.Struct": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/google.protobuf.Value"
+      },
+      "description": "A JSON object whose property values may be any JSON value."
+    },
+    "google.protobuf.Timestamp": {
+      "type": "string",
+      "examples": [
+        "2023-01-15T01:30:15.01Z",
+        "2024-12-25T12:00:00Z"
+      ],
+      "format": "date-time",
+      "description": "A point in time in RFC 3339 format, with up to nanosecond precision. Output uses UTC (`Z`); input may use an offset from UTC."
+    },
+    "google.protobuf.Value": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "array"
+        },
+        {
+          "type": "object",
+          "additionalProperties": true
+        }
+      ],
+      "description": "Any JSON value: `null`, number, string, boolean, array, or object."
+    },
+    "shared.v1.Page": {
+      "type": "object",
+      "properties": {
+        "next": {
+          "type": "string",
+          "title": "next"
+        }
+      },
+      "title": "Page",
+      "additionalProperties": false,
+      "description": "Page info."
+    },
+    "shop.v1.CancelOrderRequest": {
+      "type": "object",
+      "properties": {
+        "orderId": {
+          "type": "string",
+          "title": "order_id",
+          "format": "uuid",
+          "description": "The order to cancel."
+        },
+        "extra": {
+          "title": "extra",
+          "$ref": "#/$defs/google.protobuf.Any"
+        }
+      },
+      "title": "CancelOrderRequest",
+      "additionalProperties": false,
+      "description": "CancelOrderRequest names one open order."
+    },
+    "shop.v1.Item": {
+      "type": "object",
+      "properties": {
+        "sku": {
+          "type": "string",
+          "title": "sku"
+        },
+        "parent": {
+          "title": "parent",
+          "description": "recursive",
+          "$ref": "#/$defs/shop.v1.Item"
+        }
+      },
+      "title": "Item",
+      "additionalProperties": false,
+      "description": "An item."
+    },
+    "shop.v1.ListOrdersRequest": {
+      "type": "object",
+      "not": {
+        "required": [
+          "name",
+          "num"
+        ]
+      },
+      "properties": {
+        "pageSize": {
+          "type": "integer",
+          "title": "page_size",
+          "maximum": 100,
+          "minimum": 1,
+          "format": "int32",
+          "description": "The page size."
+        },
+        "cursor": {
+          "type": "string",
+          "title": "cursor",
+          "pattern": "^[a-z]*$",
+          "description": "Cursor."
+        },
+        "status": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/shop.v1.Status"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "status"
+        },
+        "big": {
+          "type": "string",
+          "title": "big",
+          "format": "int64"
+        },
+        "ubig": {
+          "type": "string",
+          "title": "ubig",
+          "format": "int64"
+        },
+        "since": {
+          "title": "since",
+          "$ref": "#/$defs/google.protobuf.Timestamp"
+        },
+        "ttl": {
+          "title": "ttl",
+          "$ref": "#/$defs/google.protobuf.Duration"
+        },
+        "counts": {
+          "type": "object",
+          "title": "counts",
+          "additionalProperties": {
+            "type": "string",
+            "title": "value",
+            "format": "int64"
+          }
+        },
+        "name": {
+          "type": "string",
+          "title": "name"
+        },
+        "num": {
+          "type": "integer",
+          "title": "num",
+          "format": "int32"
+        },
+        "meta": {
+          "title": "meta",
+          "$ref": "#/$defs/google.protobuf.Struct"
+        },
+        "sv": {
+          "title": "sv",
+          "$ref": "#/$defs/google.protobuf.StringValue"
+        },
+        "id": {
+          "type": "string",
+          "title": "id",
+          "minLength": 3
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/shop.v1.Item"
+          },
+          "title": "items"
+        },
+        "blob": {
+          "type": "string",
+          "title": "blob",
+          "format": "byte"
+        },
+        "d": {
+          "oneOf": [
+            {
+              "type": "number",
+              "format": "double"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "NaN",
+                "Infinity",
+                "-Infinity"
+              ]
+            }
+          ],
+          "title": "d"
+        }
+      },
+      "title": "ListOrdersRequest",
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false,
+      "description": "ListOrdersRequest lists orders.\n\nAt most one of `name`, `num` may be set."
+    },
+    "shop.v1.ListOrdersResponse": {
+      "type": "object",
+      "properties": {
+        "page": {
+          "title": "page",
+          "$ref": "#/$defs/shared.v1.Page"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/shop.v1.Item"
+          },
+          "title": "items"
+        },
+        "status": {
+          "title": "status",
+          "$ref": "#/$defs/shop.v1.Status"
+        }
+      },
+      "title": "ListOrdersResponse",
+      "additionalProperties": false
+    },
+    "shop.v1.Status": {
+      "type": "string",
+      "title": "Status",
+      "enum": [
+        "STATUS_UNSPECIFIED",
+        "STATUS_OPEN",
+        "STATUS_SHIPPED"
+      ],
+      "description": "Status of an order."
+    }
+  }
+}

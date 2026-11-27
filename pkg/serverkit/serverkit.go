@@ -632,6 +632,11 @@ type Config struct {
 	// failure terminates the process loudly); set Ignore to restore
 	// log-and-continue. See the FailurePolicy doc.
 	FailurePolicy FailurePolicy
+
+	// MCPDisabled turns off /mcp — the opted-in rpcs served as MCP tools —
+	// on the listener built from this Config. The zero value serves it
+	// (on by default); an env turns it off (the scaffold reads MCP_ENABLED).
+	MCPDisabled bool
 }
 
 // Normalize projects unset Config fields onto their fallback values. It

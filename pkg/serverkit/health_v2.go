@@ -8,6 +8,7 @@ import (
 	"connectrpc.com/connect/v2/connecthttp"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
+	"github.com/reliant-labs/forge/pkg/mcpkit"
 	"github.com/reliant-labs/forge/pkg/observe"
 )
 
@@ -94,4 +95,18 @@ func (s *Server) mountHealthOn(ready http.Handler) bool {
 		return mountHealthV2(s.Mux, ready, s.serverInterceptorsV2(), s.httpOptionsV2()...)
 	}
 	return mountHealth(s.Mux, ready, s.handlerOptions()...)
+}
+
+// mountAuthCheckV2 serves mcpkit's credential-check rpc on mux through a v2
+// server built with the listener's chain.
+func mountAuthCheckV2(mux *http.ServeMux, interceptors []connectv2.ServerInterceptor, httpOpts ...connecthttp.Option) (mounted bool) {
+	defer func() {
+		if recover() != nil {
+			mounted = false
+		}
+	}()
+	server := connectv2.NewServer(dropNilV2(interceptors)...)
+	server.Register(mcpkit.AuthCheckMethodV2())
+	connecthttp.Mount(onlyPattern{mux: mux, pattern: mcpkit.AuthCheckProcedure}, server, httpOpts...)
+	return true
 }

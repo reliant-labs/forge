@@ -12,19 +12,18 @@ package serverkit
 // gRPC-Web requests never touch vanguard.
 
 import (
-	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 
 	connectv2 "connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/vanguard"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
+
+	"github.com/reliant-labs/forge/pkg/internal/inprocess"
 )
 
 // RESTHandler serves the REST URLs that the MOUNTED services' google.api.http
@@ -59,7 +58,7 @@ func RESTHandler(mux *http.ServeMux, connectPaths []string, logger *slog.Logger)
 
 func newRESTHandler(mux *http.ServeMux, connectPaths []string) (http.Handler, error) {
 	upstream := connectv2.NewClient(connecthttp.NewTransport(
-		&http.Client{Transport: inProcessTransport{handler: mux}}, inProcessBaseURL))
+		&http.Client{Transport: inprocess.Transport{Handler: mux}}, inprocess.BaseURL))
 	server := connectv2.NewServer()
 	for _, p := range connectPaths {
 		name := strings.Trim(p, "/")
@@ -82,85 +81,6 @@ func newRESTHandler(mux *http.ServeMux, connectPaths []string) (http.Handler, er
 			mux.ServeHTTP(w, r)
 			return
 		}
-		routes.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), restOriginKey{}, r)))
+		routes.ServeHTTP(w, r.WithContext(inprocess.WithOrigin(r.Context(), r)))
 	}), nil
 }
-
-// inProcessBaseURL is the base URL of the forwarding client. Nothing dials
-// it: inProcessTransport serves every request it is handed.
-const inProcessBaseURL = "http://serverkit.rest.in-process"
-
-// restOriginKey carries the REST request into the relayed Connect call, so
-// the handler sees the real caller's address, TLS state and Host rather
-// than the in-process hop's.
-type restOriginKey struct{}
-
-// inProcessTransport is an http.RoundTripper that answers each request by
-// running handler in this process, streaming its response body back as it
-// is written.
-type inProcessTransport struct{ handler http.Handler }
-
-func (t inProcessTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req = req.Clone(req.Context())
-	if origin, ok := req.Context().Value(restOriginKey{}).(*http.Request); ok {
-		req.RemoteAddr, req.TLS, req.Host = origin.RemoteAddr, origin.TLS, origin.Host
-	}
-	req.RequestURI = req.URL.RequestURI()
-	if req.Body == nil {
-		req.Body = http.NoBody
-	}
-	pr, pw := io.Pipe()
-	w := &pipeResponseWriter{header: http.Header{}, body: pw, sent: make(chan struct{})}
-	go func() {
-		var failed error
-		defer func() {
-			if p := recover(); p != nil {
-				failed = fmt.Errorf("serverkit: REST handler for %s panicked: %v", req.URL.Path, p)
-				w.WriteHeader(http.StatusInternalServerError) // unless headers already went
-			}
-			w.WriteHeader(http.StatusOK) // a handler that wrote nothing answered 200 with no body
-			_ = pw.CloseWithError(failed)
-		}()
-		t.handler.ServeHTTP(w, req)
-	}()
-	<-w.sent
-	return &http.Response{
-		Status:        fmt.Sprintf("%d %s", w.status, http.StatusText(w.status)),
-		StatusCode:    w.status,
-		Proto:         "HTTP/1.1",
-		ProtoMajor:    1,
-		ProtoMinor:    1,
-		Header:        w.sentHeader,
-		Body:          pr,
-		ContentLength: -1,
-		Request:       req,
-	}, nil
-}
-
-// pipeResponseWriter is the handler's side of inProcessTransport. Headers
-// are fixed at the first WriteHeader (or Write), as on a real connection.
-type pipeResponseWriter struct {
-	header     http.Header
-	body       *io.PipeWriter
-	once       sync.Once
-	sent       chan struct{}
-	status     int
-	sentHeader http.Header
-}
-
-func (w *pipeResponseWriter) Header() http.Header { return w.header }
-
-func (w *pipeResponseWriter) WriteHeader(status int) {
-	w.once.Do(func() {
-		w.status, w.sentHeader = status, w.header.Clone()
-		close(w.sent)
-	})
-}
-
-func (w *pipeResponseWriter) Write(b []byte) (int, error) {
-	w.WriteHeader(http.StatusOK)
-	return w.body.Write(b)
-}
-
-// Flush is a no-op: every Write already reaches the reader.
-func (w *pipeResponseWriter) Flush() {}

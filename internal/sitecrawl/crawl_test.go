@@ -392,3 +392,51 @@ func TestReadFileStaysInsideTheBuild(t *testing.T) {
 		t.Errorf("ReadFile of an in-build symlink = %q, %v", b, err)
 	}
 }
+
+// TestDirHandlerSymlinkSwapAfterOpenServesNothingOutside swaps the file
+// (and, separately, its directory) for a symlink out of the build after the
+// handler opened it: what is served is read from the descriptor it opened,
+// never from what the name points at now. Not parallel: it sets a package
+// hook.
+func TestDirHandlerSymlinkSwapAfterOpenServesNothingOutside(t *testing.T) {
+	outside := writeSite(t, map[string]string{"page.html": "OUTSIDE SECRET", "docs/guide.html": "OUTSIDE SECRET"})
+	for name, swap := range map[string]struct{ reqPath, replace, target string }{
+		"file":      {"/page.html", "page.html", filepath.Join(outside, "page.html")},
+		"directory": {"/docs/guide.html", "docs", filepath.Join(outside, "docs")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeSite(t, map[string]string{"index.html": page("Home", "home"), "page.html": "original", "docs/guide.html": "original"})
+			swapped := false
+			serveFileHook = func(rel string) {
+				if rel != swap.reqPath || swapped {
+					return
+				}
+				swapped = true
+				p := filepath.Join(dir, swap.replace)
+				if err := os.RemoveAll(p); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(swap.target, p); err != nil {
+					t.Skipf("symlinks unavailable here: %v", err)
+				}
+			}
+			t.Cleanup(func() { serveFileHook = nil })
+			req := httptest.NewRequest(http.MethodGet, "http://site.test/", nil)
+			req.URL.Path = swap.reqPath
+			rec := httptest.NewRecorder()
+			DirHandler(dir, "").ServeHTTP(rec, req)
+			if !swapped {
+				t.Fatal("the hook never ran: the handler did not open the file")
+			}
+			if body := rec.Body.String(); strings.Contains(body, "SECRET") || body != "original" {
+				t.Errorf("GET %s after the swap: status %d body %q; want the opened file's bytes", swap.reqPath, rec.Code, body)
+			}
+			// The next request sees the swap, and the root refuses it.
+			rec = httptest.NewRecorder()
+			DirHandler(dir, "").ServeHTTP(rec, req)
+			if strings.Contains(rec.Body.String(), "SECRET") {
+				t.Errorf("GET %s once swapped served the outside file", swap.reqPath)
+			}
+		})
+	}
+}

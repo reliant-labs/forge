@@ -1,6 +1,7 @@
 package sitecrawl
 
 import (
+	"io"
 	"mime"
 	"net/http"
 	"net/url"
@@ -37,19 +38,28 @@ func routeShaped(p string) bool {
 // (see the package doc). It never lists a directory and refuses a path with a
 // ".." segment.
 //
-// Every file is read through an [os.Root] at dir, so nothing outside the
-// build is ever served: a symlink that resolves inside the build is followed
-// (a build may link one asset to another), and one that resolves outside it
-// — a file, or a directory — is not found.
+// Every file is opened through one [os.Root] handle per request, and the
+// bytes served are read from the descriptor that open returned: there is no
+// check followed by a second open for a swapped symlink to slip between. A
+// symlink that resolves inside the build is followed (a build may link one
+// asset to another); one that resolves outside it — a file, or a directory —
+// is not found, because the root refuses to open it.
 func DirHandler(dir, basePath string) http.Handler {
 	base := "/" + strings.Trim(basePath, "/")
 	if base == "/" {
 		base = ""
 	}
 	o := &dirOrigin{dir: dir, base: base}
-	o.has404 = o.isFile("/" + NotFoundFile)
+	if root, err := os.OpenRoot(dir); err == nil {
+		o.has404 = isFile(root, "/"+NotFoundFile)
+		_ = root.Close()
+	}
 	return o
 }
+
+// serveFileHook, when set, runs after serveFile opens a file and before it
+// reads it (tests swap the file there).
+var serveFileHook func(rel string)
 
 // ReadFile reads the build-relative file rel ("index.html") from dir
 // without leaving it: a path or symlink that resolves outside dir fails.
@@ -89,6 +99,12 @@ func (o *dirOrigin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reqPath = o.base + "/"
 	}
 	rel := strings.TrimPrefix(reqPath, o.base) // starts with "/"
+	root, err := os.OpenRoot(o.dir)
+	if err != nil {
+		http.Error(w, "the build directory cannot be read", http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = root.Close() }()
 
 	var names []string
 	if strings.HasSuffix(rel, "/") {
@@ -100,7 +116,7 @@ func (o *dirOrigin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, n := range names {
-		if o.serveFile(w, r, n, http.StatusOK) {
+		if serveFile(root, w, r, n, http.StatusOK) {
 			return
 		}
 	}
@@ -108,7 +124,7 @@ func (o *dirOrigin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// pricing/index.html, so it redirects to /pricing.
 	if strings.HasSuffix(rel, "/") && rel != "/" {
 		to := strings.TrimSuffix(rel, "/")
-		if routeShaped(to) && o.isFile(to+".html") {
+		if routeShaped(to) && isFile(root, to+".html") {
 			loc := (&url.URL{Path: o.base + to}).EscapedPath()
 			if r.URL.RawQuery != "" {
 				loc += "?" + r.URL.RawQuery
@@ -119,11 +135,11 @@ func (o *dirOrigin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if o.has404 {
-		if o.serveFile(w, r, "/"+NotFoundFile, http.StatusNotFound) {
+		if serveFile(root, w, r, "/"+NotFoundFile, http.StatusNotFound) {
 			return
 		}
 	} else if routeShaped(rel) {
-		if o.serveFile(w, r, "/index.html", http.StatusOK) {
+		if serveFile(root, w, r, "/index.html", http.StatusOK) {
 			return
 		}
 	}
@@ -131,24 +147,37 @@ func (o *dirOrigin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // isFile reports a regular file at the build-relative path rel, inside the
-// build.
-func (o *dirOrigin) isFile(rel string) bool {
-	root, err := os.OpenRoot(o.dir)
-	if err != nil {
-		return false
-	}
-	defer func() { _ = root.Close() }()
-	fi, err := root.Stat(filepath.FromSlash(strings.TrimPrefix(rel, "/")))
+// build. It decides only what to do (a redirect, the 404 mode); what is
+// served is whatever serveFile's own open returns.
+func isFile(root *os.Root, rel string) bool {
+	fi, err := root.Stat(rootRel(rel))
 	return err == nil && fi.Mode().IsRegular()
 }
 
+// rootRel is a build-relative URL path as an os.Root name.
+func rootRel(rel string) string {
+	if rel = strings.TrimPrefix(rel, "/"); rel == "" {
+		return "."
+	}
+	return filepath.FromSlash(rel)
+}
+
 // serveFile writes the file at the build-relative path rel with status, and
-// reports whether there was one.
-func (o *dirOrigin) serveFile(w http.ResponseWriter, r *http.Request, rel string, status int) bool {
-	if !o.isFile(rel) {
+// reports whether there was one. It opens the file once, through root, and
+// judges and reads that same descriptor.
+func serveFile(root *os.Root, w http.ResponseWriter, r *http.Request, rel string, status int) bool {
+	f, err := root.Open(rootRel(rel))
+	if err != nil {
 		return false
 	}
-	b, err := ReadFile(o.dir, rel)
+	defer func() { _ = f.Close() }()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	if serveFileHook != nil {
+		serveFileHook(rel)
+	}
+	b, err := io.ReadAll(f)
 	if err != nil {
 		return false
 	}

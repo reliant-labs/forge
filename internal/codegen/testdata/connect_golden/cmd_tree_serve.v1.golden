@@ -382,6 +382,7 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 		AutoMigrate: cfg.AutoMigrate,
 		DatabaseURL: cfg.DatabaseUrl,
 		SecurityHeaders: cfg.SecurityHeadersEnabled,
+		MCPDisabled: !cfg.McpEnabled,
 		CORSAllowCredentials: cfg.CorsAllowCredentials,
 	}
 

@@ -430,3 +430,201 @@ func TestLintNoCacheFlagIsPlumbed(t *testing.T) {
 		t.Errorf("record path = %s", got)
 	}
 }
+
+// [B1] An edit landing exactly between the post-run hash and the record
+// write leaves no record: the re-hash after the write deletes it, so the
+// next run lints instead of replaying a pass of inputs eslint never saw.
+func TestFrontendLintCacheEditAtTheRecordBoundaryLeavesNoPass(t *testing.T) {
+	stubCacheSys(t)
+	r := stubLintRunner(t)
+	dir := cacheFrontend(t)
+	root := t.TempDir()
+	c := newFrontendLintCache(root, false, func(string) string { return "" })
+
+	// An earlier pass of the original tree is on record.
+	lintDir(c, dir, false)
+	writeCacheFile(t, filepath.Join(dir, "src/app.ts"), "export const a = 2;\n")
+
+	old := lintCacheBeforeRecord
+	hooked := 0
+	lintCacheBeforeRecord = func() {
+		hooked++
+		writeCacheFile(t, filepath.Join(dir, "src/app.ts"), "export const unjudged = 3;\n")
+	}
+	lintDir(c, dir, false)
+	lintCacheBeforeRecord = old
+	if hooked != 1 || r.calls != 2 {
+		t.Fatalf("want the second run to lint and reach the record boundary once; calls=%d hooked=%d", r.calls, hooked)
+	}
+	if rec := c.load(); len(rec.Frontends) != 0 {
+		t.Fatalf("a record survived an edit at the record boundary: %+v", rec.Frontends)
+	}
+	if fs, _ := lintDir(c, dir, false); r.calls != 3 || cachedNote(fs) != nil {
+		t.Fatalf("the unjudged tree was replayed as a cached pass: calls=%d", r.calls)
+	}
+	if fs, _ := lintDir(c, dir, false); r.calls != 3 || cachedNote(fs) == nil {
+		t.Fatalf("a stable tree's pass was not recorded once it was judged: calls=%d", r.calls)
+	}
+}
+
+// recordPass alone: a mismatch at either check leaves nothing; a stable
+// tree keeps its record.
+func TestFrontendLintRecordPassRevalidatesAfterTheWrite(t *testing.T) {
+	stubCacheSys(t)
+	dir := cacheFrontend(t)
+	c := newFrontendLintCache(t.TempDir(), false, func(string) string { return "" })
+	run := frontendLintRun{scripts: []string{"lint"}, nmDir: dir}
+	key := mustKey(t, c, dir, run)
+
+	if !c.recordPass(dir, run, key) {
+		t.Fatal("a stable tree's pass was not recorded")
+	}
+	if _, ok := c.hit(dir, key); !ok {
+		t.Fatal("the recorded pass does not hit")
+	}
+
+	old := lintCacheBeforeRecord
+	t.Cleanup(func() { lintCacheBeforeRecord = old })
+	lintCacheBeforeRecord = func() { writeCacheFile(t, filepath.Join(dir, "eslint.config.mjs"), "export default [{}];\n") }
+	if c.recordPass(dir, run, key) {
+		t.Fatal("recordPass kept a record for inputs edited before its write")
+	}
+	if _, ok := c.hit(dir, key); ok {
+		t.Fatal("the stale key still hits")
+	}
+
+	lintCacheBeforeRecord = func() {}
+	if c.recordPass(dir, run, key) {
+		t.Fatal("recordPass recorded a key the tree no longer hashes to")
+	}
+}
+
+// hoistedWorkspace is a workspace root that hoists frontends/web's
+// dependencies, with the given extra files.
+func hoistedWorkspace(t *testing.T, files map[string]string) (root, dir string, c *frontendLintCache, run frontendLintRun) {
+	t.Helper()
+	root = t.TempDir()
+	base := map[string]string{
+		"package.json":               `{"private":true}`,
+		"pnpm-lock.yaml":             "lockfileVersion: '9.0'\n",
+		"node_modules/.modules.yaml": "layoutVersion: 5\n",
+		"frontends/web/package.json": `{"scripts":{"lint":"eslint ."}}`,
+		"frontends/web/src/app.ts":   "export const a = 1;\n",
+		"packages/ui/src/button.ts":  "export const b = 1;\n",
+	}
+	for k, v := range files {
+		base[k] = v
+	}
+	for rel, body := range base {
+		writeCacheFile(t, filepath.Join(root, rel), body)
+	}
+	dir = filepath.Join(root, "frontends", "web")
+	return root, dir, newFrontendLintCache(root, false, func(string) string { return "" }), frontendLintRun{scripts: []string{"lint"}, nmDir: root}
+}
+
+// [B2] Creating or removing a workspace member — even an empty directory,
+// under a pattern that already matched — changes the key, and so does each
+// way of declaring membership.
+func TestFrontendLintFingerprintWorkspaceMembership(t *testing.T) {
+	stubCacheSys(t)
+	for name, pattern := range map[string]string{
+		"single star": "packages/*",
+		"double star": "packages/**",
+	} {
+		t.Run(name, func(t *testing.T) {
+			root, dir, c, run := hoistedWorkspace(t, map[string]string{
+				"pnpm-workspace.yaml": "packages:\n  - frontends/*\n  - " + pattern + "\n",
+			})
+			base := mustKey(t, c, dir, run)
+
+			member := filepath.Join(root, "packages", "new")
+			if err := os.Mkdir(member, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			created := mustKey(t, c, dir, run)
+			if created == base {
+				t.Fatal("creating an empty member directory did not change the key")
+			}
+			writeCacheFile(t, filepath.Join(member, "src", "x.ts"), "export const x = 1;\n")
+			filled := mustKey(t, c, dir, run)
+			if filled == created {
+				t.Fatal("adding a file to the new member did not change the key")
+			}
+			if err := os.RemoveAll(member); err != nil {
+				t.Fatal(err)
+			}
+			if got := mustKey(t, c, dir, run); got == filled || got != base {
+				t.Fatalf("removing the member: want the original key back (changed=%v)", got != filled)
+			}
+			if err := os.RemoveAll(filepath.Join(root, "packages", "ui")); err != nil {
+				t.Fatal(err)
+			}
+			if got := mustKey(t, c, dir, run); got == base {
+				t.Fatal("removing an existing member did not change the key")
+			}
+		})
+	}
+
+	t.Run("nested pattern", func(t *testing.T) {
+		root, dir, c, run := hoistedWorkspace(t, map[string]string{
+			"pnpm-workspace.yaml": "packages:\n  - frontends/*\n  - apps/*/web\n",
+			"apps/admin/README":   "an app without a web member yet\n",
+		})
+		base := mustKey(t, c, dir, run)
+		if err := os.Mkdir(filepath.Join(root, "apps", "admin", "web"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if got := mustKey(t, c, dir, run); got == base {
+			t.Fatal("a member appearing under apps/*/web did not change the key")
+		}
+	})
+
+	t.Run("declarations", func(t *testing.T) {
+		root, dir, c, run := hoistedWorkspace(t, map[string]string{
+			"pnpm-workspace.yaml": "packages:\n  - frontends/*\n  - packages/*\n",
+		})
+		prev := mustKey(t, c, dir, run)
+		for _, step := range []struct{ file, body string }{
+			{"pnpm-workspace.yaml", "packages:\n  - frontends/*\n"},
+			{"pnpm-workspace.yaml", "packages:\n  - frontends/*\n  - packages/*\n  - '!packages/ui'\n"},
+			{"package.json", `{"private":true,"workspaces":["tools/*"]}`},
+			{"package.json", `{"private":true,"workspaces":{"packages":["tools/*","libs/*"]}}`},
+		} {
+			writeCacheFile(t, filepath.Join(root, step.file), step.body)
+			got := mustKey(t, c, dir, run)
+			if got == prev {
+				t.Errorf("declaring %q in %s did not change the key", step.body, step.file)
+			}
+			prev = got
+		}
+	})
+}
+
+func TestResolveWorkspaceNormalizesDeclarations(t *testing.T) {
+	root := t.TempDir()
+	for _, d := range []string{"packages/ui", "apps/x/web"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeCacheFile(t, filepath.Join(root, "pnpm-workspace.yaml"), "packages:\n  - ' packages/* '\n  - apps/*/web\n  - '!packages/old'\n")
+	writeCacheFile(t, filepath.Join(root, "package.json"), `{"workspaces":["packages/*"]}`)
+	ws := resolveWorkspace(root)
+	rel := func(ps []string) string {
+		var out []string
+		for _, p := range ps {
+			r, _ := filepath.Rel(root, p)
+			out = append(out, filepath.ToSlash(r))
+		}
+		return strings.Join(out, " ")
+	}
+	if got := strings.Join(ws.patterns, " "); got != "!packages/old apps/*/web packages/*" {
+		t.Errorf("patterns = %q", got)
+	}
+	if got := rel(ws.members); got != "apps/x/web packages/ui" {
+		t.Errorf("members = %q", got)
+	}
+	if got := rel(ws.parents); got != "apps packages" {
+		t.Errorf("glob parents = %q", got)
+	}
+}

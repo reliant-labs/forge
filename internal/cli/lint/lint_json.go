@@ -1531,8 +1531,8 @@ func collectFrontendDirJSON(ctx context.Context, deps frontendDepsPolicy, name, 
 
 	// The pass cache: key the inputs before the run, skip on a recorded
 	// pass of exactly these inputs (never under --fix, which exists to run
-	// eslint --fix), and record a pass only if the inputs after the run are
-	// still the ones it judged.
+	// eslint --fix), and record a pass only through recordPass, which can
+	// never leave a record for inputs that changed after the run started.
 	var cacheKey string
 	if cache != nil && len(run.scripts) > 0 {
 		key, _, err := cache.fingerprint(dir, run)
@@ -1546,9 +1546,7 @@ func collectFrontendDirJSON(ctx context.Context, deps frontendDepsPolicy, name, 
 					cache.forget(dir)
 					return
 				}
-				if after, n, err := cache.fingerprint(dir, run); err == nil && after == cacheKey {
-					cache.record(dir, cacheKey, n)
-				}
+				cache.recordPass(dir, run, cacheKey)
 			}()
 		}
 	}

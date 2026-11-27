@@ -19,16 +19,21 @@
 //     rewrites on every install (node_modules/.package-lock.json,
 //     .modules.yaml, …) in the node_modules the frontend resolves from.
 //   - for a workspace member whose dependencies are hoisted to an ancestor:
-//     that workspace root's own files (manifests, lockfile, shared configs)
-//     and every member directory its pnpm-workspace.yaml / package.json
-//     `workspaces` names.
+//     that workspace root's own files (manifests, lockfile, shared configs),
+//     its membership — the normalized pnpm-workspace.yaml / package.json
+//     `workspaces` patterns, the member set they resolve to, and the entries
+//     of each directory a pattern globs in, so a member appearing or
+//     disappearing (even an empty directory) is a change — and every
+//     member's files. Directories are keyed as well as files throughout.
 //   - the scripts the lane runs (and whether css_health adds lint:styles),
 //     the forge binary (version, path, size, mtime), node and npm (path,
 //     size, mtime) and the environment eslint reads (NODE_*, ESLINT_*).
 //
-// Only passes are recorded, and only when the inputs after the run equal
-// the inputs before it (an edit during the run, or an `eslint --fix` that
-// rewrote something, records nothing). A failure is never cached: the next
+// Only passes are recorded, and only through recordPass: the key is taken
+// before the run, re-checked after it, written, and re-checked after the
+// write, which deletes the record on a mismatch. An edit during the run, an
+// `eslint --fix` that rewrote something, or an edit racing the write leaves
+// no record. A failure is never cached: the next
 // run lints again. A --fix run never consults the cache (it exists to run
 // eslint --fix) but may record its pass.
 //
@@ -216,6 +221,41 @@ func (c *frontendLintCache) record(dir, key string, files int) {
 	_ = statefile.Write(c.path(), "lint cache", rec)
 }
 
+// recordPass records that the run which keyed dir's inputs as key before
+// it started passed. The protocol leaves no record for inputs that changed
+// after that key was taken:
+//
+//  1. re-hash after the run: a mismatch (an edit during the run, or an
+//     eslint --fix rewrite) records nothing and drops any older record;
+//  2. write the record for key;
+//  3. re-hash after the write: a mismatch (an edit between step 1 and the
+//     write) deletes the record just written.
+//
+// An edit after step 3 is harmless: the record names key, and the next run
+// hashes the edited tree to a different key. It reports whether a record
+// survived.
+func (c *frontendLintCache) recordPass(dir string, run frontendLintRun, key string) bool {
+	if c == nil || key == "" {
+		return false
+	}
+	after, n, err := c.fingerprint(dir, run)
+	if err != nil || after != key {
+		c.forget(dir)
+		return false
+	}
+	lintCacheBeforeRecord()
+	c.record(dir, key, n)
+	if again, _, err := c.fingerprint(dir, run); err != nil || again != key {
+		c.forget(dir)
+		return false
+	}
+	return true
+}
+
+// lintCacheBeforeRecord runs between recordPass's post-run hash and its
+// write: a seam for the test that edits the tree at exactly that boundary.
+var lintCacheBeforeRecord = func() {}
+
 // forget drops dir's record, so a failing run can never be followed by a
 // cached pass of an older tree that the record still describes.
 func (c *frontendLintCache) forget(dir string) {
@@ -338,6 +378,9 @@ func hashTree(h io.Writer, label, dir string) (int, error) {
 			if p != dir && frontendLintSkipDirs[d.Name()] {
 				return filepath.SkipDir
 			}
+			// Directories join the key too, so creating or removing one —
+			// even empty, such as a new workspace member — is a change.
+			fmt.Fprintf(h, "dir %s:%s\n", label, rel)
 			return nil
 		}
 		if frontendLintSkipFile(d.Name()) {
@@ -400,7 +443,40 @@ func hashWorkspace(h io.Writer, root, frontendDir string) (int, error) {
 			return 0, err
 		}
 	}
-	for _, m := range workspaceMembers(root) {
+	ws := resolveWorkspace(root)
+	// Membership itself is an input: the declarations as normalized, the
+	// member set they resolve to, and the entries of every directory a
+	// pattern globs in, so a member that appears or disappears under an
+	// existing pattern (even an empty directory) changes the key, as does a
+	// declaration change that the root's file hashes would also show.
+	for _, pat := range ws.patterns {
+		fmt.Fprintf(h, "ws-pattern %s\n", pat)
+	}
+	for _, m := range ws.members {
+		rel, err := filepath.Rel(root, m)
+		if err != nil {
+			return 0, err
+		}
+		fmt.Fprintf(h, "ws-member %s\n", filepath.ToSlash(rel))
+	}
+	for _, dir := range ws.parents {
+		rel, err := filepath.Rel(root, dir)
+		if err != nil {
+			return 0, err
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil && !os.IsNotExist(err) {
+			return 0, err
+		}
+		fmt.Fprintf(h, "ws-glob-dir %s exists=%v\n", filepath.ToSlash(rel), err == nil)
+		for _, e := range entries {
+			if frontendLintSkipDirs[e.Name()] {
+				continue
+			}
+			fmt.Fprintf(h, "ws-glob-entry %s/%s dir=%v\n", filepath.ToSlash(rel), e.Name(), e.IsDir())
+		}
+	}
+	for _, m := range ws.members {
 		if same, err := sameDir(m, frontendDir); err == nil && same {
 			continue
 		}
@@ -423,7 +499,23 @@ func hashWorkspace(h io.Writer, root, frontendDir string) (int, error) {
 // resolved to the directory before it, which covers every member under it.
 // Negations are ignored: including an excluded directory only costs a
 // re-run, never a false skip.
-func workspaceMembers(root string) []string {
+func workspaceMembers(root string) []string { return resolveWorkspace(root).members }
+
+// workspaceDecl is what a workspace root declares and what that resolves to.
+type workspaceDecl struct {
+	// patterns are the declared patterns, trimmed, deduplicated and sorted
+	// (negations included: they are part of the declaration).
+	patterns []string
+	// members are the existing member directories, sorted.
+	members []string
+	// parents are the directories the patterns glob in: each pattern's
+	// longest literal directory prefix, sorted. Their entry sets are keyed,
+	// so a member created later under an existing pattern is a change.
+	parents []string
+}
+
+// resolveWorkspace reads root's workspace declarations; see workspaceMembers.
+func resolveWorkspace(root string) workspaceDecl {
 	var patterns []string
 	if data, err := os.ReadFile(filepath.Join(root, "pnpm-workspace.yaml")); err == nil {
 		var doc struct {
@@ -450,12 +542,23 @@ func workspaceMembers(root string) []string {
 			}
 		}
 	}
+	var ws workspaceDecl
 	seen := map[string]bool{}
-	var out []string
+	seenPat := map[string]bool{}
+	seenParent := map[string]bool{}
 	for _, pat := range patterns {
 		pat = strings.TrimSpace(pat)
-		if pat == "" || strings.HasPrefix(pat, "!") {
+		if pat == "" || seenPat[pat] {
 			continue
+		}
+		seenPat[pat] = true
+		ws.patterns = append(ws.patterns, pat)
+		if strings.HasPrefix(pat, "!") {
+			continue
+		}
+		if parent := globParent(root, pat); !seenParent[parent] {
+			seenParent[parent] = true
+			ws.parents = append(ws.parents, parent)
 		}
 		if i := strings.Index(pat, "**"); i >= 0 {
 			pat = strings.TrimSuffix(pat[:i], "/")
@@ -477,11 +580,34 @@ func workspaceMembers(root string) []string {
 				continue
 			}
 			seen[m] = true
-			out = append(out, m)
+			ws.members = append(ws.members, m)
 		}
 	}
-	sort.Strings(out)
-	return out
+	sort.Strings(ws.patterns)
+	sort.Strings(ws.members)
+	sort.Strings(ws.parents)
+	return ws
+}
+
+// globParent is the directory a workspace pattern globs in: the path of its
+// leading segments that hold no glob metacharacter, under root. "packages/*"
+// globs in packages/, "apps/*/web" in apps/, "packages/**" in packages/
+// (whose whole tree is then a member), "*" in root itself.
+func globParent(root, pat string) string {
+	segs := strings.Split(filepath.ToSlash(pat), "/")
+	var lit []string
+	for i, seg := range segs {
+		if strings.ContainsAny(seg, "*?[{") {
+			break
+		}
+		if i == len(segs)-1 {
+			// A literal pattern names its member; its parent is where it
+			// would be created or removed.
+			break
+		}
+		lit = append(lit, seg)
+	}
+	return filepath.Join(append([]string{root}, lit...)...)
 }
 
 // sameDir reports whether a and b name the same directory.

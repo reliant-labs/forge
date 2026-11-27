@@ -267,6 +267,13 @@ func seoJudgeFrontend(projectDir, rel string, fe config.FrontendConfig, b seoBin
 		pages[i] = pages[i].At(site)
 	}
 	var out []lintJSONFinding
+	// What the source reader could not settle is a warning (never a gate)
+	// on the file, so a run shows which segment it did not judge.
+	for _, p := range pages {
+		for _, w := range p.Warnings {
+			out = append(out, lintJSONFinding{File: p.File, Severity: lintSevWarning, Rule: "skipped", Message: w})
+		}
+	}
 	for _, f := range seo.Judge(site, pages) {
 		out = append(out, seoLintFinding(f))
 	}

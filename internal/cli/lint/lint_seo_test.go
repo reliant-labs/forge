@@ -256,3 +256,33 @@ export default function L({children}) { return <html lang="en"><body>{children}<
 		t.Errorf("findings = %v, want none (the canonical and og:url resolve to https://acme.example/docs/)", got)
 	}
 }
+
+func TestSEOLaneWarnsOnAnAmbiguousLayout(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"frontends/web/app/layout.tsx": `export const metadata = { title: "Acme Rockets — rockets for everyone" }; export default function L({children}) { return <html lang="en">{children}</html>; }`,
+		"frontends/web/app/layout.js":  `export default function L({children}) { return <html lang="en">{children}</html>; }`,
+	})
+	cfg := loadTestConfig(t, staticExportForgeYAML)
+	cfg.Frontends = []config.FrontendConfig{config.FrontendConfig{Name: "web", Type: "nextjs", Output: "static"}.WithDir("frontends/web")}
+	bindings := func(context.Context, string, *config.ProjectConfig) map[string][]seoBinding {
+		return map[string][]seoBinding{"web": {{Env: "prod", PublicDir: "out", SiteURL: "https://acme.example"}}}
+	}
+	fs, err := seoFindings(context.Background(), root, cfg, bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if anyErrorFinding(fs) {
+		t.Errorf("an ambiguous layout gated: %v", seoRules(fs, lintSevError))
+	}
+	warned := false
+	for _, f := range fs {
+		if f.Rule == "skipped" && f.Severity == lintSevWarning && strings.Contains(f.Message, "layout.tsx and frontends/web/app/layout.js") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("no warning names both layout files: %+v", fs)
+	}
+}

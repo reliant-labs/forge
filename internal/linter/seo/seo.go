@@ -119,6 +119,9 @@ type Page struct {
 	// "about", "docs/"): its URL is the site's base URL plus Rel, built once
 	// the site's origin is known ([Page.At]).
 	Rel string
+	// Warnings say what the source reader could not settle (two candidate
+	// files for one segment), each judged as unknown rather than guessed.
+	Warnings []string
 }
 
 // At is p served under site, the site's base URL ending in "/".
@@ -275,6 +278,8 @@ func dynamicTag(f siteaudit.Finding) string {
 		return "canonical"
 	case f.Code == "indexing_mismatch":
 		return "robots"
+	case f.Code == "lang_missing":
+		return "lang"
 	}
 	return f.Ref
 }
@@ -330,12 +335,9 @@ func ViteIndex(feDir, relDir, site string) (Page, bool) {
 	return Page{File: path.Join(relDir, "index.html"), URL: site, HTML: string(b)}, true
 }
 
-// nextLayouts are where a Next.js app's root layout lives, in the order
-// Next.js looks.
-var nextLayouts = []string{
-	"src/app/layout.tsx", "src/app/layout.jsx", "src/app/layout.ts", "src/app/layout.js",
-	"app/layout.tsx", "app/layout.jsx", "app/layout.ts", "app/layout.js",
-}
+// nextAppDirs are where a Next.js app directory may be, in Next.js's
+// precedence: a root app/ wins, and src/app is ignored beside it.
+var nextAppDirs = []string{"app", "src/app"}
 
 // NextLayout renders the head Next.js would emit for the app's root route,
 // served at site: the metadata of the root layout, of every route-group
@@ -345,20 +347,27 @@ var nextLayouts = []string{
 // ok is false when the app has no root layout.
 //
 // A segment whose metadata the reader cannot see — generateMetadata, a
-// metadata that is not an object literal, a spread — may supply or replace
-// any field, so every field it could touch is dynamic unless a later
-// segment sets it literally: the lane never reports a tag missing that a
-// segment might write.
+// metadata that is not an object literal, a spread, unmodelled syntax, or
+// two candidate files (layout.tsx beside layout.js, which Next.js's own
+// resolver settles) — may supply or replace any field, so every field it
+// could touch is dynamic unless a later segment sets it literally: the lane
+// never reports a tag missing that a segment might write. An ambiguous
+// segment is named in Page.Warnings.
 func NextLayout(feDir, relDir, site string) (Page, bool) {
-	for _, rel := range nextLayouts {
-		b, err := os.ReadFile(filepath.Join(feDir, filepath.FromSlash(rel)))
-		if err != nil {
+	for _, appRel := range nextAppDirs {
+		appDir := filepath.Join(feDir, filepath.FromSlash(appRel))
+		if fi, err := os.Stat(appDir); err != nil || !fi.IsDir() {
 			continue
 		}
-		appDir := filepath.Join(feDir, filepath.FromSlash(path.Dir(rel)))
-		srcs := append([]string{string(b)}, rootRouteSegments(appDir)...)
+		var warnings []string
+		relApp := path.Join(relDir, appRel)
+		root, rootFile, ok := readSegmentFile(appDir, "layout", relApp, &warnings)
+		if !ok {
+			return Page{}, false
+		}
+		srcs := append([]string{root}, rootRouteSegments(appDir, relApp, &warnings)...)
 		doc, dynamic := nextHead(srcs, site)
-		return Page{File: path.Join(relDir, rel), URL: site, HTML: doc, Dynamic: dynamic}, true
+		return Page{File: rootFile, URL: site, HTML: doc, Dynamic: dynamic, Warnings: warnings}, true
 	}
 	return Page{}, false
 }
@@ -366,30 +375,52 @@ func NextLayout(feDir, relDir, site string) (Page, bool) {
 // nextSourceExts are the extensions a Next.js segment file may have.
 var nextSourceExts = []string{".tsx", ".jsx", ".ts", ".js"}
 
-// readSegmentFile returns dir/<name>.<ext> for the first extension present.
-func readSegmentFile(dir, name string) (string, bool) {
+// ambiguousSegment stands for a segment with more than one candidate file:
+// its metadata is unknown (segmentMetadata).
+const ambiguousSegment = "\x00ambiguous segment"
+
+// readSegmentFile returns dir/<name>.<ext>'s source and its path
+// (relDir/<name>.<ext>, relDir being dir as the caller names it). More than one candidate extension
+// is ambiguous: the source is ambiguousSegment, the path names the first,
+// and a warning names them all.
+func readSegmentFile(dir, name, relDir string, warnings *[]string) (src, file string, ok bool) {
+	var found []string
 	for _, ext := range nextSourceExts {
-		if b, err := os.ReadFile(filepath.Join(dir, name+ext)); err == nil {
-			return string(b), true
+		b, err := os.ReadFile(filepath.Join(dir, name+ext))
+		if err != nil {
+			continue
 		}
+		if len(found) == 0 {
+			src = string(b)
+		}
+		found = append(found, path.Join(relDir, name+ext))
 	}
-	return "", false
+	switch len(found) {
+	case 0:
+		return "", "", false
+	case 1:
+		return src, found[0], true
+	}
+	*warnings = append(*warnings, fmt.Sprintf("%s are both candidate %s files for one segment; which one Next.js uses is its resolver's choice, so that segment's metadata was not judged (keep one)", strings.Join(found, " and "), name))
+	return ambiguousSegment, found[0], true
 }
 
 // rootRouteSegments are the sources, after the root layout, that make the
 // root route's head: the layouts of the route groups ("(marketing)") the
 // root page sits in, outermost first, then the page. Empty when the root
 // page is not found.
-func rootRouteSegments(appDir string) []string {
-	var walk func(dir string, depth int) ([]string, bool)
-	walk = func(dir string, depth int) ([]string, bool) {
+func rootRouteSegments(appDir, appRel string, warnings *[]string) []string {
+	var walk func(dir, rel string, depth int) ([]string, bool)
+	walk = func(dir, rel string, depth int) ([]string, bool) {
 		var chain []string
+		var ws []string
 		if depth > 0 {
-			if l, ok := readSegmentFile(dir, "layout"); ok {
+			if l, _, ok := readSegmentFile(dir, "layout", rel, &ws); ok {
 				chain = append(chain, l)
 			}
 		}
-		if pg, ok := readSegmentFile(dir, "page"); ok {
+		if pg, _, ok := readSegmentFile(dir, "page", rel, &ws); ok {
+			*warnings = append(*warnings, ws...)
 			return append(chain, pg), true
 		}
 		if depth == 8 {
@@ -401,14 +432,15 @@ func rootRouteSegments(appDir string) []string {
 		}
 		for _, e := range entries {
 			if n := e.Name(); e.IsDir() && strings.HasPrefix(n, "(") && strings.HasSuffix(n, ")") {
-				if rest, ok := walk(filepath.Join(dir, n), depth+1); ok {
+				if rest, ok := walk(filepath.Join(dir, n), path.Join(rel, n), depth+1); ok {
+					*warnings = append(*warnings, ws...)
 					return append(chain, rest...), true
 				}
 			}
 		}
 		return nil, false
 	}
-	chain, _ := walk(appDir, 0)
+	chain, _ := walk(appDir, appRel, 0)
 	return chain
 }
 
@@ -439,7 +471,7 @@ var metadataTags = map[string][]string{
 // when the segment computes or hides it (generateMetadata, a metadata that
 // is not an object literal, a spread): it may then write any field.
 func segmentMetadata(src string) (meta map[string]jsValue, known bool) {
-	if strings.Contains(src, "generateMetadata") {
+	if src == ambiguousSegment || strings.Contains(src, "generateMetadata") {
 		return nil, false
 	}
 	if loc := metadataDecl.FindStringIndex(src); loc != nil {
@@ -512,6 +544,9 @@ func mergeSegments(srcs []string) (map[string]jsValue, map[string]bool) {
 func nextHead(srcs []string, site string) (string, map[string]bool) {
 	meta, dynamic := mergeSegments(srcs)
 	src := srcs[0]
+	if src == ambiguousSegment {
+		dynamic["lang"] = true // the root layout writes <html lang>
+	}
 	base, _ := url.Parse(site)
 	if mb, ok := meta["metadataBase"]; ok {
 		if s, lit := jsString(mb); lit {

@@ -389,3 +389,49 @@ func TestJudgeKeepsEveryPageThatSharesAURL(t *testing.T) {
 		t.Errorf("order changed the result:\n%v\n%v", got, again)
 	}
 }
+
+// Two candidate files for one segment (layout.tsx beside layout.js) are
+// Next.js's resolver's to settle, so the segment is unknown and named in a
+// warning; the same for page files. A root app/ wins over src/app.
+func TestNextAmbiguousSegmentFilesAreUnknown(t *testing.T) {
+	t.Parallel()
+	notitle := `export const metadata = { description: "x" };
+export default function L({children}) { return <html lang="en">{children}</html>; }`
+	titled := `export const metadata = { title: "Acme Rockets — rockets for everyone" };
+export default function L({children}) { return <html lang="en">{children}</html>; }`
+	cases := map[string]map[string]string{
+		"root layout": {"app/layout.tsx": titled, "app/layout.js": notitle},
+		"page":        {"app/layout.tsx": notitle, "app/page.tsx": `export const metadata = { title: "Acme Rockets — rockets for everyone" };`, "app/page.js": `export default function P() { return null; }`},
+		"group layout": {"app/layout.tsx": notitle, "app/(site)/layout.tsx": titled, "app/(site)/layout.jsx": notitle,
+			"app/(site)/page.tsx": `export default function P() { return null; }`},
+	}
+	for name, files := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			write(t, dir, files)
+			p, ok := NextLayout(dir, "web", "https://acme.example/")
+			if !ok {
+				t.Fatal("no layout found")
+			}
+			if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "candidate") {
+				t.Errorf("warnings = %q, want one naming both candidate files", p.Warnings)
+			}
+			if !p.Dynamic["title"] || !p.Dynamic["canonical"] {
+				t.Errorf("dynamic = %v: the ambiguous segment's fields must be unknown", p.Dynamic)
+			}
+			for _, c := range codes(Judge("https://acme.example/", []Page{p})) {
+				if strings.HasPrefix(c, "title_") || strings.HasPrefix(c, "canonical_") || strings.HasPrefix(c, "lang_missing") {
+					t.Errorf("judged a field an ambiguous segment may write: %s", c)
+				}
+			}
+		})
+	}
+
+	dir := t.TempDir()
+	write(t, dir, map[string]string{"app/layout.tsx": titled, "src/app/layout.tsx": notitle})
+	p, _ := NextLayout(dir, "web", "https://acme.example/")
+	if p.File != "web/app/layout.tsx" || len(p.Warnings) != 0 || siteaudit.ExtractHead(p.HTML).Title == "" {
+		t.Errorf("a root app/ beside src/app: file %q, warnings %q, head %s", p.File, p.Warnings, p.HTML)
+	}
+}

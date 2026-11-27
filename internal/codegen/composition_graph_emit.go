@@ -1073,10 +1073,6 @@ type providersGraphData struct {
 	// plain-named session cookie read in development only), and the auth
 	// config has Environment to decide it from.
 	DevSessionCookie bool
-	// MCPTools: the project serves at least one rpc as an MCP tool
-	// (codegen.MCPTools), so pkg/middleware/mcp_tools_gen.go declares
-	// MCPTools and the API listener serves /mcp.
-	MCPTools bool
 	// Sessions: the project has a database and a login broker, so native
 	// sign-in keeps its sessions server-side (the Sessions provider,
 	// forge/pkg/session) in the auth_sessions table.
@@ -1202,8 +1198,7 @@ func GenerateGraphProviders(modulePath, databaseDriver, projectDir string, major
 		NoProjectAuthInterceptor: !projectDeclaresAuthInterceptorFor(projectDir, v2), ClaimsEnricher: projectDeclaresClaimsEnricher(projectDir),
 		DevSessionCookie: projectMiddlewareDeclares(projectDir, projectDevSessionCookieDecl) && configTypeDeclares(msgs, authConfig, configFields, "Environment"),
 		ConnectV2:        v2,
-		Sessions:         hasDB && hasBroker,
-		MCPTools:         projectServesMCPTools(projectDir)}
+		Sessions:         hasDB && hasBroker}
 	content, err := templates.ProjectTemplates().Render("providers-graph.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render providers-graph.go.tmpl: %w", err)
@@ -1264,16 +1259,4 @@ func writeSessionsMigration(projectDir string) error {
 	}
 	fmt.Printf("  ✅ Scaffolded %s (server-side sign-in sessions — yours)\n", filepath.Join(config.MigrationsDirIn(projectDir), filepath.Base(path)))
 	return nil
-}
-
-// projectServesMCPTools reports whether the project's protos opt at least one
-// rpc in as an MCP tool. Best-effort, like projectAPIRESTEnabled: a project
-// whose descriptor cannot be read serves none.
-func projectServesMCPTools(projectDir string) bool {
-	svcs, err := ParseDeclaredServices(projectDir)
-	if err != nil {
-		return false
-	}
-	tools, err := MCPTools(svcs)
-	return err == nil && len(tools) > 0
 }

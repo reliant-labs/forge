@@ -175,17 +175,14 @@ func TestProvidersGraph_DevSessionCookieReadsTheAuthConfigsEnvironment(t *testin
 	}
 }
 
-// The API listener serves /mcp only when the project serves an MCP tool; a
-// project with none renders exactly as before.
-func TestProvidersGraph_MCPOnlyWithTools(t *testing.T) {
-	without := renderFormatted(t, "providers-graph.go.tmpl", providersGraphData{Module: "example.com/rbc", HasDatabase: true, ConfigFields: map[string]bool{}})
-	if strings.Contains(without, "mcpkit") || strings.Contains(without, "MCP") {
-		t.Fatalf("a project with no MCP tool names MCP:\n%s", without)
-	}
-	with := renderFormatted(t, "providers-graph.go.tmpl", providersGraphData{Module: "example.com/rbc", HasDatabase: true, ConfigFields: map[string]bool{}, MCPTools: true})
+// Every graph providers.go hands the API listener the generated MCP table:
+// providers.go is scaffold-once, and an rpc opted in after birth must be
+// served without editing it. An empty table serves nothing (serverkit).
+func TestProvidersGraph_MCPTableAlwaysWired(t *testing.T) {
+	out := renderFormatted(t, "providers-graph.go.tmpl", providersGraphData{Module: "example.com/rbc", HasDatabase: true, ConfigFields: map[string]bool{}})
 	for _, want := range []string{`"github.com/reliant-labs/forge/pkg/mcpkit"`, "MCP: &mcpkit.Config{", "Tools:          middleware.MCPTools,", "AllowedOrigins: d.ServerCfg.CORSOrigins,"} {
-		if !strings.Contains(with, want) {
-			t.Errorf("providers.go with MCP tools lacks %q", want)
+		if !strings.Contains(out, want) {
+			t.Errorf("providers.go lacks %q", want)
 		}
 	}
 }

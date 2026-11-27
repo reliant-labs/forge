@@ -210,8 +210,9 @@ type ListenerDeps struct {
 	REST bool
 	// MCP serves the given rpcs as MCP tools on mcpkit.Path (and their
 	// resource metadata on mcpkit.MetadataPath), inside Edge, each tool call
-	// relayed in process through the chain. nil is off, and so is
-	// Config.MCPDisabled.
+	// relayed in process through the chain. nil is off, and so are an empty
+	// Tools table and Config.MCPDisabled: then neither path nor the
+	// credential-check rpc is mounted.
 	MCP *mcpkit.Config
 	// Ready is the process's readiness handler, which the health rpc asks
 	// (health.go). nil is the Front route on DefaultReadinessPath, if any.
@@ -326,7 +327,7 @@ func newListener(deps ListenerDeps) (*Listener, error) {
 				}
 			}
 		}
-		if deps.MCP != nil && !cfg.MCPDisabled {
+		if deps.MCP != nil && len(deps.MCP.Tools) > 0 && !cfg.MCPDisabled {
 			if deps.Chain == nil && deps.ChainV2 != nil {
 				mountAuthCheckV2(mux, deps.ChainV2.ServerInterceptors(), deps.ChainV2.HTTPOptions()...)
 			} else {

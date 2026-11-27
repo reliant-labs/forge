@@ -236,3 +236,22 @@ func TestMCP_DisabledPerEnv(t *testing.T) {
 		t.Fatalf("/mcp with MCPDisabled = %d, want 404", res.StatusCode)
 	}
 }
+
+// An empty table — a project with no opted-in rpc — mounts nothing: no /mcp,
+// no resource metadata, no credential-check rpc.
+func TestMCP_EmptyTableMountsNothing(t *testing.T) {
+	base := mcpListener(t, loopback(), nil)
+	for _, path := range []string{mcpkit.Path, mcpkit.MetadataPath, mcpkit.AuthCheckProcedure} {
+		req, _ := http.NewRequest(http.MethodPost, base+path, strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer good")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusNotFound || res.Header.Get("WWW-Authenticate") != "" {
+			t.Errorf("%s with an empty table = %d %q, want 404 and no challenge", path, res.StatusCode, res.Header.Get("WWW-Authenticate"))
+		}
+	}
+}

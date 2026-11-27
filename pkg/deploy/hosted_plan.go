@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/claimablecaps"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
@@ -89,15 +90,11 @@ type ClaimableLimits struct {
 // caps (control-plane, 2026-10-29), for when the control plane cannot be
 // asked. A caller that uses it
 // says so: the platform's own answer wins.
+//
+// The numbers live in internal/claimablecaps, a leaf the scaffold templates
+// read without importing this package.
 func ClaimableLimitsFallback() ClaimableLimits {
-	return ClaimableLimits{
-		MaxServices: 1, MaxReplicas: 1, MaxMigrationJobs: 1,
-		WorkloadCPUMillicores: 125, WorkloadMemoryBytes: 128 << 20,
-		MaxDatabases: 1, DatabaseInstances: 1, DatabaseDeclaredStorageGiB: 1,
-		DatabaseCPUMillicores: 125, DatabaseMemoryBytes: 128 << 20,
-		DatabaseStorageBytes: 256 << 20, DatabaseMaxConnections: 10,
-		MaxStaticSites: 1,
-	}
+	return ClaimableLimits(claimablecaps.Fallback())
 }
 
 // Valid reports whether l can judge anything: a published answer that left

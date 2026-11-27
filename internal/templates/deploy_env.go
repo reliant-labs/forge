@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/reliant-labs/forge/pkg/deploy"
+	"github.com/reliant-labs/forge/internal/claimablecaps"
 )
 
 // EnvTemplateData is the payload of the env main.k templates
@@ -131,15 +131,19 @@ func (d EnvTemplateData) withDefaults() interface{} {
 	if d.Claimable && d.ClaimableResources == "" {
 		// The compiled-in copy of the control plane's caps: a scaffold is
 		// written offline, and every deploy check re-reads the published ones.
-		caps := deploy.ClaimableLimitsFallback()
-		r := caps.Resources()
-		d.ClaimableShape = fmt.Sprintf("%dm / %d MiB", r.CPURequestMillicores, r.MemoryRequestBytes>>20)
+		// deploy.ClaimableLimitsFallback's numbers, read from the leaf it
+		// reads (pkg/deploy would put k8s and the OTLP exporters into every
+		// binary that renders a template). The plan has no burst, so the
+		// request and the limit are both the cap (ClaimableLimits.Resources).
+		caps := claimablecaps.Fallback()
+		cpu, mem := caps.WorkloadCPUMillicores, caps.WorkloadMemoryBytes
+		d.ClaimableShape = fmt.Sprintf("%dm / %d MiB", cpu, mem>>20)
 		d.ClaimableDatabaseStorageGiB = caps.DatabaseDeclaredStorageGiB
 		d.ClaimableDBConnections = caps.DatabaseMaxConnections
 		d.ClaimableDBPool = claimableDBPool(caps.DatabaseMaxConnections)
 		d.ClaimableResources = fmt.Sprintf("    cpuRequestMillicores = %d\n    cpuLimitMillicores = %d\n"+
 			"    memoryRequestBytes = forge.mib(%d)\n    memoryLimitBytes = forge.mib(%d)",
-			r.CPURequestMillicores, r.CPULimitMillicores, r.MemoryRequestBytes>>20, r.MemoryLimitBytes>>20)
+			cpu, cpu, mem>>20, mem>>20)
 	}
 	if d.Replicas == 0 {
 		d.Replicas, d.CPURequest, d.CPULimit, d.MemoryRequestMiB, d.MemoryLimitMiB = 3, "0.5", "2.0", 512, 1024

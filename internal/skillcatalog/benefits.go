@@ -1,4 +1,11 @@
-package cli
+package skillcatalog
+
+import (
+	"bytes"
+	"strings"
+
+	"github.com/reliant-labs/forge/internal/benefits"
+)
 
 // `<!-- @benefits ... -->` directives in forge-shipped skills.
 //
@@ -16,25 +23,18 @@ package cli
 //	<!-- @benefits limits -->            what forge does not do
 //
 // It runs in ResolveSkillContentAt, so `skill load`, the MCP skill_load tool
-// and every harness that injects a skill (cli.RenderSkill, cli.LoadSkill) see
+// and every harness that injects a skill (skills.RenderSkill and skills.LoadSkill, and their forge/cli forwarders) see
 // the same text. A directive the registry cannot render is an error, never a
 // silent gap; TestShippedSkillDirectivesRender renders every shipped skill.
-
-import (
-	"bytes"
-	"strings"
-
-	"github.com/reliant-labs/forge/internal/benefits"
-)
 
 const (
 	benefitsDirectiveOpen  = "<!-- @benefits "
 	benefitsDirectiveClose = "-->"
 )
 
-// expandBenefitDirectives replaces every directive line in body with its
+// ExpandBenefitDirectives replaces every directive line in body with its
 // rendering. A body with no directive is returned as is.
-func expandBenefitDirectives(body []byte) ([]byte, error) {
+func ExpandBenefitDirectives(body []byte) ([]byte, error) {
 	if !bytes.Contains(body, []byte(benefitsDirectiveOpen)) {
 		return body, nil
 	}

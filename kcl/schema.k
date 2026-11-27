@@ -5287,6 +5287,22 @@ schema Frontend:
     # runtime_config, which the browser calls cross-origin.
     apis: {str:str | WorkloadURL} = {}
 
+    # Per-release URLs, on forge.OnHosted: the platform serves every release
+    # this env still retains at a URL of its own, on the preview domain
+    # (https://<unguessable>--<site>.<preview domain>), so a past release can
+    # be opened and compared without promoting it. Each URL sends noindex,
+    # serves this env's CURRENT config.js with the release's own files,
+    # _headers and _redirects, and stops answering once the release is
+    # collected. The platform's console links them from each deploy.
+    #
+    # Unset means on. False turns them off for this frontend in this env:
+    # an old release may still hold what a newer one removed, and this is how
+    # an env says none of its releases may be reachable but the live one.
+    # On every other runtime nothing serves release URLs, so False holds
+    # there by construction and is accepted; declare it once on a frontend
+    # bound per env.
+    release_urls?: bool
+
     check:
         name, "Frontend.name is required"
         all k, _v in apis { regex.match(k, "^[a-z][a-z0-9-]{0,30}$") }, \

@@ -173,7 +173,7 @@ func hostedVulnPlan(ctx context.Context, ledger envLedger, version string) *prom
 	if v.Features == nil {
 		v.Features = []string{}
 	}
-	kept, known := sbomUploadOutcome(hs.endpoint, hs.project, version)
+	kept, known := sbomUploadOutcome(ctx, hs.endpoint, hs.project, version)
 	if known {
 		v.SBOMsKept = &kept
 	}
@@ -290,7 +290,7 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 		project = s.project
 	}
 	kept := false
-	defer func() { noteSBOMUploadOutcome(s.endpoint, project, r.Version, kept) }()
+	defer func() { noteSBOMUploadOutcome(ctx, s.endpoint, project, r.Version, kept) }()
 	if s.sboms == nil {
 		fmt.Fprintf(warn, "[ledger] warning: release %s's SBOMs were not uploaded to %s: this ledger has no machine ledger to read them from\n", r.Version, s.endpoint)
 		return
@@ -383,26 +383,33 @@ func claimableSBOMNote(endpoint, version string, err error) string {
 		"Claim the deploy, then cut a new release to have them scanned", endpoint, version, why)
 }
 
-// sbomUploadOutcomes is, per process, whether a control plane kept the SBOMs
-// of a release this process cut there: (endpoint, project, version) → bool.
-// A deploy opens its ledger once for the cut and again for the promotion, so
-// the outcome the plan reads (hostedVulnPlan) cannot live on the store.
-var sbomUploadOutcomes sync.Map
+// Each deploy owns its upload outcomes, shared by its cut and plan even when
+// they open separate stores. Concurrent deploys of the same release must not
+// borrow one another's result.
+type sbomUploadOutcomesKey struct{}
+
+func withSBOMUploadOutcomes(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sbomUploadOutcomesKey{}, &sync.Map{})
+}
 
 func sbomUploadKey(endpoint, project, version string) string {
 	return endpoint + "\x00" + project + "\x00" + version
 }
 
-// noteSBOMUploadOutcome records whether the control plane kept every SBOM of
-// the release this process just uploaded.
-func noteSBOMUploadOutcome(endpoint, project, version string, kept bool) {
-	sbomUploadOutcomes.Store(sbomUploadKey(endpoint, project, version), kept)
+// noteSBOMUploadOutcome records whether this deploy's cut uploaded every SBOM.
+func noteSBOMUploadOutcome(ctx context.Context, endpoint, project, version string, kept bool) {
+	if outcomes, ok := ctx.Value(sbomUploadOutcomesKey{}).(*sync.Map); ok {
+		outcomes.Store(sbomUploadKey(endpoint, project, version), kept)
+	}
 }
 
-// sbomUploadOutcome is what noteSBOMUploadOutcome recorded; known is false
-// when this process uploaded no SBOM of that release.
-func sbomUploadOutcome(endpoint, project, version string) (kept, known bool) {
-	v, ok := sbomUploadOutcomes.Load(sbomUploadKey(endpoint, project, version))
+// sbomUploadOutcome is known only when this deploy uploaded the release.
+func sbomUploadOutcome(ctx context.Context, endpoint, project, version string) (kept, known bool) {
+	outcomes, ok := ctx.Value(sbomUploadOutcomesKey{}).(*sync.Map)
+	if !ok {
+		return false, false
+	}
+	v, ok := outcomes.Load(sbomUploadKey(endpoint, project, version))
 	if !ok {
 		return false, false
 	}

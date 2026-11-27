@@ -92,6 +92,9 @@ import (
 //     forge's rules. A pinned forge older than the 2h floor and the
 //     live-build lease (#1231, #1243, #1245) would trim the Go build cache
 //     down to now-20m, under running builds.
+//   - cache: this machine's shared Go build cache. `cache prog` runs once
+//     per go command (GOCACHEPROG); a project pinning a forge that lacks it
+//     would fail every go build in the checkout if it were handed over.
 //   - mcp: a long-lived server whose every tool call names its own project
 //     (each may pin a different forge), run in-process. Handing the server
 //     to the forge its STARTING directory pins would make every later
@@ -113,7 +116,7 @@ import (
 // project, stays here (machineWideFlags).
 var handOffExempt = []string{
 	"", "version", "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd,
-	"project upgrade", "project new", "report-bug", "telemetry", "storage", "slot", "mcp",
+	"project upgrade", "project new", "report-bug", "telemetry", "storage", "slot", "cache", "mcp",
 	"env ps", "env devstack", "test begin", "test capture",
 }
 

@@ -1,0 +1,380 @@
+[
+  {
+    "name": "openinference: an LLM span maps to a chat call with its model, provider, tokens, reported cost and session",
+    "trace_id": "0af7651916cd43dd8448eb211c80319c",
+    "input": {
+      "openinference.span.kind": "LLM",
+      "llm.model_name": "gpt-4.1-mini",
+      "llm.provider": "openai",
+      "llm.system": "openai",
+      "llm.token_count.prompt": "1200",
+      "llm.token_count.completion": "300",
+      "llm.token_count.total": "1500",
+      "llm.token_count.prompt_details.cache_read": "1000",
+      "llm.cost.total": "0.0042",
+      "session.id": "sess-1",
+      "user.id": "u-1"
+    },
+    "want": {
+      "openinference.span.kind": "LLM",
+      "llm.model_name": "gpt-4.1-mini",
+      "llm.provider": "openai",
+      "llm.system": "openai",
+      "llm.token_count.prompt": "1200",
+      "llm.token_count.completion": "300",
+      "llm.token_count.total": "1500",
+      "llm.token_count.prompt_details.cache_read": "1000",
+      "llm.cost.total": "0.0042",
+      "session.id": "sess-1",
+      "user.id": "u-1",
+      "forge.ai.convention": "openinference",
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.request.model": "gpt-4.1-mini",
+      "gen_ai.usage.input_tokens": "1200",
+      "gen_ai.usage.output_tokens": "300",
+      "gen_ai.usage.cache_read.input_tokens": "1000",
+      "forge.ai.cost.usd": "0.0042",
+      "gen_ai.conversation.id": "sess-1"
+    }
+  },
+  {
+    "name": "openinference: an AGENT span maps to an agent turn with its name, graph node and session",
+    "trace_id": "0af7651916cd43dd8448eb211c80319c",
+    "input": {
+      "openinference.span.kind": "AGENT",
+      "agent.name": "planner",
+      "graph.node.id": "plan",
+      "session.id": "sess-1"
+    },
+    "want": {
+      "openinference.span.kind": "AGENT",
+      "agent.name": "planner",
+      "graph.node.id": "plan",
+      "session.id": "sess-1",
+      "forge.ai.convention": "openinference",
+      "gen_ai.operation.name": "invoke_agent",
+      "gen_ai.agent.name": "planner",
+      "forge.ai.node.id": "plan",
+      "gen_ai.conversation.id": "sess-1"
+    }
+  },
+  {
+    "name": "openinference: a TOOL span maps to a tool call with its name and call id",
+    "trace_id": "0af7651916cd43dd8448eb211c80319c",
+    "input": {
+      "openinference.span.kind": "TOOL",
+      "tool.name": "search_docs",
+      "tool_call.id": "call_1"
+    },
+    "want": {
+      "openinference.span.kind": "TOOL",
+      "tool.name": "search_docs",
+      "tool_call.id": "call_1",
+      "forge.ai.convention": "openinference",
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.name": "search_docs",
+      "gen_ai.tool.call.id": "call_1"
+    }
+  },
+  {
+    "name": "openinference: a CHAIN span has no GenAI operation; it keeps its session and gets only its convention",
+    "trace_id": "0af7651916cd43dd8448eb211c80319c",
+    "input": {
+      "openinference.span.kind": "CHAIN",
+      "session.id": "sess-1"
+    },
+    "want": {
+      "openinference.span.kind": "CHAIN",
+      "session.id": "sess-1",
+      "forge.ai.convention": "openinference",
+      "gen_ai.conversation.id": "sess-1"
+    }
+  },
+  {
+    "name": "openinference: the hosting provider wins over the API shape and maps to its GenAI value; cache-write and reasoning tokens map",
+    "trace_id": "0af7651916cd43dd8448eb211c80319c",
+    "input": {
+      "openinference.span.kind": "LLM",
+      "llm.provider": "aws",
+      "llm.system": "anthropic",
+      "llm.model_name": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "llm.token_count.prompt_details.cache_write": "50",
+      "llm.token_count.completion_details.reasoning": "10"
+    },
+    "want": {
+      "openinference.span.kind": "LLM",
+      "llm.provider": "aws",
+      "llm.system": "anthropic",
+      "llm.model_name": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "llm.token_count.prompt_details.cache_write": "50",
+      "llm.token_count.completion_details.reasoning": "10",
+      "forge.ai.convention": "openinference",
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "aws.bedrock",
+      "gen_ai.request.model": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "gen_ai.usage.cache_creation.input_tokens": "50",
+      "gen_ai.usage.reasoning.output_tokens": "10"
+    }
+  },
+  {
+    "name": "openinference: an EMBEDDING span with only llm.system; the request and response model names win over llm.model_name",
+    "trace_id": "0af7651916cd43dd8448eb211c80319c",
+    "input": {
+      "openinference.span.kind": "EMBEDDING",
+      "llm.system": "vertexai",
+      "llm.request.model_name": "text-embedding-005",
+      "llm.response.model_name": "text-embedding-005@001",
+      "llm.model_name": "text-embedding"
+    },
+    "want": {
+      "openinference.span.kind": "EMBEDDING",
+      "llm.system": "vertexai",
+      "llm.request.model_name": "text-embedding-005",
+      "llm.response.model_name": "text-embedding-005@001",
+      "llm.model_name": "text-embedding",
+      "forge.ai.convention": "openinference",
+      "gen_ai.operation.name": "embeddings",
+      "gen_ai.provider.name": "gcp.vertex_ai",
+      "gen_ai.request.model": "text-embedding-005",
+      "gen_ai.response.model": "text-embedding-005@001"
+    }
+  },
+  {
+    "name": "a canonical key the span already carries is never overwritten",
+    "trace_id": "0af7651916cd43dd8448eb211c80319c",
+    "input": {
+      "openinference.span.kind": "LLM",
+      "gen_ai.operation.name": "text_completion",
+      "gen_ai.request.model": "claude-sonnet-5",
+      "llm.model_name": "something-else"
+    },
+    "want": {
+      "openinference.span.kind": "LLM",
+      "gen_ai.operation.name": "text_completion",
+      "gen_ai.request.model": "claude-sonnet-5",
+      "llm.model_name": "something-else",
+      "forge.ai.convention": "openinference"
+    }
+  },
+  {
+    "name": "openllmetry: a chat span with the older gen_ai names, a workflow and association properties",
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "input": {
+      "llm.request.type": "chat",
+      "gen_ai.system": "openai",
+      "gen_ai.request.model": "gpt-4o",
+      "gen_ai.response.model": "gpt-4o-2024-08-06",
+      "gen_ai.usage.prompt_tokens": "800",
+      "gen_ai.usage.completion_tokens": "120",
+      "gen_ai.usage.cache_read_input_tokens": "400",
+      "llm.usage.reasoning_tokens": "64",
+      "traceloop.workflow.name": "support-bot",
+      "traceloop.association.properties.session_id": "conv-9",
+      "traceloop.association.properties.user_id": "u-9"
+    },
+    "want": {
+      "llm.request.type": "chat",
+      "gen_ai.system": "openai",
+      "gen_ai.request.model": "gpt-4o",
+      "gen_ai.response.model": "gpt-4o-2024-08-06",
+      "gen_ai.usage.prompt_tokens": "800",
+      "gen_ai.usage.completion_tokens": "120",
+      "gen_ai.usage.cache_read_input_tokens": "400",
+      "llm.usage.reasoning_tokens": "64",
+      "traceloop.workflow.name": "support-bot",
+      "traceloop.association.properties.session_id": "conv-9",
+      "traceloop.association.properties.user_id": "u-9",
+      "forge.ai.convention": "openllmetry",
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.usage.input_tokens": "800",
+      "gen_ai.usage.output_tokens": "120",
+      "gen_ai.usage.cache_read.input_tokens": "400",
+      "gen_ai.usage.reasoning.output_tokens": "64",
+      "forge.ai.workflow.name": "support-bot",
+      "forge.ai.run.id": "4bf92f3577b34da6a3ce929d0e0e4736",
+      "gen_ai.conversation.id": "conv-9",
+      "user.id": "u-9"
+    }
+  },
+  {
+    "name": "openllmetry: a workflow span is a workflow segment whose run is its trace",
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "input": {
+      "traceloop.span.kind": "workflow",
+      "traceloop.entity.name": "support-bot",
+      "traceloop.workflow.name": "support-bot"
+    },
+    "want": {
+      "traceloop.span.kind": "workflow",
+      "traceloop.entity.name": "support-bot",
+      "traceloop.workflow.name": "support-bot",
+      "forge.ai.convention": "openllmetry",
+      "gen_ai.operation.name": "invoke_workflow",
+      "forge.ai.workflow.name": "support-bot",
+      "forge.ai.run.id": "4bf92f3577b34da6a3ce929d0e0e4736"
+    }
+  },
+  {
+    "name": "openllmetry: an agent span's entity name is the agent",
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "input": {
+      "traceloop.span.kind": "agent",
+      "traceloop.entity.name": "researcher",
+      "traceloop.workflow.name": "support-bot"
+    },
+    "want": {
+      "traceloop.span.kind": "agent",
+      "traceloop.entity.name": "researcher",
+      "traceloop.workflow.name": "support-bot",
+      "forge.ai.convention": "openllmetry",
+      "gen_ai.operation.name": "invoke_agent",
+      "gen_ai.agent.name": "researcher",
+      "forge.ai.workflow.name": "support-bot",
+      "forge.ai.run.id": "4bf92f3577b34da6a3ce929d0e0e4736"
+    }
+  },
+  {
+    "name": "openllmetry: a tool span outside a workflow gets no run",
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "input": {
+      "traceloop.span.kind": "tool",
+      "traceloop.entity.name": "web_search"
+    },
+    "want": {
+      "traceloop.span.kind": "tool",
+      "traceloop.entity.name": "web_search",
+      "forge.ai.convention": "openllmetry",
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.name": "web_search"
+    }
+  },
+  {
+    "name": "openllmetry: a task span has no GenAI operation and its entity name is neither agent nor tool",
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "input": {
+      "traceloop.span.kind": "task",
+      "traceloop.entity.name": "format_answer",
+      "traceloop.workflow.name": "support-bot"
+    },
+    "want": {
+      "traceloop.span.kind": "task",
+      "traceloop.entity.name": "format_answer",
+      "traceloop.workflow.name": "support-bot",
+      "forge.ai.convention": "openllmetry",
+      "forge.ai.workflow.name": "support-bot",
+      "forge.ai.run.id": "4bf92f3577b34da6a3ce929d0e0e4736"
+    }
+  },
+  {
+    "name": "genai: the renamed gen_ai.system value and token names map to the current ones",
+    "trace_id": "5b8efff798038103d269b633813fc60c",
+    "input": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.system": "vertex_ai",
+      "gen_ai.request.model": "gemini-2.5-pro",
+      "gen_ai.usage.prompt_tokens": "10",
+      "gen_ai.usage.completion_tokens": "5"
+    },
+    "want": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.system": "vertex_ai",
+      "gen_ai.request.model": "gemini-2.5-pro",
+      "gen_ai.usage.prompt_tokens": "10",
+      "gen_ai.usage.completion_tokens": "5",
+      "forge.ai.convention": "genai",
+      "gen_ai.provider.name": "gcp.vertex_ai",
+      "gen_ai.usage.input_tokens": "10",
+      "gen_ai.usage.output_tokens": "5"
+    }
+  },
+  {
+    "name": "genai: az.ai.openai becomes azure.ai.openai; the draft cache-write and reasoning names map",
+    "trace_id": "5b8efff798038103d269b633813fc60c",
+    "input": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.system": "az.ai.openai",
+      "gen_ai.usage.cache_write.input_tokens": "7",
+      "gen_ai.usage.reasoning_tokens": "3"
+    },
+    "want": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.system": "az.ai.openai",
+      "gen_ai.usage.cache_write.input_tokens": "7",
+      "gen_ai.usage.reasoning_tokens": "3",
+      "forge.ai.convention": "genai",
+      "gen_ai.provider.name": "azure.ai.openai",
+      "gen_ai.usage.cache_creation.input_tokens": "7",
+      "gen_ai.usage.reasoning.output_tokens": "3"
+    }
+  },
+  {
+    "name": "genai: an unrenamed gen_ai.system value is copied as it is; a provider name already set is kept",
+    "trace_id": "5b8efff798038103d269b633813fc60c",
+    "input": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.system": "anthropic",
+      "gen_ai.usage.cache_creation_input_tokens": "12"
+    },
+    "want": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.system": "anthropic",
+      "gen_ai.usage.cache_creation_input_tokens": "12",
+      "forge.ai.convention": "genai",
+      "gen_ai.provider.name": "anthropic",
+      "gen_ai.usage.cache_creation.input_tokens": "12"
+    }
+  },
+  {
+    "name": "genai: a span forge's own helpers emitted gains only its convention",
+    "trace_id": "5b8efff798038103d269b633813fc60c",
+    "input": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "anthropic",
+      "gen_ai.system": "gcp.vertex_ai",
+      "gen_ai.request.model": "claude-sonnet-5",
+      "gen_ai.usage.input_tokens": "1200",
+      "gen_ai.usage.cache_read.input_tokens": "1000",
+      "forge.ai.run.id": "run-1"
+    },
+    "want": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "anthropic",
+      "gen_ai.system": "gcp.vertex_ai",
+      "gen_ai.request.model": "claude-sonnet-5",
+      "gen_ai.usage.input_tokens": "1200",
+      "gen_ai.usage.cache_read.input_tokens": "1000",
+      "forge.ai.run.id": "run-1",
+      "forge.ai.convention": "genai"
+    }
+  },
+  {
+    "name": "a workflow node span with forge.ai.* and no gen_ai key is left alone",
+    "trace_id": "5b8efff798038103d269b633813fc60c",
+    "input": {
+      "forge.ai.run.id": "run-1",
+      "forge.ai.node.id": "classify"
+    },
+    "want": {
+      "forge.ai.run.id": "run-1",
+      "forge.ai.node.id": "classify"
+    }
+  },
+  {
+    "name": "a non-AI span's session.id, user.id and tool.name are never read as a convention's",
+    "trace_id": "5b8efff798038103d269b633813fc60c",
+    "input": {
+      "session.id": "browser-session-1",
+      "user.id": "u-1",
+      "tool.name": "hammer",
+      "http.route": "/api/answer"
+    },
+    "want": {
+      "session.id": "browser-session-1",
+      "user.id": "u-1",
+      "tool.name": "hammer",
+      "http.route": "/api/answer"
+    }
+  }
+]

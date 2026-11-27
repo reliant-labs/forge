@@ -63,7 +63,7 @@ Set caps before the first run and fail closed when reached: a maximum number of 
 
 ### Idempotency
 
-Decide the key that identifies "the same thing": a URL, an event ID, a week number, a prospect's ID. Store the keys you have handled and skip them on re-run. Name output files by period (`2025-w10.md`) so a re-run overwrites its own output instead of adding a second one. Anything with an external effect needs the key checked first. A duplicate trigger should produce the same result or no result, never a second send.
+Decide the key that identifies "the same thing": a URL, an event ID, a week number, a prospect's ID. Store the keys you have handled and skip them on re-run. Name output files by period (`2025-w11.md`) so a re-run overwrites its own output instead of adding a second one. Anything with an external effect needs the key checked first. A duplicate trigger should produce the same result or no result, never a second send.
 
 ## Worked designs
 
@@ -115,7 +115,7 @@ These are specs, not code. Adapt the sources and thresholds.
 - **Outputs:** a dated digest file in the reviews folder with the query or source for each number.
 - **Failure handling:** if a query fails, show the gap and last known value, clearly labelled; never fill a number from memory or estimate silently.
 - **Cost limits:** max query run time and rows; model use limited to summarising the final table.
-- **Idempotency:** one file per week keyed by the week number; a re-run replaces it.
+- **Idempotency:** one file per review date (for example `2025-03-10-digest.md`); a re-run replaces it.
 
 ## Test before you trust it
 

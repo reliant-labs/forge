@@ -149,6 +149,7 @@ var credentialShortNames = map[string]bool{"pass": true, "passin": true, "passou
 // program only.
 var programCredentialFlags = map[string]map[string]bool{
 	"redis-cli": {"-a": true},
+	"sshpass":   {"-p": true},
 	"openssl":   {"-k": true},
 	"smbclient": {"-U": true},
 }
@@ -163,6 +164,9 @@ func takesCredential(flag, program, value string) bool {
 	}
 	if strings.HasPrefix(value, "--") {
 		return false // the next flag, not a value
+	}
+	if _, attached := redactAttached(flag, program); attached {
+		return false // its value is already attached, not the following word
 	}
 	name := strings.TrimLeft(flag, "-")
 	switch {
@@ -208,8 +212,11 @@ func redactAttached(w, program string) (string, bool) {
 	if m := wordUserAttached.FindStringSubmatch(w); m != nil {
 		return m[1] + Redacted, true
 	}
-	if mysqlLike[program] && len(w) > 2 && strings.HasPrefix(w, "-p") {
-		return "-p" + Redacted, true
+	if len(w) > 2 {
+		flag := w[:2]
+		if programCredentialFlags[program][flag] || (mysqlLike[program] && flag == "-p") {
+			return flag + Redacted, true
+		}
 	}
 	return "", false
 }

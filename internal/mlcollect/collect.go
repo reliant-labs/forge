@@ -282,6 +282,7 @@ func (r *reader) listCore(ctx context.Context) {
 	} else {
 		for i := range items {
 			strip(&items[i].ObjectMeta)
+			stripNode(&items[i])
 		}
 		r.s.Nodes = items
 	}
@@ -293,6 +294,7 @@ func (r *reader) listCore(ctx context.Context) {
 		for i := range items {
 			strip(&items[i].ObjectMeta)
 			stripPodSpec(&items[i].Spec)
+			stripPodStatus(&items[i].Status)
 		}
 		r.s.Pods = items
 	}
@@ -505,6 +507,7 @@ func (r *reader) dynamicList(ctx context.Context, gvr schema.GroupVersionResourc
 func strip(m *metav1.ObjectMeta) {
 	m.ManagedFields = nil
 	m.Annotations = nil
+	redactStringMap(m.Labels)
 }
 
 func stripTemplate(t *corev1.PodTemplateSpec) {
@@ -521,7 +524,9 @@ func stripTemplate(t *corev1.PodTemplateSpec) {
 // hooks likewise, and replaces the value of every HTTP header a probe or hook
 // sends (an Authorization header is the usual one), keeping the name. A CSI
 // volume's attributes and a FlexVolume's options keep only values under
-// keys that do not name a credential.
+// keys that do not name a credential. Volume URLs lose embedded credentials,
+// inline Windows GMSA documents are replaced whole, and embedded PVC metadata
+// follows the same stripping rules as top-level metadata.
 func stripPodSpec(p *corev1.PodSpec) {
 	for i := range p.InitContainers {
 		stripContainer(&p.InitContainers[i])
@@ -531,6 +536,10 @@ func stripPodSpec(p *corev1.PodSpec) {
 	}
 	for i := range p.EphemeralContainers {
 		c := &p.EphemeralContainers[i].EphemeralContainerCommon
+		c.Image = RedactArgText(c.Image)
+		if c.SecurityContext != nil {
+			stripWindowsOptions(c.SecurityContext.WindowsOptions)
+		}
 		blankEnv(c.Env)
 		c.Command, c.Args = RedactArgv(c.Command, c.Args)
 		for _, pr := range []*corev1.Probe{c.LivenessProbe, c.ReadinessProbe, c.StartupProbe} {
@@ -546,10 +555,84 @@ func stripPodSpec(p *corev1.PodSpec) {
 		if v.FlexVolume != nil {
 			redactStringMap(v.FlexVolume.Options)
 		}
+		if v.GitRepo != nil {
+			v.GitRepo.Repository = RedactArgText(v.GitRepo.Repository)
+		}
+		if v.AzureDisk != nil {
+			v.AzureDisk.DataDiskURI = RedactArgText(v.AzureDisk.DataDiskURI)
+		}
+		if v.ScaleIO != nil {
+			v.ScaleIO.Gateway = RedactArgText(v.ScaleIO.Gateway)
+		}
+		if v.Ephemeral != nil && v.Ephemeral.VolumeClaimTemplate != nil {
+			strip(&v.Ephemeral.VolumeClaimTemplate.ObjectMeta)
+		}
+	}
+	if p.SecurityContext != nil {
+		stripWindowsOptions(p.SecurityContext.WindowsOptions)
+	}
+}
+
+// Core-object retention audit: metadata annotations/managed fields are dropped;
+// label values are sanitized. Pod specs retain scheduling/resource/security
+// settings and object/key/path references (Secret references are not data).
+// Inline data surfaces are env, argv, probe/hook headers and paths, volume
+// option maps/URLs, and GMSA documents, all handled above. Node specs/status
+// retain addresses, IDs, resource quantities, version information and reference
+// names; provider/image URLs are sanitized below. Status reason codes, phases,
+// timestamps and readiness stay, but diagnostic messages do not.
+//
+// Status messages are arbitrary application/runtime output, not inventory.
+// Keep scheduling state, resource counts, identities and references, but never
+// persist diagnostic text that can echo credentials (including terminated execs).
+func stripPodStatus(s *corev1.PodStatus) {
+	s.Message = ""
+	for i := range s.Conditions {
+		s.Conditions[i].Message = ""
+	}
+	for _, statuses := range [][]corev1.ContainerStatus{s.ContainerStatuses, s.InitContainerStatuses, s.EphemeralContainerStatuses} {
+		for i := range statuses {
+			statuses[i].Image = RedactArgText(statuses[i].Image)
+			statuses[i].ImageID = RedactArgText(statuses[i].ImageID)
+			for _, state := range []*corev1.ContainerState{&statuses[i].State, &statuses[i].LastTerminationState} {
+				if state.Waiting != nil {
+					state.Waiting.Message = ""
+				}
+				if state.Terminated != nil {
+					state.Terminated.Message = ""
+				}
+			}
+		}
+	}
+}
+
+func stripNode(n *corev1.Node) {
+	n.Spec.ProviderID = RedactArgText(n.Spec.ProviderID)
+	if n.Status.Config != nil {
+		n.Status.Config.Error = ""
+	}
+	for i := range n.Status.Conditions {
+		n.Status.Conditions[i].Message = ""
+	}
+	for i := range n.Status.Images {
+		for j := range n.Status.Images[i].Names {
+			n.Status.Images[i].Names[j] = RedactArgText(n.Status.Images[i].Names[j])
+		}
+	}
+}
+
+func stripWindowsOptions(w *corev1.WindowsSecurityContextOptions) {
+	if w != nil && w.GMSACredentialSpec != nil {
+		v := Redacted
+		w.GMSACredentialSpec = &v
 	}
 }
 
 func stripContainer(c *corev1.Container) {
+	c.Image = RedactArgText(c.Image)
+	if c.SecurityContext != nil {
+		stripWindowsOptions(c.SecurityContext.WindowsOptions)
+	}
 	blankEnv(c.Env)
 	c.Command, c.Args = RedactArgv(c.Command, c.Args)
 	for _, pr := range []*corev1.Probe{c.LivenessProbe, c.ReadinessProbe, c.StartupProbe} {

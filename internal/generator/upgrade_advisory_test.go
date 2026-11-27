@@ -26,6 +26,9 @@ const advisoryQueryClient = "src/lib/query-client.ts"
 // the scaffolders write into forge.yaml for it.
 func advisoryTestProject(t *testing.T) (string, *config.ProjectConfig) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("scaffolds a complete frontend with durable file writes; runs in task test")
+	}
 	dir := t.TempDir()
 	if err := GenerateFrontendFiles(dir, "github.com/example/demo", "demo", "web", 8080, ""); err != nil {
 		t.Fatalf("GenerateFrontendFiles: %v", err)

@@ -1,4 +1,4 @@
-package cli
+package skillcatalog
 
 import "strings"
 

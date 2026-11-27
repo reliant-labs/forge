@@ -2,11 +2,15 @@
 package cli
 
 import (
-	internalcli "github.com/reliant-labs/forge/internal/cli"
+	"github.com/reliant-labs/forge/pkg/skills"
 )
 
 // Skill is the public metadata view of a forge skill, suitable for
 // out-of-process consumers (e.g. reliant surfacing forge skills natively).
+// It has the same fields as [skills.Skill], and converts to and from it.
+//
+// Deprecated: use [skills.Skill] from github.com/reliant-labs/forge/pkg/skills,
+// which serves skills without linking the whole forge CLI.
 type Skill struct {
 	// Path is the skill identifier (e.g. "db", "frontend/state").
 	Path string
@@ -71,12 +75,18 @@ type Skill struct {
 // and are noise for any project not mid-transition. Use
 // [ListSkillsWithOptions] to opt them in; they always remain loadable by
 // exact path via [LoadSkill].
+//
+// Deprecated: use [skills.ListSkills]. Importing this package links the whole
+// forge CLI (about 2,150 packages) into every binary above the import;
+// pkg/skills links only the skill catalog.
 func ListSkills(projectRoot string) ([]Skill, error) {
 	return ListSkillsWithOptions(projectRoot, ListSkillsOptions{})
 }
 
 // ListSkillsOptions tunes ListSkillsWithOptions. The zero value matches
 // ListSkills' default behavior.
+//
+// Deprecated: use [skills.ListSkillsOptions].
 type ListSkillsOptions struct {
 	// IncludeMigrationSkills opts relevance=migration skills back into
 	// the listing (e.g. for an upgrade-assistant surface).
@@ -85,27 +95,16 @@ type ListSkillsOptions struct {
 
 // ListSkillsWithOptions is [ListSkills] with explicit listing options.
 // Additive API — ListSkills' signature is stable for existing consumers.
+//
+// Deprecated: use [skills.ListSkillsWithOptions].
 func ListSkillsWithOptions(projectRoot string, opts ListSkillsOptions) ([]Skill, error) {
-	metas, err := internalcli.ListSkillsAtWithOptions(projectRoot, internalcli.SkillListOptions{
-		IncludeMigrations: opts.IncludeMigrationSkills,
-	})
+	listed, err := skills.ListSkillsWithOptions(projectRoot, skills.ListSkillsOptions(opts))
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Skill, 0, len(metas))
-	for _, m := range metas {
-		out = append(out, Skill{
-			Path:                m.Path,
-			Name:                m.Name,
-			Description:         m.Description,
-			Scope:               string(m.Scope),
-			Emit:                string(m.Emit),
-			Relevance:           string(m.Relevance),
-			Version:             m.Version,
-			SkillForgeVersion:   m.SkillForgeVersion,
-			ProjectForgeVersion: m.ProjectForgeVersion,
-			VersionSkew:         m.VersionSkew,
-		})
+	out := make([]Skill, 0, len(listed))
+	for _, s := range listed {
+		out = append(out, Skill(s))
 	}
 	return out, nil
 }
@@ -119,9 +118,10 @@ func ListSkillsWithOptions(projectRoot string, opts ListSkillsOptions) ([]Skill,
 // (see Skill.VersionSkew), a one-line "Note: this guidance is from
 // forge <X>; this project pins forge <Y>..." advisory is inserted after
 // the YAML frontmatter so downstream readers see the skew inline.
+//
+// Deprecated: use [skills.LoadSkill].
 func LoadSkill(projectRoot, skillPath string) ([]byte, error) {
-	body, _, err := internalcli.ResolveSkillContentAt(projectRoot, skillPath)
-	return body, err
+	return skills.LoadSkill(projectRoot, skillPath)
 }
 
 // LoadSkillForAudience is like [LoadSkill] but filters the body for the
@@ -130,16 +130,16 @@ func LoadSkill(projectRoot, skillPath string) ([]byte, error) {
 // "forge" or "" to keep the full body. Reliant and other harness shims
 // should use this when a project lacks forge.yaml so emit:both skills
 // surface without forge-specific tooling instructions.
+//
+// Deprecated: use [skills.LoadSkillForAudience].
 func LoadSkillForAudience(projectRoot, skillPath, audience string) ([]byte, error) {
-	body, err := LoadSkill(projectRoot, skillPath)
-	if err != nil {
-		return nil, err
-	}
-	return internalcli.RenderSkillForAudience(body, internalcli.SkillAudience(audience)), nil
+	return skills.LoadSkillForAudience(projectRoot, skillPath, audience)
 }
 
 // RenderSkillOptions tunes [RenderSkill]. The zero value renders exactly what
 // `forge skill load` prints from THIS process.
+//
+// Deprecated: use [skills.RenderSkillOptions].
 type RenderSkillOptions struct {
 	// Audience filters the body the same way as [LoadSkillForAudience]:
 	// "general" strips `@forge-only` blocks, "forge" or "" keeps the full
@@ -167,10 +167,8 @@ type RenderSkillOptions struct {
 // different forge build than the one that generated its project.
 //
 // A "forge/" prefix on skillPath is accepted, matching `skill load`.
+//
+// Deprecated: use [skills.RenderSkill].
 func RenderSkill(projectRoot, skillPath string, opts RenderSkillOptions) ([]byte, error) {
-	cliName := opts.CLIName
-	if cliName == "" {
-		cliName = internalcli.Name()
-	}
-	return internalcli.RenderSkillContentAt(projectRoot, skillPath, internalcli.SkillAudience(opts.Audience), cliName)
+	return skills.RenderSkill(projectRoot, skillPath, skills.RenderSkillOptions(opts))
 }

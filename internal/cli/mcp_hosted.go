@@ -1067,7 +1067,7 @@ func hostedSkillLoad(in skillLoadArgs) *mcp.CallToolResult {
 		if s.Path != name {
 			continue
 		}
-		body, err := s.body()
+		body, err := s.Body()
 		if err == nil {
 			body, err = expandBenefitDirectives(body)
 		}

@@ -131,16 +131,8 @@ COMMENT ON TABLE plan_catalog IS 'forge:public: the pricing page lists every pla
 COMMENT ON TABLE feature_flags IS 'forge:unscoped: admin service only; scoped in its handler';
 ```
 
-The reason is required. These markers change no codegen. Forge writes none
-for you, scaffolded tables included.
-
-While a table is still exactly as `forge scaffold` births it, the finding is a
-warning, `pending: choose an owner for <Entity>`, with the same fix, so a fresh
-scaffold passes `forge lint`. It gates once the table is edited: the birth
-migration changed in place (its `-- Birth checksum:` line no longer matches the
-file), or a later migration alters the table (`ALTER TABLE`, `COMMENT ON`,
-`CREATE INDEX … ON`). A table forge did not birth gates from the start, and a
-`forge:public` or `forge:unscoped` with no reason is an error either way.
+The reason is required. These markers change no codegen. Forge writes none;
+an unedited born table only warns (`db/birth`).
 
 The column form, `COMMENT ON COLUMN t.c IS 'forge:owner'`, is unchanged. It
 arms the `unscoped_auth` audit and scaffolds a wrapper you finish by hand

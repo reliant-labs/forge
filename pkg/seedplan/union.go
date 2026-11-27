@@ -798,12 +798,17 @@ func unionPinPlaceable(t schemadef.Table, col schemadef.Column, pools EnumPools,
 }
 
 // declaredBound is the numeric range the column's own single-column range
-// CHECKs pin it to — the same model BoundsFromTables builds, read here
+// CHECKs — and the single-column terms of a multi-column one — pin it to: the
+// same model BoundsFromTables builds, read here
 // directly so this pass stays a pure function of the schema and does not
 // depend on whether a caller wired SetBounds.
 func declaredBound(t schemadef.Table, name string) NumBound {
 	var have NumBound
 	for _, ck := range t.Checks {
+		if b, ok := multiColumnConjunctBounds(ck)[name]; ok {
+			have = intersectBounds(have, b)
+			continue
+		}
 		if len(ck.Columns) != 1 || ck.Columns[0] != name {
 			continue
 		}

@@ -490,7 +490,9 @@ func BoundsFromTables(tables []schemadef.Table) CheckBounds {
 			bounds[t.Name][ck.Columns[0]] = have
 		}
 	}
-	return bounds
+	// A multi-column CHECK's single-column terms (`a >= 0 AND b >= 0 AND
+	// a <= b`) bound their columns just as surely (conjuncts.go).
+	return mergeCheckBounds(bounds, conjunctBoundsFromTables(tables))
 }
 
 // IntrospectEnumPools reads, from the live target database, the allowed string

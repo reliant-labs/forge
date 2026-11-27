@@ -606,14 +606,40 @@ func (p *Plan) Render() string {
 // document as a value and validates it (see vocabValueProblem) — that
 // overlay is consulted before this and stays the place domain knowledge
 // lives.
+//
+// The one document it does invent is forced by the schema: when a CHECK
+// excludes the document above (`selector <> '{}'::jsonb`, the column's own
+// DEFAULT), the row needs SOME other document, and the smallest one of the
+// same JSON type is the least invention that satisfies it (see
+// JSONDocumentFor).
 func (p *Plan) jsonDocument(table string, col schemadef.Column) string {
+	return sqlString(JSONDocumentFor(p.byName[table], col))
+}
+
+// JSONDocumentFor is the document jsonDocument seeds into col, unquoted.
+// Exported for codegen's lifecycle-test fixtures, which mint create requests
+// against the same schema: one model of what a json column holds.
+func JSONDocumentFor(t schemadef.Table, col schemadef.Column) string {
+	base := "{}"
 	if doc, ok := jsonDefaultDocument(col.Default); ok {
-		return sqlString(doc)
+		base = doc
+	} else if jsonShapeIsArray(t, col.Name) {
+		base = "[]"
 	}
-	if jsonShapeIsArray(p.byName[table], col.Name) {
-		return "'[]'"
+	excluded := ExcludedLiterals(t, col.Name)
+	if !literalExcluded(col, base, excluded) {
+		return base
 	}
-	return "'{}'"
+	candidates := []string{`{"key": "value"}`, `{"key": "other"}`}
+	if strings.HasPrefix(strings.TrimSpace(base), "[") {
+		candidates = []string{`["value"]`, `["other"]`}
+	}
+	for _, c := range candidates {
+		if !literalExcluded(col, c, excluded) {
+			return c
+		}
+	}
+	return base // every candidate excluded: the INSERT reports the CHECK
 }
 
 // jsonDefaultDocument unwraps a column DEFAULT that is a literal JSON

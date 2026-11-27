@@ -121,6 +121,14 @@ func TestOrderRelsFromCheck_Shapes(t *testing.T) {
 			"issued_at", "expires_at", "max_qty", "min_qty"),
 		want: []orderRel{{lo: "issued_at", hi: "expires_at"}, {lo: "min_qty", hi: "max_qty"}},
 	}, {
+		// reliant's machine_pools_bounds: single-column literal bounds ANDed
+		// with a guarded ordering. The bounds are the bounds model's
+		// (conjuncts.go); the ordering is this pass's edge.
+		name: "literal bounds beside a guarded ordering",
+		ck: check("c", "CHECK (((min_members >= 0) AND (max_members >= 0) AND (max_runs_per_member >= 0) AND ((max_members = 0) OR (min_members <= max_members))))",
+			"min_members", "max_members", "max_runs_per_member"),
+		want: []orderRel{{lo: "min_members", hi: "max_members"}},
+	}, {
 		name: "constraint added NOT VALID is still enforced on inserts",
 		ck:   check("c", "CHECK ((expires_at > issued_at)) NOT VALID", "expires_at", "issued_at"),
 		want: []orderRel{{lo: "issued_at", hi: "expires_at"}},
@@ -147,6 +155,11 @@ func TestOrderRelsFromCheck_Shapes(t *testing.T) {
 		ck: check("c", "CHECK (((issued_at IS NOT NULL) AND (expires_at > issued_at)))",
 			"issued_at", "expires_at"),
 	}, {
+		// A literal bound does not excuse an unreadable sibling term.
+		name: "literal bound beside an unreadable term",
+		ck: check("c", "CHECK (((min_members >= 0) AND (num_nonnulls(signed_at, voided_at) = 1)))",
+			"min_members", "signed_at", "voided_at"),
+	}, {
 		name: "not a comparison at all",
 		ck:   check("c", "CHECK ((num_nonnulls(signed_at, voided_at) = 1))", "signed_at", "voided_at"),
 	}, {
@@ -160,7 +173,7 @@ func TestOrderRelsFromCheck_Shapes(t *testing.T) {
 	}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := orderRelsFromCheck(tc.ck)
+			got, ok, _ := orderRelsFromCheck(tc.ck)
 			if len(tc.want) == 0 {
 				if ok {
 					t.Fatalf("%s must be REFUSED (forge's placement does not prove it), got %+v", tc.ck.Def, got)
@@ -555,5 +568,34 @@ func TestOrdering_PlainEqualityIsNotReportedAsDerivation(t *testing.T) {
 	p := planFor(t, table, 5)
 	if joined := strings.Join(p.Warnings(), "\n  "); strings.Contains(joined, "GENERATED ALWAYS AS") {
 		t.Errorf("a plain equality is an invariant, not a derivation — it has no expression to generate from; got:\n  %s", joined)
+	}
+}
+
+// A multi-column CHECK made only of single-column literal bounds has no edge
+// to place and nothing unreadable in it: the bounds model owns every term, so
+// the ordering pass neither places nor refuses it.
+func TestOrderRelsFromCheck_BoundsOnly(t *testing.T) {
+	ck := check("c", "CHECK (((min_members >= 0) AND (max_members <= 10)))", "min_members", "max_members")
+	rels, ok, bounded := orderRelsFromCheck(ck)
+	if ok || len(rels) != 0 || !bounded {
+		t.Fatalf("got rels=%+v ok=%t bounded=%t, want a bounds-only constraint", rels, ok, bounded)
+	}
+	tbl := schemadef.Table{
+		Name: "pools",
+		Columns: []schemadef.Column{
+			{Name: "min_members", Type: schemadef.TypeInt, NotNull: true, Default: "0"},
+			{Name: "max_members", Type: schemadef.TypeInt, NotNull: true, Default: "0"},
+		},
+		Checks: []schemadef.CheckConstraint{ck},
+	}
+	if _, warns := tableOrderChains(tbl); len(warns) != 0 {
+		t.Errorf("a bounds-only constraint was warned about: %v", warns)
+	}
+	b := BoundsFromTables([]schemadef.Table{tbl})["pools"]
+	if got := b["min_members"]; got.Min == nil || *got.Min != 0 || got.Max != nil {
+		t.Errorf("min_members bound = %s, want [0,∞)", got.describe())
+	}
+	if got := b["max_members"]; got.Max == nil || *got.Max != 10 || got.Min != nil {
+		t.Errorf("max_members bound = %s, want [-∞,10]", got.describe())
 	}
 }

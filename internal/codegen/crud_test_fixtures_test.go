@@ -487,6 +487,74 @@ func TestCRUDTestFixtures_JSONFieldFixtureIsValidJSON(t *testing.T) {
 	}
 }
 
+// TestCRUDTestFixtures_JSONFixtureSkipsExcludedDocument: reliant's
+// machine_pools.selector is `NOT NULL DEFAULT '{}'` with
+// `CHECK (selector <> '{}'::jsonb)`, so a create #1 carrying the empty document
+// is the one request the schema refuses.
+func TestCRUDTestFixtures_JSONFixtureSkipsExcludedDocument(t *testing.T) {
+	pools := schemadef.Table{
+		Name:   "machine_pools",
+		PKCols: []string{"id"},
+		Columns: []schemadef.Column{
+			{Name: "id", Type: schemadef.TypeString, NotNull: true, IsPK: true},
+			{Name: "selector", Type: schemadef.TypeJSON, NotNull: true, Default: "'{}'::jsonb"},
+		},
+		Checks: []schemadef.CheckConstraint{{
+			Name: "machine_pools_selector_present", Def: "CHECK ((selector <> '{}'::jsonb))", Columns: []string{"selector"},
+		}},
+	}
+	fx := fixtureModel(t, []schemadef.Table{pools}, "machine_pools")
+	ent := EntityDef{Name: "MachinePool", TableName: "machine_pools", PkField: "id", PkGoType: "string"}
+	v1, v2, ok := fx.fieldFixture(ServiceDef{}, ent, "CreateMachinePoolRequest", "selector", "string", FieldKindScalar)
+	if !ok {
+		t.Fatal("expected a JSON fixture for the selector column, got ok=false")
+	}
+	for _, lit := range []string{v1, v2} {
+		s, err := strconv.Unquote(lit)
+		if err != nil || !json.Valid([]byte(s)) {
+			t.Fatalf("fixture %q is not a quoted JSON document (err %v)", lit, err)
+		}
+		if s == "{}" {
+			t.Errorf("fixture carries the document the CHECK excludes: %s", s)
+		}
+	}
+	if v1 == v2 {
+		t.Errorf("both creates carry %s; they must differ", v1)
+	}
+}
+
+// TestUnplacedConstraintNote_NamesTheViolatedConstraint: the note lists the
+// constraints forge could not place as the CAUSE of a parent-seeding failure.
+// When postgres names a different constraint, they are not the cause, and the
+// note must say which constraint failed instead of pointing at the wrong one.
+func TestUnplacedConstraintNote_NamesTheViolatedConstraint(t *testing.T) {
+	signoffs := schemadef.Table{
+		Name:   "signoffs",
+		PKCols: []string{"id"},
+		Columns: []schemadef.Column{
+			{Name: "id", Type: schemadef.TypeString, NotNull: true, IsPK: true},
+			{Name: "signed_at", Type: schemadef.TypeTime},
+			{Name: "voided_at", Type: schemadef.TypeTime},
+			{Name: "title", Type: schemadef.TypeString, NotNull: true},
+		},
+		Checks: []schemadef.CheckConstraint{{
+			Name: "signoffs_one_stamp", Def: "CHECK ((num_nonnulls(signed_at, voided_at) = 1))",
+			Columns: []string{"signed_at", "voided_at"},
+		}},
+	}
+	fx := fixtureModel(t, []schemadef.Table{signoffs}, "signoffs")
+
+	const prefix = `ERROR: new row for relation "signoffs" violates check constraint `
+	if got := fx.unplacedConstraintNote("signoffs", prefix+`"signoffs_one_stamp" (SQLSTATE 23514)`); !strings.Contains(got, "forge could not place these constraints") ||
+		!strings.Contains(got, "signoffs_one_stamp") {
+		t.Errorf("the unplaced constraint postgres rejected must be named as the cause, got:\n%s", got)
+	}
+	got := fx.unplacedConstraintNote("signoffs", prefix+`"signoffs_title_check" (SQLSTATE 23514)`)
+	if strings.Contains(got, "forge could not place these constraints") || !strings.Contains(got, `"signoffs_title_check"`) {
+		t.Errorf("a violation of a constraint forge planned for must name it, not the unrelated unplaced ones, got:\n%s", got)
+	}
+}
+
 // TestCRUDTestFixtures_OrderedColumnsInCreate pins the fixture half of the
 // two-column ordering CHECK — the half a seed-plan fix does not reach.
 //

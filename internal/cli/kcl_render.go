@@ -1403,11 +1403,17 @@ type FrontendEntity struct {
 	// true carries the Forge Changes the source's changes.yaml declares into
 	// the env's shape; false keeps them out. The render emits the key only
 	// when it is false, so every other frontend renders byte-identically.
-	ChangesFromSource *bool       `json:"changes_from_source,omitempty"`
-	DevRunner         string      `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
-	Port              int         `json:"port,omitempty"`
-	EnvFile           string      `json:"env_file,omitempty"`
-	EnvVars           []KCLEnvVar `json:"env_vars,omitempty"`
+	ChangesFromSource *bool `json:"changes_from_source,omitempty"`
+	// ReleaseURLs is the KCL `release_urls`: nil (unset) or true leaves the
+	// platform's per-release URLs on for an OnHosted frontend; false turns
+	// them off, recorded in the env's shape (release.Shape.HostedFrontends).
+	// The render emits the key only when it is false, so every other
+	// frontend renders byte-identically.
+	ReleaseURLs *bool       `json:"release_urls,omitempty"`
+	DevRunner   string      `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
+	Port        int         `json:"port,omitempty"`
+	EnvFile     string      `json:"env_file,omitempty"`
+	EnvVars     []KCLEnvVar `json:"env_vars,omitempty"`
 	// Config is the typed, well-known knobs block (kcl/schema.k
 	// FrontendConfig). nil when the frontend declares no `config`. forge
 	// expands it into the SAME env stream as EnvVars via frontendConfigEnv,

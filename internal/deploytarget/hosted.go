@@ -600,6 +600,11 @@ func limitDeclaredShape(ctx context.Context, c HostedCaller, env string, declare
 	if err := reader.CheckScopedVulnExemptions(declared); err != nil {
 		return release.Shape{}, fmt.Errorf("ensure environment %q: %w", env, err)
 	}
+	// A release-URL opt-out sent to a control plane that serves them but
+	// cannot read it would be stripped and ignored: refused, never stripped.
+	if err := reader.CheckReleaseURLs(declared); err != nil {
+		return release.Shape{}, fmt.Errorf("ensure environment %q: %w", env, err)
+	}
 	return reader.LimitShape(declared), nil
 }
 

@@ -5287,6 +5287,22 @@ schema Frontend:
     # runtime_config, which the browser calls cross-origin.
     apis: {str:str | WorkloadURL} = {}
 
+    # Per-release URLs, on forge.OnHosted: the platform serves every release
+    # this env still retains at a URL of its own, on the preview domain
+    # (https://<unguessable>--<site>.<preview domain>), so a past release can
+    # be opened and compared without promoting it. Each URL sends noindex,
+    # serves this env's CURRENT config.js with the release's own files,
+    # _headers and _redirects, and stops answering once the release is
+    # collected. The platform's console links them from each deploy.
+    #
+    # Unset means on. False turns them off for this frontend in this env:
+    # an old release may still hold what a newer one removed, and this is how
+    # an env says none of its releases may be reachable but the live one.
+    # On every other runtime nothing serves release URLs, so False holds
+    # there by construction and is accepted; declare it once on a frontend
+    # bound per env.
+    release_urls?: bool
+
     check:
         name, "Frontend.name is required"
         all k, _v in apis { regex.match(k, "^[a-z][a-z0-9-]{0,30}$") }, \
@@ -9503,10 +9519,9 @@ schema Bundle:
     external_secrets_operators: [ExternalSecretsOperator] = []
     # The ML components each cluster declares (forge.MLStack, kcl/ml.k),
     # any subset of them, one stack per cluster: each declared component is
-    # adopted (an inventory assertion) or installed (a pinned chart forge
-    # labels as its own), and only what a stack declares renders. Scraping
-    # one is an Observability.telemetry entry. `forge ml discover` proposes
-    # it. Empty renders nothing.
+    # adopted (read where it runs) or installed (a pinned chart forge labels
+    # as its own), and only what a stack declares renders. `forge ml
+    # discover` proposes it. Empty renders nothing.
     ml_stacks: [MLStack] = []
     _agent_workloads = _obs_workloads(workloads, ml_stacks, observability)
     # Where the values the secret store needs BEFORE it can serve a read live
@@ -9743,6 +9758,8 @@ schema Bundle:
         # The structural rules live on the schemas; these need the Bundle.
         len(_duplicates([s.cluster.cluster for s in ml_stacks])) == 0, \
             "Bundle.ml_stacks declares two stacks on cluster ${_duplicates([s.cluster.cluster for s in ml_stacks])}: one forge.MLStack per cluster context. Merge them into one"
+        len(_duplicates([x.svc for x in _ml_scrapes(ml_stacks)])) == 0, \
+            "Bundle.ml_stacks scrapes two components as service ${_duplicates([x.svc for x in _ml_scrapes(ml_stacks)])}: a scrape's service.name is unique in the env. Set service_name on one of them (forge.Adopt or forge.Install)"
         len(_duplicates([_eso_context(e) for e in external_secrets_operators])) == 0, \
             "Bundle.external_secrets_operators installs ESO twice on ${_duplicates([_eso_context(e) for e in external_secrets_operators])}: one cluster has one External Secrets Operator (several fight over the cluster-scoped CRDs and webhook configurations). Remove the duplicate; configure the one with `values`"
         len(_openbao_sources(required_secrets)) == 0 or openbao, \

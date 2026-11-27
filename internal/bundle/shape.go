@@ -119,6 +119,10 @@ type ShapeInput struct {
 	// Changes are the Forge Changes the project declares (changes.yaml),
 	// keyed by change key, or nil when it declares none.
 	Changes map[string]release.ShapeChange
+	// HostedFrontends is what the env declares about its hosted static
+	// frontends beyond their StaticSites (forge.Frontend.release_urls), or
+	// nil when every one keeps the defaults.
+	HostedFrontends []release.ShapeHostedFrontend
 }
 
 // ProjectShape projects one env's render into the shape a ledger indexes.
@@ -183,6 +187,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		Buckets:             in.Buckets,
 		Preview:             in.Preview,
 		Changes:             in.Changes,
+		HostedFrontends:     in.HostedFrontends,
 	}.WithStoreSecrets(in.Store).Canonical()
 }
 

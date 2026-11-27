@@ -13,8 +13,8 @@ WHAT THIS PINS
   * that Namespace is not rendered when the env renders it already (a
     workload namespace) or declares it in a forge.Manifests group, nor for a
     namespace Kubernetes owns;
-  * an Install renders no scrape of its own: scraping what forge installed
-    is an Observability.telemetry entry.
+  * an Install with selector + port renders a scrape with
+    namespaces = [chart.namespace].
 """
 
 import forge
@@ -39,7 +39,10 @@ _bundle = lambda stack: forge.MLStack, manifests: [forge.Manifests] -> forge.Bun
 
 _out = forge.render(_bundle(forge.MLStack {
     cluster = _gpu
-    accelerators = [forge.Accelerators {vendor = "nvidia", metrics = forge.Install {kind = "dcgm-exporter", chart = _chart("dcgm-exporter", "forge-ml", "bundle")}}]
+    accelerators = [forge.Accelerators {vendor = "nvidia", metrics = forge.Install {
+        kind = "dcgm-exporter", chart = _chart("dcgm-exporter", "forge-ml", "bundle")
+        selector = {"app.kubernetes.io/name": "dcgm-exporter"}, port = 9400, allow = ["DCGM_FI_DEV_GPU_UTIL"]
+    }}]
     node_health = forge.Install {kind = "node-problem-detector", chart = _chart("node-problem-detector", "forge-ml", "bundle")}
     pull_cache = forge.Install {kind = "spegel", chart = _chart("spegel", "kube-system", "bundle")}
     monitoring = [forge.Install {kind = "kube-state-metrics", chart = _chart("kube-state-metrics", "acme-prod", "bundle")}]
@@ -61,9 +64,10 @@ assert_workload_namespace_once = len([m for m in _out.manifests if m.kind == "Na
 assert_no_system_namespace = len([m for m in _out.manifests if m.kind == "Namespace" and m.metadata.name == "kube-system"]) == 0
 assert_no_namespace_for_bootstrap = len([m for m in _out.manifests if m.kind == "Namespace" and m.metadata.name == "jobset-system"]) == 0
 
-# An Install is not scraped by itself.
-assert_install_not_scraped = "telemetry" not in _out
-assert_install_projected = _out.ml_stacks[0].components[0].mode == "install" and _out.ml_stacks[0].components[0].namespace == "forge-ml"
+# An Install with selector + port is scraped in its chart's namespace.
+_tel = [t for t in _out.telemetry if t.source.startswith("ml-stack:")]
+assert_install_scraped = [t.service_name for t in _tel] == ["ml-dcgm-exporter"] and _tel[0].namespaces == ["forge-ml"] and _tel[0].metrics[0].allow == "DCGM_FI_DEV_GPU_UTIL"
+assert_install_scrape_projected = _out.ml_stacks[0].components[0].service_name == "ml-dcgm-exporter" and _out.ml_stacks[0].components[0].port == 9400 and _out.ml_stacks[0].components[0].mode == "install"
 
 # A Namespace the env declares itself is not rendered twice.
 _declared = forge.render(_bundle(forge.MLStack {

@@ -221,8 +221,8 @@
               "selector": {
                 "app": "nvidia-dcgm-exporter"
               },
-              "service_name": "dcgm-exporter",
-              "source": "observability"
+              "service_name": "ml-dcgm-exporter",
+              "source": "ml-stack:gke_acme_us-central1_gpu"
             }
           ],
           "tokenSecret": null
@@ -241,45 +241,67 @@
         "cluster": "gke_acme_us-central1_gpu",
         "components": [
           {
+            "allow": [
+              "DCGM_FI_DEV_GPU_UTIL",
+              "DCGM_FI_DEV_FB_USED",
+              "DCGM_FI_DEV_XID_ERRORS"
+            ],
             "chart": "",
             "kind": "dcgm-exporter",
             "mode": "adopt",
             "namespace": "gpu-operator",
             "note": "",
+            "port": 9400,
             "reason": "",
+            "selector": {
+              "app": "nvidia-dcgm-exporter"
+            },
+            "service_name": "ml-dcgm-exporter",
             "slot": "accelerators",
             "vendor": "nvidia",
             "version": "3.3.9"
           },
           {
+            "allow": [],
             "chart": "node-problem-detector",
             "kind": "node-problem-detector",
             "mode": "install",
             "namespace": "forge-ml",
             "note": "",
+            "port": 0,
             "reason": "",
+            "selector": {},
+            "service_name": "",
             "slot": "node_health",
             "vendor": "",
             "version": "2.3.14"
           },
           {
+            "allow": [],
             "chart": "",
             "kind": "kueue",
             "mode": "adopt",
             "namespace": "kueue-system",
             "note": "",
+            "port": 0,
             "reason": "",
+            "selector": {},
+            "service_name": "",
             "slot": "queue",
             "vendor": "",
             "version": "0.9.1"
           },
           {
+            "allow": [],
             "chart": "jobset",
             "kind": "jobset",
             "mode": "install",
             "namespace": "jobset-system",
             "note": "",
+            "port": 0,
             "reason": "",
+            "selector": {},
+            "service_name": "",
             "slot": "training",
             "vendor": "",
             "version": "0.10.1"
@@ -406,8 +428,8 @@
         "selector": {
           "app": "nvidia-dcgm-exporter"
         },
-        "service_name": "dcgm-exporter",
-        "source": "observability"
+        "service_name": "ml-dcgm-exporter",
+        "source": "ml-stack:gke_acme_us-central1_gpu"
       }
     ],
     "workloads": [

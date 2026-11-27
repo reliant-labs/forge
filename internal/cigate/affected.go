@@ -389,7 +389,10 @@ func selectChanges(changed []string, g *packageGraph, ignore []string, rules []c
 		}
 		pkg, ok := g.owner(f)
 		read := false
-		if !strings.HasSuffix(f, ".go") {
+		// A test can read another package's Go source without importing it.
+		// Add those readers for owned files, but do not use reader matches
+		// to narrow the fallback for Go files the graph cannot place.
+		if ok || !strings.HasSuffix(f, ".go") {
 			if readers := g.readers.readersOf(f); len(readers) > 0 {
 				for p := range readers {
 					sel.rulePkgs[p] = true

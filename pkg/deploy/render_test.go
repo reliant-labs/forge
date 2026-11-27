@@ -199,6 +199,15 @@ func TestProbesSplit(t *testing.T) {
 		t.Errorf("readiness timings %v, want %+v", ready, r)
 	}
 
+	// An adopted app that names only its own health path is liveness-probed
+	// on it, never on a /healthz it does not serve.
+	adopted := svc("fider", httpPort(true))
+	adopted.Spec.Probes = &v1alpha1.Probes{ReadinessPath: "/_health"}
+	c = get(podOf(objects(t, render(t, v1alpha1.ProfileFull, adopted))["Deployment/fider"]), "containers", 0)
+	if get(c, "readinessProbe", "httpGet", "path") != "/_health" || get(c, "livenessProbe", "httpGet", "path") != "/_health" {
+		t.Errorf("readinessPath only: readiness %v liveness %v, want both on /_health", get(c, "readinessProbe"), get(c, "livenessProbe"))
+	}
+
 	pg := wl("pg", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, Ports: []v1alpha1.Port{{Name: "pg", Port: 5432}}, Probes: &v1alpha1.Probes{TCP: true}})
 	c = get(podOf(objects(t, render(t, v1alpha1.ProfileFull, pg))["Deployment/pg"]), "containers", 0)
 	for _, probe := range []string{"readinessProbe", "livenessProbe"} {

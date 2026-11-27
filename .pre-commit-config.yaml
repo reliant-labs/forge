@@ -1,6 +1,11 @@
 # See https://pre-commit.com for full docs. Run locally with:
 #     pip install pre-commit && pre-commit install
 # CI runs the same set via .github/workflows/pre-commit.yml.
+#
+# minimum_pre_commit_version is forge's pre-commit pin: pre-commit refuses an
+# older release, and scripts/ci-tools.sh installs exactly this one for the
+# local merge gate (`task ci`), so a host needs no pre-commit of its own.
+minimum_pre_commit_version: "4.7.0"
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0

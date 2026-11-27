@@ -688,7 +688,8 @@ type Port struct {
 // slow dependency restarted pods that only needed to stop taking traffic.
 //
 // An HTTP probe GETs ReadinessPath and LivenessPath (default /readyz and
-// /healthz, serverkit's split). TCP probes with a connect instead, which is
+// /healthz, serverkit's split; a probe that declares only some other
+// readiness path is liveness-probed on that path too). TCP probes with a connect instead, which is
 // correct for a workload that serves a non-HTTP protocol. Probing "/" by
 // default would restart-loop such a workload and make the loop look like
 // an application fault.
@@ -706,7 +707,10 @@ type Probes struct {
 	// +kubebuilder:validation:Pattern=`^/.*$`
 	ReadinessPath string `json:"readinessPath,omitempty"`
 
-	// LivenessPath is the HTTP liveness path. Unset means /healthz.
+	// LivenessPath is the HTTP liveness path. Unset means /healthz when
+	// ReadinessPath is unset or /readyz (serverkit's pair), and otherwise
+	// the declared ReadinessPath: an app that names its own health path
+	// need not serve /healthz.
 	// +optional
 	// +kubebuilder:validation:MaxLength=2048
 	// +kubebuilder:validation:Pattern=`^/.*$`
@@ -810,14 +814,31 @@ func (p Probes) WithDefaults() Probes {
 		p.FailureThreshold = DefaultProbeFailureThreshold
 	}
 	if !p.TCP {
+		if p.LivenessPath == "" {
+			p.LivenessPath = defaultLivenessPathFor(p.ReadinessPath)
+		}
 		if p.ReadinessPath == "" {
 			p.ReadinessPath = DefaultReadinessPath
 		}
-		if p.LivenessPath == "" {
-			p.LivenessPath = DefaultLivenessPath
-		}
 	}
 	return p
+}
+
+// defaultLivenessPathFor is the liveness path of an HTTP probe that declares
+// none, given the readiness path it declared ("" for none).
+//
+// /healthz is serverkit's liveness route, and serverkit serves it beside
+// /readyz, so it is the default when the probe names no path at all or names
+// serverkit's own readiness path. A probe that names some OTHER readiness
+// path is an app forge did not build (an adopted Express, Django or Fider
+// image), which serves the path it named and has no reason to serve /healthz:
+// defaulting liveness to /healthz there made the kubelet kill a healthy pod
+// every minute. Its liveness is the one path it is known to answer.
+func defaultLivenessPathFor(readinessPath string) string {
+	if readinessPath == "" || readinessPath == DefaultReadinessPath {
+		return DefaultLivenessPath
+	}
+	return readinessPath
 }
 
 // Readiness returns the (defaulted) readiness timings.

@@ -309,6 +309,7 @@ func crudOwnershipFindingsFor(schema ownershipSchema, services []codegen.Service
 		if len(served) == 0 || declaresOwnership(t) {
 			continue
 		}
+
 		out = append(out, crudOwnershipFinding{File: site.createFile, Line: site.createLine, Table: t.Name, Comment: t.Comment, RPCs: served,
 			Entity: codegen.TableEntityName(t), Pending: site.scaffolded()})
 	}
@@ -692,6 +693,7 @@ func sqlCommentValue(s string) (value string, known bool) {
 }
 
 func sqlCommentLiteralValue(s string) (value string, known bool) {
+
 	switch {
 	case len(s) >= 4 && strings.EqualFold(s[:4], "null") && (len(s) == 4 || !isIdentByte(s[4])):
 		return "", true

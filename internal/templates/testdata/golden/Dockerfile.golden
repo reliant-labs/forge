@@ -149,7 +149,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # mounts in every pod it renders (the root filesystem is read-only), so the
 # counters outlive a container restart. serverkit's /debug/coverage serves
 # them live on the debug listener.
-FROM alpine:3.21 AS cover
+FROM alpine:3.24 AS cover
 
 RUN apk --no-cache add ca-certificates tzdata
 

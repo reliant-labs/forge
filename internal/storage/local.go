@@ -67,6 +67,11 @@ type Runner struct {
 	// location in production and is REFUSED under `go test`.
 	GoCacheRoot       string // shared GOCACHE
 	GolangciCacheRoot string
+	// ExtraGoCacheRoots are Go build caches this pass trims beyond the
+	// shared one and the policy's go_caches (`--go-cache`): the caches a
+	// scheduler such as the Reliant daemon saw other processes build into.
+	// Each is trimmed like go_caches' entries.
+	ExtraGoCacheRoots []string
 	// OpenPaths is the lsof snapshot. REFUSED under test when unset.
 	OpenPaths func(context.Context) (openfiles.Snapshot, error)
 	// OnGoCacheTrim, when set, receives what each Go-format cache trim

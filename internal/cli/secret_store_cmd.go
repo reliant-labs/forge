@@ -1123,12 +1123,37 @@ func generatableSecretNames(e *KCLEntities) []string {
 			seen[r.EnvName] = struct{}{}
 		}
 	}
+	// A host-infra instance's own credentials (a host MinIO's root user and
+	// password) are minted whether or not any workload references them: the
+	// server reads them itself. declaredSecretNames carries them too; they
+	// are named here as well so `generate` never depends on that routing.
+	if e != nil {
+		for _, n := range hostInfraSecretNames(e) {
+			seen[n] = struct{}{}
+		}
+	}
 	out := make([]string, 0, len(seen))
 	for k := range seen {
 		out = append(out, k)
 	}
 	sort.Strings(out)
 	return out
+}
+
+// hostInfraSecretNames is the store keys a host-infra instance itself reads:
+// a host MinIO's root credentials. They are declared even when no workload
+// references the MinIO's buckets, because the server cannot start without
+// them.
+func hostInfraSecretNames(e *KCLEntities) []string {
+	var names []string
+	for _, hi := range e.Infra {
+		for _, n := range []string{hi.MinIORootUserSecret, hi.MinIORootPasswordSecret} {
+			if n != "" {
+				names = append(names, n)
+			}
+		}
+	}
+	return names
 }
 
 func declaredSecretNames(e *KCLEntities) []string {
@@ -1143,6 +1168,9 @@ func declaredSecretNames(e *KCLEntities) []string {
 			for _, name := range managedSecretNamesForService(&e.Workloads[i]) {
 				seen[name] = struct{}{}
 			}
+		}
+		for _, name := range hostInfraSecretNames(e) {
+			seen[name] = struct{}{}
 		}
 	}
 	for _, ref := range renderedSecretStoreKeys(e) {

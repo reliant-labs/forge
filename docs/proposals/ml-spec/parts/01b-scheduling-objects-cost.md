@@ -452,7 +452,7 @@ The pod annotation `jobset.sigs.k8s.io/restart-attempt` carries the attempt numb
 | LWS          | `leaderworkerset.sigs.k8s.io/name` | `group-index`                                         | `worker-index`                                  | group recreate events                                     |
 | Kueue        | Workload (owner chain)             | `kueue.x-k8s.io/podset`                               | —                                               | `requeueState.count`, eviction count                      |
 
-torchrun sets `RANK`, `LOCAL_RANK`, `WORLD_SIZE`, `GROUP_RANK`, `TORCHELASTIC_RESTART_COUNT`, `TORCHELASTIC_RUN_ID`, `MASTER_ADDR` (K). Record them as OTel resource attributes (`ml.rank`, `ml.local_rank`, `ml.attempt`). GPU telemetry then joins to pods through DCGM exporter's `pod`/`namespace`/`container` labels.
+torchrun sets `RANK`, `LOCAL_RANK`, `WORLD_SIZE`, `GROUP_RANK`, `TORCHELASTIC_RESTART_COUNT`, `TORCHELASTIC_RUN_ID`, `MASTER_ADDR` (K). Record them as OTel resource attributes (`ml.rank`, `ml.local_rank`, `ml.attempt`). (Narrowed 2026-11-26: forge keeps `ml.attempt`, `ml.world_size` and `ml.rank` only; see [01-metrics-inventory.md](../01-metrics-inventory.md#attribute-mapping).) GPU telemetry then joins to pods through DCGM exporter's `pod`/`namespace`/`container` labels.
 
 ---
 

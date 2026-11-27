@@ -36,6 +36,13 @@ on:
 permissions:
   contents: read
 
+# -trimpath on every go command: one set of cache keys across agents, the
+# self-hosted runners and the gate, so they can share the machine's trusted Go
+# build cache (docs/go-cache.md). The Taskfile already merges -trimpath into
+# task runs; the raw `go test` and `go vet` steps here had none.
+env:
+  GOFLAGS: -trimpath
+
 # ── SELF-HOSTED RUNNERS ON cicd, FOR THE MERGE QUEUE ONLY ──────────────────
 #
 # Owner, 2026-11-26: "The cicd machine is supposed to be exactly for this." A
@@ -670,8 +677,17 @@ jobs:
         # than left to `go test`'s 10-minute default. A panicking timeout
         # fails the whole job and hides every other package's result behind
         # something that reads as a hang rather than as one slow package.
+        #
+        # GO_TEST_VET=-vet=off: this push's Lint job runs `go vet ./...`, every
+        # analyzer go test's built-in vet runs and more, over these packages
+        # and their test files, so vetting again here (cold, under -race's own
+        # cache keys) bought nothing. (All -race adds to the build is two
+        # `const raceEnabled = true` files.) The integration step below is
+        # behind a build tag `go vet ./...` does not set, so it keeps vet;
+        # TestVetOffOnlyWhereGoVetRuns (internal/ciguard) holds these rules.
         env:
           CI_TEST_JSON: ${{ runner.temp }}/test-full.json
+          GO_TEST_VET: -vet=off
         run: scripts/ci-test-full-shard.sh ${{ matrix.args }}
       # Recorded as lane integration-storage (forge test capture), with its
       # coverage, like every other lane test-upload.yml sends.
@@ -761,9 +777,11 @@ jobs:
         run: scripts/ci-test-packages.sh check
       - name: Go tests (internal/cli)
         # The same 30m per-binary budget as `test`: a hang detector, not a
-        # speed bound.
+        # speed bound. GO_TEST_VET=-vet=off as in `test`: Lint's `go vet ./...`
+        # vets internal/cli and its test files on this same push.
         env:
           CI_TEST_JSON: ${{ runner.temp }}/test-full.json
+          GO_TEST_VET: -vet=off
         run: scripts/ci-test-full-shard.sh ${{ matrix.args }}
       # Main only: the run the shard recorded, for test-upload.yml.
       - name: Keep the recorded test runs (for test-upload.yml)

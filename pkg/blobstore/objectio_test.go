@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"strings"
@@ -22,6 +23,14 @@ func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
+
+var (
+	// wrappedEOF is a Read error that wraps io.EOF instead of being it.
+	wrappedEOF = fmt.Errorf("copying the source: %w", io.EOF)
+	// errSource, wrapped as errWrappedSource, is a source's own failure.
+	errSource        = errors.New("source failed")
+	errWrappedSource = fmt.Errorf("copying the source: %w", errSource)
+)
 
 // failAfter yields data, then fails with err.
 func failAfter(data []byte, err error) io.Reader {
@@ -78,6 +87,15 @@ func checkObjectIO(t *testing.T, store blobstore.Store, prefix string) {
 			if err != nil || st.Size != int64(len(body)) || st.ContentType != "text/plain" || st.SHA256 != "" {
 				t.Fatalf("%s: Stat = %+v, %v (Stat never reports a SHA256)", name, st, err)
 			}
+			// A bare io.EOF that arrives with the last bytes ends the
+			// body too: those bytes are stored.
+			k2 := k + "-eof-with-data"
+			if o, err := blobstore.PutObject(ctx, store, k2, iotest.DataErrReader(bytes.NewReader(body)), opts); err != nil || o.Size != int64(len(body)) || o.SHA256 != sha256Hex(body) {
+				t.Fatalf("%s, io.EOF with the data: PutObject = %+v, %v", name, o, err)
+			}
+			if got, _, err := readOpen(t, store, k2, blobstore.OpenOptions{}); err != nil || !bytes.Equal(got, body) {
+				t.Fatalf("%s, io.EOF with the data: stored %q, %v", name, got, err)
+			}
 			got, _, err := readOpen(t, store, k, blobstore.OpenOptions{})
 			if err != nil || !bytes.Equal(got, body) {
 				t.Fatalf("%s: Open = %q, %v", name, got, err)
@@ -111,6 +129,16 @@ func checkObjectIO(t *testing.T, store blobstore.Store, prefix string) {
 			"fails with ErrUnexpectedEOF":        {failAfter(body[:11], io.ErrUnexpectedEOF), blobstore.PutObjectOptions{ContentType: "text/plain"}, io.ErrUnexpectedEOF},
 			"fails with ErrUnexpectedEOF, sized": {failAfter(body[:11], io.ErrUnexpectedEOF), blobstore.PutObjectOptions{ContentType: "text/plain", ContentLength: int64(len(body))}, io.ErrUnexpectedEOF},
 			"fails with ErrUnexpectedEOF, max":   {failAfter(body[:11], io.ErrUnexpectedEOF), blobstore.PutObjectOptions{ContentType: "text/plain", MaxBytes: 1 << 20}, io.ErrUnexpectedEOF},
+			// Only io.EOF itself ends a body, as for io.Copy and
+			// io.ReadAll: a Read error that wraps io.EOF breaks the
+			// io.Reader contract and may hide a truncated source, so it
+			// fails the call (still errors.Is io.EOF) and stores nothing,
+			// even when every declared byte arrived first.
+			"wrapped EOF":                        {failAfter(body[:11], wrappedEOF), blobstore.PutObjectOptions{ContentType: "text/plain"}, io.EOF},
+			"wrapped EOF, max":                   {failAfter(body[:11], wrappedEOF), blobstore.PutObjectOptions{ContentType: "text/plain", MaxBytes: 1 << 20}, io.EOF},
+			"wrapped EOF, after the whole sized": {failAfter(body, wrappedEOF), blobstore.PutObjectOptions{ContentType: "text/plain", ContentLength: int64(len(body))}, io.EOF},
+			"wrapped other error":                {failAfter(body[:11], errWrappedSource), blobstore.PutObjectOptions{ContentType: "text/plain"}, errSource},
+			"wrapped other error, sized":         {failAfter(body[:11], errWrappedSource), blobstore.PutObjectOptions{ContentType: "text/plain", ContentLength: int64(len(body))}, errSource},
 		}
 		for name, c := range cases {
 			k := key("refused-" + strings.NewReplacer(" ", "-", ",", "").Replace(name))

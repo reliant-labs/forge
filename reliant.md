@@ -374,6 +374,14 @@ shards and changed-test gate share this wrapper. Repository-wide guard scans use
 not the metadata of skipped `.git`/`.forge` state. Its full-mode regression test
 runs cmd/go repeatedly and proves both replay and invalidation on real input edits.
 
+**go test's built-in vet:** on everywhere except main's full Test and Test
+(internal/cli) shards, which set `GO_TEST_VET=-vet=off` for the wrapper because Lint's
+`go vet ./...` vets the same packages on the same push (`TestVetOffOnlyWhereGoVetRuns`
+holds the rule). The merge tier keeps it: its golangci job reports only changed files and
+never vets `pkg/`. Locally `GO_TEST_VET=-vet=off task test` does the same after a
+`go vet ./...` of your own. No lane adds `-ldflags=-w`: run-mode `go test` already links
+with `-s -w`.
+
 Build caches: a merge-tier job restores main's cache and never saves one; only pushes to main
 save (`ci.yml`'s "Build-cache note"). A PR's cache is visible to that PR alone, and PR
 saves were evicting main's entries from the repository's 10 GB budget. Main saves four

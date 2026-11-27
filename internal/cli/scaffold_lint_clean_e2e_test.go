@@ -835,6 +835,16 @@ func assertScaffoldIsEslintCleanAsEmitted(t *testing.T, feDir string) {
 // crud-table-unowned to gate from then on; declaring the scope clears it.
 func assertEditedTableOwnershipGates(t *testing.T, projectDir, forgeBin string) {
 	t.Helper()
+	// crud-table-unowned warns until a project's pin reaches its GatesFrom
+	// release (the rollout has its own test,
+	// TestE2ENewRuleWarnsUntilPinReachesGatesFrom); this one pins what the
+	// rule finds once the table is edited, so it gates the rule explicitly
+	// rather than depending on which release the tree is.
+	forgeYAML := filepath.Join(projectDir, "forge.yaml")
+	if cfg := readFileE2E(t, forgeYAML); strings.Contains(cfg, "\nlint:") {
+		t.Fatalf("the scaffolded forge.yaml has a lint block already; extend the fixture:\n%s", cfg)
+	}
+	appendFileE2E(t, forgeYAML, "\nlint:\n  rules:\n    crud-table-unowned: error\n")
 	writeFileE2E(t, nextMigrationPathE2E(t, projectDir, "orders_add_carrier"),
 		"-- forge:backward-compatible — adds a nullable column\n"+
 			"ALTER TABLE orders ADD COLUMN carrier TEXT;\n")

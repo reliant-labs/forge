@@ -29,14 +29,19 @@ printf '%s\n' "$*"
 			t.Fatal(err)
 		}
 	}
-	cmd := exec.Command("bash", filepath.Join(root, "test.sh"), "-short", "./fixture")
-	cmd.Env = append(os.Environ(), "PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"), "FORGE_SLOT_HELD=heavy:1:unique-lease", "FIXTURE_INPUT=preserved",
-		// What forge test capture exports to the command it records: a new
-		// run directory every time, which would key the test cache on it.
-		"FORGE_TEST_RUN=/runs/01ABC", "FORGE_TEST_LANE=unit", "FORGE_TEST_LANE_DIR=/runs/01ABC/unit")
-	out, err := cmd.CombinedOutput()
-	if err != nil || strings.TrimSpace(string(out)) != "test -short ./fixture" {
-		t.Fatalf("test helper: %v\n%s", err, out)
+	// GO_TEST_VET (empty or unset: vet stays on) goes ahead of the caller's
+	// flags, so a lane's own -vet= still wins.
+	for vet, want := range map[string]string{"": "test -short ./fixture", "-vet=off": "test -vet=off -short ./fixture"} {
+		cmd := exec.Command("bash", filepath.Join(root, "test.sh"), "-short", "./fixture")
+		cmd.Env = append(os.Environ(), "PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"), "FORGE_SLOT_HELD=heavy:1:unique-lease", "FIXTURE_INPUT=preserved",
+			// What forge test capture exports to the command it records: a new
+			// run directory every time, which would key the test cache on it.
+			"FORGE_TEST_RUN=/runs/01ABC", "FORGE_TEST_LANE=unit", "FORGE_TEST_LANE_DIR=/runs/01ABC/unit",
+			"GO_TEST_VET="+vet)
+		out, err := cmd.CombinedOutput()
+		if err != nil || strings.TrimSpace(string(out)) != want {
+			t.Fatalf("test helper, GO_TEST_VET=%q: %v\n%s\nwant %q", vet, err, out, want)
+		}
 	}
 	for _, script := range []string{"ci-test-shard.sh", "ci-changed-tests.sh"} {
 		src := readText(t, filepath.Join("..", "..", "scripts", script))

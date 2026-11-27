@@ -116,8 +116,47 @@ func TestMCPCmdRejectsAnUnknownToolsValue(t *testing.T) {
 			t.Errorf("--tools %q: err = %v, want it to say %q", spec, err, want)
 		}
 	}
-	if f := newMCPCmd().Flags().Lookup("tools"); f == nil || f.DefValue != "all" {
-		t.Errorf("--tools default = %v, want all", f)
+}
+
+// `forge mcp` with no --tools lists the core group and forge_tools, which
+// keeps every other tool one call away; --tools all still lists all 24.
+func TestMCP_DefaultToolsetIsCore(t *testing.T) {
+	f := newMCPCmd().Flags().Lookup("tools")
+	if f == nil || f.DefValue != "core" {
+		t.Fatalf("--tools default = %v, want core", f)
+	}
+	groups, err := parseMCPTools(f.DefValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, _ := connectMCPGroups(t, t.TempDir(), nil, groups)
+	want := []string{"audit", "forge_tools", "generate", "lint", "shapes", "skill_load", "skill_search"}
+	if got := mcpToolNames(listMCPTools(t, cs)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the default lists %v, want %v", got, want)
+	}
+	instructions := cs.InitializeResult().Instructions
+	for _, want := range []string{"core tools (--tools core, the default)", "forge_tools", "--tools all"} {
+		if !strings.Contains(instructions, want) {
+			t.Errorf("the default's instructions do not mention %q: %s", want, instructions)
+		}
+	}
+	// Every group stays reachable from the default: forge_tools names each.
+	out, isErr := callMCP(t, cs, "forge_tools", nil)
+	for _, g := range mcpToolGroups {
+		for _, tool := range g.tools {
+			if isErr || !strings.Contains(out, tool) {
+				t.Errorf("forge_tools on the default server does not reach %s (%s):\n%s", tool, g.name, out)
+			}
+		}
+	}
+
+	all, err := parseMCPTools("all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, _ = connectMCPGroups(t, t.TempDir(), nil, all)
+	if got := mcpToolNames(listMCPTools(t, cs)); len(got) != 24 || slices.Contains(got, "forge_tools") {
+		t.Errorf("--tools all lists %d tools %v, want the 24 without forge_tools", len(got), got)
 	}
 }
 
@@ -167,16 +206,16 @@ func TestMCP_CoreToolsetEnablesTheRestInSession(t *testing.T) {
 	}
 }
 
-// The default lists every tool and no forge_tools, with the instructions
-// unchanged.
+// Every group (--tools all) lists every tool and no forge_tools, with the
+// full instructions.
 func TestMCP_AllToolsetHasNoForgeTools(t *testing.T) {
 	cs := connectMCP(t, t.TempDir())
 	got := mcpToolNames(listMCPTools(t, cs))
 	if len(got) != 24 || slices.Contains(got, "forge_tools") {
-		t.Errorf("the default lists %d tools %v, want the 24 without forge_tools", len(got), got)
+		t.Errorf("every group lists %d tools %v, want the 24 without forge_tools", len(got), got)
 	}
 	if cs.InitializeResult().Instructions != mcpInstructions {
-		t.Error("the default's instructions changed")
+		t.Error("every group's instructions changed")
 	}
 }
 

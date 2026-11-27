@@ -138,3 +138,19 @@ func TestRunPinnedCommand(t *testing.T) {
 		t.Errorf("quoting: %s", got)
 	}
 }
+
+// TestSkewOverriddenReadsAnExplicitOffAsOff: FORGE_ALLOW_VERSION_SKEW=0 used to
+// turn the override ON (any non-empty value counted), so a user who wrote 0 to
+// be safe ran a forge other than the pin. An explicit off is off; every other
+// non-empty value stays on, as it was.
+func TestSkewOverriddenReadsAnExplicitOffAsOff(t *testing.T) {
+	for value, want := range map[string]bool{
+		"": false, "  ": false, "0": false, "false": false, "FALSE": false, "no": false, "off": false, " Off ": false,
+		"1": true, "true": true, "TRUE": true, "yes": true, "on": true, "2": true,
+	} {
+		t.Setenv(SkewOverrideEnv, value)
+		if got := SkewOverridden(); got != want {
+			t.Errorf("%s=%q: SkewOverridden() = %v, want %v", SkewOverrideEnv, value, got, want)
+		}
+	}
+}

@@ -37,13 +37,23 @@ import (
 // SkewOverrideEnv lets a user proceed past the refusal. Pre-1.0 forge owes
 // no compatibility, but a wall with no door is its own defect — someone
 // debugging forge itself, or rendering a project whose pin is wrong, needs
-// to get through. Set to any non-empty value.
+// to get through. Set it to 1 (or any value but an explicit off: 0, false,
+// no, off).
 const SkewOverrideEnv = "FORGE_ALLOW_VERSION_SKEW"
 
 // SkewOverridden reports whether the user has asked to proceed despite a
 // version skew.
+//
+// Any non-empty value used to count, so FORGE_ALLOW_VERSION_SKEW=0 turned the
+// override ON and ran a forge other than the pin. An explicit off (0, false,
+// no, off, in any case) now reads as unset; every other non-empty value still
+// turns it on, as it always has (v1: `=yes` or `=true` keep working).
 func SkewOverridden() bool {
-	return strings.TrimSpace(os.Getenv(SkewOverrideEnv)) != ""
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(SkewOverrideEnv))) {
+	case "", "0", "false", "no", "off":
+		return false
+	}
+	return true
 }
 
 // firstUserSentinel is the deliberate forge.yaml pin for forge-as-its-own-

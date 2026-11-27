@@ -19,9 +19,9 @@ import (
 // to them. GOMAXPROCS bounds every Go process the command runs — the go
 // command, which then runs at most that many compiles, links and test
 // binaries at once; the compiler and linker; each test binary and its
-// -parallel default. A variable the child's environment already sets is left
-// alone, so a command that chose its own (GOMAXPROCS=16 go test ...) keeps
-// it, and so does a child of a holder, which inherits its parent's.
+// -parallel default. A positive integer the child's environment already sets
+// is left alone, so a command that chose its own (GOMAXPROCS=16 go test ...)
+// keeps it, and so does a child of a holder, which inherits its parent's.
 //
 // The share is the default's (DefaultShare) for the holders running when the
 // slot is taken, so a holder alone on the machine keeps the whole of it and
@@ -171,18 +171,20 @@ func (s *Slot) ShareSource() string {
 // CPUEnv returns what to append to env, a child's environment, so the child
 // runs on this slot's CPU share: GOMAXPROCS=Share, and UV_THREADPOOL_SIZE
 // when Share is under libuv's default of 4, each only where env does not set
-// it already (see the package's CPU share notes). Nil when there is nothing
-// to export: no share, or one as wide as the machine.
+// a valid positive integer already (see the package's CPU share notes). Nil
+// when there is nothing to export: no share, or one as wide as the machine.
 func (s *Slot) CPUEnv(env []string) []string {
 	n := s.Share()
 	if n < 1 {
 		return nil
 	}
 	var out []string
-	if n < max(1, int(math.Floor(s.capacity.Machine.CPUs))) && lookupEnv(env, envGOMAXPROCS) == "" {
+	goProcs, goErr := strconv.Atoi(lookupEnv(env, envGOMAXPROCS))
+	if n < max(1, int(math.Floor(s.capacity.Machine.CPUs))) && (goErr != nil || goProcs < 1) {
 		out = append(out, envGOMAXPROCS+"="+strconv.Itoa(n))
 	}
-	if n < uvDefaultPool && lookupEnv(env, envUVPool) == "" {
+	uvPool, uvErr := strconv.Atoi(lookupEnv(env, envUVPool))
+	if n < uvDefaultPool && (uvErr != nil || uvPool < 1) {
 		out = append(out, envUVPool+"="+strconv.Itoa(n))
 	}
 	return out

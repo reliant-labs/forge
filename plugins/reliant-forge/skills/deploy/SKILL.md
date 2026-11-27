@@ -10,6 +10,9 @@ deploys it with no account: `npx -y @reliantlabs/forge@1.12.0 env deploy prod --
 
 This plugin runs the Forge MCP server (`npx -y @reliantlabs/forge@1.12.0 mcp`). Prefer
 its tools. Every step also works as a shell command, with nothing installed.
+If the server lists `forge_tools` but not `deploy_claimable` (a newer server
+lists only its core tools by default), call `forge_tools` with
+`enable: ["deploy", "ops"]` first.
 
 ## Pick the path
 

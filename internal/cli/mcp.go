@@ -73,17 +73,18 @@ func newMCPCmd() *cobra.Command {
 
 Any MCP-capable harness (Claude Code, Codex, Cursor, ...) can then call forge's
 benefits, skill, lint and introspection verbs as tools, in ANY repo, with no
-memory file telling it how. The server says what forge is and what it does for
-the repo the agent is in, forge project or not, and sends the model to the
-benefits tool and the 'adopt' skill (the 'forge' skill in a forge project).
+memory file telling it how. The server says what forge is and sends the model
+to the 'adopt' skill (the 'forge' skill in a forge project); started with
+--tools all, it also says what forge does for the repo the agent is in and
+points at the benefits tool.
 
 Tools, by group (each but explain_error and forge_tools takes an optional
 "dir": the repo to act on; default is the directory the server was started
-in, or -C). --tools picks the groups: all (the default), or a comma list such
-as core or core,ops. core is the smallest useful set; started without a group,
-the server also lists forge_tools, which enables the rest in-session
-(notifications/tools/list_changed). The default is planned to become core in
-a later minor; --tools all stays.
+in, or -C). --tools picks the groups: core (the default), a comma list such
+as core,ops, or all. core is the smallest useful set; whenever a group is left
+out the server also lists forge_tools, which enables the rest in-session
+(notifications/tools/list_changed), so every tool stays reachable. --tools all
+lists every tool up front, as the server did before core became the default.
 
   core      audit          what THIS project currently is
             shapes         where every rpc/message/table/handler is, with file:line
@@ -143,8 +144,8 @@ docs/mcp.md has the config files in full.`,
 			return runMCP(ctx, cmd.InOrStdin(), os.Stdout, groups)
 		},
 	}
-	cmd.Flags().StringVar(&tools, "tools", mcpToolsAll,
-		"tool groups to list: all, or a comma-separated list of "+strings.Join(mcpToolGroupNames(), ", ")+" (core is the smallest useful set)")
+	cmd.Flags().StringVar(&tools, "tools", mcpToolsDefault,
+		"tool groups to list: a comma-separated list of "+strings.Join(mcpToolGroupNames(), ", ")+", or all for every tool up front (core, the default, is the smallest useful set; forge_tools enables the rest in-session)")
 	return cmd
 }
 

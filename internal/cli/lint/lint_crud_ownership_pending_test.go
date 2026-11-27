@@ -117,6 +117,104 @@ func TestCRUDOwnership_EditedTableGates(t *testing.T) {
 	}
 }
 
+// Every spelling of a later statement that changes the table ends its
+// scaffolded state: a COMMENT ON whatever its value (IS NULL included), on
+// the table, a column or an object of it, and a schema-qualified, quoted,
+// IF EXISTS or ONLY name. A statement on another table leaves it pending.
+func TestCRUDOwnership_EveryEditSpellingGates(t *testing.T) {
+	born := bornTasksSQL(t)
+	for _, stmt := range []string{
+		"COMMENT ON TABLE tasks IS NULL;",
+		"comment on table tasks is null;",
+		"COMMENT ON COLUMN tasks.title IS NULL;",
+		"COMMENT ON TABLE public.tasks IS NULL;",
+		`COMMENT ON TABLE "tasks" IS NULL;`,
+		`COMMENT ON TABLE "public"."tasks" IS 'x';`,
+		`COMMENT ON COLUMN public."tasks"."title" IS NULL;`,
+		"COMMENT ON TABLE tasks IS E'the to-do\\'s list';",
+		"COMMENT ON TABLE tasks IS $$the to-do list$$;",
+		"COMMENT ON COLUMN tasks.title IS $body$what it is$body$;",
+		"COMMENT ON CONSTRAINT tasks_pkey ON tasks IS NULL;",
+		"COMMENT ON CONSTRAINT tasks_pkey ON public.tasks IS 'the key';",
+		"COMMENT ON TRIGGER tasks_touch ON tasks IS NULL;",
+		"COMMENT ON POLICY tasks_owner ON tasks IS NULL;",
+		"COMMENT ON RULE tasks_rule ON tasks IS NULL;",
+		"ALTER TABLE public.tasks ADD COLUMN notes TEXT;",
+		`ALTER TABLE "tasks" ADD COLUMN notes TEXT;`,
+		"ALTER TABLE IF EXISTS tasks ADD COLUMN notes TEXT;",
+		"ALTER TABLE ONLY tasks ADD COLUMN notes TEXT;",
+		"ALTER TABLE IF EXISTS ONLY public.tasks ENABLE ROW LEVEL SECURITY;",
+		"CREATE UNIQUE INDEX tasks_title_key ON public.tasks (title);",
+		"CREATE INDEX tasks_title_idx ON ONLY \"tasks\" (title);",
+		"CREATE POLICY tasks_owner ON tasks USING (true);",
+		"CREATE TRIGGER tasks_touch BEFORE UPDATE ON public.tasks FOR EACH ROW EXECUTE FUNCTION touch();",
+		"CREATE OR REPLACE RULE tasks_rule AS ON INSERT TO tasks DO NOTHING;",
+		"DROP TRIGGER IF EXISTS tasks_touch ON tasks;",
+		"ALTER POLICY tasks_owner ON public.tasks USING (false);",
+		"DROP RULE tasks_rule ON tasks;",
+	} {
+		t.Run(stmt, func(t *testing.T) {
+			fs := ownershipFindings(t, map[string]string{
+				"0001_create_tasks.up.sql": born,
+				"0002_edit.up.sql":         stmt + "\n",
+			}, allGenerated, taskService(true))
+			if len(fs) != 1 || fs[0].Table != "tasks" {
+				t.Fatalf("findings = %+v, want one on tasks", fs)
+			}
+			if fs[0].Pending || fs[0].severity() != lintSevError {
+				t.Fatalf("%q edits tasks, so it must gate; got pending=%v severity=%s", stmt, fs[0].Pending, fs[0].severity())
+			}
+		})
+	}
+
+	for _, stmt := range []string{
+		"COMMENT ON TABLE projects IS NULL;",
+		"COMMENT ON COLUMN public.projects.title IS NULL;",
+		"ALTER TABLE IF EXISTS ONLY public.projects ADD COLUMN notes TEXT;",
+		"CREATE RULE projects_rule AS ON INSERT TO projects DO NOTHING;",
+		"COMMENT ON INDEX tasks_title_idx IS NULL;", // names no table: not read
+	} {
+		t.Run("other: "+stmt, func(t *testing.T) {
+			fs := ownershipFindings(t, map[string]string{
+				"0001_create_tasks.up.sql": born,
+				"0002_other.up.sql":        stmt + "\n",
+			}, allGenerated, taskService(true))
+			if len(fs) != 1 || !fs[0].Pending {
+				t.Fatalf("%q does not edit tasks, so it must stay pending; findings = %+v", stmt, fs)
+			}
+		})
+	}
+}
+
+// COMMENT ON replaces the comment whatever the literal's spelling, and IS
+// NULL removes it: an owner set by a dollar quote answers the rule, and a
+// later IS NULL takes the answer away again.
+func TestCRUDOwnership_CommentValueSpellings(t *testing.T) {
+	born := bornTasksSQL(t)
+	for _, stmt := range []string{
+		"COMMENT ON TABLE tasks IS $$forge:owner=user_id$$;",
+		"COMMENT ON TABLE tasks IS $o$forge:owner=user_id$o$;",
+		"COMMENT ON TABLE tasks IS E'forge:owner=user_id';",
+		"COMMENT ON TABLE public.\"tasks\" IS 'forge:owner=user_id';",
+	} {
+		if fs := ownershipFindings(t, map[string]string{
+			"0001_create_tasks.up.sql": born,
+			"0002_owner.up.sql":        stmt + "\n",
+		}, allGenerated, taskService(true)); len(fs) != 0 {
+			t.Errorf("%q declares an owner; findings = %+v, want none", stmt, fs)
+		}
+	}
+
+	fs := ownershipFindings(t, map[string]string{
+		"0001_create_tasks.up.sql": born,
+		"0002_owner.up.sql":        "COMMENT ON TABLE tasks IS 'forge:owner=user_id';\n",
+		"0003_unset.up.sql":        "COMMENT ON TABLE tasks IS NULL;\n",
+	}, allGenerated, taskService(true))
+	if len(fs) != 1 || fs[0].Pending || fs[0].Comment != "" || fs[0].severity() != lintSevError {
+		t.Fatalf("IS NULL removes the owner, so the edited table gates again; findings = %+v", fs)
+	}
+}
+
 // A later birth that back-fills a foreign key onto the table is forge's
 // write, not a person's: the table stays pending. An edited later birth is a
 // person's write.

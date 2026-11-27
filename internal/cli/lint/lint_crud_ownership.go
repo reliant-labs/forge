@@ -76,8 +76,10 @@
 //   - the file that creates the table is a forge birth whose birth checksum
 //     (checksums.StampSQLBirth) still matches every byte — an in-place edit
 //     to the birth, a column added or a comment reworded, ends it;
-//   - no other migration alters it (ALTER TABLE, COMMENT ON TABLE/COLUMN,
-//     CREATE INDEX/TRIGGER/POLICY … ON it), except another pristine birth:
+//   - no other migration alters it (ALTER TABLE; any COMMENT ON it, a
+//     column, or a constraint/trigger/policy/rule of it, IS NULL included;
+//     CREATE/ALTER/DROP of an index, trigger, policy or rule on it — see
+//     alterTableRe), except another pristine birth:
 //     a later birth back-fills a foreign key onto an earlier table, and that
 //     is forge's write, not a person's.
 //
@@ -354,17 +356,40 @@ type tableSite struct {
 // scaffolded it: the crud-table-unowned exception (see the file header).
 func (s tableSite) scaffolded() bool { return s.bornPristine && !s.editedElsewhere }
 
-// renameTableRe matches `ALTER TABLE <t> RENAME TO <new>`. CREATE and DROP
-// reuse the fixture lane's createTableRe / dropTableRe.
-var renameTableRe = regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(` + sqlident.Qualified + `)\s+rename\s+to\s+(` + sqlident.Part + `)`)
-
-// alterTableRe matches any `ALTER TABLE <t>`, and createOnTableRe a
-// `CREATE [UNIQUE] INDEX | TRIGGER | POLICY | RULE … ON <t>`: the statements
-// that change an existing table, which end its scaffolded state when a
-// person writes them.
+// renameTableRe matches `ALTER TABLE <t> RENAME TO <new>`. CREATE reuses the
+// fixture lane's createTableRe; dropTablesRe captures DROP TABLE's whole
+// name list (`DROP TABLE a, b`), which the fixture lane's dropTableRe does
+// not.
 var (
-	alterTableRe    = regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(` + sqlident.Qualified + `)`)
-	createOnTableRe = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:unique\s+)?(?:index|(?:constraint\s+)?trigger|policy|rule)\b[^;]*?\bon\s+(?:only\s+)?(` + sqlident.Qualified + `)`)
+	renameTableRe = regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(` + sqlident.Qualified + `)\s+rename\s+to\s+(` + sqlident.Part + `)`)
+	dropTablesRe  = regexp.MustCompile(`(?is)\bdrop\s+table\s+(?:if\s+exists\s+)?((?:` + sqlident.Qualified + `)(?:\s*,\s*` + sqlident.Qualified + `)*)`)
+	qualifiedRe   = regexp.MustCompile(sqlident.Qualified)
+)
+
+// The statements that change an existing table, which end its scaffolded
+// state when a person writes them:
+//
+//   - alterTableRe: any `ALTER TABLE [IF EXISTS] [ONLY] <t>`;
+//   - createOnTableRe: `CREATE [UNIQUE] INDEX | TRIGGER | POLICY … ON <t>`;
+//   - createRuleRe: `CREATE RULE <r> AS ON <event> TO <t>` (a rule names its
+//     table after TO, not ON);
+//   - onTableObjectRe: `DROP | ALTER TRIGGER | POLICY | RULE <name> ON <t>`;
+//   - commentOnTableObjectRe: any COMMENT ON the table, a column of it, or a
+//     constraint, trigger, policy or rule on it, whatever the value — a
+//     quoted string, E'…', a dollar quote, or IS NULL, which removes the
+//     comment. The value is read separately (sqlCommentValue): Go's regexp
+//     cannot match a dollar quote's closing tag.
+//
+// Names may be schema-qualified or quoted (sqlident). `COMMENT ON INDEX
+// <idx>` and `DROP | ALTER INDEX <idx>` name only the index, and resolving
+// one to its table would mean tracking every index name, so they are not
+// read: the rule can miss that edit, never invent one.
+var (
+	alterTableRe           = regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(` + sqlident.Qualified + `)`)
+	createOnTableRe        = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:unique\s+)?(?:index|(?:constraint\s+)?trigger|policy)\b[^;]*?\bon\s+(?:only\s+)?(` + sqlident.Qualified + `)`)
+	createRuleRe           = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?rule\s+` + sqlident.Part + `\s+as\s+on\s+(?:select|insert|update|delete)\s+to\s+(?:only\s+)?(` + sqlident.Qualified + `)`)
+	onTableObjectRe        = regexp.MustCompile(`(?is)\b(?:drop|alter)\s+(?:trigger|policy|rule)\s+(?:if\s+exists\s+)?` + sqlident.Part + `\s+on\s+(?:only\s+)?(` + sqlident.Qualified + `)`)
+	commentOnTableObjectRe = regexp.MustCompile(`(?is)\bcomment\s+on\s+(table|column|(?:constraint|trigger|policy|rule)\s+` + sqlident.Part + `\s+on)\s+(` + sqlident.Qualified + `)\s+is\b`)
 )
 
 // ownershipSchemaFromMigrations replays the migrations' text in file order.
@@ -380,9 +405,9 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 	var order []string
 
 	type event struct {
-		at   int
-		kind string
-		m    []string
+		at, end int
+		kind    string
+		m       []string
 	}
 	err := eachMigration(root, migDir, func(rel, text string) {
 		lineAt := func(off int) int { return strings.Count(text[:off], "\n") + 1 }
@@ -413,16 +438,17 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 						m[i] = text[loc[2*i]:loc[2*i+1]]
 					}
 				}
-				evs = append(evs, event{at: loc[0], kind: kind, m: m})
+				evs = append(evs, event{at: loc[0], end: loc[1], kind: kind, m: m})
 			}
 		}
 		add("create", createTableRe)
-		add("drop", dropTableRe)
+		add("drop", dropTablesRe)
 		add("rename", renameTableRe)
-		add("comment-table", commentOnRelationRe)
-		add("comment-column", commentOnColumnRe)
+		add("comment", commentOnTableObjectRe)
 		add("alter", alterTableRe)
-		add("create-on", createOnTableRe)
+		add("alter", createOnTableRe)
+		add("alter", createRuleRe)
+		add("alter", onTableObjectRe)
 		sort.SliceStable(evs, func(i, j int) bool { return evs[i].at < evs[j].at })
 
 		for _, ev := range evs {
@@ -435,7 +461,7 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 				tables[name] = &tableState{t: schemadef.Table{Name: name}, cols: map[string]string{},
 					site: tableSite{createFile: rel, createLine: lineAt(ev.at), bornPristine: pristineBirth}}
 			case "drop":
-				for _, n := range strings.Split(ev.m[1], ",") {
+				for _, n := range qualifiedRe.FindAllString(ev.m[1], -1) {
 					delete(tables, sqlident.Last(n))
 				}
 			case "rename":
@@ -447,25 +473,30 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 					tables[to] = st
 					order = append(order, to)
 				}
-			case "comment-table":
-				if !strings.EqualFold(ev.m[1], "table") {
-					continue // a view's comment
+			case "comment":
+				// COMMENT ON replaces the whole comment and IS NULL removes
+				// it; a value this cannot read leaves the last known one.
+				value, known := sqlCommentValue(text[ev.end:])
+				switch kind := strings.ToLower(ev.m[1]); kind {
+				case "table":
+					edited(sqlident.Last(ev.m[2]))
+					if st, ok := tables[sqlident.Last(ev.m[2])]; ok && known {
+						st.t.Comment = value
+						st.site.commentFile, st.site.commentLine = rel, lineAt(ev.at)
+					}
+				case "column":
+					parts := sqlident.Parts(ev.m[2])
+					if len(parts) < 2 {
+						continue
+					}
+					edited(parts[len(parts)-2])
+					if st, ok := tables[parts[len(parts)-2]]; ok && known {
+						st.cols[parts[len(parts)-1]] = value
+					}
+				default: // a constraint, trigger, policy or rule ON the table
+					edited(sqlident.Last(ev.m[2]))
 				}
-				edited(sqlident.Last(ev.m[2]))
-				if st, ok := tables[sqlident.Last(ev.m[2])]; ok {
-					st.t.Comment = unescapeSQLString(ev.m[3])
-					st.site.commentFile, st.site.commentLine = rel, lineAt(ev.at)
-				}
-			case "comment-column":
-				parts := sqlident.Parts(ev.m[1])
-				if len(parts) < 2 {
-					continue
-				}
-				edited(parts[len(parts)-2])
-				if st, ok := tables[parts[len(parts)-2]]; ok {
-					st.cols[parts[len(parts)-1]] = unescapeSQLString(ev.m[2])
-				}
-			case "alter", "create-on":
+			case "alter":
 				edited(sqlident.Last(ev.m[1]))
 			}
 		}
@@ -500,6 +531,62 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 	return out, nil
 }
 
-// unescapeSQLString undoes postgres's doubled-quote escaping in a string
-// literal's body.
-func unescapeSQLString(s string) string { return strings.ReplaceAll(s, "''", "'") }
+// dollarTagRe matches a dollar quote's opening tag: `$$` or `$tag$`.
+var dollarTagRe = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$`)
+
+// sqlCommentValue reads the value a COMMENT ON statement sets from the text
+// after its IS: "" for NULL (which removes the comment), else the body of a
+// '…' string (doubled quotes undone), an E'…' string (backslash escapes
+// too) or a dollar quote. known is false for anything else — a U&'…'
+// string, or text that is not a literal at all.
+func sqlCommentValue(s string) (value string, known bool) {
+	s = strings.TrimLeft(s, " \t\r\n")
+	switch {
+	case len(s) >= 4 && strings.EqualFold(s[:4], "null") && (len(s) == 4 || !isIdentByte(s[4])):
+		return "", true
+	case strings.HasPrefix(s, "'"):
+		return quotedSQLString(s[1:], false)
+	case len(s) >= 2 && (s[0] == 'E' || s[0] == 'e') && s[1] == '\'':
+		return quotedSQLString(s[2:], true)
+	case strings.HasPrefix(s, "$"):
+		tag := dollarTagRe.FindString(s)
+		if tag == "" {
+			return "", false
+		}
+		if body, _, found := strings.Cut(s[len(tag):], tag); found {
+			return body, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// quotedSQLString reads a string literal's body up to its closing quote,
+// s starting just after the opening one. backslash selects E'…' escapes.
+func quotedSQLString(s string, backslash bool) (string, bool) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '\'' && i+1 < len(s) && s[i+1] == '\'':
+			b.WriteByte('\'')
+			i++
+		case c == '\'':
+			return b.String(), true
+		case c == '\\' && backslash && i+1 < len(s):
+			i++
+			switch s[i] {
+			case 'n':
+				b.WriteByte('\n')
+			case 't':
+				b.WriteByte('\t')
+			case 'r':
+				b.WriteByte('\r')
+			default:
+				b.WriteByte(s[i])
+			}
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return "", false
+}

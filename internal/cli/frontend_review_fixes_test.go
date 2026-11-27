@@ -78,11 +78,11 @@ func TestFrontendLintConfigConsistency(t *testing.T) {
 	}
 	cfg := string(eslintCfg)
 	for _, want := range []string{
-		`"import/internal-regex": "^@/"`,
+		`"import-x/internal-regex": "^@/"`,
 		`"src/app/**/*.{ts,tsx}"`,
 		`"src/components/ui/**/*.{ts,tsx}"`,
 		`"src/mocks/scenarios/**/*.{ts,tsx}"`,
-		`"import/no-default-export": "off"`,
+		`"import-x/no-default-export": "off"`,
 	} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("nextjs eslint config missing %q", want)

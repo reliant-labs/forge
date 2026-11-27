@@ -183,16 +183,16 @@ func TestTSImportOrderMatchesESLintConfig(t *testing.T) {
 	// Anchoring on indentation would make this test fail on a reformat; the
 	// options below appear nowhere else in the file, so "first match after
 	// the rule name" is both simpler and stabler.
-	at := strings.Index(config, `"import/order":`)
+	at := strings.Index(config, `"import-x/order":`)
 	if at < 0 {
-		t.Fatalf("no import/order rule in nextjs/eslint.config.mjs — CanonicalTSImportOrder orders " +
+		t.Fatalf("no import-x/order rule in nextjs/eslint.config.mjs — CanonicalTSImportOrder orders " +
 			"emitted imports to satisfy a rule the scaffold no longer configures")
 	}
 	body := config[at:]
 
 	groupsBlock := regexp.MustCompile(`(?s)groups:\s*\[(.*?)\]`).FindStringSubmatch(body)
 	if groupsBlock == nil {
-		t.Fatalf("import/order carries no explicit `groups` array; the emitter mirrors one:\n%s", body)
+		t.Fatalf("import-x/order carries no explicit `groups` array; the emitter mirrors one:\n%s", body)
 	}
 	var groups []string
 	for _, m := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(groupsBlock[1], -1) {
@@ -213,12 +213,12 @@ func TestTSImportOrderMatchesESLintConfig(t *testing.T) {
 		t.Errorf("alphabetize.caseInsensitive is not true; the emitter lowercases before comparing:\n%s", body)
 	}
 
-	m := regexp.MustCompile(`"import/internal-regex":\s*"([^"]+)"`).FindStringSubmatch(config)
+	m := regexp.MustCompile(`"import-x/internal-regex":\s*"([^"]+)"`).FindStringSubmatch(config)
 	if m == nil {
-		t.Fatalf("no import/internal-regex setting — without it eslint cannot classify @/ aliases " +
+		t.Fatalf("no import-x/internal-regex setting — without it eslint cannot classify @/ aliases " +
 			"deterministically and the emitter's `internal` group is a guess")
 	}
 	if m[1] != tsInternalRegex.String() {
-		t.Errorf("import/internal-regex is %q, emitter uses %q", m[1], tsInternalRegex.String())
+		t.Errorf("import-x/internal-regex is %q, emitter uses %q", m[1], tsInternalRegex.String())
 	}
 }

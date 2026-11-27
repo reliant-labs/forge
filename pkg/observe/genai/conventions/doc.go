@@ -11,10 +11,11 @@
 //     and forge's KCL module carries the same list as
 //     forge.GENAI_NORMALIZE_SPAN_STATEMENTS (kcl/genai_normalize_gen.k), so
 //     the collector config is generated from this table, never hand-copied.
-//   - Normalize applies the table to one span's attributes in Go. It is the
-//     reference semantics the golden vectors (Vectors) pin; a consumer that
-//     runs the OTTL statements proves its collector agrees by feeding it the
-//     same vectors.
+//   - NormalizeAttributes applies the table to typed OTLP attributes in Go.
+//     It is the reference semantics the golden vectors (TypedVectors) pin;
+//     a consumer running the OTTL statements proves its collector agrees by
+//     feeding it those same int64 token counts and float64 costs. Normalize
+//     and Vectors remain available for legacy string-only callers.
 //
 // # Additive, never destructive
 //

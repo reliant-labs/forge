@@ -10,6 +10,9 @@ import (
 //
 //	set(attributes["gen_ai.request.model"], attributes["llm.model_name"]) where attributes["gen_ai.request.model"] == nil and attributes["llm.model_name"] != nil and attributes["forge.ai.convention"] == "openinference"
 //
+// Attribute-to-attribute set preserves OTLP types, including int64 token
+// counts and double costs; do not wrap copies in String or parse integers
+// through floating point. TypedVectors supplies typed collector test inputs.
 // Run them with error_mode ignore: a statement that cannot apply to one span
 // must never drop the span. The result has no single quote or backslash, so
 // it embeds in KCL or YAML single-quoted strings as is.

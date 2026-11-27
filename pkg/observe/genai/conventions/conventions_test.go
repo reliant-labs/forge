@@ -12,9 +12,67 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/observe/genai"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
 var update = flag.Bool("update", false, "rewrite kcl/genai_normalize_gen.k from Rules")
+
+// Typed vectors use the same int64/double values as real collector spans.
+func TestTypedVectors(t *testing.T) {
+	for _, v := range TypedVectors() {
+		t.Run(v.Name, func(t *testing.T) {
+			attrs := pcommon.NewMap()
+			if err := attrs.FromRaw(v.Input); err != nil {
+				t.Fatal(err)
+			}
+			before := attrs.AsRaw()
+			got := NormalizeAttributes(v.TraceID, before)
+			if !reflect.DeepEqual(got, v.Want) {
+				t.Fatalf("got %#v, want %#v", got, v.Want)
+			}
+			if !reflect.DeepEqual(before, v.Input) {
+				t.Fatal("normalization mutated the input")
+			}
+			if twice := NormalizeAttributes(v.TraceID, got); !reflect.DeepEqual(twice, got) {
+				t.Fatal("normalization is not idempotent")
+			}
+			if err := attrs.FromRaw(got); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(attrs.AsRaw(), v.Want) {
+				t.Fatal("OTLP round trip changed attribute types")
+			}
+		})
+	}
+}
+
+func TestTokenCopiesPreserveOTLPIntegers(t *testing.T) {
+	// Above float64's exact range: converting through a double loses precision.
+	const tokens int64 = 9007199254740993
+	for _, r := range Rules() {
+		if !strings.HasPrefix(r.Set, "gen_ai.usage.") {
+			continue
+		}
+		attrs := map[string]any{r.Copy: tokens}
+		for _, c := range r.When {
+			attrs[c.Key] = c.Equals
+		}
+		got := NormalizeAttributes("", attrs)
+		if got[r.Set] != tokens {
+			t.Errorf("%s -> %s: got %#v, want int64 %d", r.Copy, r.Set, got[r.Set], tokens)
+		}
+		// A direct OTTL attribute copy is type-preserving, not a string or
+		// floating-point conversion. Check the actual emitted statement.
+		if !strings.HasPrefix(statement(r), "set("+attr(r.Set)+", "+attr(r.Copy)+") where ") {
+			t.Errorf("token copy converts its source: %s", statement(r))
+		}
+		// Canonical zero is present, not missing, and must win.
+		attrs[r.Set] = int64(0)
+		if got := NormalizeAttributes("", attrs); got[r.Set] != int64(0) {
+			t.Errorf("overwrote canonical zero: %#v", got[r.Set])
+		}
+	}
+}
 
 // Every golden vector is what Normalize makes of its input.
 func TestNormalizeSatisfiesTheGoldenVectors(t *testing.T) {

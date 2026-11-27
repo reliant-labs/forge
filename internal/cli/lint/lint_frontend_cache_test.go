@@ -263,6 +263,42 @@ func cachedNote(fs []lintJSONFinding) *lintJSONFinding {
 	return nil
 }
 
+// Lifecycle hooks may read policy outside the project. Neither a passing
+// run nor a subsequent external edit may leave a reusable cached verdict.
+func TestFrontendLintCacheLifecycleHooksReadExternalPolicy(t *testing.T) {
+	for _, hook := range []string{"prepare", "prelint", "postlint", "prelint:styles", "postlint:styles"} {
+		t.Run(hook, func(t *testing.T) {
+			stubCacheSys(t)
+			dir := cacheFrontend(t)
+			c := newFrontendLintCache(dir, false, func(string) string { return "" })
+			run := frontendLintRun{scripts: []string{"lint", "lint:styles"}, nmDir: dir}
+			external := filepath.Join(t.TempDir(), "lint-policy.json")
+			writeCacheFile(t, external, `{"strict":false}`)
+			manifest := map[string]any{"scripts": map[string]string{
+				"lint":        "eslint .",
+				"lint:styles": "eslint .",
+				hook:          "cat " + external,
+			}}
+			data, err := json.Marshal(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeCacheFile(t, filepath.Join(dir, "package.json"), string(data))
+			for _, policy := range []string{`{"strict":false}`, `{"strict":true}`} {
+				writeCacheFile(t, external, policy)
+				key, _, err := c.fingerprint(dir, run)
+				if err == nil || key != "" {
+					t.Fatalf("hook with external policy yielded a reusable key: key=%q err=%v", key, err)
+				}
+				c.record(dir, "previous-pass", 1)
+				if c.recordPass(dir, run, "previous-pass") || len(c.load().Frontends) != 0 {
+					t.Fatal("hook with external policy retained a cached pass")
+				}
+			}
+		})
+	}
+}
+
 // A pass is recorded; the same inputs then skip the run with a note that
 // says so; an edit runs it again.
 func TestFrontendLintCacheSkipsOnMatchAndRunsOnMiss(t *testing.T) {

@@ -35,8 +35,8 @@
 //     Recursive globs, negations and other unsupported workspace syntax
 //     disable caching rather than approximate package-manager membership.
 //   - the scripts the lane runs (and whether css_health adds lint:styles).
-//     Only the exact `eslint .` invocation without npm pre/post hooks is
-//     cacheable; arbitrary scripts may read files outside the keyed roots.
+//     Only the exact `eslint .` invocation without npm pre/post hooks or a
+//     prepare script is cacheable; hooks may read outside the keyed roots.
 //     The forge binary (version, path, size, mtime), node and npm (path,
 //     size, mtime, content) and the complete inherited environment: arbitrary
 //     project scripts and their child tools may read any variable. Environment
@@ -89,7 +89,7 @@ const (
 	// frontendLintCacheVersion is part of every key. Bump it whenever the
 	// fingerprint's meaning changes, so a record written under the old rules
 	// never answers under the new ones.
-	frontendLintCacheVersion = 6
+	frontendLintCacheVersion = 7
 
 	// lintNoCacheEnv is --no-cache for runs nobody types (a gate script).
 	lintNoCacheEnv = "FORGE_LINT_NO_CACHE"
@@ -365,6 +365,11 @@ func cacheableLintScripts(dir string, scripts []string) error {
 	}
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return err
+	}
+	// Conservatively exclude package preparation as well as each requested
+	// script's pre/post hooks: their external inputs are not fingerprinted.
+	if manifest.Scripts["prepare"] != "" {
+		return fmt.Errorf("lint cache: prepare has script inputs that cannot be proven complete")
 	}
 	for _, script := range scripts {
 		if manifest.Scripts[script] != "eslint ." ||

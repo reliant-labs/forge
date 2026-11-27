@@ -78,12 +78,14 @@ func TestReleaseHealthReachesTheShape(t *testing.T) {
 	e := renderReleaseHealth(t, `forge.ReleaseHealth {
         window = "30m"
         max_p95_ratio = 2
-        fail_on = ["latency", "new_issue", "error_rate"]
+        fail_on = ["latency", "new_issue", "error_rate", "seo_regressed"]
         require_baseline = "every"
         regressed_issue_min_events = 1
         error_rate_min_errors = 1
         baseline_window = "48h"
         alert_baseline_min_firings = 0
+        seo_max_score_drop = 0
+        a11y_max_score_drop = 25
     }`)
 	got := shapeReleaseHealthOf(e)
 	if got == nil {
@@ -92,13 +94,15 @@ func TestReleaseHealthReachesTheShape(t *testing.T) {
 	want := release.DefaultReleaseHealth()
 	want.WindowSeconds = 1800
 	want.MaxP95Ratio = 2
-	want.FailOn = []string{release.HealthErrorRate, release.HealthLatency, release.HealthNewIssue}
+	want.FailOn = []string{release.HealthErrorRate, release.HealthLatency, release.HealthNewIssue, release.HealthSEORegressed}
 	want.RequireBaseline = release.BaselineEvery
 	want.RegressedIssueMinEvents = 1
 	want.ErrorRateMinErrors = 1
 	want.BaselineWindowSeconds = 172800
 	zero := 0
 	want.AlertBaselineMinFirings = &zero
+	twentyFive := 25
+	want.SEOMaxScoreDrop, want.A11yMaxScoreDrop = &zero, &twentyFive
 	if !reflect.DeepEqual(*got, want) {
 		t.Errorf("shape policy:\n got  %+v\n want %+v", *got, want)
 	}

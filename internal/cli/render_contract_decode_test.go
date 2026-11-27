@@ -46,7 +46,7 @@ func runtimesOf(e *KCLEntities) map[string][]string {
 // Every golden decodes, strictly, and every workload's runtime block carries
 // exactly the variant its type names — nothing guessed, nothing dropped.
 func TestRenderContract_EveryGoldenDecodes(t *testing.T) {
-	for _, name := range []string{"host", "compose", "cluster", "hosted", "build-only", "build-outputs", "mixed", "unit-split", "flux-delivery"} {
+	for _, name := range []string{"host", "compose", "cluster", "hosted", "build-only", "build-outputs", "mixed", "unit-split", "flux-delivery", "ml-stack"} {
 		t.Run(name, func(t *testing.T) {
 			e, _ := loadContract(t, name)
 			if len(e.Workloads) == 0 {
@@ -561,5 +561,46 @@ func TestRenderContract_FluxDelivery(t *testing.T) {
 	}
 	if DirectApplyAllowed(e) {
 		t.Error("an applier = flux env may be direct-applied")
+	}
+}
+
+// The ml-stack golden: a bootstrap Install's labels reach the chart spec the
+// deploy applies, a bundle Install's reach the chart internal/cluster expands,
+// and the declared stack decodes as the env schema describes it.
+func TestRenderContract_MLStack(t *testing.T) {
+	e, raw := loadContract(t, "ml-stack")
+	want := map[string]string{"forge.dev/component-owner": "acme.prod", "forge.dev/component": "ml-jobset"}
+	if len(e.HelmCharts) != 1 || !reflect.DeepEqual(e.HelmCharts[0].Labels, want) || !e.HelmCharts[0].ClusterTarget {
+		t.Fatalf("bootstrap Install chart = %+v, want jobset on its ClusterTarget with labels %v", e.HelmCharts, want)
+	}
+	specs, err := helmChartSpecsFromEntities(t.Context(), e.HelmCharts, nil, "acme.prod")
+	if err != nil {
+		t.Fatalf("chart specs: %v", err)
+	}
+	if !reflect.DeepEqual(specs[0].Labels, want) || specs[0].Cluster != "gke_acme_us-central1_gpu" {
+		t.Errorf("spec labels/cluster = %v/%q", specs[0].Labels, specs[0].Cluster)
+	}
+	var doc struct {
+		Output envDocumentWire `json:"output"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if b := doc.Output.BundledCharts; len(b) != 1 || b[0].Labels["forge.dev/component"] != "ml-node-problem-detector" || b[0].Cluster != "gke_acme_us-central1_gpu" {
+		t.Errorf("bundled_charts = %+v", b)
+	}
+	m := doc.Output.MLStacks
+	if len(m) != 1 || m[0].Cluster != "gke_acme_us-central1_gpu" || len(m[0].Components) != 4 || len(m[0].Decisions) != 1 {
+		t.Fatalf("ml_stacks = %+v", m)
+	}
+	var modes []string
+	for _, c := range m[0].Components {
+		modes = append(modes, c.Slot+":"+c.Mode+":"+c.Kind)
+	}
+	if got := strings.Join(modes, " "); got != "accelerators:adopt:dcgm-exporter node_health:install:node-problem-detector queue:adopt:kueue training:install:jobset" {
+		t.Errorf("components = %s", got)
+	}
+	if m[0].Components[0].ServiceName != "ml-dcgm-exporter" {
+		t.Errorf("scraped adoption's service_name = %q", m[0].Components[0].ServiceName)
 	}
 }

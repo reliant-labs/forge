@@ -47,6 +47,10 @@ const (
 // recorded as AuthMethodOther, so the vocabulary stays bounded.
 type AuthMethod string
 
+// The AuthMethod values, spelled as an auth event's `method` records them.
+// AuthMethodInvite is an accepted invitation (an auth_signed_up), and
+// AuthMethodReset a sign-in right after a password reset. AuthMethodOther
+// stands in for any value outside the set.
 const (
 	AuthMethodPassword  AuthMethod = "password"
 	AuthMethodPasskey   AuthMethod = "passkey"
@@ -63,9 +67,9 @@ const (
 type AuthKind string
 
 const (
-	// AuthKindCredential: a credential was just verified. The default.
+	// AuthKindCredential means a credential was just verified. The default.
 	AuthKindCredential AuthKind = "credential"
-	// AuthKindResumed: an existing valid session was seen.
+	// AuthKindResumed means an existing valid session was seen.
 	AuthKindResumed AuthKind = "resumed"
 )
 

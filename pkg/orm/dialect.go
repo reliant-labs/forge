@@ -128,31 +128,41 @@ func ListDialects() []string {
 // PostgresDialect implements the Dialect interface for PostgreSQL
 type PostgresDialect struct{}
 
+// Name returns "postgres".
 func (d *PostgresDialect) Name() string {
 	return "postgres"
 }
 
+// DriverName returns "postgres", the database/sql driver name.
 func (d *PostgresDialect) DriverName() string {
 	return "postgres"
 }
 
+// Placeholder returns the bind placeholder for the 0-based index: $1 for 0.
 func (d *PostgresDialect) Placeholder(index int) string {
 	return fmt.Sprintf("$%d", index+1)
 }
 
+// QuoteIdentifier double-quotes identifier, doubling any double quote in it.
 func (d *PostgresDialect) QuoteIdentifier(identifier string) string {
 	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
 }
 
+// MapFieldType returns fieldType unchanged: FieldType is spelled as
+// PostgreSQL types are.
 func (d *PostgresDialect) MapFieldType(fieldType FieldType) string {
 	// PostgreSQL types are already correct in FieldType
 	return string(fieldType)
 }
 
+// SupportsReturning returns true: PostgreSQL has RETURNING.
 func (d *PostgresDialect) SupportsReturning() bool {
 	return true
 }
 
+// OnConflictClause returns ON CONFLICT (conflictColumn) DO UPDATE SET, setting
+// each of updateColumns to its EXCLUDED value, or DO NOTHING when there are
+// none. The column names are written as given, unquoted.
 func (d *PostgresDialect) OnConflictClause(conflictColumn string, updateColumns []string) string {
 	sets := make([]string, len(updateColumns))
 	for i, col := range updateColumns {

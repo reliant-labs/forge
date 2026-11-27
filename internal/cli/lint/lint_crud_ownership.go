@@ -59,6 +59,34 @@
 // An error, under the warn-first rollout (lint_rollout_table.go): a project
 // pinned below the release after the one that ships it sees a warning
 // carrying the gate date.
+//
+// ── The one exception: a table still as forge scaffolded it (WARNING) ────
+//
+// `forge scaffold` births a `// forge:entity` table with its authenticated
+// CRUD and deliberately declares no owner — only the author knows whose rows
+// they are (see the birth in internal/scaffold/entityproto.go). Failing the
+// gate on that output makes the scaffold phase's expected state illegal: an
+// agent told to gate on lint invents an ownership decision nobody asked it
+// to make. So while the table is still exactly what forge scaffolded, the
+// finding is a warning, "pending: choose an owner for <Entity>", carrying
+// the same fix. Once a person edits the table, it gates again.
+//
+// "Exactly what forge scaffolded" is two facts read from the migrations:
+//
+//   - the file that creates the table is a forge birth whose birth checksum
+//     (checksums.StampSQLBirth) still matches every byte — an in-place edit
+//     to the birth, a column added or a comment reworded, ends it;
+//   - no other migration alters it (ALTER TABLE; any COMMENT ON it, a
+//     column, or a constraint/trigger/policy/rule of it, IS NULL included;
+//     CREATE/ALTER/DROP of an index, trigger, policy or rule on it — see
+//     alterTableRe), except another pristine birth:
+//     a later birth back-fills a foreign key onto an earlier table, and that
+//     is forge's write, not a person's.
+//
+// No evidence reads as edited: a table born before births carried the
+// checksum, a hand-written CREATE TABLE, or a squashed baseline gates as it
+// always did. An exemption declared without a reason is never held: it is a
+// declaration, and wrong whatever state the table is in.
 
 package lint
 
@@ -72,6 +100,7 @@ import (
 
 	"github.com/jinzhu/inflection"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -93,14 +122,34 @@ type crudOwnershipFinding struct {
 	Comment string   // the table's current comment, so the fix can keep it
 	RPCs    []string // "Service.Method", sorted
 	Marker  string   // schemadef.TableMarkerPublic / TableMarkerUnscoped
+	// Entity names the table's entity ("Task") in a pending finding.
+	Entity string
+	// Pending is set when the table is still exactly as forge scaffolded
+	// it, which holds the finding at a warning (see the file header).
+	Pending bool
+}
+
+// severity is the finding's JSON severity: an error, unless the table is
+// still forge's fresh scaffold.
+func (f crudOwnershipFinding) severity() string {
+	if f.Pending {
+		return lintSevWarning
+	}
+	return lintSevError
 }
 
 func (f crudOwnershipFinding) message() string {
 	if f.Marker != "" {
 		return fmt.Sprintf("table %s declares %s with no reason: the marker exists to record why the table needs no owner, and an empty one records nothing", f.Table, f.Marker)
 	}
-	return fmt.Sprintf("table %s is read and written by forge-generated CRUD on authenticated rpc(s) %s and declares no owner: every signed-in caller can read, update and delete every row",
+	msg := fmt.Sprintf("table %s is read and written by forge-generated CRUD on authenticated rpc(s) %s and declares no owner: every signed-in caller can read, update and delete every row",
 		f.Table, strings.Join(f.RPCs, ", "))
+	if f.Pending {
+		msg = fmt.Sprintf("pending: choose an owner for %s — %s. The table is still exactly as forge scaffolded it "+
+			"(its birth migration is unedited and no later migration alters it), so this is a warning for now; "+
+			"it fails the build once the table is edited", f.Entity, msg)
+	}
+	return msg
 }
 
 func (f crudOwnershipFinding) fixHint() string {
@@ -138,7 +187,7 @@ func collectCRUDOwnershipJSON(cwd string, cfg *config.ProjectConfig) ([]lintJSON
 	out := make([]lintJSONFinding, 0, len(fs))
 	for _, f := range fs {
 		out = append(out, lintJSONFinding{
-			File: f.File, Line: f.Line, Severity: lintSevError,
+			File: f.File, Line: f.Line, Severity: f.severity(),
 			Rule: ruleCRUDTableUnowned, Message: f.message(), FixHint: f.fixHint(),
 		})
 	}
@@ -231,7 +280,8 @@ func crudOwnershipFindingsFor(schema ownershipSchema, services []codegen.Service
 			continue
 		}
 		sort.Strings(served)
-		out = append(out, crudOwnershipFinding{File: site.createFile, Line: site.createLine, Table: t.Name, Comment: t.Comment, RPCs: served})
+		out = append(out, crudOwnershipFinding{File: site.createFile, Line: site.createLine, Table: t.Name, Comment: t.Comment, RPCs: served,
+			Entity: codegen.TableEntityName(t), Pending: site.scaffolded()})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Table < out[j].Table })
 	return out
@@ -289,15 +339,58 @@ type ownershipSchema struct {
 }
 
 // tableSite locates a table's CREATE TABLE and its latest COMMENT ON TABLE
-// (project-relative file, 1-based line).
+// (project-relative file, 1-based line), and records whether the table is
+// still as forge scaffolded it.
 type tableSite struct {
 	createFile, commentFile string
 	createLine, commentLine int
+	// bornPristine: the CREATE TABLE is in a forge birth migration whose
+	// birth checksum still matches it.
+	bornPristine bool
+	// editedElsewhere: a migration other than the CREATE's, and not itself
+	// a pristine birth, alters the table.
+	editedElsewhere bool
 }
 
-// renameTableRe matches `ALTER TABLE <t> RENAME TO <new>`. CREATE and DROP
-// reuse the fixture lane's createTableRe / dropTableRe.
-var renameTableRe = regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(` + sqlident.Qualified + `)\s+rename\s+to\s+(` + sqlident.Part + `)`)
+// scaffolded reports whether the table is still exactly as forge
+// scaffolded it: the crud-table-unowned exception (see the file header).
+func (s tableSite) scaffolded() bool { return s.bornPristine && !s.editedElsewhere }
+
+// renameTableRe matches `ALTER TABLE <t> RENAME TO <new>`. CREATE reuses the
+// fixture lane's createTableRe; dropTablesRe captures DROP TABLE's whole
+// name list (`DROP TABLE a, b`), which the fixture lane's dropTableRe does
+// not.
+var (
+	renameTableRe = regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(` + sqlident.Qualified + `)\s+rename\s+to\s+(` + sqlident.Part + `)`)
+	dropTablesRe  = regexp.MustCompile(`(?is)\bdrop\s+table\s+(?:if\s+exists\s+)?((?:` + sqlident.Qualified + `)(?:\s*,\s*` + sqlident.Qualified + `)*)`)
+	qualifiedRe   = regexp.MustCompile(sqlident.Qualified)
+)
+
+// The statements that change an existing table, which end its scaffolded
+// state when a person writes them:
+//
+//   - alterTableRe: any `ALTER TABLE [IF EXISTS] [ONLY] <t>`;
+//   - createOnTableRe: `CREATE [UNIQUE] INDEX | TRIGGER | POLICY … ON <t>`;
+//   - createRuleRe: `CREATE RULE <r> AS ON <event> TO <t>` (a rule names its
+//     table after TO, not ON);
+//   - onTableObjectRe: `DROP | ALTER TRIGGER | POLICY | RULE <name> ON <t>`;
+//   - commentOnTableObjectRe: any COMMENT ON the table, a column of it, or a
+//     constraint, trigger, policy or rule on it, whatever the value — a
+//     quoted string, E'…', a dollar quote, or IS NULL, which removes the
+//     comment. The value is read separately (sqlCommentValue): Go's regexp
+//     cannot match a dollar quote's closing tag.
+//
+// Names may be schema-qualified or quoted (sqlident). `COMMENT ON INDEX
+// <idx>` and `DROP | ALTER INDEX <idx>` name only the index, and resolving
+// one to its table would mean tracking every index name, so they are not
+// read: the rule can miss that edit, never invent one.
+var (
+	alterTableRe           = regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(` + sqlident.Qualified + `)`)
+	createOnTableRe        = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:unique\s+)?(?:index|(?:constraint\s+)?trigger|policy)\b[^;]*?\bon\s+(?:only\s+)?(` + sqlident.Qualified + `)`)
+	createRuleRe           = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?rule\s+` + sqlident.Part + `\s+as\s+on\s+(?:select|insert|update|delete)\s+to\s+(?:only\s+)?(` + sqlident.Qualified + `)`)
+	onTableObjectRe        = regexp.MustCompile(`(?is)\b(?:drop|alter)\s+(?:trigger|policy|rule)\s+(?:if\s+exists\s+)?` + sqlident.Part + `\s+on\s+(?:only\s+)?(` + sqlident.Qualified + `)`)
+	commentOnTableObjectRe = regexp.MustCompile(`(?is)\bcomment\s+on\s+(table|column|(?:constraint|trigger|policy|rule)\s+` + sqlident.Part + `\s+on)\s+(` + sqlident.Qualified + `)\s+is\b`)
+)
 
 // ownershipSchemaFromMigrations replays the migrations' text in file order.
 // Statements this does not recognise are ignored: the rule can then miss a
@@ -312,12 +405,30 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 	var order []string
 
 	type event struct {
-		at   int
-		kind string
-		m    []string
+		at, end int
+		kind    string
+		m       []string
 	}
 	err := eachMigration(root, migDir, func(rel, text string) {
 		lineAt := func(off int) int { return strings.Count(text[:off], "\n") + 1 }
+		// text has its comments blanked, and the birth checksum is a
+		// comment over the file's own bytes: read those.
+		pristineBirth := false
+		path := filepath.FromSlash(rel)
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(root, path)
+		}
+		if raw, err := os.ReadFile(path); err == nil {
+			_, pristineBirth = checksums.SQLBirthIsPristine(raw)
+		}
+		// edited records a statement in this file that changes table name:
+		// a person's edit unless this file is the table's own CREATE or a
+		// pristine birth (forge back-filling a foreign key).
+		edited := func(name string) {
+			if st, ok := tables[name]; ok && !pristineBirth && st.site.createFile != rel {
+				st.site.editedElsewhere = true
+			}
+		}
 		var evs []event
 		add := func(kind string, re *regexp.Regexp) {
 			for _, loc := range re.FindAllStringSubmatchIndex(text, -1) {
@@ -327,14 +438,17 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 						m[i] = text[loc[2*i]:loc[2*i+1]]
 					}
 				}
-				evs = append(evs, event{at: loc[0], kind: kind, m: m})
+				evs = append(evs, event{at: loc[0], end: loc[1], kind: kind, m: m})
 			}
 		}
 		add("create", createTableRe)
-		add("drop", dropTableRe)
+		add("drop", dropTablesRe)
 		add("rename", renameTableRe)
-		add("comment-table", commentOnRelationRe)
-		add("comment-column", commentOnColumnRe)
+		add("comment", commentOnTableObjectRe)
+		add("alter", alterTableRe)
+		add("alter", createOnTableRe)
+		add("alter", createRuleRe)
+		add("alter", onTableObjectRe)
 		sort.SliceStable(evs, func(i, j int) bool { return evs[i].at < evs[j].at })
 
 		for _, ev := range evs {
@@ -345,35 +459,45 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 					order = append(order, name)
 				}
 				tables[name] = &tableState{t: schemadef.Table{Name: name}, cols: map[string]string{},
-					site: tableSite{createFile: rel, createLine: lineAt(ev.at)}}
+					site: tableSite{createFile: rel, createLine: lineAt(ev.at), bornPristine: pristineBirth}}
 			case "drop":
-				for _, n := range strings.Split(ev.m[1], ",") {
+				for _, n := range qualifiedRe.FindAllString(ev.m[1], -1) {
 					delete(tables, sqlident.Last(n))
 				}
 			case "rename":
 				from, to := sqlident.Last(ev.m[1]), sqlident.Last(ev.m[2])
+				edited(from)
 				if st, ok := tables[from]; ok {
 					delete(tables, from)
 					st.t.Name = to
 					tables[to] = st
 					order = append(order, to)
 				}
-			case "comment-table":
-				if !strings.EqualFold(ev.m[1], "table") {
-					continue // a view's comment
+			case "comment":
+				// COMMENT ON replaces the whole comment and IS NULL removes
+				// it; a value this cannot read leaves the last known one.
+				value, known := sqlCommentValue(text[ev.end:])
+				switch kind := strings.ToLower(ev.m[1]); kind {
+				case "table":
+					edited(sqlident.Last(ev.m[2]))
+					if st, ok := tables[sqlident.Last(ev.m[2])]; ok && known {
+						st.t.Comment = value
+						st.site.commentFile, st.site.commentLine = rel, lineAt(ev.at)
+					}
+				case "column":
+					parts := sqlident.Parts(ev.m[2])
+					if len(parts) < 2 {
+						continue
+					}
+					edited(parts[len(parts)-2])
+					if st, ok := tables[parts[len(parts)-2]]; ok && known {
+						st.cols[parts[len(parts)-1]] = value
+					}
+				default: // a constraint, trigger, policy or rule ON the table
+					edited(sqlident.Last(ev.m[2]))
 				}
-				if st, ok := tables[sqlident.Last(ev.m[2])]; ok {
-					st.t.Comment = unescapeSQLString(ev.m[3])
-					st.site.commentFile, st.site.commentLine = rel, lineAt(ev.at)
-				}
-			case "comment-column":
-				parts := sqlident.Parts(ev.m[1])
-				if len(parts) < 2 {
-					continue
-				}
-				if st, ok := tables[parts[len(parts)-2]]; ok {
-					st.cols[parts[len(parts)-1]] = unescapeSQLString(ev.m[2])
-				}
+			case "alter":
+				edited(sqlident.Last(ev.m[1]))
 			}
 		}
 	})
@@ -407,6 +531,62 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 	return out, nil
 }
 
-// unescapeSQLString undoes postgres's doubled-quote escaping in a string
-// literal's body.
-func unescapeSQLString(s string) string { return strings.ReplaceAll(s, "''", "'") }
+// dollarTagRe matches a dollar quote's opening tag: `$$` or `$tag$`.
+var dollarTagRe = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$`)
+
+// sqlCommentValue reads the value a COMMENT ON statement sets from the text
+// after its IS: "" for NULL (which removes the comment), else the body of a
+// '…' string (doubled quotes undone), an E'…' string (backslash escapes
+// too) or a dollar quote. known is false for anything else — a U&'…'
+// string, or text that is not a literal at all.
+func sqlCommentValue(s string) (value string, known bool) {
+	s = strings.TrimLeft(s, " \t\r\n")
+	switch {
+	case len(s) >= 4 && strings.EqualFold(s[:4], "null") && (len(s) == 4 || !isIdentByte(s[4])):
+		return "", true
+	case strings.HasPrefix(s, "'"):
+		return quotedSQLString(s[1:], false)
+	case len(s) >= 2 && (s[0] == 'E' || s[0] == 'e') && s[1] == '\'':
+		return quotedSQLString(s[2:], true)
+	case strings.HasPrefix(s, "$"):
+		tag := dollarTagRe.FindString(s)
+		if tag == "" {
+			return "", false
+		}
+		if body, _, found := strings.Cut(s[len(tag):], tag); found {
+			return body, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// quotedSQLString reads a string literal's body up to its closing quote,
+// s starting just after the opening one. backslash selects E'…' escapes.
+func quotedSQLString(s string, backslash bool) (string, bool) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '\'' && i+1 < len(s) && s[i+1] == '\'':
+			b.WriteByte('\'')
+			i++
+		case c == '\'':
+			return b.String(), true
+		case c == '\\' && backslash && i+1 < len(s):
+			i++
+			switch s[i] {
+			case 'n':
+				b.WriteByte('\n')
+			case 't':
+				b.WriteByte('\t')
+			case 'r':
+				b.WriteByte('\r')
+			default:
+				b.WriteByte(s[i])
+			}
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return "", false
+}

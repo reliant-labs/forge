@@ -154,7 +154,7 @@ func runVulnList(ctx context.Context, out, errOut io.Writer, deps vulnDeps, envN
 		notes = append(notes, env.GradeNote)
 	}
 	doc := vulnscan.BuildDocument(vulnscan.DocumentInput{
-		Env: envName, Release: rel.Version, Gate: env.Gate, GradedAs: env.GradedAs, Artifacts: rs.Artifacts, Filter: filter, Now: now, Notes: notes,
+		Env: envName, Release: rel.Version, Gate: env.Gate, GradedAs: env.GradedAs, Artifacts: rs.Artifacts, NotApplicable: rs.NotApplicable, Filter: filter, Now: now, Notes: notes,
 	})
 	if asJSON {
 		if err := writeVulnJSON(out, doc); err != nil {

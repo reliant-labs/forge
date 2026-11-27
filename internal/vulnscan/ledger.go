@@ -23,18 +23,11 @@ type FindingsStore interface {
 // describes and the gate covers: an image, a host binary, an npm package or
 // a Go module. A git source pin (a frontend built from another repository)
 // names a commit, not bytes, and a frontend's source maps are debugging data,
-// so neither gets an SBOM at the cut, and neither leaves a release "not
-// scanned". It is the rule the cut's SBOM step (internal/cli/build_sbom.go,
-// sbomDescribes) applies, stated where the gate reads it.
+// so neither gets an SBOM at the cut (each records one marked not applicable),
+// and neither leaves a release "not scanned". It is release.SBOMApplicable,
+// the one rule the cut's SBOM step (internal/cli/build_sbom.go) applies too.
 func ShipsCode(name string, art release.Artifact) bool {
-	if _, maps := release.SourcemapsFrontend(name); maps {
-		return false
-	}
-	switch art.Kind {
-	case release.KindOCI, release.KindFile, release.KindNPM, release.KindGoModule:
-		return true
-	}
-	return false
+	return release.SBOMApplicable(name, art)
 }
 
 // Record wraps a scan of one SBOM in the ledger's envelope; the scan itself
@@ -90,6 +83,9 @@ const (
 type ReleaseScan struct {
 	// Artifacts are the release's artifacts, sorted by name.
 	Artifacts []ArtifactScan
+	// NotApplicable are the release's artifacts no SBOM describes
+	// (NotApplicableOf): outside Artifacts, and outside the coverage.
+	NotApplicable []NotApplicableArtifact
 	// Notes are what the reader should know but that changed no verdict:
 	// a rescan that failed while an older scan stood in for it.
 	Notes []string
@@ -106,7 +102,7 @@ type ReleaseScan struct {
 // stale: a stale one could only produce a stale verdict, and grype refuses it
 // anyway.
 func ScanRelease(ctx context.Context, store FindingsStore, scanner *Scanner, local Status, rel *release.Release, policy Rescan) (ReleaseScan, error) {
-	var out ReleaseScan
+	out := ReleaseScan{NotApplicable: NotApplicableOf(rel)}
 	names := make([]string, 0, len(rel.Artifacts))
 	for name, art := range rel.Artifacts {
 		// An artifact that ships no code (a source pin, source maps) has

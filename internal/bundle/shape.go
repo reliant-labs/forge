@@ -83,6 +83,8 @@ type ShapeInput struct {
 	ReleaseHealth *release.ShapeReleaseHealth
 	// UptimeChecks are the env's uptime checks, or nil when it has none.
 	UptimeChecks []release.ShapeUptimeCheck
+	// StatusPage is the env's declared status page, or nil when it has none.
+	StatusPage *release.ShapeStatusPage
 	// ReleaseProbes are the env's release probes, or nil when it has none.
 	ReleaseProbes []release.ShapeReleaseProbe
 	// Identity is the env's managed identity declaration when it declares
@@ -117,6 +119,10 @@ type ShapeInput struct {
 	// Changes are the Forge Changes the project declares (changes.yaml),
 	// keyed by change key, or nil when it declares none.
 	Changes map[string]release.ShapeChange
+	// HostedFrontends is what the env declares about its hosted static
+	// frontends beyond their StaticSites (forge.Frontend.release_urls), or
+	// nil when every one keeps the defaults.
+	HostedFrontends []release.ShapeHostedFrontend
 }
 
 // ProjectShape projects one env's render into the shape a ledger indexes.
@@ -168,6 +174,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		DataAccess:          in.DataAccess,
 		ReleaseHealth:       in.ReleaseHealth,
 		UptimeChecks:        in.UptimeChecks,
+		StatusPage:          in.StatusPage,
 		ReleaseProbes:       in.ReleaseProbes,
 		Identity:            in.Identity,
 		Identities:          in.Identities,
@@ -180,6 +187,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		Buckets:             in.Buckets,
 		Preview:             in.Preview,
 		Changes:             in.Changes,
+		HostedFrontends:     in.HostedFrontends,
 	}.WithStoreSecrets(in.Store).Canonical()
 }
 

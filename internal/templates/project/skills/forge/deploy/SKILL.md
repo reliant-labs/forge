@@ -150,6 +150,8 @@ tool.
 | another cluster's API server; letting the control plane deploy into yours | `deploy/cluster-access`, `deploy/cluster-connect` |
 | secrets beyond `config_secrets` | `deploy/control-plane-secret`, `deploy/external-secrets`, `deploy/openbao` |
 | users and sign-in declared in KCL | `deploy/managed-identity` |
+| a replica range scaled on CPU (`forge.Autoscale`); why a hosted deploy refuses it | `deploy/autoscale` |
+| early access: declare a GPU cluster's ML components (`forge.MLStack`, `forge.Adopt`, `forge.Install`) | `deploy/ml-stack` |
 | PDBs, priority classes, StatefulSet volume growth | `deploy/pdb`, `deploy/pod-priority`, `deploy/statefulset-volumes` |
 | a KCL value from a script; another project's `workloads.k` | `deploy/kcl-eval`, `deploy/kcl-imports` |
 | several repos, any language: a shared infra/envs repo, or one deploy repo building N app repos at pinned refs | `deploy/polyrepo` |

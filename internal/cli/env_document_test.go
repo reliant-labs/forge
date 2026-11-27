@@ -116,6 +116,15 @@ func TestEnvDocument_RenderContractLoadsLikeItsRender(t *testing.T) {
 			if g, w := mustJSON(t, got.Workloads), mustJSON(t, want.Workloads); g != w {
 				t.Errorf("workloads differ\n got %s\nwant %s", g, w)
 			}
+			// A bundled chart expands through `helm template`: a fake one
+			// renders it, through a shell subprocess, so only in the full lane.
+			if _, charts := wrapper.Output["bundled_charts"]; charts {
+				if testing.Short() {
+					loaded++
+					return
+				}
+				fakeHelmOnPath(t)
+			}
 			gs, gerr := cluster.ExtractManifests(out)
 			ws, werr := cluster.ExtractManifests(raw)
 			if gerr != nil || werr != nil || gs != ws {

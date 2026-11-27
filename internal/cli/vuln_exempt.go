@@ -11,18 +11,27 @@ package cli
 // one ci.vuln_scan.exemptions already uses: an id, a reason a reviewer can
 // check, and an expiry, after which the exemption exempts nothing.
 //
-// Idempotent: the same exemption again changes nothing. The same id with a
-// new reason or expiry replaces the old entry (renewing an exemption is an
-// edit of the one entry, not a second one, which the schema refuses).
+// --package, --artifact and --location (each repeatable) scope it: the
+// exemption then covers the advisory only where every one given names the
+// finding (release.ShapeVulnScopedExempt). An exemption's identity is its id AND
+// its scope.
+//
+// Idempotent: the same exemption again changes nothing. The same id and
+// scope with a new reason or expiry replaces the old entry (renewing an
+// exemption is an edit of the one entry, not a second one, which the schema
+// refuses). The same id with another scope is another declaration, added
+// beside the first.
 
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -51,12 +60,50 @@ var vulnExemptRender = func(ctx context.Context, projectDir, env string) (releas
 type vulnExemptOptions struct {
 	reason  string
 	expires string
+	// packages, artifacts and locations scope the exemption.
+	packages  []string
+	artifacts []string
+	locations []string
+}
+
+// exemption is the exemption the options state, its scope lists sorted.
+func (o vulnExemptOptions) exemption(id string) release.ShapeVulnScopedExempt {
+	sorted := func(in []string) []string {
+		if len(in) == 0 {
+			return nil
+		}
+		out := append([]string(nil), in...)
+		sort.Strings(out)
+		return out
+	}
+	return release.ShapeVulnScopedExempt{
+		ID: id, Reason: strings.TrimSpace(o.reason), Expires: o.expires,
+		Packages: sorted(o.packages), Artifacts: sorted(o.artifacts), Locations: sorted(o.locations),
+	}
+}
+
+// vulnExemptScopeLabel describes an exemption's scope for a message: ""
+// when it has none.
+func vulnExemptScopeLabel(ex release.ShapeVulnScopedExempt) string {
+	var parts []string
+	for _, f := range []struct {
+		name string
+		vals []string
+	}{{"package", ex.Packages}, {"artifact", ex.Artifacts}, {"location", ex.Locations}} {
+		if len(f.vals) > 0 {
+			parts = append(parts, f.name+" "+strings.Join(f.vals, ", "))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, "; ") + ")"
 }
 
 func newVulnExemptCmd(deps vulnDeps) *cobra.Command {
 	var opts vulnExemptOptions
 	cmd := &cobra.Command{
-		Use:   "exempt <env> <advisory-id> --reason \"<why>\" --expires YYYY-MM-DD",
+		Use:   "exempt <env> <advisory-id> --reason \"<why>\" --expires YYYY-MM-DD [--package p] [--artifact a] [--location /path]",
 		Short: "Accept one advisory for an env's vuln_gate, declared in the env's KCL",
 		Long: `Accept one advisory for an env's vuln_gate: write a forge.VulnExemption into
 deploy/kcl/<env>/main.k (or into the env document's delivery_policy.vuln_gate),
@@ -67,9 +114,29 @@ and the other way round), the reason a reviewer can check, and the date it
 expires: from the day after, it exempts nothing and the gate judges the finding
 again. --expires must not be in the past.
 
+By default it covers the advisory in every package of every artifact of the
+env. --package, --artifact and --location (each repeatable) narrow it: the
+finding is exempt only where every flag given names it, and a finding found in
+several places is exempt only when every place is covered.
+
+  --package    a package name ("stdlib") or a purl prefix ("pkg:golang/stdlib")
+  --artifact   a release artifact name, as forge vuln list names it
+  --location   an absolute path inside the artifact ("/usr/local/bin/grype"),
+               or every path under a directory that ends in "/"
+
+A Go standard-library advisory is the case for --location: every Go binary's
+package is "stdlib", so only the path tells an unreachable one in a vendored
+tool from a reachable one in your own binary. ` + "`forge vuln list <env> --json`" + `
+lists each finding's occurrences (artifact and path).
+
 The env is rendered after the edit, and the edit is kept only if the rendered
 policy carries the exemption. Running it again with the same values changes
-nothing; with a new reason or expiry it replaces the entry.`,
+nothing; with the same id and scope and a new reason or expiry it replaces the
+entry; with another scope it adds a second one.
+
+A control plane that predates scoped exemptions is sent the policy without
+them, and judges the findings they cover as unexempted: a scoped exemption
+never widens into an exemption of the advisory everywhere.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runVulnExempt(cmd.Context(), cmd.OutOrStdout(), deps, args[0], args[1], opts)
@@ -77,6 +144,9 @@ nothing; with a new reason or expiry it replaces the entry.`,
 	}
 	cmd.Flags().StringVar(&opts.reason, "reason", "", "why this advisory cannot hurt this env: the claim a reviewer checks (required)")
 	cmd.Flags().StringVar(&opts.expires, "expires", "", "the last day the exemption applies, YYYY-MM-DD (required; not in the past)")
+	cmd.Flags().StringArrayVar(&opts.packages, "package", nil, "cover only this package: a name (stdlib) or a purl prefix (pkg:golang/stdlib); repeatable")
+	cmd.Flags().StringArrayVar(&opts.artifacts, "artifact", nil, "cover only this release artifact; repeatable")
+	cmd.Flags().StringArrayVar(&opts.locations, "location", nil, "cover only this absolute path inside the artifact (/usr/local/bin/grype), or every path under one ending in /; repeatable")
 	return cmd
 }
 
@@ -106,6 +176,30 @@ func validateVulnExemption(id, reason, expires string, now time.Time) error {
 	return nil
 }
 
+// validateVulnExemptScope refuses a scope the schema would refuse.
+func validateVulnExemptScope(o vulnExemptOptions) error {
+	for _, f := range []struct {
+		flag string
+		vals []string
+	}{{"--package", o.packages}, {"--artifact", o.artifacts}, {"--location", o.locations}} {
+		seen := map[string]bool{}
+		for _, v := range f.vals {
+			switch {
+			case v == "" || v != strings.TrimSpace(v) || strings.ContainsAny(v, "\t\r\n"):
+				return fmt.Errorf("%s %q must be one non-empty line, not padded with spaces", f.flag, v)
+			case strings.Contains(v, "${"):
+				return fmt.Errorf("%s may not contain `${` (KCL would read it as interpolation)", f.flag)
+			case f.flag == "--location" && !strings.HasPrefix(v, "/"):
+				return fmt.Errorf("--location %q must be an absolute path inside the artifact (/usr/local/bin/grype)", v)
+			case seen[v]:
+				return fmt.Errorf("%s %q is given twice", f.flag, v)
+			}
+			seen[v] = true
+		}
+	}
+	return nil
+}
+
 func runVulnExempt(ctx context.Context, out io.Writer, deps vulnDeps, env, id string, opts vulnExemptOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -114,6 +208,11 @@ func runVulnExempt(ctx context.Context, out io.Writer, deps vulnDeps, env, id st
 	if err := validateVulnExemption(id, reason, opts.expires, deps.now()); err != nil {
 		return err
 	}
+	if err := validateVulnExemptScope(opts); err != nil {
+		return err
+	}
+	ex := opts.exemption(id)
+	scope := vulnExemptScopeLabel(ex)
 	projectDir := deps.projectDir()
 	path, kind, err := vulnExemptTarget(projectDir, env)
 	if err != nil {
@@ -127,13 +226,18 @@ func runVulnExempt(ctx context.Context, out io.Writer, deps vulnDeps, env, id st
 	var changed bool
 	switch kind {
 	case "kcl":
-		next, changed, err = exemptInKCL(string(orig), id, reason, opts.expires)
+		next, changed, err = exemptInKCLOf(string(orig), ex)
 	case "yaml":
-		next, changed, err = exemptInEnvDocYAML(orig, id, reason, opts.expires)
+		next, changed, err = exemptInEnvDocYAMLOf(orig, ex)
 	default:
+		entry, _ := json.Marshal(ex)
+		key := "exemptions"
+		if ex.Scoped() {
+			key = "scoped_exemptions"
+		}
 		err = &errVulnExemptNoAnchor{
 			why:     fmt.Sprintf("%s is a JSON env document, which forge does not rewrite", relOrAbs(projectDir, path)),
-			snippet: fmt.Sprintf("    \"delivery_policy\": {\"vuln_gate\": {\"exemptions\": [{\"id\": %q, \"reason\": %q, \"expires\": %q}]}}\n", id, reason, opts.expires),
+			snippet: fmt.Sprintf("    \"delivery_policy\": {\"vuln_gate\": {%q: [%s]}}\n", key, entry),
 		}
 	}
 	if err != nil {
@@ -141,7 +245,7 @@ func runVulnExempt(ctx context.Context, out io.Writer, deps vulnDeps, env, id st
 	}
 	rel := filepath.ToSlash(relOrAbs(projectDir, path)) // the same spelling on every OS
 	if !changed {
-		_, _ = fmt.Fprintf(out, "%s already exempts %s (expires %s); nothing changed\n", rel, id, opts.expires)
+		_, _ = fmt.Fprintf(out, "%s already exempts %s%s (expires %s); nothing changed\n", rel, id, scope, opts.expires)
 		return nil
 	}
 	info, err := os.Stat(path)
@@ -159,7 +263,7 @@ func runVulnExempt(ctx context.Context, out io.Writer, deps vulnDeps, env, id st
 		return fmt.Errorf("forge vuln exempt: %s did not read back as written; restored it", relOrAbs(projectDir, path))
 	}
 	gate, rerr := vulnExemptRender(ctx, projectDir, env)
-	if rerr == nil && !gateExempts(gate, id, reason, opts.expires) {
+	if rerr == nil && !gateExempts(gate, ex) {
 		rerr = fmt.Errorf("the edit to %s does not reach env %s's rendered vuln_gate (its policy may be built in another file)", rel, env)
 	}
 	if rerr != nil {
@@ -167,9 +271,9 @@ func runVulnExempt(ctx context.Context, out io.Writer, deps vulnDeps, env, id st
 			return fmt.Errorf("forge vuln exempt: %v; and restoring %s failed: %w", rerr, rel, werr)
 		}
 		return fmt.Errorf("forge vuln exempt %s %s: %v\n  %s is unchanged. Add the exemption where env %s declares its vuln_gate:\n      %s",
-			env, id, rerr, rel, env, vulnExemptionLiteral("forge", id, reason, opts.expires))
+			env, id, rerr, rel, env, vulnExemptionLiteralOf("forge", ex))
 	}
-	_, _ = fmt.Fprintf(out, "exempted %s in env %s until %s: %s\n", id, env, opts.expires, rel)
+	_, _ = fmt.Fprintf(out, "exempted %s%s in env %s until %s: %s\n", id, scope, env, opts.expires, rel)
 	_, _ = fmt.Fprintf(out, "  review and commit it; `forge vuln list %s --include-exempt` shows what it covers\n", env)
 	return nil
 }
@@ -197,10 +301,15 @@ func vulnExemptTarget(projectDir, env string) (path, kind string, err error) {
 	return doc, "yaml", nil
 }
 
-// gateExempts reports whether gate carries exactly this exemption.
-func gateExempts(gate release.ShapeVulnGate, id, reason, expires string) bool {
+// gateExempts reports whether gate carries exactly this exemption: its
+// identity (id and scope), reason and expiry.
+func gateExempts(gate release.ShapeVulnGate, ex release.ShapeVulnScopedExempt) bool {
+	all := append([]release.ShapeVulnScopedExempt{}, gate.ScopedExemptions...)
 	for _, e := range gate.Exemptions {
-		if e.ID == id && strings.TrimSpace(e.Reason) == reason && e.Expires == expires {
+		all = append(all, release.ShapeVulnScopedExempt{ID: e.ID, Reason: e.Reason, Expires: e.Expires})
+	}
+	for _, e := range all {
+		if e.Identity() == ex.Identity() && strings.TrimSpace(e.Reason) == ex.Reason && e.Expires == ex.Expires {
 			return true
 		}
 	}
@@ -213,11 +322,36 @@ func gateExempts(gate release.ShapeVulnGate, id, reason, expires string) bool {
 // hand-written policy is the author's whole statement, and inventing the
 // rest of one is not this verb's call.
 func exemptInEnvDocYAML(src []byte, id, reason, expires string) (string, bool, error) {
+	return exemptInEnvDocYAMLOf(src, release.ShapeVulnScopedExempt{ID: id, Reason: reason, Expires: expires})
+}
+
+// exemptInEnvDocYAMLOf is exemptInEnvDocYAML for an exemption that may be
+// scoped: an entry with the same id and scope is the one replaced.
+func exemptInEnvDocYAMLOf(src []byte, ex release.ShapeVulnScopedExempt) (string, bool, error) {
+	id, reason, expires := ex.ID, ex.Reason, ex.Expires
 	var doc yaml.Node
 	if err := yaml.Unmarshal(src, &doc); err != nil {
 		return "", false, err
 	}
-	snippet := fmt.Sprintf("    delivery_policy:\n      vuln_gate:\n        exemptions:\n          - id: %s\n            reason: %q\n            expires: %q\n", id, reason, expires)
+	scopeYAML := ""
+	scopeLists := []struct {
+		key  string
+		vals []string
+	}{{"packages", ex.Packages}, {"artifacts", ex.Artifacts}, {"locations", ex.Locations}}
+	for _, f := range scopeLists {
+		if len(f.vals) > 0 {
+			q := make([]string, len(f.vals))
+			for i, v := range f.vals {
+				q[i] = fmt.Sprintf("%q", v)
+			}
+			scopeYAML += fmt.Sprintf("            %s: [%s]\n", f.key, strings.Join(q, ", "))
+		}
+	}
+	snippetKey := "exemptions"
+	if ex.Scoped() {
+		snippetKey = "scoped_exemptions"
+	}
+	snippet := fmt.Sprintf("    delivery_policy:\n      vuln_gate:\n        %s:\n          - id: %s\n            reason: %q\n            expires: %q\n%s", snippetKey, id, reason, expires, scopeYAML)
 	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
 		return "", false, &errVulnExemptNoAnchor{why: "the env document is not a YAML mapping", snippet: snippet}
 	}
@@ -228,27 +362,78 @@ func exemptInEnvDocYAML(src []byte, id, reason, expires string) (string, bool, e
 	entry := &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{
 		yamlStr("id"), yamlStr(id), yamlStr("reason"), yamlStr(reason), yamlStr("expires"), yamlStr(expires),
 	}}
-	list := yamlChild(gate, "exemptions")
-	switch {
-	case list == nil:
-		gate.Content = append(gate.Content, yamlStr("exemptions"), &yaml.Node{Kind: yaml.SequenceNode, Content: []*yaml.Node{entry}})
-	case list.Kind != yaml.SequenceNode:
-		return "", false, &errVulnExemptNoAnchor{why: "delivery_policy.vuln_gate.exemptions is not a list", snippet: snippet}
-	default:
-		replaced := false
-		for i, e := range list.Content {
-			if n := yamlChild(e, "id"); n != nil && n.Value == id {
-				if v := yamlChild(e, "reason"); v != nil && v.Value == reason {
-					if x := yamlChild(e, "expires"); x != nil && x.Value == expires {
-						return string(src), false, nil
-					}
+	for _, f := range scopeLists {
+		if len(f.vals) > 0 {
+			seq := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
+			for _, v := range f.vals {
+				seq.Content = append(seq.Content, yamlStr(v))
+			}
+			entry.Content = append(entry.Content, yamlStr(f.key), seq)
+		}
+	}
+	// yamlScopeKey is an entry's scope (vulnExemptScopeKey); "" and ok
+	// false when a scope key is not a list of strings, which forge does
+	// not rewrite.
+	yamlScopeKey := func(e *yaml.Node) (string, bool) {
+		lists := map[string][]string{}
+		for _, f := range scopeLists {
+			n := yamlChild(e, f.key)
+			if n == nil {
+				continue
+			}
+			if n.Kind != yaml.SequenceNode {
+				return "", false
+			}
+			for _, v := range n.Content {
+				if v.Kind != yaml.ScalarNode {
+					return "", false
 				}
-				list.Content[i], replaced = entry, true
+				lists[f.key] = append(lists[f.key], v.Value)
 			}
 		}
-		if !replaced {
-			list.Content = append(list.Content, entry)
+		return vulnExemptScopeKey(lists["packages"], lists["artifacts"], lists["locations"]), true
+	}
+	want := vulnExemptScopeKey(ex.Packages, ex.Artifacts, ex.Locations)
+	// The document is the render's form: a scoped exemption is an entry of
+	// scoped_exemptions, an unscoped one of exemptions. The entry of the
+	// same declaration is replaced in whichever list holds it.
+	listKey := "exemptions"
+	if ex.Scoped() {
+		listKey = "scoped_exemptions"
+	}
+	for _, key := range []string{"exemptions", "scoped_exemptions"} {
+		list := yamlChild(gate, key)
+		if list == nil {
+			continue
 		}
+		if list.Kind != yaml.SequenceNode {
+			return "", false, &errVulnExemptNoAnchor{why: "delivery_policy.vuln_gate." + key + " is not a list", snippet: snippet}
+		}
+		for i, e := range list.Content {
+			if n := yamlChild(e, "id"); n == nil || n.Value != id {
+				continue
+			}
+			scope, ok := yamlScopeKey(e)
+			if !ok {
+				return "", false, &errVulnExemptNoAnchor{why: fmt.Sprintf("an exemption of %s in delivery_policy.vuln_gate.%s has a scope that is not a list of strings", id, key), snippet: snippet}
+			}
+			if scope != want {
+				continue // another declaration of the advisory
+			}
+			if v := yamlChild(e, "reason"); v != nil && v.Value == reason {
+				if x := yamlChild(e, "expires"); x != nil && x.Value == expires {
+					return string(src), false, nil
+				}
+			}
+			list.Content[i], listKey = entry, ""
+		}
+	}
+	switch list := yamlChild(gate, listKey); {
+	case listKey == "": // replaced in place
+	case list == nil:
+		gate.Content = append(gate.Content, yamlStr(listKey), &yaml.Node{Kind: yaml.SequenceNode, Content: []*yaml.Node{entry}})
+	default:
+		list.Content = append(list.Content, entry)
 	}
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)

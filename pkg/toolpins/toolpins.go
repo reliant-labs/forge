@@ -110,7 +110,7 @@ type Archive struct {
 //     installer refuses an archive whose executable misses this value, and
 //     internal/toolfetch's TestPinnedBinaryChecksumsMatchTheirArchives
 //     (FORGE_TEST_TOOLFETCH_LIVE=1) re-derives every one from the release.
-//
+
 // Syft returns the pinned syft release.
 func Syft() Tool {
 	return tool("syft", SyftVersion, "anchore/syft", "github.com/anchore/syft/cmd/syft",

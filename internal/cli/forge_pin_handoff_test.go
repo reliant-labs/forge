@@ -9,6 +9,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/forgedelegate"
+	"github.com/reliant-labs/forge/pkg/forgepin"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -259,5 +260,28 @@ func TestResolvePinnedForge(t *testing.T) {
 	t.Setenv(forgedelegate.CacheDirEnv, t.TempDir())
 	if _, ok, err := ResolvePinnedForge(context.Background(), root, "skill load", io.Discard); ok || err == nil || !strings.Contains(err.Error(), "could not be obtained") {
 		t.Errorf("unobtainable pin: ok %v, err %v", ok, err)
+	}
+}
+
+// pkg/forgepin.Resolve, the leaf a host imports instead of this package, is
+// answered by ResolvePinnedForge whenever this package is linked.
+func TestForgepinResolveIsResolvePinnedForge(t *testing.T) {
+	skewedProject(t)
+	root, _ := os.Getwd()
+	h, installs := armDelegation(t)
+
+	got, ok, err := forgepin.Resolve(context.Background(), root, "skill load", io.Discard)
+	if err != nil || !ok || got.Path == "" || got.Key != "pin:"+skewTestPin || !strings.Contains(got.Want, skewTestPin) {
+		t.Fatalf("forgepin.Resolve: got %+v, ok %v, err %v", got, ok, err)
+	}
+	// The whole answer comes through, not only the first four fields.
+	if got.Pin != skewTestPin || got.Source == "" {
+		t.Errorf("forgepin.Resolve dropped fields: got %+v, want Pin %q and a Source", got, skewTestPin)
+	}
+	if len(*installs) != 1 || h.path != "" {
+		t.Errorf("built %v, exec'd %q: resolve must build, never exec", *installs, h.path)
+	}
+	if _, ok, _ := forgepin.Resolve(context.Background(), root, "version", io.Discard); ok {
+		t.Error("an exempt command resolved a pinned forge through forgepin.Resolve")
 	}
 }

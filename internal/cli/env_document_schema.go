@@ -72,6 +72,10 @@ type envDocumentWire struct {
 	// Generated are the forge.Generated commands whose YAML joins the apply
 	// stream.
 	Generated []cluster.GeneratedOutput `json:"generated,omitempty"`
+	// MLStacks are the env's declared ML stacks (forge.MLStack). Read by
+	// tools (forge ml discover, the control plane); what they lower to is in
+	// bundled_charts and telemetry.
+	MLStacks []MLStackOutput `json:"ml_stacks,omitempty"`
 	// Manifests is the applyable stream: Kubernetes objects, including one
 	// forge.dev/v1alpha1 Workload record per cluster-bound workload.
 	Manifests []map[string]any `json:"manifests,omitempty"`

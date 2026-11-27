@@ -120,7 +120,8 @@ func TestServiceTaskfileRunsUnderTask(t *testing.T) {
 		}
 	}
 	// The pinned forge reports two frontends, one at a KCL-declared path, and
-	// begins the run test:frontend records into (`test begin` prints its dir).
+	// answers `test begin` (test:frontend opens a recorded run with it) with a
+	// run directory.
 	runDir := t.TempDir()
 	fake("pinned-forge", `case "$1 $2" in
 "project frontends") printf 'npm:frontends/admin\nnpm:web\n' ;;

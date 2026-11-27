@@ -30,6 +30,13 @@ func connectMCP(t *testing.T, dir string) *mcp.ClientSession {
 // handler), returning the server's runner too.
 func connectMCPWith(t *testing.T, dir string, opts *mcp.ClientOptions) (*mcp.ClientSession, *mcpRunner) {
 	t.Helper()
+	return connectMCPGroups(t, dir, opts, nil)
+}
+
+// connectMCPGroups is connectMCPWith for a server started with only the
+// named tool groups (nil: every group).
+func connectMCPGroups(t *testing.T, dir string, opts *mcp.ClientOptions, groups []string) (*mcp.ClientSession, *mcpRunner) {
+	t.Helper()
 	resetCmdRoute(t)
 	t.Chdir(dir)
 	r, err := newMCPRunner(NewRootCmd)
@@ -40,7 +47,7 @@ func connectMCPWith(t *testing.T, dir string, opts *mcp.ClientOptions) (*mcp.Cli
 	t.Cleanup(cancel)
 
 	serverT, clientT := mcp.NewInMemoryTransports()
-	ss, err := newMCPServer(r).Connect(ctx, serverT, nil)
+	ss, err := newMCPServer(r, groups).Connect(ctx, serverT, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +330,7 @@ func TestMCP_AnswersEveryRequestReadBeforeStdinCloses(t *testing.T) {
 `
 	done := make(chan error, 1)
 	go func() {
-		err := runMCP(context.Background(), strings.NewReader(in), outW)
+		err := runMCP(context.Background(), strings.NewReader(in), outW, nil)
 		outW.Close()
 		done <- err
 	}()

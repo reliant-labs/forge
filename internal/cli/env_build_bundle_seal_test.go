@@ -83,6 +83,10 @@ func fullyDeclaredShape() release.Shape {
 			Reach: release.ExternalDatabaseReachDirect, Port: 6432,
 		}},
 		UptimeChecks: []release.ShapeUptimeCheck{{Name: "web", Target: "web", Method: "GET", IntervalSeconds: 60, TimeoutSeconds: 10, Source: release.UptimeSourceDefault}},
+		StatusPage: &release.ShapeStatusPage{
+			Title: "Shop status", Links: []release.ShapeStatusLink{{Label: "Help", URL: "https://shop.example.com/help"}},
+			Components: []release.ShapeStatusComponent{{Name: "Website", Checks: []string{"web"}}},
+		},
 		ReleaseProbes: []release.ShapeReleaseProbe{{
 			Target: "web", Kind: release.ReleaseProbeKindFrontend, Paths: []string{"/"}, Method: "GET",
 			RatePerMin: 4, TimeoutSeconds: 10, Source: release.ReleaseProbeSourceDefault,
@@ -116,8 +120,9 @@ func fullyDeclaredShape() release.Shape {
 			{Name: "media", RuntimeKind: release.BucketRuntimeS3, Bucket: "acme-prod-media", Endpoint: "https://acct.r2.cloudflarestorage.com"},
 			{Name: "uploads", RuntimeKind: release.BucketRuntimeHosted, PublicRead: true},
 		},
-		Preview:   &release.ShapePreview{Of: "preview", ExpiresAt: "2026-11-15T12:00:00Z", Source: "pr-12"},
-		Telemetry: release.ShapeTelemetryOf([]telemetry.Target{hostedTelemetryTarget("api")}),
+		Preview:         &release.ShapePreview{Of: "preview", ExpiresAt: "2026-11-15T12:00:00Z", Source: "pr-12"},
+		HostedFrontends: []release.ShapeHostedFrontend{{Frontend: "web", ReleaseURLs: new(bool)}},
+		Telemetry:       release.ShapeTelemetryOf([]telemetry.Target{hostedTelemetryTarget("api")}),
 		Changes: map[string]release.ShapeChange{"new-checkout": {
 			Type: release.ChangeTypeBool, Default: "control", Description: "Shorter checkout flow",
 			Variants: map[string]json.RawMessage{"control": json.RawMessage(`false`), "treatment": json.RawMessage(`true`)},

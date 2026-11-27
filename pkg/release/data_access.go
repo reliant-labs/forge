@@ -12,14 +12,14 @@ import "fmt"
 type DBQueryPolicy string
 
 const (
-	// DBQueryOpen: anyone with the env may query, with no confirmation. The
-	// default for a local or ephemeral env, whose data is scratch.
+	// DBQueryOpen means anyone with the env may query, with no confirmation.
+	// The default for a local or ephemeral env, whose data is scratch.
 	DBQueryOpen DBQueryPolicy = "open"
-	// DBQueryAudited: only a person holding the db:query grant, naming the env
-	// and a reason, and every call is recorded. The default for every other
-	// env: reading real data is allowed, and leaves a trail.
+	// DBQueryAudited means only a person holding the db:query grant, naming
+	// the env and a reason, and every call is recorded. The default for every
+	// other env: reading real data is allowed, and leaves a trail.
 	DBQueryAudited DBQueryPolicy = "audited"
-	// DBQueryDeny: nobody.
+	// DBQueryDeny lets nobody query.
 	DBQueryDeny DBQueryPolicy = "deny"
 )
 
@@ -38,12 +38,12 @@ var DBQueryPolicies = []DBQueryPolicy{DBQueryOpen, DBQueryAudited, DBQueryDeny}
 type StoragePolicy string
 
 const (
-	// StorageOpen: anyone with the env may browse its buckets.
+	// StorageOpen means anyone with the env may browse its buckets.
 	StorageOpen StoragePolicy = "open"
-	// StorageAudited: only a person holding the storage:read grant, naming
-	// the env and a reason, and every call is recorded.
+	// StorageAudited means only a person holding the storage:read grant,
+	// naming the env and a reason, and every call is recorded.
 	StorageAudited StoragePolicy = "audited"
-	// StorageDeny: nobody.
+	// StorageDeny lets nobody browse.
 	StorageDeny StoragePolicy = "deny"
 )
 

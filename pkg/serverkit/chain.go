@@ -29,6 +29,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/activity"
 	"github.com/reliant-labs/forge/pkg/authn"
 	"github.com/reliant-labs/forge/pkg/middleware"
+	"github.com/reliant-labs/forge/pkg/mountkit"
 	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/validate"
 )
@@ -372,6 +373,7 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 		audience:     deps.Auth.Audience(),
 		interceptors: interceptors,
 		options: []connect.HandlerOption{
+			mountkit.JSONCodecOption(),
 			connect.WithInterceptors(interceptors...),
 			connect.WithReadMaxBytes(payloadCap(deps.ReadMaxBytes)),
 			connect.WithSendMaxBytes(payloadCap(deps.SendMaxBytes)),
@@ -524,7 +526,9 @@ func (c *Chain) Interceptors() []connect.Interceptor {
 }
 
 // HandlerOptions returns the options every Connect handler mounted with this
-// chain is built with: the interceptors and the payload caps.
+// chain is built with: forge's protobuf JSON codec (mountkit.JSONCodecOption,
+// first, so a later connect.WithCodec wins), the interceptors and the payload
+// caps.
 func (c *Chain) HandlerOptions() []connect.HandlerOption {
 	return append([]connect.HandlerOption(nil), c.options...)
 }

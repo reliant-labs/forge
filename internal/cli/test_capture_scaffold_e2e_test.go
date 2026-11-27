@@ -288,7 +288,8 @@ func reportStepRunE2E(t *testing.T, ciYML string) map[string]string {
 
 // TestE2EScaffoldedCIReportWithoutTokenStaysGreen: the scaffolded CI's report
 // step, run as a runner with no FORGE_CONTROL_PLANE_TOKEN and no sign-in
-// would run it, exits 0 and says once that the upload was skipped; and
+// would run it, exits 0 and says once that the upload was skipped (plus once
+// as a GitHub Actions warning); and
 // FORGE_TESTS=off records nothing.
 func TestE2EScaffoldedCIReportWithoutTokenStaysGreen(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
@@ -325,14 +326,23 @@ func TestE2EScaffoldedCIReportWithoutTokenStaysGreen(t *testing.T) {
 			if strings.Contains(out, "forge test report exited") {
 				t.Errorf("the step's `|| echo` fallback fired, so `forge test report --upload` itself failed without a token:\n%s", out)
 			}
-			var skipped []string
+			// The note, once, plus (GITHUB_ACTIONS is set) the same note
+			// once as a `::warning` workflow command for the run's summary
+			// (#3007): the runner turns that line into an annotation.
+			var skipped, annotations []string
 			for _, line := range strings.Split(out, "\n") {
-				if strings.Contains(line, "upload skipped") {
+				switch {
+				case strings.Contains(line, "::warning title=Test results not uploaded::"):
+					annotations = append(annotations, line)
+				case strings.Contains(line, "upload skipped"):
 					skipped = append(skipped, line)
 				}
 			}
 			if len(skipped) != 1 || !strings.Contains(skipped[0], "FORGE_CONTROL_PLANE_TOKEN") {
 				t.Errorf("want exactly one \"upload skipped\" line naming FORGE_CONTROL_PLANE_TOKEN, got %q in:\n%s", skipped, out)
+			}
+			if len(annotations) != 1 || !strings.Contains(annotations[0], "upload skipped") {
+				t.Errorf("want exactly one \"Test results not uploaded\" warning saying the upload was skipped, got %q in:\n%s", annotations, out)
 			}
 		})
 	}

@@ -23,6 +23,8 @@
 //     OpenInfra, because checking a key reads the database, and installs the
 //     result on that same authenticator.
 {{- end}}
+//   - APIKeyFormat — the prefix this app's API keys carry, read by SetupAuth
+//     and by the code that issues keys.
 package app
 
 import (
@@ -32,6 +34,7 @@ import (
 	"time"
 {{- end}}
 
+	"github.com/reliant-labs/forge/pkg/apikey"
 	"github.com/reliant-labs/forge/pkg/auth"
 {{- if not .NoJWTConfig}}
 	"github.com/reliant-labs/forge/pkg/oauth2"
@@ -56,7 +59,8 @@ const discoveryTimeout = 10 * time.Second
 // there is none to build, and SetupAuth returns nil: a process whose root
 // reaches the user authenticator (NewUserAuth, providers.go) then REFUSES TO
 // START, fail-closed, naming the missing validator. Build the authenticator
-// your product uses here — any auth.NewAuthenticator over a validator — or
+// your product uses here — any auth.NewAuthenticator over a validator, with
+// authenticator.UseKeyFormat(APIKeyFormat()) so your keys route as keys — or
 // declare the jwt_* fields on the config of the process that serves users
 // (cfg is that config) and wire forge's JWT validator (`forge skill load auth`).
 func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator, error) {
@@ -66,9 +70,10 @@ func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator
 {{- else}}
 
 // SetupAuth returns the authenticator this service checks every request's
-// credential with. It routes a credential by its shape: an API key ("fk_…")
-// to the key validator APIKeyValidator supplies once infra is open, anything
-// else to the bearer-token validator built here.
+// credential with. It routes a credential by its shape: an API key (the
+// prefix APIKeyFormat names, "fk_…" by default) to the key validator
+// APIKeyValidator supplies once infra is open, anything else to the
+// bearer-token validator built here.
 //
 // Default: validate JWTs using the typed config fields —
 //
@@ -220,6 +225,9 @@ func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator
 		return nil, fmt.Errorf("build JWT validator: %w", err)
 	}
 	authenticator := auth.NewAuthenticator(validator.Validate)
+	// A credential with APIKeyFormat's prefix (or forge's "fk_") is an API
+	// key, and goes to the key validator rather than the JWT validator.
+	authenticator.UseKeyFormat(APIKeyFormat())
 
 	// A managed identity's access token names the user by subject only: no
 	// email. With an issuer to ask, Claims.Email is filled from its OIDC
@@ -246,8 +254,24 @@ func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator
 
 {{- end}}
 
+// APIKeyFormat is the shape of the API keys this app issues and accepts: a
+// prefix, then 32 random characters. The zero apikey.Format is forge's
+// "fk_". To use your product's prefix:
+//
+//	return apikey.MustFormat("acme_") // lowercase, ends in "_"
+//
+// SetupAuth installs it, so keys with its prefix route to APIKeyValidator,
+// which looks them up with APIKeyFormat().LookupPrefix(key). The code that
+// issues keys calls its Generate: hand it APIKeyFormat() through a Deps
+// field set in compose.go (a handler cannot import this package). Keys
+// already issued as "fk_" keep authenticating after a change: every Format
+// accepts them.
+func APIKeyFormat() apikey.Format {
+	return apikey.Format{}
+}
+
 // APIKeyValidator returns the validator API keys are checked with — a
-// credential that starts with apikey.KeyPrefix ("fk_"), presented as
+// credential with APIKeyFormat's prefix ("fk_" by default), presented as
 // "X-API-Key: fk_…" (middleware.APIKeyHeader) or "Authorization: Bearer
 {{- if .Graph}}
 // fk_…". The UserAuth provider (providers.go) calls it with the serving pool
@@ -260,7 +284,7 @@ func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator
 {{- end}}
 // a second connection pool of its own, and with the request's context.
 //
-// nil — the default — leaves API keys DISABLED: every "fk_" credential is
+// nil — the default — leaves API keys DISABLED: every key credential is
 // rejected and bearer tokens are unaffected. Disabled is not unchecked;
 // there is no value this function can return that lets a key through
 // unverified, and a key too short to be one never reaches your store.
@@ -274,7 +298,7 @@ func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator
 //	func APIKeyValidator(infra *Infra) auth.KeyValidator {
 {{- end}}
 //		return auth.KeyValidatorFunc(func(ctx context.Context, key string) (*auth.Claims, error) {
-//			prefix, err := apikey.LookupPrefix(key)
+//			prefix, err := APIKeyFormat().LookupPrefix(key)
 //			if err != nil {
 //				return nil, err
 //			}

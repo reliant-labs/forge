@@ -13,6 +13,8 @@ package appkit
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/serverkit"
@@ -96,5 +98,36 @@ func TestNewContextWorkerInstance_SatisfiesContextWorker(t *testing.T) {
 	ranWith = ""
 	if err := inst.Start(context.Background()); err != nil || ranWith != "runContext" {
 		t.Errorf("Start should delegate to runContext (err=%v ranWith=%q)", err, ranWith)
+	}
+}
+
+// TestNewWorkerInstance_DelegatesToLifecyclekit pins the deprecated appkit
+// constructor: the row it returns must carry the name and run the supplied
+// start and stop functions, because generated and hand-written code that
+// still imports appkit relies on it behaving like lifecyclekit's.
+func TestNewWorkerInstance_DelegatesToLifecyclekit(t *testing.T) {
+	var calls []string
+	startErr := errors.New("start failed")
+	w := NewWorkerInstance("billing",
+		func(context.Context) error { calls = append(calls, "start"); return startErr },
+		func(context.Context) error { calls = append(calls, "stop"); return nil },
+	)
+
+	if w.Name() != "billing" {
+		t.Errorf("Name() = %q, want billing", w.Name())
+	}
+	if err := w.Start(context.Background()); !errors.Is(err, startErr) {
+		t.Errorf("Start() = %v, want the start function's error", err)
+	}
+	if err := w.Stop(context.Background()); err != nil {
+		t.Errorf("Stop() = %v, want nil", err)
+	}
+	if got := strings.Join(calls, ","); got != "start,stop" {
+		t.Errorf("calls = %q, want start,stop", got)
+	}
+
+	// The wrapped row is a legacy worker: it must not look ctx-aware.
+	if _, ok := WrapWorker("billing", w).(serverkit.ContextWorker); ok {
+		t.Error("a WorkerInstance wrapped by WrapWorker must not satisfy serverkit.ContextWorker")
 	}
 }

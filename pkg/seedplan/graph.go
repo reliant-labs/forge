@@ -28,7 +28,23 @@ func BuildPlanFromDB(ctx context.Context, db *sql.DB, cfg Config) (*Plan, error)
 	if err != nil {
 		return nil, fmt.Errorf("introspect live schema: %w", err)
 	}
-	return planFromTables(ctx, db, tables, cfg)
+	return planDevDataset(ctx, db, tables, cfg)
+}
+
+// planDevDataset is planFromTables for the development dataset — the rows
+// `forge db seed` and `forge env up` write into a dev database. It first
+// leaves out every table that declares `forge:no-seed`, and the tables that
+// cannot exist without one (ExcludeNoSeed); the plan's Warnings name the
+// second kind. SeedGraph does not go through it: a test seeding a spine asks
+// for exactly the tables it names.
+func planDevDataset(ctx context.Context, db schemadef.Queryer, tables []schemadef.Table, cfg Config) (*Plan, error) {
+	kept, left, warns := excludeNoSeed(tables)
+	plan, err := planFromTables(ctx, db, kept, cfg)
+	if err != nil {
+		return nil, err
+	}
+	plan.noSeed, plan.scopeWarns = left, warns
+	return plan, nil
 }
 
 // planFromTables is the shared tail of BuildLivePlan and BuildPlanFromDB:

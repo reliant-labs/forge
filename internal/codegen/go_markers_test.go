@@ -93,6 +93,7 @@ func TestGoMarkerRegistryAgreesWithRecognizers(t *testing.T) {
 		directiveConstructorMarker: func(raw string) bool { return commentEquals(&ast.Comment{Text: raw}, directiveConstructorMarker) },
 		directiveNoObserve:         func(raw string) bool { return commentEquals(&ast.Comment{Text: raw}, directiveNoObserve) },
 		contract.NoCaptureMarker:   func(raw string) bool { _, ok := contract.ParseNoCaptureComment(raw); return ok },
+		contract.ObserveMarker:     contract.IsObserveComment,
 		directiveServiceMarker: func(raw string) bool {
 			return HasServiceContractMarker(&ast.CommentGroup{List: []*ast.Comment{{Text: raw}}})
 		},

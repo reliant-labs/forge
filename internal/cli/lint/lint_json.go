@@ -284,7 +284,7 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 	}
 	// Targeted lanes go through the outcome engine, which knows how each
 	// lane honours --scope, and one report covers every lane named.
-	if outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope, nil); targeted {
+	if outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope, targetedOutcomeOutput{}); targeted {
 		if err != nil {
 			return nil, err
 		}
@@ -432,7 +432,9 @@ func collectSingleLinterJSON(
 	case flags.tracing:
 		// `forge lint --tracing --fix` is the migration: the named lane fixes
 		// its warnings too (--json refuses --fix, so it stays detect-only).
-		return report(collectTracingJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd, fix: flags.autoFix(), targeted: true}))
+		// Its rewrites stay inside --scope (or the named package paths),
+		// like --proto-format's below.
+		return report(collectTracingJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd, fix: flags.autoFix(), targeted: true, scope: scope, paths: paths}))
 	case flags.protoOptions:
 		return reportUngated(collectProtoOptionsJSON(protoDirDefault))
 	case flags.vendoredProtos:
@@ -1065,6 +1067,35 @@ var reFileLineCol = regexp.MustCompile(`^([^\s:]+):(\d+)(?::(\d+))?:\s*(.+)$`)
 // generic "golangci-lint".
 var reTrailingLinter = regexp.MustCompile(`\(([A-Za-z0-9_-]+)\)$`)
 
+// goimportsFixHint names the grouping goimports gates on, which gofmt and go
+// vet accept either way: agents met it only as "File is not properly
+// formatted (goimports)" and a lint round-trip.
+const goimportsFixHint = formatFixHint + ". goimports wants three import groups separated by blank lines: " +
+	"the standard library, then third-party modules (forge's github.com/reliant-labs/forge/pkg/... included), " +
+	"then this module's packages (local-prefixes in .golangci.yml). See `forge skill load ci/golangci`"
+
+// complexityFixHint is the remedy for the size and complexity caps the
+// scaffolded .golangci.yml sets, which are the project's own to tune.
+const complexityFixHint = "split the function: extract its steps or branches into named helpers, and return early. " +
+	"When the size is the shape of the thing (a table, a state machine), say so on the function: " +
+	"`//nolint:%s // <why>`. The threshold is this project's own, in .golangci.yml. See `forge skill load ci/golangci`"
+
+// golangciFixHint is the remedy a golangci-lint finding of rule carries, or
+// "" for a linter whose message is its own fix.
+func golangciFixHint(rule string) string {
+	switch rule {
+	case "gofmt":
+		// forge's own format pass applies exactly what the formatters
+		// gate on (lint_format.go).
+		return formatFixHint
+	case "goimports":
+		return goimportsFixHint
+	case "funlen", "gocognit", "nestif":
+		return fmt.Sprintf(complexityFixHint, rule)
+	}
+	return ""
+}
+
 // externalLinesToFindings normalizes captured sub-tool output. Lines in
 // `file:line[:col]: message` shape become file-scoped findings with the
 // given rule; everything else is kept verbatim with rule "external" so
@@ -1093,11 +1124,7 @@ func externalLinesToFindings(output, rule, severity string) []lintJSONFinding {
 				if lm := reTrailingLinter.FindStringSubmatch(m[4]); lm != nil {
 					f.Rule = lm[1]
 				}
-				// forge's own format pass applies exactly what these
-				// two formatters gate on (lint_format.go).
-				if f.Rule == "gofmt" || f.Rule == "goimports" {
-					f.FixHint = formatFixHint
-				}
+				f.FixHint = golangciFixHint(f.Rule)
 			}
 			out = append(out, f)
 			anchor = f.File
@@ -1274,6 +1301,11 @@ func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error
 // finding.
 func collectContractLintJSON(ctx context.Context, paths []string, excludes []string, gate contract.ExcludeGateOptions) ([]lintJSONFinding, bool, error) {
 	diags, err := runContractAnalysisInProcess(ctx, paths, excludes, gate)
+	if ud, ok := asUndecided(err); ok {
+		// The engine decides: undecided under --scope, the lane's failure
+		// otherwise (lint_scope_undecided.go).
+		return nil, false, ud
+	}
 	if err != nil {
 		return []lintJSONFinding{{
 			Severity: lintSevError,
@@ -1294,7 +1326,7 @@ func collectContractLintJSON(ctx context.Context, paths []string, excludes []str
 			gated = true
 		}
 		if hint == "" {
-			hint = "either declare the exported method in the contract interface, or unexport it (lowercase) if it's helper-only"
+			hint = contract.FixHint
 		}
 		fs = append(fs, lintJSONFinding{
 			File:     d.Pos.Filename,
@@ -1392,8 +1424,12 @@ func collectFrontendLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 	var out []lintJSONFinding
 	gated := false
 	deps := rc.frontendDeps()
+	// eslint --fix rewrites the whole frontend, so it applies only to a
+	// whole-project run: `forge lint --fix ./internal/x/...` confines the
+	// fixers to those Go packages (a --scope run skips this lane outright).
+	fix := rc.fix && formatWithFrontends(rc.scope, rc.paths, false)
 	for _, f := range frontends {
-		fs, g := collectFrontendDirJSON(ctx, deps, f.name, f.dir, cssHealth, rc.fix)
+		fs, g := collectFrontendDirJSON(ctx, deps, f.name, f.dir, cssHealth, fix)
 		out = append(out, fs...)
 		gated = gated || g
 	}

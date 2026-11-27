@@ -68,7 +68,7 @@ if [[ "$2" == list ]]; then echo "$FIXTURE_RUN"; else echo "$FIXTURE_JOBS"; fi
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{"--commit exact", "--workflow ci.yml", `.event == "push" or .event == "workflow_dispatch"`} {
+			for _, want := range []string{"--commit exact", "--workflow ci.yml", `.event == "push" or .event == "workflow_dispatch"`, `startswith("reliant-queue/") | not`} {
 				if !strings.Contains(string(calls), want) {
 					t.Errorf("query lost %q: %s", want, calls)
 				}

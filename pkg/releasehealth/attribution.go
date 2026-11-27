@@ -47,13 +47,14 @@ const MinVersionShare = 0.5
 type LiveState string
 
 const (
-	// LiveUnknown: the promotion records no apply or cluster-rollout gate,
-	// so nothing says when it went live; its promoted_at stands in.
+	// LiveUnknown means the promotion records no apply or cluster-rollout
+	// gate, so nothing says when it went live; its promoted_at stands in.
 	LiveUnknown LiveState = "unknown"
-	// LiveShipped: an attempt shipped the release, at the time LiveAt returns.
+	// LiveShipped means an attempt shipped the release, at the time LiveAt
+	// returns.
 	LiveShipped LiveState = "shipped"
-	// LiveNotShipped: the promotion records deploy gates, and every attempt
-	// so far failed: its release has not run yet.
+	// LiveNotShipped means the promotion records deploy gates, and every
+	// attempt so far failed: its release has not run yet.
 	LiveNotShipped LiveState = "not_shipped"
 )
 
@@ -215,6 +216,11 @@ func (r *Report) attribute(i int) bool {
 // is not the live release's is evidence about f's own version: the release's
 // aggregate share never moves a finding on its own.
 func (r Report) unattributed(f Finding) (why string, otherVersion bool) {
+	if slices.Contains(release.SiteAuditFindings, f.Code) {
+		// Judged from an audit of the release itself (site_audit.go), not
+		// from a traffic window: no window or share moves it.
+		return "", false
+	}
 	if r.WindowNotLive != "" {
 		return "the after window is not the live release's", false
 	}

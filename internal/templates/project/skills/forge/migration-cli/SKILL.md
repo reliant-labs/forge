@@ -56,7 +56,7 @@ For an admin / inspector CLI that hosts its own child subcommands (e.g. `<binary
 
 ## Pure-utility packages — three options
 
-For packages like `naming`, `validate`, format helpers — pure functions on no state — `forge package new` is overkill. The contract+mock generation has no test seam to mock when the package has no I/O, no time, no randomness, no external state.
+For packages like `naming`, `validate`, format helpers — pure functions on no state — `forge scaffold package` is overkill. The contract+mock generation has no test seam to mock when the package has no I/O, no time, no randomness, no external state.
 
 Three honest options:
 
@@ -64,8 +64,6 @@ Three honest options:
 Set in `forge.yaml`:
 ```yaml
 contracts:
-  strict: true
-  allow_exported_funcs: true
   exclude:
     - internal/<utility-pkg>
 ```
@@ -81,14 +79,7 @@ Keep free functions for ergonomics, ALSO expose a `Service` interface that deleg
 
 ## Porting CLI commands
 
-CLI commands map to `internal/cli/` (or wherever your Cobra commands live). The `--kind cli` scaffold doesn't pre-emit a command tree — it gives you a Cobra root in `cmd/<binary>/main.go` and you build out from there. Recommended: one Cobra command per file under `internal/cli/<command>.go`, mirroring the source layout. Set the contracts floor before porting:
-
-```yaml
-contracts:
-  strict: true
-  allow_exported_vars: false
-  allow_exported_funcs: false
-```
+CLI commands map to `internal/cli/` (or wherever your Cobra commands live). The `--kind cli` scaffold doesn't pre-emit a command tree — it gives you a Cobra root in `cmd/<binary>/main.go` and you build out from there. Recommended: one Cobra command per file under `internal/cli/<command>.go`, mirroring the source layout. Run `forge lint --contract` before porting and after each phase; there are no contract strictness settings to turn on.
 
 Cobra commands themselves don't need `contract.go` (they are wired into the root cmd, not consumed by other packages); the rule applies to the `internal/<utility>/` and `internal/<service>/` packages they call into.
 
@@ -99,6 +90,9 @@ For `--kind cli`, `forge generate` does NOT regenerate Connect-RPC stubs or fron
 Run `forge generate` after every config-block or contract-bearing package port. Skipping it means stale mocks/config; tests against your interface compile against the previous shape.
 
 ## Sub-module under `pkg/`
+
+Publishing a Go SDK that imports generated types or clients? Load
+`migration-cli/go-sdk` for the `gen/` module tag and the clean-consumer check.
 
 `pkg/` is ONLY for code with real external importers you will support as public API. No external importer ⇒ keep it in `internal/`, not `pkg/`. Carve out a `pkg/` sub-module (its own `pkg/go.mod`) only when you have **runtime libraries** downstream consumers should import without pulling in your CLI / build-tool dep graph (Cobra, codegen libs, Delve, etc.). Symptoms:
 
@@ -135,7 +129,7 @@ $(go env GOPATH)/bin/<name>-next --help    # smoke
 - App code lives under `internal/`. `pkg/` is only for code with real external importers.
 - `contract.go` is optional for a trivial CLI; the config/logger/shutdown paved path is not.
 - Use `forge scaffold binary <name>` for second binaries (real owned Cobra subcommands; see `binaries`). The scaffolded command also hosts child subcommands via `<name>Cmd.AddCommand(...)`.
-- For pure-utility packages, pick option (A), (B), or (C) explicitly. Don't blanket-apply `forge package new`.
+- For pure-utility packages, pick option (A), (B), or (C) explicitly. Don't blanket-apply `forge scaffold package`.
 - `pkg/` sub-module: workspace `use` OR `replace`, not both.
 
 ## When this skill is not enough

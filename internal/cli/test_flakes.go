@@ -287,9 +287,14 @@ func newTestFlakesGateCmd() *cobra.Command {
 		Short: "Run every test the change adds or edits three times (the flake gate)",
 		Long: `Finds the top-level Test and Fuzz functions the diff from --base to HEAD
 adds or edits (a +func line, or a hunk inside the function) and runs them
-three times, in one invocation of the project's own ` + "`go test`" + `:
+three times, through the project's own ` + "`go test`" + `:
 
   go test -json -short -count=3 -timeout 10m [-race] -run '^(TestA|TestB)$' ./pkg...
+
+A selection too large for one -run argument (over 8 KiB of names: a wide
+refactor) is split across several such invocations, a package's own names
+across several when they alone do not fit; only the selected tests ever run,
+and -timeout is a budget per package's test binary.
 
 --full adds -race. --cpu 1,2,4 runs each test once per GOMAXPROCS value
 instead of -count=3, which Go's test cache keeps. A command after -- replaces

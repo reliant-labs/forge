@@ -43,7 +43,7 @@ func SiteMarkers(site MarkerSite) []string {
 		// ViewMarkerEntity on a base table projects a table a forge library
 		// owns (forge/pkg/audit's audit_log), which forge otherwise leaves
 		// off the ORM; on any other table it states the default.
-		return []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName, ViewMarkerEntity, TableMarkerOwner, TableMarkerPublic, TableMarkerUnscoped}
+		return []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerNoSeed, TableMarkerEntityName, ViewMarkerEntity, TableMarkerOwner, TableMarkerPublic, TableMarkerUnscoped}
 	case SiteView:
 		return []string{ViewMarkerEntity, TableMarkerEntityName}
 	case SiteColumn:

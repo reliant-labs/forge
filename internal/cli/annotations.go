@@ -460,6 +460,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "COMMENT ON TABLE goose_db_version IS 'forge:no-entity — goose owns it';",
 		},
 		{
+			Name:      schemadef.TableMarkerNoSeed,
+			AppliesTo: "table",
+			Effect:    "Keeps the TABLE out of the development dataset: `forge env up`'s first-boot seed, `forge db seed apply` and `forge db seed reset` (and the seed step of `forge db reset`) never synthesize rows into it. (`seed reset` empties the seeded tables with TRUNCATE … CASCADE, which postgres extends to every table holding a foreign key into them, this one included.) A table with a NOT NULL foreign key into it cannot hold a row without one, so it is left out too, and the seed prints a warning naming it; a NULLABLE reference into it is written NULL. Declare it on a table whose rows only the app writes correctly — a lease, a serialized protobuf payload, a ledger whose rows mean money moved — where a synthesized row is a fabricated fact the app then acts on. It is about seed data only: the table keeps its store, entity factory and frontend mock fixtures, and it is independent of `forge:no-entity` (which removes the store and says nothing about seeding). The text after the marker is free-form; say why.",
+			Placement: "COMMENT ON TABLE <table> IS 'forge:no-seed'; in a migration — on the TABLE, not a column. A reason may follow the marker.",
+			Example:   "COMMENT ON TABLE job_leases IS 'forge:no-seed — the control plane writes leases';",
+		},
+		{
 			// The same word as the column marker below; the TABLE form takes a
 			// value and is enforced, the column form is bare and advisory.
 			Name:      schemadef.TableMarkerOwner,
@@ -538,6 +545,13 @@ func markerSpecs() []MarkerSpec {
 			Effect:    "Opts out of the generated observability decorator, which every package whose constructor returns its contract gets by default. On the constructor it exempts the whole package (no middleware_gen.go, and compose.go constructs it unwrapped); on a single interface method it routes just that method around the chain.",
 			Placement: "on the constructor's doc comment (whole package), or above one interface method",
 			Example:   "type Service interface {\n\t// forge:no-observe\n\tHealthz() error\n}",
+		},
+		{
+			Name:      "forge:observe",
+			AppliesTo: "contract",
+			Effect:    "Routes one lifecycle method back through the generated observability decorator's chain. Lifecycle methods — Run, Drain, Close and Ready shaped `func(context.Context) error`, a worker's Start, Stop and RunContext, and io.Closer's `Close() error` — delegate directly by default, because a span around Run would last as long as the process and Ready is a probe called every few seconds. No effect on any other method; `forge:no-observe` wins over it.",
+			Placement: "above one interface method, or on its implementation's doc comment",
+			Example:   "type Service interface {\n\t// forge:observe\n\tReady(ctx context.Context) error\n}",
 		},
 		{
 			Name:      "forge:no-capture",

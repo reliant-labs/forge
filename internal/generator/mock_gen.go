@@ -13,14 +13,15 @@ import (
 )
 
 // forge:section MockService
-// forge:hash=cd51b98c27d8c54913c394a681ca680414836e90c171f9c1239f196eb8ca8154
+// forge:hash=6e6cd75b7a2bf8474600bd2a2accee2902772d51b5dec124f8e7c62e40b9a7d7
 
 // MockService is a test mock for the Service interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockService.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockService.<Method>Func not set" error.
 type MockService struct {
 	contractkit.Recorder
 	GeneratePlanORMFunc       func(string, config.ORMConfig, []config.PlanEntity, *FileChecksums) error
@@ -175,18 +176,367 @@ func (m *MockService) SaveChecksums(root string, cs *FileChecksums) error {
 	return contractkit.MockNotSet("MockService", "SaveChecksums")
 }
 
+// MockServiceGeneratePlanORMCall is one recorded call of MockService.GeneratePlanORM, one
+// field per parameter.
+type MockServiceGeneratePlanORMCall struct {
+	Root     string
+	Orm      config.ORMConfig
+	Entities []config.PlanEntity
+	Cs       *FileChecksums
+}
+
+// GeneratePlanORMCalls returns every recorded GeneratePlanORM call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GeneratePlanORM").
+func (m *MockService) GeneratePlanORMCalls() []MockServiceGeneratePlanORMCall {
+	var out []MockServiceGeneratePlanORMCall
+	for _, c := range m.Recorder.Calls("GeneratePlanORM") {
+		var r MockServiceGeneratePlanORMCall
+		r.Root, _ = c.Args[0].(string)
+		r.Orm, _ = c.Args[1].(config.ORMConfig)
+		r.Entities, _ = c.Args[2].([]config.PlanEntity)
+		r.Cs, _ = c.Args[3].(*FileChecksums)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGeneratePlanProtoFileCall is one recorded call of MockService.GeneratePlanProtoFile, one
+// field per parameter.
+type MockServiceGeneratePlanProtoFileCall struct {
+	Root        string
+	ModulePath  string
+	ServiceName string
+	Rpcs        []config.PlanRPC
+	Entities    []config.PlanEntity
+}
+
+// GeneratePlanProtoFileCalls returns every recorded GeneratePlanProtoFile call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GeneratePlanProtoFile").
+func (m *MockService) GeneratePlanProtoFileCalls() []MockServiceGeneratePlanProtoFileCall {
+	var out []MockServiceGeneratePlanProtoFileCall
+	for _, c := range m.Recorder.Calls("GeneratePlanProtoFile") {
+		var r MockServiceGeneratePlanProtoFileCall
+		r.Root, _ = c.Args[0].(string)
+		r.ModulePath, _ = c.Args[1].(string)
+		r.ServiceName, _ = c.Args[2].(string)
+		r.Rpcs, _ = c.Args[3].([]config.PlanRPC)
+		r.Entities, _ = c.Args[4].([]config.PlanEntity)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateServiceFilesCall is one recorded call of MockService.GenerateServiceFiles, one
+// field per parameter.
+type MockServiceGenerateServiceFilesCall struct {
+	Root        string
+	ModulePath  string
+	ServiceName string
+	ProjectName string
+}
+
+// GenerateServiceFilesCalls returns every recorded GenerateServiceFiles call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateServiceFiles").
+func (m *MockService) GenerateServiceFilesCalls() []MockServiceGenerateServiceFilesCall {
+	var out []MockServiceGenerateServiceFilesCall
+	for _, c := range m.Recorder.Calls("GenerateServiceFiles") {
+		var r MockServiceGenerateServiceFilesCall
+		r.Root, _ = c.Args[0].(string)
+		r.ModulePath, _ = c.Args[1].(string)
+		r.ServiceName, _ = c.Args[2].(string)
+		r.ProjectName, _ = c.Args[3].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateWorkerFilesCall is one recorded call of MockService.GenerateWorkerFiles, one
+// field per parameter.
+type MockServiceGenerateWorkerFilesCall struct {
+	Root       string
+	ModulePath string
+	WorkerName string
+	Kind       string
+	Schedule   string
+}
+
+// GenerateWorkerFilesCalls returns every recorded GenerateWorkerFiles call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateWorkerFiles").
+func (m *MockService) GenerateWorkerFilesCalls() []MockServiceGenerateWorkerFilesCall {
+	var out []MockServiceGenerateWorkerFilesCall
+	for _, c := range m.Recorder.Calls("GenerateWorkerFiles") {
+		var r MockServiceGenerateWorkerFilesCall
+		r.Root, _ = c.Args[0].(string)
+		r.ModulePath, _ = c.Args[1].(string)
+		r.WorkerName, _ = c.Args[2].(string)
+		r.Kind, _ = c.Args[3].(string)
+		r.Schedule, _ = c.Args[4].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateOperatorFilesCall is one recorded call of MockService.GenerateOperatorFiles, one
+// field per parameter.
+type MockServiceGenerateOperatorFilesCall struct {
+	Root       string
+	ModulePath string
+	Name       string
+	Group      string
+	Version    string
+}
+
+// GenerateOperatorFilesCalls returns every recorded GenerateOperatorFiles call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateOperatorFiles").
+func (m *MockService) GenerateOperatorFilesCalls() []MockServiceGenerateOperatorFilesCall {
+	var out []MockServiceGenerateOperatorFilesCall
+	for _, c := range m.Recorder.Calls("GenerateOperatorFiles") {
+		var r MockServiceGenerateOperatorFilesCall
+		r.Root, _ = c.Args[0].(string)
+		r.ModulePath, _ = c.Args[1].(string)
+		r.Name, _ = c.Args[2].(string)
+		r.Group, _ = c.Args[3].(string)
+		r.Version, _ = c.Args[4].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateWebhookFilesCall is one recorded call of MockService.GenerateWebhookFiles, one
+// field per parameter.
+type MockServiceGenerateWebhookFilesCall struct {
+	Root        string
+	ModulePath  string
+	ServiceName string
+	WebhookName string
+}
+
+// GenerateWebhookFilesCalls returns every recorded GenerateWebhookFiles call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateWebhookFiles").
+func (m *MockService) GenerateWebhookFilesCalls() []MockServiceGenerateWebhookFilesCall {
+	var out []MockServiceGenerateWebhookFilesCall
+	for _, c := range m.Recorder.Calls("GenerateWebhookFiles") {
+		var r MockServiceGenerateWebhookFilesCall
+		r.Root, _ = c.Args[0].(string)
+		r.ModulePath, _ = c.Args[1].(string)
+		r.ServiceName, _ = c.Args[2].(string)
+		r.WebhookName, _ = c.Args[3].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateFrontendFilesCall is one recorded call of MockService.GenerateFrontendFiles, one
+// field per parameter.
+type MockServiceGenerateFrontendFilesCall struct {
+	Root         string
+	ModulePath   string
+	ProjectName  string
+	FrontendName string
+	APIPort      int
+	Kind         string
+}
+
+// GenerateFrontendFilesCalls returns every recorded GenerateFrontendFiles call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateFrontendFiles").
+func (m *MockService) GenerateFrontendFilesCalls() []MockServiceGenerateFrontendFilesCall {
+	var out []MockServiceGenerateFrontendFilesCall
+	for _, c := range m.Recorder.Calls("GenerateFrontendFiles") {
+		var r MockServiceGenerateFrontendFilesCall
+		r.Root, _ = c.Args[0].(string)
+		r.ModulePath, _ = c.Args[1].(string)
+		r.ProjectName, _ = c.Args[2].(string)
+		r.FrontendName, _ = c.Args[3].(string)
+		r.APIPort, _ = c.Args[4].(int)
+		r.Kind, _ = c.Args[5].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceEnsureCoreComponentsCall is one recorded call of MockService.EnsureCoreComponents, one
+// field per parameter.
+type MockServiceEnsureCoreComponentsCall struct {
+	FrontendDir string
+}
+
+// EnsureCoreComponentsCalls returns every recorded EnsureCoreComponents call, oldest first, with
+// its arguments typed. It reads the same log as Calls("EnsureCoreComponents").
+func (m *MockService) EnsureCoreComponentsCalls() []MockServiceEnsureCoreComponentsCall {
+	var out []MockServiceEnsureCoreComponentsCall
+	for _, c := range m.Recorder.Calls("EnsureCoreComponents") {
+		var r MockServiceEnsureCoreComponentsCall
+		r.FrontendDir, _ = c.Args[0].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateE2ETestsCall is one recorded call of MockService.GenerateE2ETests, one
+// field per parameter.
+type MockServiceGenerateE2ETestsCall struct {
+	ProjectDir  string
+	ServiceName string
+	ModulePath  string
+	ProjectName string
+	Methods     []E2EMethodInfo
+}
+
+// GenerateE2ETestsCalls returns every recorded GenerateE2ETests call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateE2ETests").
+func (m *MockService) GenerateE2ETestsCalls() []MockServiceGenerateE2ETestsCall {
+	var out []MockServiceGenerateE2ETestsCall
+	for _, c := range m.Recorder.Calls("GenerateE2ETests") {
+		var r MockServiceGenerateE2ETestsCall
+		r.ProjectDir, _ = c.Args[0].(string)
+		r.ServiceName, _ = c.Args[1].(string)
+		r.ModulePath, _ = c.Args[2].(string)
+		r.ProjectName, _ = c.Args[3].(string)
+		r.Methods, _ = c.Args[4].([]E2EMethodInfo)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceRegenerateInfraFilesCall is one recorded call of MockService.RegenerateInfraFiles, one
+// field per parameter.
+type MockServiceRegenerateInfraFilesCall struct {
+	ProjectDir string
+	Cfg        *config.ProjectConfig
+}
+
+// RegenerateInfraFilesCalls returns every recorded RegenerateInfraFiles call, oldest first, with
+// its arguments typed. It reads the same log as Calls("RegenerateInfraFiles").
+func (m *MockService) RegenerateInfraFilesCalls() []MockServiceRegenerateInfraFilesCall {
+	var out []MockServiceRegenerateInfraFilesCall
+	for _, c := range m.Recorder.Calls("RegenerateInfraFiles") {
+		var r MockServiceRegenerateInfraFilesCall
+		r.ProjectDir, _ = c.Args[0].(string)
+		r.Cfg, _ = c.Args[1].(*config.ProjectConfig)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceUpgradeCall is one recorded call of MockService.Upgrade, one
+// field per parameter.
+type MockServiceUpgradeCall struct {
+	ProjectDir string
+	Cfg        *config.ProjectConfig
+	Force      bool
+	CheckOnly  bool
+}
+
+// UpgradeCalls returns every recorded Upgrade call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Upgrade").
+func (m *MockService) UpgradeCalls() []MockServiceUpgradeCall {
+	var out []MockServiceUpgradeCall
+	for _, c := range m.Recorder.Calls("Upgrade") {
+		var r MockServiceUpgradeCall
+		r.ProjectDir, _ = c.Args[0].(string)
+		r.Cfg, _ = c.Args[1].(*config.ProjectConfig)
+		r.Force, _ = c.Args[2].(bool)
+		r.CheckOnly, _ = c.Args[3].(bool)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceWriteGeneratedFileCall is one recorded call of MockService.WriteGeneratedFile, one
+// field per parameter.
+type MockServiceWriteGeneratedFileCall struct {
+	Root    string
+	RelPath string
+	Content []byte
+	Cs      *FileChecksums
+	Force   bool
+}
+
+// WriteGeneratedFileCalls returns every recorded WriteGeneratedFile call, oldest first, with
+// its arguments typed. It reads the same log as Calls("WriteGeneratedFile").
+func (m *MockService) WriteGeneratedFileCalls() []MockServiceWriteGeneratedFileCall {
+	var out []MockServiceWriteGeneratedFileCall
+	for _, c := range m.Recorder.Calls("WriteGeneratedFile") {
+		var r MockServiceWriteGeneratedFileCall
+		r.Root, _ = c.Args[0].(string)
+		r.RelPath, _ = c.Args[1].(string)
+		r.Content, _ = c.Args[2].([]byte)
+		r.Cs, _ = c.Args[3].(*FileChecksums)
+		r.Force, _ = c.Args[4].(bool)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceHashContentCall is one recorded call of MockService.HashContent, one
+// field per parameter.
+type MockServiceHashContentCall struct {
+	Content []byte
+}
+
+// HashContentCalls returns every recorded HashContent call, oldest first, with
+// its arguments typed. It reads the same log as Calls("HashContent").
+func (m *MockService) HashContentCalls() []MockServiceHashContentCall {
+	var out []MockServiceHashContentCall
+	for _, c := range m.Recorder.Calls("HashContent") {
+		var r MockServiceHashContentCall
+		r.Content, _ = c.Args[0].([]byte)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceLoadChecksumsCall is one recorded call of MockService.LoadChecksums, one
+// field per parameter.
+type MockServiceLoadChecksumsCall struct {
+	Root string
+}
+
+// LoadChecksumsCalls returns every recorded LoadChecksums call, oldest first, with
+// its arguments typed. It reads the same log as Calls("LoadChecksums").
+func (m *MockService) LoadChecksumsCalls() []MockServiceLoadChecksumsCall {
+	var out []MockServiceLoadChecksumsCall
+	for _, c := range m.Recorder.Calls("LoadChecksums") {
+		var r MockServiceLoadChecksumsCall
+		r.Root, _ = c.Args[0].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceSaveChecksumsCall is one recorded call of MockService.SaveChecksums, one
+// field per parameter.
+type MockServiceSaveChecksumsCall struct {
+	Root string
+	Cs   *FileChecksums
+}
+
+// SaveChecksumsCalls returns every recorded SaveChecksums call, oldest first, with
+// its arguments typed. It reads the same log as Calls("SaveChecksums").
+func (m *MockService) SaveChecksumsCalls() []MockServiceSaveChecksumsCall {
+	var out []MockServiceSaveChecksumsCall
+	for _, c := range m.Recorder.Calls("SaveChecksums") {
+		var r MockServiceSaveChecksumsCall
+		r.Root, _ = c.Args[0].(string)
+		r.Cs, _ = c.Args[1].(*FileChecksums)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ Service = (*MockService)(nil)
 
 // forge:section MockConfigService
-// forge:hash=7032bd32aeb705002ac321c24e9aabce95e000abce63fee9dbf525708e47735c
+// forge:hash=2682cbda8f08c0402d7506cada925ac21aaba4109e7741cd2a1082d6b7be5406
 
 // MockConfigService is a test mock for the ConfigService interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockConfigService.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockConfigService.<Method>Func not set" error.
 type MockConfigService struct {
 	contractkit.Recorder
 	ReadProjectConfigFunc          func(string) (*config.ProjectConfig, error)
@@ -219,6 +569,68 @@ func (m *MockConfigService) SetProjectConfigScalarPath(path string, keys []strin
 		return m.SetProjectConfigScalarPathFunc(path, keys, value)
 	}
 	return contractkit.MockNotSet("MockConfigService", "SetProjectConfigScalarPath")
+}
+
+// MockConfigServiceReadProjectConfigCall is one recorded call of MockConfigService.ReadProjectConfig, one
+// field per parameter.
+type MockConfigServiceReadProjectConfigCall struct {
+	Path string
+}
+
+// ReadProjectConfigCalls returns every recorded ReadProjectConfig call, oldest first, with
+// its arguments typed. It reads the same log as Calls("ReadProjectConfig").
+func (m *MockConfigService) ReadProjectConfigCalls() []MockConfigServiceReadProjectConfigCall {
+	var out []MockConfigServiceReadProjectConfigCall
+	for _, c := range m.Recorder.Calls("ReadProjectConfig") {
+		var r MockConfigServiceReadProjectConfigCall
+		r.Path, _ = c.Args[0].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockConfigServiceSetProjectConfigScalarCall is one recorded call of MockConfigService.SetProjectConfigScalar, one
+// field per parameter.
+type MockConfigServiceSetProjectConfigScalarCall struct {
+	Path  string
+	Key   string
+	Value any
+}
+
+// SetProjectConfigScalarCalls returns every recorded SetProjectConfigScalar call, oldest first, with
+// its arguments typed. It reads the same log as Calls("SetProjectConfigScalar").
+func (m *MockConfigService) SetProjectConfigScalarCalls() []MockConfigServiceSetProjectConfigScalarCall {
+	var out []MockConfigServiceSetProjectConfigScalarCall
+	for _, c := range m.Recorder.Calls("SetProjectConfigScalar") {
+		var r MockConfigServiceSetProjectConfigScalarCall
+		r.Path, _ = c.Args[0].(string)
+		r.Key, _ = c.Args[1].(string)
+		r.Value, _ = c.Args[2].(any)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockConfigServiceSetProjectConfigScalarPathCall is one recorded call of MockConfigService.SetProjectConfigScalarPath, one
+// field per parameter.
+type MockConfigServiceSetProjectConfigScalarPathCall struct {
+	Path  string
+	Keys  []string
+	Value any
+}
+
+// SetProjectConfigScalarPathCalls returns every recorded SetProjectConfigScalarPath call, oldest first, with
+// its arguments typed. It reads the same log as Calls("SetProjectConfigScalarPath").
+func (m *MockConfigService) SetProjectConfigScalarPathCalls() []MockConfigServiceSetProjectConfigScalarPathCall {
+	var out []MockConfigServiceSetProjectConfigScalarPathCall
+	for _, c := range m.Recorder.Calls("SetProjectConfigScalarPath") {
+		var r MockConfigServiceSetProjectConfigScalarPathCall
+		r.Path, _ = c.Args[0].(string)
+		r.Keys, _ = c.Args[1].([]string)
+		r.Value, _ = c.Args[2].(any)
+		out = append(out, r)
+	}
+	return out
 }
 
 // Compile-time check.

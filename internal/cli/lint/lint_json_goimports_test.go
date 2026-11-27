@@ -26,8 +26,8 @@ func TestGolangciFormatterFindingCarriesTheFormatFix(t *testing.T) {
 		t.Fatal("no findings")
 	}
 	got := fs[0]
-	if got.File != "cmd/demo/cmd/db.go" || got.Line != 53 || got.Rule != "goimports" || got.FixHint != formatFixHint {
-		t.Errorf("anchored finding = %+v, want cmd/demo/cmd/db.go:53 goimports with fix %q", got, formatFixHint)
+	if got.File != "cmd/demo/cmd/db.go" || got.Line != 53 || got.Rule != "goimports" || got.FixHint != goimportsFixHint {
+		t.Errorf("anchored finding = %+v, want cmd/demo/cmd/db.go:53 goimports with fix %q", got, goimportsFixHint)
 	}
 	for _, f := range fs[1:] {
 		if f.File != "" || f.Rule != "external" {
@@ -38,6 +38,35 @@ func TestGolangciFormatterFindingCarriesTheFormatFix(t *testing.T) {
 	other := externalLinesToFindings("a.go:3:2: ineffectual assignment to x (ineffassign)\n", "golangci-lint", lintSevError)
 	if len(other) != 1 || other[0].FixHint != "" {
 		t.Errorf("ineffassign finding = %+v, want no fix hint", other)
+	}
+	// gofmt's remedy is the format pass alone; it has no grouping to name.
+	if g := externalLinesToFindings("a.go:1:1: File is not properly formatted (gofmt)\n", "golangci-lint", lintSevError); len(g) != 1 || g[0].FixHint != formatFixHint {
+		t.Errorf("gofmt finding = %+v, want fix %q", g, formatFixHint)
+	}
+}
+
+// ranger's agents met the goimports grouping rule and funlen's cap only as a
+// bare finding after a lint round-trip. Each finding now says what the rule
+// is and how to fix it.
+func TestGolangciFindingsSayWhatTheRuleIsAndHowToFixIt(t *testing.T) {
+	t.Parallel()
+	gi := externalLinesToFindings(goimportsRunOutput, "golangci-lint", lintSevError)[0]
+	for _, want := range []string{"forge lint --fix", "standard library", "third-party", "forge/pkg", "local-prefixes", "ci/golangci"} {
+		if !strings.Contains(gi.FixHint, want) {
+			t.Errorf("goimports hint lacks %q: %s", want, gi.FixHint)
+		}
+	}
+	for _, rule := range []string{"funlen", "gocognit", "nestif"} {
+		line := "internal/balancer/balancer.go:40:1: Function 'Rebalance' has too many statements (87 > 80) (" + rule + ")\n"
+		fs := externalLinesToFindings(line, "golangci-lint", lintSevError)
+		if len(fs) != 1 || fs[0].Rule != rule {
+			t.Fatalf("%s: findings = %+v", rule, fs)
+		}
+		for _, want := range []string{"split the function", "//nolint:" + rule + " // <why>", ".golangci.yml", "ci/golangci"} {
+			if !strings.Contains(fs[0].FixHint, want) {
+				t.Errorf("%s hint lacks %q: %s", rule, want, fs[0].FixHint)
+			}
+		}
 	}
 }
 
@@ -77,7 +106,7 @@ func TestGolangciFormatterFindingShapeFromTheRealTool(t *testing.T) {
 			anchored = append(anchored, f)
 		}
 	}
-	if len(anchored) != 1 || anchored[0].Rule != "goimports" || anchored[0].File != "a/a.go" || anchored[0].FixHint != formatFixHint {
+	if len(anchored) != 1 || anchored[0].Rule != "goimports" || anchored[0].File != "a/a.go" || anchored[0].FixHint != goimportsFixHint {
 		t.Fatalf("anchored findings = %+v, want one goimports finding on a/a.go with the format fix\n%s", anchored, out)
 	}
 	if fs[0].File == "" {

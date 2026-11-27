@@ -12,9 +12,11 @@ refusal() {
 }
 command -v "$gh" >/dev/null 2>&1 || refusal "gh is required"
 # gh's jq filter is bundled: no extra jq dependency for release contributors.
+# A push to reliant-queue/** (the Reliant merge queue's candidates) runs only
+# the Windows job, never the full tests, so its run is never the one to judge.
 run=$("$gh" run list --repo "$repo" --workflow ci.yml --commit "$sha" --limit 100 \
-  --json databaseId,event,status,conclusion,headSha \
-  --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")] | sort_by(.databaseId) | last | if . == null then "missing" else [.databaseId,.status,.conclusion,.headSha] | map(tostring) | join("|") end') || refusal "cannot read CI runs"
+  --json databaseId,event,status,conclusion,headSha,headBranch \
+  --jq '[.[] | select((.event == "push" or .event == "workflow_dispatch") and ((.headBranch // "") | startswith("reliant-queue/") | not))] | sort_by(.databaseId) | last | if . == null then "missing" else [.databaseId,.status,.conclusion,.headSha] | map(tostring) | join("|") end') || refusal "cannot read CI runs"
 # "|", not tabs: a run still in progress has an EMPTY conclusion, and read
 # collapses adjacent whitespace delimiters, shifting the sha into it.
 IFS='|' read -r id status conclusion head <<<"$run"

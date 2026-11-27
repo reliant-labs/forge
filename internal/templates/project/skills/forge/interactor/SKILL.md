@@ -148,15 +148,17 @@ func TestChargeAndAudit_HappyPath(t *testing.T) {
     if got := auditor.CallCount("Append"); got != 1 {
         t.Fatalf("Append called %d times, want 1", got)
     }
-    if args := auditor.Calls("Append")[0]; args[3] != "ch_1" {
-        t.Fatalf("Append got refID %v, want the charge id", args[3])
+    if got := auditor.AppendCalls()[0].RefID; got != "ch_1" {
+        t.Fatalf("Append got refID %q, want the charge id", got)
     }
 }
 ```
 
+`AppendCalls()` returns each recorded call as a struct with one typed field per parameter, named after the contract's parameter names (`Append(ctx context.Context, userID, action, refID string)` → `Ctx`, `UserID`, `Action`, `RefID`), so a parameter added later breaks the test at compile time instead of shifting a positional `Calls("Append")[0].Args[3]`.
+
 The two assertions interactor tests typically need — and the recorder answers both without a line of fake bookkeeping:
 
-1. **Composition order.** "When step 1 succeeds, step 2 is called with step 1's output." → `auditor.Calls("Append")[0]` carries the recorded arguments.
+1. **Composition order.** "When step 1 succeeds, step 2 is called with step 1's output." → `auditor.AppendCalls()[0]` carries the recorded arguments, typed.
 2. **Failure short-circuiting.** "When step 1 fails, step 2 is not called." → set `ChargeFunc` to return an error and assert `auditor.CallCount("Append") == 0`. This is the pattern that catches half-applied workflows.
 
 Both assertions read off the mock. If you find yourself adding a field to a fake to record what it was called with, stop — that field is `contractkit.Recorder`, and it is already there.

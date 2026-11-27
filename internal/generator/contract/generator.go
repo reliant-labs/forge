@@ -101,6 +101,12 @@ type MethodDef struct {
 	// inner implementation without routing through the observe chain. It is the
 	// method-scoped twin of the package-level `// forge:no-observe` opt-out.
 	SkipObserve bool
+	// ForceObserve is true when the method carries `// forge:observe`: a
+	// lifecycle method (Run, Drain, Close, Ready, a worker's Start/Stop —
+	// observed_lifecycle.go), which the decorator otherwise delegates
+	// directly, routes through the chain like any other. It has no effect
+	// on a non-lifecycle method, and SkipObserve wins over it.
+	ForceObserve bool
 }
 
 // ParamDef represents a method parameter or return value.
@@ -141,6 +147,10 @@ type File struct {
 	// import block, and a db.EstimateStore's signatures routinely mention
 	// packages contract.go never imports (orm, the db package itself).
 	ForeignImports map[string]ImportDef
+	// PackageScopeNames is every package-level identifier the package
+	// declares outside mock_gen.go. The mock's typed call-record types are
+	// package-level too, and must not redeclare one (mock_calls.go).
+	PackageScopeNames map[string]bool
 }
 
 // Options controls optional aspects of mock generation. The zero value is
@@ -429,10 +439,14 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 					// A method-level `// forge:no-observe` on the field's doc or
 					// inline comment routes this method AROUND the observe chain
 					// in the generated decorator (direct delegation).
+					// `// forge:observe` routes a lifecycle method (Run, Close, …;
+					// exempt by default, observed_lifecycle.go) back THROUGH it.
 					skip := commentGroupsHaveNoObserve(field.Doc, field.Comment)
+					force := commentGroupsHaveDirective(ObserveMarker, field.Doc, field.Comment)
 					for _, name := range field.Names {
 						md := extractMethod(name.Name, ft, fset)
 						md.SkipObserve = skip
+						md.ForceObserve = force
 						ifaceMethodMap[entry.name] = append(ifaceMethodMap[entry.name], md)
 					}
 				case *ast.Ident:
@@ -533,6 +547,10 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 		cf.Interfaces = append(cf.Interfaces, iface)
 	}
 	cf.ForeignImports = foreignImports
+	cf.PackageScopeNames, err = collectPackageScopeNames(dir, cf.Package)
+	if err != nil {
+		return nil, err
+	}
 
 	return cf, nil
 }
@@ -641,12 +659,20 @@ const noObserveDirective = "forge:no-observe"
 // marker must be the whole comment line so prose that merely mentions it is
 // never a false positive.
 func commentGroupsHaveNoObserve(groups ...*ast.CommentGroup) bool {
+	return commentGroupsHaveDirective(noObserveDirective, groups...)
+}
+
+// commentGroupsHaveDirective reports whether any of the given comment groups
+// carries a comment whose whole text (comment syntax and whitespace
+// stripped) is directive — the exact-match rule commentGroupsHaveNoObserve
+// describes.
+func commentGroupsHaveDirective(directive string, groups ...*ast.CommentGroup) bool {
 	for _, cg := range groups {
 		if cg == nil {
 			continue
 		}
 		for _, c := range cg.List {
-			if trimContractCommentMarkers(c.Text) == noObserveDirective {
+			if trimContractCommentMarkers(c.Text) == directive {
 				return true
 			}
 		}
@@ -829,13 +855,16 @@ func renderMock(cf *File, opts Options) ([]byte, error) {
 			ifaces[i].Methods[j] = m.withBodyScopedNames(mockReceiver, "contractkit")
 		}
 	}
+	// The typed call records are named from the contract's own parameter
+	// names (a parameter `m` is field M, not the body-scoped P1).
+	mocks := buildMockInterfaces(cf.Interfaces, ifaces, cf.PackageScopeNames)
 
 	data := templateData{
 		Package:          cf.Package,
 		Source:           cf.sourceName(),
 		Receiver:         mockReceiver,
 		Imports:          imports,
-		Interfaces:       ifaces,
+		Interfaces:       mocks,
 		InterfaceNames:   interfaceNames,
 		PrimitiveAliases: cf.PrimitiveAliases,
 	}

@@ -66,7 +66,8 @@ func ValidateRequestsV2() connectv2.ServerInterceptor {
 //	    svc.RegisterV2, orderv1connect.NewOrderServiceClient)
 //
 // The server's chain is interceptors (e.g. ServerPrincipalV2), then the
-// request-validation warning (validate.go), then svcerr.InterceptorV2,
+// request-validation warning (validate.go), then production's logging
+// interceptor writing to [Logger](t), then svcerr.InterceptorV2,
 // innermost — NewConnectClient's chain. It is mounted with mountkit.MountV2, so
 // an unknown method of the service is a plain 404, as in production and in
 // v1. Server and client both read messages of any size, as v1's do (v2's
@@ -81,7 +82,7 @@ func NewConnectClientV2[C any](
 	interceptors ...connectv2.ServerInterceptor,
 ) (*httptest.Server, C) {
 	t.Helper()
-	ints := make([]connectv2.ServerInterceptor, 0, len(interceptors)+2)
+	ints := make([]connectv2.ServerInterceptor, 0, len(interceptors)+3)
 	for _, ic := range interceptors {
 		if ic != nil {
 			ints = append(ints, ic)
@@ -90,6 +91,9 @@ func NewConnectClientV2[C any](
 	if warn := newWarnInvalidRequestsV2(t); warn != nil {
 		ints = append(ints, warn)
 	}
+	// Outside svcerr, as in production: it logs the wire error and the cause
+	// svcerr withheld from the client, to the test's own log ([Logger]).
+	ints = append(ints, observe.LoggingInterceptorV2(Logger(t)))
 	server := connectv2.NewServer(svcerr.WithInterceptorV2(ints)...)
 	register(server)
 	srv := NewTestServer(t, func(mux *http.ServeMux) {

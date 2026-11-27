@@ -13,14 +13,15 @@ import (
 )
 
 // forge:section MockService
-// forge:hash=b895014310be8b42504cea3bb18bf21b76aa479f06ab9f84a5fde76960c40109
+// forge:hash=ad00b7cb0f64b6b8fa8a38d3ba823b2c336db864e60ca64dce42451999f897a6
 
 // MockService is a test mock for the Service interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockService.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockService.<Method>Func not set" error.
 type MockService struct {
 	contractkit.Recorder
 	GenerateServiceStubFunc         func(ServiceDef, string, ...map[string]bool) error
@@ -135,18 +136,271 @@ func (m *MockService) GenerateMigrate(targetDir string, modulePath string, hasMi
 	return contractkit.MockNotSet("MockService", "GenerateMigrate")
 }
 
+// MockServiceGenerateServiceStubCall is one recorded call of MockService.GenerateServiceStub, one
+// field per parameter.
+type MockServiceGenerateServiceStubCall struct {
+	Svc             ServiceDef
+	TargetDir       string
+	CrudMethodNames []map[string]bool
+}
+
+// GenerateServiceStubCalls returns every recorded GenerateServiceStub call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateServiceStub").
+func (m *MockService) GenerateServiceStubCalls() []MockServiceGenerateServiceStubCall {
+	var out []MockServiceGenerateServiceStubCall
+	for _, c := range m.Recorder.Calls("GenerateServiceStub") {
+		var r MockServiceGenerateServiceStubCall
+		r.Svc, _ = c.Args[0].(ServiceDef)
+		r.TargetDir, _ = c.Args[1].(string)
+		r.CrudMethodNames, _ = c.Args[2].([]map[string]bool)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceRegenerateServiceFileCall is one recorded call of MockService.RegenerateServiceFile, one
+// field per parameter.
+type MockServiceRegenerateServiceFileCall struct {
+	Svc       ServiceDef
+	TargetDir string
+}
+
+// RegenerateServiceFileCalls returns every recorded RegenerateServiceFile call, oldest first, with
+// its arguments typed. It reads the same log as Calls("RegenerateServiceFile").
+func (m *MockService) RegenerateServiceFileCalls() []MockServiceRegenerateServiceFileCall {
+	var out []MockServiceRegenerateServiceFileCall
+	for _, c := range m.Recorder.Calls("RegenerateServiceFile") {
+		var r MockServiceRegenerateServiceFileCall
+		r.Svc, _ = c.Args[0].(ServiceDef)
+		r.TargetDir, _ = c.Args[1].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateMissingHandlerStubsCall is one recorded call of MockService.GenerateMissingHandlerStubs, one
+// field per parameter.
+type MockServiceGenerateMissingHandlerStubsCall struct {
+	Svc             ServiceDef
+	ProjectDir      string
+	TargetDir       string
+	CrudMethodNames map[string]bool
+	Cs              *checksums.FileChecksums
+}
+
+// GenerateMissingHandlerStubsCalls returns every recorded GenerateMissingHandlerStubs call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateMissingHandlerStubs").
+func (m *MockService) GenerateMissingHandlerStubsCalls() []MockServiceGenerateMissingHandlerStubsCall {
+	var out []MockServiceGenerateMissingHandlerStubsCall
+	for _, c := range m.Recorder.Calls("GenerateMissingHandlerStubs") {
+		var r MockServiceGenerateMissingHandlerStubsCall
+		r.Svc, _ = c.Args[0].(ServiceDef)
+		r.ProjectDir, _ = c.Args[1].(string)
+		r.TargetDir, _ = c.Args[2].(string)
+		r.CrudMethodNames, _ = c.Args[3].(map[string]bool)
+		r.Cs, _ = c.Args[4].(*checksums.FileChecksums)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateMockCall is one recorded call of MockService.GenerateMock, one
+// field per parameter.
+type MockServiceGenerateMockCall struct {
+	Svc        ServiceDef
+	ProjectDir string
+	MockDir    string
+	Cs         *checksums.FileChecksums
+}
+
+// GenerateMockCalls returns every recorded GenerateMock call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateMock").
+func (m *MockService) GenerateMockCalls() []MockServiceGenerateMockCall {
+	var out []MockServiceGenerateMockCall
+	for _, c := range m.Recorder.Calls("GenerateMock") {
+		var r MockServiceGenerateMockCall
+		r.Svc, _ = c.Args[0].(ServiceDef)
+		r.ProjectDir, _ = c.Args[1].(string)
+		r.MockDir, _ = c.Args[2].(string)
+		r.Cs, _ = c.Args[3].(*checksums.FileChecksums)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateCRUDHandlersCall is one recorded call of MockService.GenerateCRUDHandlers, one
+// field per parameter.
+type MockServiceGenerateCRUDHandlersCall struct {
+	Svc         ServiceDef
+	CrudMethods []CRUDMethod
+	ModulePath  string
+	ProjectDir  string
+	Cs          *checksums.FileChecksums
+}
+
+// GenerateCRUDHandlersCalls returns every recorded GenerateCRUDHandlers call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateCRUDHandlers").
+func (m *MockService) GenerateCRUDHandlersCalls() []MockServiceGenerateCRUDHandlersCall {
+	var out []MockServiceGenerateCRUDHandlersCall
+	for _, c := range m.Recorder.Calls("GenerateCRUDHandlers") {
+		var r MockServiceGenerateCRUDHandlersCall
+		r.Svc, _ = c.Args[0].(ServiceDef)
+		r.CrudMethods, _ = c.Args[1].([]CRUDMethod)
+		r.ModulePath, _ = c.Args[2].(string)
+		r.ProjectDir, _ = c.Args[3].(string)
+		r.Cs, _ = c.Args[4].(*checksums.FileChecksums)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateCRUDTestsCall is one recorded call of MockService.GenerateCRUDTests, one
+// field per parameter.
+type MockServiceGenerateCRUDTestsCall struct {
+	Svc         ServiceDef
+	CrudMethods []CRUDMethod
+	ModulePath  string
+	ProjectDir  string
+	Cs          *checksums.FileChecksums
+}
+
+// GenerateCRUDTestsCalls returns every recorded GenerateCRUDTests call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateCRUDTests").
+func (m *MockService) GenerateCRUDTestsCalls() []MockServiceGenerateCRUDTestsCall {
+	var out []MockServiceGenerateCRUDTestsCall
+	for _, c := range m.Recorder.Calls("GenerateCRUDTests") {
+		var r MockServiceGenerateCRUDTestsCall
+		r.Svc, _ = c.Args[0].(ServiceDef)
+		r.CrudMethods, _ = c.Args[1].([]CRUDMethod)
+		r.ModulePath, _ = c.Args[2].(string)
+		r.ProjectDir, _ = c.Args[3].(string)
+		r.Cs, _ = c.Args[4].(*checksums.FileChecksums)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateCmdServerCall is one recorded call of MockService.GenerateCmdServer, one
+// field per parameter.
+type MockServiceGenerateCmdServerCall struct {
+	Messages  []ConfigMessage
+	TargetDir string
+	Cs        *checksums.FileChecksums
+}
+
+// GenerateCmdServerCalls returns every recorded GenerateCmdServer call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateCmdServer").
+func (m *MockService) GenerateCmdServerCalls() []MockServiceGenerateCmdServerCall {
+	var out []MockServiceGenerateCmdServerCall
+	for _, c := range m.Recorder.Calls("GenerateCmdServer") {
+		var r MockServiceGenerateCmdServerCall
+		r.Messages, _ = c.Args[0].([]ConfigMessage)
+		r.TargetDir, _ = c.Args[1].(string)
+		r.Cs, _ = c.Args[2].(*checksums.FileChecksums)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateCmdServerWithFieldsCall is one recorded call of MockService.GenerateCmdServerWithFields, one
+// field per parameter.
+type MockServiceGenerateCmdServerWithFieldsCall struct {
+	ConfigFields map[string]bool
+	TargetDir    string
+	Cs           *checksums.FileChecksums
+}
+
+// GenerateCmdServerWithFieldsCalls returns every recorded GenerateCmdServerWithFields call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateCmdServerWithFields").
+func (m *MockService) GenerateCmdServerWithFieldsCalls() []MockServiceGenerateCmdServerWithFieldsCall {
+	var out []MockServiceGenerateCmdServerWithFieldsCall
+	for _, c := range m.Recorder.Calls("GenerateCmdServerWithFields") {
+		var r MockServiceGenerateCmdServerWithFieldsCall
+		r.ConfigFields, _ = c.Args[0].(map[string]bool)
+		r.TargetDir, _ = c.Args[1].(string)
+		r.Cs, _ = c.Args[2].(*checksums.FileChecksums)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateConfigLoaderCall is one recorded call of MockService.GenerateConfigLoader, one
+// field per parameter.
+type MockServiceGenerateConfigLoaderCall struct {
+	Messages  []ConfigMessage
+	TargetDir string
+	Cs        *checksums.FileChecksums
+}
+
+// GenerateConfigLoaderCalls returns every recorded GenerateConfigLoader call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateConfigLoader").
+func (m *MockService) GenerateConfigLoaderCalls() []MockServiceGenerateConfigLoaderCall {
+	var out []MockServiceGenerateConfigLoaderCall
+	for _, c := range m.Recorder.Calls("GenerateConfigLoader") {
+		var r MockServiceGenerateConfigLoaderCall
+		r.Messages, _ = c.Args[0].([]ConfigMessage)
+		r.TargetDir, _ = c.Args[1].(string)
+		r.Cs, _ = c.Args[2].(*checksums.FileChecksums)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateBootstrapTestingCall is one recorded call of MockService.GenerateBootstrapTesting, one
+// field per parameter.
+type MockServiceGenerateBootstrapTestingCall struct {
+	In BootstrapTestingGenInput
+}
+
+// GenerateBootstrapTestingCalls returns every recorded GenerateBootstrapTesting call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateBootstrapTesting").
+func (m *MockService) GenerateBootstrapTestingCalls() []MockServiceGenerateBootstrapTestingCall {
+	var out []MockServiceGenerateBootstrapTestingCall
+	for _, c := range m.Recorder.Calls("GenerateBootstrapTesting") {
+		var r MockServiceGenerateBootstrapTestingCall
+		r.In, _ = c.Args[0].(BootstrapTestingGenInput)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceGenerateMigrateCall is one recorded call of MockService.GenerateMigrate, one
+// field per parameter.
+type MockServiceGenerateMigrateCall struct {
+	TargetDir     string
+	ModulePath    string
+	HasMigrations bool
+	Cs            *checksums.FileChecksums
+}
+
+// GenerateMigrateCalls returns every recorded GenerateMigrate call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GenerateMigrate").
+func (m *MockService) GenerateMigrateCalls() []MockServiceGenerateMigrateCall {
+	var out []MockServiceGenerateMigrateCall
+	for _, c := range m.Recorder.Calls("GenerateMigrate") {
+		var r MockServiceGenerateMigrateCall
+		r.TargetDir, _ = c.Args[0].(string)
+		r.ModulePath, _ = c.Args[1].(string)
+		r.HasMigrations, _ = c.Args[2].(bool)
+		r.Cs, _ = c.Args[3].(*checksums.FileChecksums)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ Service = (*MockService)(nil)
 
 // forge:section MockParser
-// forge:hash=2cf117fca23ad292a9cd76abcdb0bdc8305fe7189abe4beb53507c835c089584
+// forge:hash=dbe3ee89d5e4f21df720f613f7a8da493f96dc7ccfe9d8f22a8fe877690301f3
 
 // MockParser is a test mock for the Parser interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockParser.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockParser.<Method>Func not set" error.
 type MockParser struct {
 	contractkit.Recorder
 	ParseServicesFromProtosFunc  func(string, string) ([]ServiceDef, error)
@@ -201,18 +455,111 @@ func (m *MockParser) GetModulePath(dir string) (string, error) {
 	return "", contractkit.MockNotSet("MockParser", "GetModulePath")
 }
 
+// MockParserParseServicesFromProtosCall is one recorded call of MockParser.ParseServicesFromProtos, one
+// field per parameter.
+type MockParserParseServicesFromProtosCall struct {
+	Dir        string
+	ProjectDir string
+}
+
+// ParseServicesFromProtosCalls returns every recorded ParseServicesFromProtos call, oldest first, with
+// its arguments typed. It reads the same log as Calls("ParseServicesFromProtos").
+func (m *MockParser) ParseServicesFromProtosCalls() []MockParserParseServicesFromProtosCall {
+	var out []MockParserParseServicesFromProtosCall
+	for _, c := range m.Recorder.Calls("ParseServicesFromProtos") {
+		var r MockParserParseServicesFromProtosCall
+		r.Dir, _ = c.Args[0].(string)
+		r.ProjectDir, _ = c.Args[1].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockParserParseEntityProtosCall is one recorded call of MockParser.ParseEntityProtos, one
+// field per parameter.
+type MockParserParseEntityProtosCall struct {
+	ProjectDir string
+}
+
+// ParseEntityProtosCalls returns every recorded ParseEntityProtos call, oldest first, with
+// its arguments typed. It reads the same log as Calls("ParseEntityProtos").
+func (m *MockParser) ParseEntityProtosCalls() []MockParserParseEntityProtosCall {
+	var out []MockParserParseEntityProtosCall
+	for _, c := range m.Recorder.Calls("ParseEntityProtos") {
+		var r MockParserParseEntityProtosCall
+		r.ProjectDir, _ = c.Args[0].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockParserParseConfigProtoCall is one recorded call of MockParser.ParseConfigProto, one
+// field per parameter.
+type MockParserParseConfigProtoCall struct {
+	ProtoPath string
+}
+
+// ParseConfigProtoCalls returns every recorded ParseConfigProto call, oldest first, with
+// its arguments typed. It reads the same log as Calls("ParseConfigProto").
+func (m *MockParser) ParseConfigProtoCalls() []MockParserParseConfigProtoCall {
+	var out []MockParserParseConfigProtoCall
+	for _, c := range m.Recorder.Calls("ParseConfigProto") {
+		var r MockParserParseConfigProtoCall
+		r.ProtoPath, _ = c.Args[0].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockParserParseConfigProtosFromDirCall is one recorded call of MockParser.ParseConfigProtosFromDir, one
+// field per parameter.
+type MockParserParseConfigProtosFromDirCall struct {
+	Dir string
+}
+
+// ParseConfigProtosFromDirCalls returns every recorded ParseConfigProtosFromDir call, oldest first, with
+// its arguments typed. It reads the same log as Calls("ParseConfigProtosFromDir").
+func (m *MockParser) ParseConfigProtosFromDirCalls() []MockParserParseConfigProtosFromDirCall {
+	var out []MockParserParseConfigProtosFromDirCall
+	for _, c := range m.Recorder.Calls("ParseConfigProtosFromDir") {
+		var r MockParserParseConfigProtosFromDirCall
+		r.Dir, _ = c.Args[0].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockParserGetModulePathCall is one recorded call of MockParser.GetModulePath, one
+// field per parameter.
+type MockParserGetModulePathCall struct {
+	Dir string
+}
+
+// GetModulePathCalls returns every recorded GetModulePath call, oldest first, with
+// its arguments typed. It reads the same log as Calls("GetModulePath").
+func (m *MockParser) GetModulePathCalls() []MockParserGetModulePathCall {
+	var out []MockParserGetModulePathCall
+	for _, c := range m.Recorder.Calls("GetModulePath") {
+		var r MockParserGetModulePathCall
+		r.Dir, _ = c.Args[0].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
 // Compile-time check.
 var _ Parser = (*MockParser)(nil)
 
 // forge:section MockInspector
-// forge:hash=619ac7f94fb5c1ffe5ae98bd39c5085b32ba581ab713bc84c26807f5dd08ce3e
+// forge:hash=fc120c2b215959831969918401e560542ccb5154e7375887f8948cfe37d4b96c
 
 // MockInspector is a test mock for the Inspector interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockInspector.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockInspector.<Method>Func not set" error.
 type MockInspector struct {
 	contractkit.Recorder
 	DetectFallibleConstructorFunc func(string) (bool, error)
@@ -235,6 +582,42 @@ func (m *MockInspector) DetectDepsDBField(dir string) (bool, error) {
 		return m.DetectDepsDBFieldFunc(dir)
 	}
 	return false, contractkit.MockNotSet("MockInspector", "DetectDepsDBField")
+}
+
+// MockInspectorDetectFallibleConstructorCall is one recorded call of MockInspector.DetectFallibleConstructor, one
+// field per parameter.
+type MockInspectorDetectFallibleConstructorCall struct {
+	Dir string
+}
+
+// DetectFallibleConstructorCalls returns every recorded DetectFallibleConstructor call, oldest first, with
+// its arguments typed. It reads the same log as Calls("DetectFallibleConstructor").
+func (m *MockInspector) DetectFallibleConstructorCalls() []MockInspectorDetectFallibleConstructorCall {
+	var out []MockInspectorDetectFallibleConstructorCall
+	for _, c := range m.Recorder.Calls("DetectFallibleConstructor") {
+		var r MockInspectorDetectFallibleConstructorCall
+		r.Dir, _ = c.Args[0].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockInspectorDetectDepsDBFieldCall is one recorded call of MockInspector.DetectDepsDBField, one
+// field per parameter.
+type MockInspectorDetectDepsDBFieldCall struct {
+	Dir string
+}
+
+// DetectDepsDBFieldCalls returns every recorded DetectDepsDBField call, oldest first, with
+// its arguments typed. It reads the same log as Calls("DetectDepsDBField").
+func (m *MockInspector) DetectDepsDBFieldCalls() []MockInspectorDetectDepsDBFieldCall {
+	var out []MockInspectorDetectDepsDBFieldCall
+	for _, c := range m.Recorder.Calls("DetectDepsDBField") {
+		var r MockInspectorDetectDepsDBFieldCall
+		r.Dir, _ = c.Args[0].(string)
+		out = append(out, r)
+	}
+	return out
 }
 
 // Compile-time check.

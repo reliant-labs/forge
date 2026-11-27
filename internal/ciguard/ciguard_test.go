@@ -196,10 +196,15 @@ const requiredCheck = "CI gate"
 const (
 	// The merge tier: the merge queue, and a pull request labelled ci:run.
 	queueTier = "${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:run')) }}"
-	// The slow tier: a push to main, and a manual dispatch.
-	mainTier = "${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}"
-	// Everywhere but an unlabelled pull request: the merge tier plus main.
-	notReviewFirst = "${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') }}"
+	// The slow tier: a push to main, and a manual dispatch. It names main
+	// because `on: push` also takes reliant-queue/** (queueBranches).
+	mainTier = "${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}"
+	// The Windows tier: main's, and every push to a Reliant merge queue
+	// candidate branch, whose gate waits for the Windows check.
+	windowsTier = "${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}"
+	// Everywhere but an unlabelled pull request and a queue candidate: the
+	// merge tier plus main.
+	notReviewFirst = "${{ (github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/heads/reliant-queue/')) || contains(github.event.pull_request.labels.*.name, 'ci:run') }}"
 	// The checks that read the pull request itself.
 	prOnly = "${{ github.event_name == 'pull_request' }}"
 	// The merge queue's Windows job: the merge queue, and a pull request
@@ -245,7 +250,7 @@ func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 			}
 		}
 	}
-	allowed := []string{queueTier, mainTier, notReviewFirst, prOnly, windowsQueueTier}
+	allowed := []string{queueTier, mainTier, windowsTier, notReviewFirst, prOnly, windowsQueueTier}
 	for name, j := range wf.Jobs {
 		cond := strings.TrimSpace(j.If)
 		if name == "gate" {
@@ -270,6 +275,48 @@ func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 	}
 	if cond := strings.TrimSpace(wf.Jobs["windows-changed"].If); cond != windowsQueueTier {
 		t.Errorf("job %q has if: %q; it must run in the merge queue and on ci:windows (%q)", "windows-changed", cond, windowsQueueTier)
+	}
+}
+
+// queueBranches is the Reliant merge queue's candidate branches. forge's
+// .reliant/pipeline.yaml gate waits for the Windows check on a candidate's
+// sha (gate.checks), so ci.yml runs on a push to one of them.
+const queueBranches = "reliant-queue/**"
+
+// TestQueueCandidatePushRunsOnlyWindows proves a push to a Reliant merge
+// queue candidate branch starts ci.yml, runs its `windows` job (named
+// Windows, the check the queue's gate waits for), and no other job but the
+// gate: every other push-triggered job names main. A job that ran there would
+// spend a runner on every candidate the queue builds.
+func TestQueueCandidatePushRunsOnlyWindows(t *testing.T) {
+	wf := readWorkflow(t)
+	push, _ := wf.On["push"].(map[string]any)
+	var branches []string
+	if list, ok := push["branches"].([]any); ok {
+		for _, b := range list {
+			if s, ok := b.(string); ok {
+				branches = append(branches, s)
+			}
+		}
+	}
+	if !slices.Equal(branches, []string{"main", queueBranches}) {
+		t.Errorf("push branches are %q, want [main %s]: the queue's gate waits for the Windows check on its candidates", branches, queueBranches)
+	}
+	win := wf.Jobs["windows"]
+	if win.Name != "Windows" {
+		t.Errorf("the windows job is named %q, want Windows: .reliant/pipeline.yaml's gate.checks names it", win.Name)
+	}
+	if cond := strings.TrimSpace(win.If); cond != windowsTier {
+		t.Errorf("job windows has if: %q, want %q: it must run on a queue candidate push too", cond, windowsTier)
+	}
+	for name, j := range wf.Jobs {
+		cond := strings.TrimSpace(j.If)
+		if name == "windows" || name == "gate" {
+			continue
+		}
+		if cond == windowsTier || cond == "" {
+			t.Errorf("job %q has if: %q, which a push to %s satisfies: only windows runs there", name, j.If, queueBranches)
+		}
 	}
 }
 

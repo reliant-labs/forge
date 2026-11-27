@@ -35,6 +35,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -75,6 +76,10 @@ const (
 	// tree has no one digest, so its Subject is optional and, when empty,
 	// nothing is cached.
 	KindDir Kind = "dir"
+	// KindArchive is an image saved to a tarball on disk: `docker save`'s
+	// docker-archive, or an OCI image layout archive. syft reads the file
+	// alone, with no daemon and no registry.
+	KindArchive Kind = "archive"
 )
 
 // Target is one artifact to describe.
@@ -192,7 +197,7 @@ func GeneratorName(version string) string {
 func (g *Generator) one(ctx context.Context, bin, generator string, t Target) Result {
 	subject := t.Subject
 	switch t.Kind {
-	case KindBinary, KindLockfile:
+	case KindBinary, KindLockfile, KindArchive:
 		if subject == "" {
 			sum, err := fileDigest(t.Ref)
 			if err != nil {
@@ -268,6 +273,16 @@ func (g *Generator) scan(ctx context.Context, bin string, t Target) ([]byte, str
 			return nil, release.SBOMSourceLockfile, fmt.Errorf("syft on %s: %s", t.Ref, oneLine(err.Error()))
 		}
 		return data, release.SBOMSourceLockfile, nil
+	case KindArchive:
+		scheme, err := ArchiveScheme(t.Ref)
+		if err != nil {
+			return nil, release.SBOMSourceImage, err
+		}
+		data, err := g.run(ctx, bin, t, scheme+":"+t.Ref, nil)
+		if err != nil {
+			return nil, release.SBOMSourceImage, fmt.Errorf("syft on %s: %s", t.Ref, oneLine(err.Error()))
+		}
+		return data, release.SBOMSourceImage, nil
 	default: // binary, lockfile
 		source := sourceFor(t.Kind)
 		data, err := g.run(ctx, bin, t, "file:"+t.Ref, nil)
@@ -305,7 +320,7 @@ func syftArgs(t Target, src string) []string {
 	if t.Version != "" {
 		args = append(args, "--source-version", t.Version)
 	}
-	if t.Platform != "" && (t.Kind == KindImage || t.Kind == KindRegistry) {
+	if t.Platform != "" && (t.Kind == KindImage || t.Kind == KindRegistry || t.Kind == KindArchive) {
 		args = append(args, "--platform", t.Platform)
 	}
 	return args
@@ -334,7 +349,7 @@ func checkDocument(out []byte) error {
 
 func sourceFor(k Kind) string {
 	switch k {
-	case KindImage:
+	case KindImage, KindArchive:
 		return release.SBOMSourceImage
 	case KindRegistry:
 		return release.SBOMSourceRegistry
@@ -372,12 +387,18 @@ func Digest(data []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// fileDigest hashes the file as it streams: an image archive is gigabytes.
 func fileDigest(path string) (string, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // the caller names a file of the project it builds
+	f, err := os.Open(path) //nolint:gosec // the caller names a file of the project it builds
 	if err != nil {
 		return "", fmt.Errorf("read %s: %v", path, err)
 	}
-	return Digest(data), nil
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("read %s: %v", path, err)
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func withNote(note string) string {

@@ -43,7 +43,7 @@ internal/                     # the application: components, DI, data access
     graph_gen.go              #     generated: memoized accessors g.<X>(), Build<Root>/Run<Root>, the default Server root
     routes_gen.go             #     generated: <Audience>Routes route sets, MountOptions, the data-only Inventory
   db/                         #   <entity>_orm.go (generated from schema) + <entity>_repo_ext.go (yours)
-pkg/app/                      # substrate: testing.go (per-component test harness) + migrate.go
+pkg/app/                      # CONVENTIONS.md only (the composition root is internal/app)
 pkg/config/                   # typed config projected from the config proto (below)
 pkg/middleware/               # thin owned policy file
 gen/                          # ALL generated stubs/clients/mocks + forge_descriptor/ — never hand-edit
@@ -122,6 +122,8 @@ func (g *Graph) newBilling() (*billing.Service, error) {
 - **Route sets are per audience** (`routes_gen.go`): `UserRoutes` mounts every service whose proto declares the user audience (the default), `DaemonRoutes` every `audience: "daemon"` one; per-service mount options go in `compose.go` as `Options: MountOptions{…}`.
 
 ### Roots and commands
+
+CLI-only commands: `cmd/<bin>/usercmd` (`binaries/commands`).
 
 Every root is a command: `cmd/<bin>/cmd/roots_gen.go` (generated) adds one cobra command per root, named after the root or after its `command=` option — `//forge:root api command=server,api` runs as `<bin> server api`. With no declared root the one command is `server`. Each command hands its root to `runRoot` in the owned `cmd/<bin>/cmd/serve.go` — the one process policy every root runs under (config, logger, boot probes, migrate, telemetry, readiness gate, stop budget). Two facts come from the root's reach, read at generate time: a root that reaches the database migrates first, and a root with no API listener gets a probe-only listener on the server address, so every process answers `/healthz` and `/readyz`. While the graph is still being built, the boot probes' `/readyz` (503) names each node already built (`ok: true`) and each still under construction (`detail: "building"`), so a constructor that blocks boot is visible by its graph node name.
 

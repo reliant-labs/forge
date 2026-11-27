@@ -1,6 +1,6 @@
 ---
 name: observability/check
-description: `forge obs check` after a deploy: the subject and windows, the env's `forge.ReleaseHealth` policy (thresholds, `fail_on`, `warn_on`), the exit codes a CI gate branches on (0 PASS, 1 FAIL, 2 INCONCLUSIVE, 8 check again later), the INCONCLUSIVE `reason_code`s (`low_traffic`, `thin_baseline`, `no_request_telemetry`, ...), `--wait`, `--early-pass` and `--gate-json`.
+description: `forge obs check` after a deploy: the subject and windows, the env's `forge.ReleaseHealth` policy (thresholds, `fail_on`, `warn_on`), the exit codes a CI gate branches on (0 PASS, 1 FAIL, 2 INCONCLUSIVE, 8 check again later), the INCONCLUSIVE `reason_code`s (`low_traffic`, `thin_baseline`, `no_request_telemetry`, ...), `--wait`, `--early-pass` and `--gate-json`, and the warn-only site-audit findings of a static site (`seo_regressed`, `a11y_regressed`).
 ---
 
 # Release health from the CLI: `forge obs check`
@@ -20,8 +20,10 @@ release_health = forge.ReleaseHealth {
     new_issue_min_events = 3
     regressed_issue_min_events = 3      # unset: follows new_issue_min_events; 1 counts every regression
     alert_baseline_min_firings = 1
+    seo_max_score_drop = 10             # site audits: points a static site's SEO score may drop; 0 fires on any drop
+    a11y_max_score_drop = 10            # the same for accessibility
     fail_on = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed",
-               "browser_errors", "browser_failed_requests", "browser_page_load"]   # the default; latency, workload_restarts warn
+               "browser_errors", "browser_failed_requests", "browser_page_load"]   # the default; latency, workload_restarts, seo_regressed, a11y_regressed warn
     warn_on = ["browser_page_load"]     # demote named findings to warnings without restating fail_on
     require_baseline = "any"            # or "every", "none" (observability/release-health)
 }
@@ -43,6 +45,8 @@ An INCONCLUSIVE document carries `reason` (a sentence) and `reason_code`, one of
 **Signals: spans, plus the browser** (`observability/release-health`): a service with no server spans is not judged on its requests (the platform's ingress figures are not passed to the judgement yet); a frontend is judged on its browser telemetry (`browser_*` findings, fail by default; `warn_on` demotes one). Each service says which (`signal`).
 
 **`no_request_telemetry`: no request data at all.** No server span or browser telemetry in either window: a service that exports no traces has no request data however much traffic it serves. forge instruments what it builds; an app built from its own Dockerfile or command, or a third-party image, exports traces only if it is instrumented, and the reason names those services (`uninstrumented_services`). Add an OpenTelemetry SDK that exports OTLP to `$OTEL_EXPORTER_OTLP_ENDPOINT` (hosting sets it and `OTEL_SERVICE_NAME` on every workload), then check again. A static site has no service to instrument: it is judged on its pages' browser telemetry, so load them in a real browser (curl and uptime probes send none), then check again. Until then the verdict stays INCONCLUSIVE — not proven good — and what forge sees without telemetry still counts: a restart, a firing alert or a new issue is a finding, and `forge obs workloads <env>` and `forge obs logs <env>` show the app's health and output.
+
+**Site audits: `seo_regressed`, `a11y_regressed`** (warn by default). A hosted static frontend is audited for search and accessibility after each promotion (the console's Site insights), and the control plane compares the audit with the same env's audit of the previous release, so a site that was always imperfect is never blamed for it. `seo_regressed`: the site's or one route's SEO score dropped by more than `seo_max_score_drop` points, or an error-severity SEO finding appeared that the previous audit did not have (the env became noindex, `robots.txt` disallows `/`, a canonical names another host, an internal link answers 404). `a11y_regressed`: the same for the accessibility score (`a11y_max_score_drop`) and a new critical axe violation. Each frontend has at most one finding per code for its score (`value` is the largest drop in points, `threshold` the limit) and one for its new errors (`value` is their count); the message names the routes and the findings. Neither is in the default `fail_on`, and a warning never changes the exit code: list one in `fail_on` (or `--fail-on seo_regressed`) to fail releases on it. A release with no previous audit (the env's first) has neither; one whose audit has not finished, or failed, lists `site_audit` in `not_evaluated`, which never makes the verdict INCONCLUSIVE on its own. A route the previous audit did not crawl has no score baseline, but its new errors count (a page the release added with an error is the release's); two audits by different audit rules are not compared. The audit is of the release's own bytes, not a traffic window, so attribution (`observability/release-health`) never moves these findings. Only the control plane judges them: a local env has no site audit.
 
 `--gate-json FILE` writes the evidence `forge gate record --from` attaches to the promotion.
 

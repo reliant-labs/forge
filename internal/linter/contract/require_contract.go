@@ -5,9 +5,12 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"golang.org/x/mod/modfile"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 
@@ -15,23 +18,35 @@ import (
 	"github.com/reliant-labs/forge/internal/contractsrc"
 )
 
-// RequireContractAnalyzer checks that internal packages with exported methods
-// on structs have a contract.go file defining the interface contract.
+// RequireContractAnalyzer checks that packages in the module's internal/ tree
+// with exported methods on structs have a contract.go file (or a
+// //forge:contract type) defining the interface contract.
 var RequireContractAnalyzer = &analysis.Analyzer{
 	Name:     "requirecontract",
-	Doc:      "checks that internal packages with exported struct methods have a contract.go file",
+	Doc:      "checks that packages under the module's root internal/ with exported struct methods have a contract.go file",
 	Run:      runRequireContract,
 	Requires: []*analysis.Analyzer{inspect.Analyzer},
 }
+
+// RequireContractFixHint is the remediation for a requirecontract finding:
+// every way to satisfy the rule, and when the per-package opt-out is refused.
+const RequireContractFixHint = "give the package a contract: mark its implementing struct `//forge:contract` " +
+	"(forge derives the Service interface, its mock and decorator) or write contract.go — or unexport the " +
+	"methods only the package itself calls. A package with no behavioural seam (pure functions, a data " +
+	"vocabulary, a strategy registry) opts out with `//forge:exclude-contract: <why>` in its doc.go, which " +
+	"forge refuses on a package that does outbound I/O or owns an interface with two implementations, " +
+	"because there the contract is the point; or by listing its path under forge.yaml `contracts.exclude`. " +
+	"See `forge skill load contracts`"
 
 func init() {
 	registerExcludeFlag(&RequireContractAnalyzer.Flags)
 }
 
 func runRequireContract(pass *analysis.Pass) (interface{}, error) {
-	// Only check packages under internal/.
+	// Only check packages in the module's own internal/ tree — see
+	// inModuleInternalTree for why a nested internal/ is not.
 	pkgPath := pass.Pkg.Path()
-	if !isInternalPackage(pkgPath) {
+	if !inModuleInternalTree(pass) {
 		return nil, nil
 	}
 
@@ -206,7 +221,7 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 	if !hasContract {
 		// Report on the package clause of the first file.
 		if len(pass.Files) > 0 {
-			pass.Reportf(pass.Files[0].Package,
+			reportWithHint(pass, pass.Files[0].Package, RequireContractFixHint,
 				"package %s has exported methods but no contract.go%s",
 				pass.Pkg.Name(), malformedExcludeHint(pass))
 		}
@@ -501,6 +516,72 @@ func isInternalPackage(pkgPath string) bool {
 	return strings.Contains(pkgPath, "/internal/") ||
 		strings.HasPrefix(pkgPath, "internal/") ||
 		pkgPath == "internal"
+}
+
+// inModuleInternalTree reports whether the package under analysis lives in
+// the internal/ directory at the ROOT of its module: internal/<pkg>, not
+// pkg/<sdk>/internal/<pkg> or cmd/<tool>/internal/<pkg>.
+//
+// That is the tree the contract earns its keep in. forge's contract codegen
+// (the derived Service, mock_gen.go, the decorators) and the composition
+// that constructs components both walk the project's root internal/ only
+// (codegen.DiscoverInternalPackages, generateInternalPackageContracts). A
+// nested internal/ is Go's "private to the parent" — a public SDK's
+// plumbing under pkg/, a command's helpers — which forge never composes,
+// and a contract.go written there gets no mock and no decorator. Requiring
+// one demanded a file forge does nothing with: ranger's
+// pkg/internal/rangerconn (the Connect plumbing behind its public
+// pkg/rangerclient SDK) was flagged, could not use //forge:exclude-contract
+// (it builds Connect clients, so the outbound-io refusal applies), and was
+// contorted into returning closures instead of exporting methods. The
+// public pkg/ packages above it were never subject to the rule.
+//
+// The module root comes from the nearest go.mod, and is trusted only when
+// its module path plus the directory reproduces the import path. Otherwise
+// (a GOPATH-mode fixture, a synthetic pass) the package path alone decides,
+// as before: any internal segment.
+func inModuleInternalTree(pass *analysis.Pass) bool {
+	pkgPath := pass.Pkg.Path()
+	if dir := passPkgDir(pass); dir != "" {
+		if root, modPath := moduleOf(dir); modPath != "" {
+			if rel, err := filepath.Rel(root, dir); err == nil {
+				rel = filepath.ToSlash(rel)
+				if (rel == "." && pkgPath == modPath) || pkgPath == modPath+"/"+rel {
+					return rel == "internal" || strings.HasPrefix(rel, "internal/")
+				}
+			}
+		}
+	}
+	return isInternalPackage(pkgPath)
+}
+
+// moduleCache maps a directory to its moduleInfo; analyzers run
+// concurrently across packages.
+var moduleCache sync.Map
+
+type moduleInfo struct{ root, path string }
+
+// moduleOf walks up from dir to the nearest go.mod and returns its directory
+// and module path, or "", "" when there is none (or it does not parse).
+func moduleOf(dir string) (string, string) {
+	if v, ok := moduleCache.Load(dir); ok {
+		m := v.(moduleInfo)
+		return m.root, m.path
+	}
+	var m moduleInfo
+	for cur := dir; ; {
+		if data, err := os.ReadFile(filepath.Join(cur, "go.mod")); err == nil {
+			m = moduleInfo{root: cur, path: modfile.ModulePath(data)}
+			break
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+		cur = parent
+	}
+	moduleCache.Store(dir, m)
+	return m.root, m.path
 }
 
 // isHandlerPackage returns true for proto-service handler packages, which by

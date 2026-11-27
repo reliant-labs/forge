@@ -202,11 +202,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		sort.Strings(ifaceNames)
 		joined := strings.Join(ifaceNames, ", ")
 		if len(constraints) == 1 {
-			pass.Reportf(funcDecl.Name.Pos(),
+			reportWithHint(pass, funcDecl.Name.Pos(), FixHint,
 				"exported method %s on type %s is not declared in the %s interface (contract.go)",
 				methodName, named.Obj().Name(), joined)
 		} else {
-			pass.Reportf(funcDecl.Name.Pos(),
+			reportWithHint(pass, funcDecl.Name.Pos(), FixHint,
 				"exported method %s on type %s is not declared in any of the implemented contract interfaces [%s] (contract.go)",
 				methodName, named.Obj().Name(), joined)
 		}

@@ -72,8 +72,14 @@ runs:
     - name: Note when the Go build cache was restored
       shell: bash
       run: echo "GOCACHE_RESTORED_AT=$(date +%s)" >> "$GITHUB_ENV"
+    # SELF-HOSTED (the cicd merge-queue runners, ci.yml's header): no restore.
+    # A repository's runners share one GOMODCACHE and GOCACHE on the machine
+    # (set in the runner units, under /srv/gha/cache/<repo>) that stay warm
+    # across jobs; extracting these multi-GB archives there took 4-6 minutes
+    # a job (the disk, not the download, was the bound).
     - name: Restore the Go module cache
       id: mod
+      if: ${{ runner.environment != 'self-hosted' }}
       uses: actions/cache/restore@v6
       with:
         path: ~/go/pkg/mod
@@ -95,7 +101,7 @@ runs:
         esac
     - name: Restore the Go build cache (${{ inputs.scope }})
       id: build
-      if: ${{ inputs.scope != '' }}
+      if: ${{ inputs.scope != '' && runner.environment != 'self-hosted' }}
       uses: actions/cache/restore@v6
       with:
         path: ~/.cache/go-build

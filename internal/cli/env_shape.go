@@ -451,6 +451,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		DataAccess:          shapeDataAccessOf(entities),
 		ReleaseHealth:       shapeReleaseHealthOf(entities),
 		UptimeChecks:        shapeUptimeChecksOf(entities),
+		StatusPage:          shapeStatusPageOf(entities),
 		Identity:            shapeIdentityOf(entities),
 		Identities:          shapeIdentitiesOf(entities),
 		Databases:           shapeDatabasesOf(entities),
@@ -462,6 +463,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Buckets:             shapeBucketsOf(entities),
 		Preview:             entities.Preview,
 		Changes:             changes,
+		HostedFrontends:     shapeHostedFrontendsOf(entities),
 		Store:               store,
 	})
 	if err != nil {
@@ -758,6 +760,26 @@ func shapeFrontendTelemetryOf(e *KCLEntities) []release.ShapeFrontendTelemetry {
 	return out
 }
 
+// shapeHostedFrontendsOf projects what the env declares about its hosted
+// static frontends beyond their StaticSites: each OnHosted frontend that turns
+// per-release URLs off (release_urls = False). A frontend on any other runtime
+// has no release URLs to turn off, so its False is not recorded. Nil when no
+// hosted frontend opts out, so the shape encodes as it did before the field.
+func shapeHostedFrontendsOf(e *KCLEntities) []release.ShapeHostedFrontend {
+	if e == nil {
+		return nil
+	}
+	var out []release.ShapeHostedFrontend
+	for _, f := range e.Frontends {
+		if f.Runtime.Type != FrontendRuntimeHosted || f.ReleaseURLs == nil || *f.ReleaseURLs {
+			continue
+		}
+		off := false
+		out = append(out, release.ShapeHostedFrontend{Frontend: f.Name, ReleaseURLs: &off})
+	}
+	return out
+}
+
 // shapeDeliveryPolicyOf projects the env's delivery policy. Nil when the env
 // declares none or declares only defaults: the shape then encodes as it did
 // before the field, and absence means "every control at its default".
@@ -894,6 +916,16 @@ func shapeUptimeChecksOf(e *KCLEntities) []release.ShapeUptimeCheck {
 		return nil
 	}
 	return e.UptimeChecks
+}
+
+// shapeStatusPageOf projects the env's status page, resolved by the render.
+// Nil when the env declares none, so the shape encodes as it did before the
+// field.
+func shapeStatusPageOf(e *KCLEntities) *release.ShapeStatusPage {
+	if e == nil {
+		return nil
+	}
+	return e.StatusPage
 }
 
 // shapeIdentityOf projects the env's managed identity. The render already

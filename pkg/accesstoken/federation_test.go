@@ -99,18 +99,21 @@ func TestDeployAndTokenScopesAreNeverFederatable(t *testing.T) {
 	}
 }
 
-// TestFederatableScopes pins today's lists: any ref may upload test runs and
-// nothing else, and no scope yet needs a protected ref. A scope that joins
-// either list changes this test in the same PR, where it is reviewed.
+// TestFederatableScopes pins today's lists: any ref may upload test runs, and
+// only a protected ref may also record SBOMs. A scope that joins either list
+// changes this test in the same PR, where it is reviewed.
 func TestFederatableScopes(t *testing.T) {
 	if got, want := FederatableScopes(false), []Scope{ScopeTestsWrite}; !reflect.DeepEqual(got, want) {
 		t.Errorf("FederatableScopes(false) = %v, want %v", got, want)
 	}
-	if got, want := FederatableScopes(true), []Scope{ScopeTestsWrite}; !reflect.DeepEqual(got, want) {
+	if got, want := FederatableScopes(true), []Scope{ScopeTestsWrite, ScopeSBOMWrite}; !reflect.DeepEqual(got, want) {
 		t.Errorf("FederatableScopes(true) = %v, want %v", got, want)
 	}
 	if got := FederationOf(ScopeTestsWrite); got != FederationAnyRef {
 		t.Errorf("FederationOf(tests:write) = %d, want FederationAnyRef", got)
+	}
+	if got := FederationOf(ScopeSBOMWrite); got != FederationProtectedRef {
+		t.Errorf("FederationOf(sbom:write) = %d, want FederationProtectedRef", got)
 	}
 	if got := FederationOf("tests:wrIte"); got != FederationNone {
 		t.Errorf("FederationOf(unknown) = %d, want FederationNone", got)
@@ -148,7 +151,41 @@ func TestFederatableHonoursRefProtection(t *testing.T) {
 	if got, want := FederatableScopes(false), []Scope{ScopeTestsWrite}; !reflect.DeepEqual(got, want) {
 		t.Errorf("FederatableScopes(false) = %v, want %v", got, want)
 	}
-	if got, want := FederatableScopes(true), []Scope{ScopeTestsWrite, "x:protected"}; !reflect.DeepEqual(got, want) {
+	if got, want := FederatableScopes(true), []Scope{ScopeTestsWrite, ScopeSBOMWrite, "x:protected"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("FederatableScopes(true) = %v, want %v", got, want)
+	}
+}
+
+// TestSBOMWriteIsProtectedRefOnly: a recorded SBOM is write-once, so
+// sbom:write is minted for a CI identity only on a protected ref, and it is
+// the narrow scope that does so — standard, in BundleCI, bound to nothing,
+// acting as nobody, never deploy:write.
+func TestSBOMWriteIsProtectedRefOnly(t *testing.T) {
+	if Federatable(ScopeSBOMWrite, false) {
+		t.Error("Federatable(sbom:write, unprotected ref) = true: the first SBOM written stands, so an unprotected branch must not write it")
+	}
+	if !Federatable(ScopeSBOMWrite, true) {
+		t.Error("Federatable(sbom:write, protected ref) = false")
+	}
+	if c := ClassOf(ScopeSBOMWrite); c != ClassStandard {
+		t.Errorf("ClassOf(sbom:write) = %s, want standard", c)
+	}
+	if !ExpandBundle(BundleCI).Has(ScopeSBOMWrite) {
+		t.Error("sbom:write is not in BundleCI")
+	}
+	if _, bindable := scopeResourceRules[ScopeSBOMWrite]; bindable {
+		t.Error("sbom:write has a binding rule: an upload names its release in the request, which a binding would not confine")
+	}
+	if RequiresActingUser(ScopeSBOMWrite) || RegistryOnly(ScopeSBOMWrite) {
+		t.Error("sbom:write acts as a person or is registry-only")
+	}
+	held := SetOf(ScopeSBOMWrite)
+	for _, scope := range AllScopes {
+		if scope != ScopeSBOMWrite && held.Permits(scope) {
+			t.Errorf("sbom:write permits %s: it implies nothing", scope)
+		}
+	}
+	if SetOf(ScopeDeployWrite).Permits(ScopeSBOMWrite) {
+		t.Error("deploy:write permits sbom:write in this package: a consumer that accepts both says so in its own rpc mapping")
 	}
 }

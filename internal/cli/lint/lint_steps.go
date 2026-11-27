@@ -96,12 +96,24 @@ type lintRunCtx struct {
 	// human run shows where it is. Nil in the machine-readable modes.
 	progress io.Writer
 
+	// emit, when set, receives each lane's outcome the moment the lane is
+	// done, in pipeline order (the structured renderer prints it then).
+	// Nil in --json, which renders the whole list at the end.
+	emit func(lintStepOutcome)
+
 	// golangciMemo is this run's golangci-lint resolution (see
 	// golangci_toolchain.go), so the gating lane and the advisory guardrail
 	// share one binary — and at most one provisioning build. A pointer, so
 	// the per-step scoped copies the structured driver makes share it; the
 	// run's constructor sets it.
 	golangciMemo *golangciMemo
+}
+
+// emitOutcome hands o to rc.emit, when there is one.
+func (rc *lintRunCtx) emitOutcome(o lintStepOutcome) {
+	if rc.emit != nil {
+		rc.emit(o)
+	}
 }
 
 // linterStep is one entry in the ordered `forge lint` pipeline. See the
@@ -167,6 +179,11 @@ func lintPipeline() []linterStep {
 			// lint it.
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, g := collectGolangciLintJSON(rc)
+				// A scope whose only errors are imports of broken
+				// packages outside it is not decided, not failed.
+				if ud := golangciUndecided(rc, fs); ud != nil {
+					return nil, false, ud
+				}
 				return fs, g, nil
 			},
 		},
@@ -693,8 +710,11 @@ func lintPipeline() []linterStep {
 		// CRUD on an authenticated rpc must say whose rows it holds
 		// (forge:owner=), or why nobody owns them (forge:public /
 		// forge:unscoped with a reason). Gates through the warn-first
-		// rollout (lint_crud_ownership.go). Reads migration text and the
-		// generated ops files, so it needs no shadow postgres.
+		// rollout (lint_crud_ownership.go), except a table still exactly as
+		// forge scaffolded it, which warns "pending: choose an owner" — so
+		// the lane gates on its error findings, not on any finding. Reads
+		// migration text and the generated ops files, so it needs no
+		// shadow postgres.
 		{
 			name:      "crud-ownership lint",
 			gates:     true,
@@ -702,7 +722,7 @@ func lintPipeline() []linterStep {
 			shouldRun: crudOwnershipShouldRun,
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectCRUDOwnershipJSON(rc.cwd, rc.cfg)
-				return fs, len(fs) > 0, err
+				return fs, anyErrorFinding(fs), err
 			},
 		},
 

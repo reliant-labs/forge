@@ -539,6 +539,7 @@ func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 		DataAccess:          doc.Shape.DataAccess,
 		ReleaseHealth:       doc.Shape.ReleaseHealth,
 		UptimeChecks:        doc.Shape.UptimeChecks,
+		StatusPage:          doc.Shape.StatusPage,
 		ReleaseProbes:       doc.Shape.ReleaseProbes,
 		Identity:            doc.Shape.Identity,
 		Identities:          doc.Shape.Identities,
@@ -551,6 +552,7 @@ func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 		Buckets:             doc.Shape.Buckets,
 		Preview:             doc.Shape.Preview,
 		Changes:             doc.Shape.Changes,
+		HostedFrontends:     doc.Shape.HostedFrontends,
 		Store: release.StoreProjection{
 			StoreSecrets: doc.Shape.StoreSecrets, GeneratedSecrets: doc.Shape.GeneratedSecrets,
 			OpenBao: doc.Shape.OpenBao, ExternalSecretsOperators: doc.Shape.ExternalSecretsOperators,

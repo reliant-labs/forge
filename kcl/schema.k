@@ -7926,13 +7926,19 @@ schema KubernetesInventory:
         credential. Its OTel `k8sobjects` receiver lists Nodes every
         `node_interval` and apps DaemonSets and Deployments every
         `workload_interval`, and watches events.k8s.io Events (unless
-        `events = False`). Each object is one log record, its JSON as the
-        body (an Event: the watch envelope `{type, object}`), with
-        k8sobjects' `k8s.resource.name` attribute ("nodes", "daemonsets",
-        "deployments", "events") and the resource attribute
-        `k8s.cluster.name` (the cluster's kube context). Its ClusterRole
-        `<namespace>-cluster-collector` is read-only: get/list/watch nodes,
-        events and apps daemonsets/deployments, never Secrets;
+        `events = False`). Each object is one log record whose body is the
+        object projected onto an allowlist of inventory fields (names,
+        uids, labels naming the component, container names and images,
+        replica and node counts, capacity, condition types and reasons,
+        Event reasons; never env values, args, commands, annotations,
+        messages or an Event's note), an Event inside its watch envelope
+        `{type, object}`, with k8sobjects' `k8s.resource.name` attribute
+        ("nodes", "daemonsets", "deployments", "events") and the resource
+        attribute `k8s.cluster.name` (the cluster's kube context). A config
+        change rolls the collector (its pod template carries the config's
+        SHA-256). Its ClusterRole `<namespace>-cluster-collector` is
+        read-only: get/list/watch nodes, apps daemonsets/deployments and,
+        with `events`, events.k8s.io events; never Secrets;
       * on the node agent's scrapes (each `forge.Telemetry` metrics
         target it pulls), the resource attributes `k8s.cluster.name` and
         `k8s.node.name` (the agent's own node: it pulls only its node's

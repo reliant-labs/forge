@@ -113,6 +113,50 @@ type exportedRecord struct {
 // hostLogs, mounted at mountAt, and returns every record it exported.
 func runCollector(t *testing.T, cfg collectorDoc, processors map[string]any, order []string, hostLogs, mountAt, want string) []exportedRecord {
 	t.Helper()
+	raw, logs := runCollectorFile(t, cfg, processors, order, hostLogs, mountAt, want)
+
+	var recs []exportedRecord
+	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
+		if line == "" {
+			continue
+		}
+		var doc struct {
+			ResourceLogs []struct {
+				Resource struct {
+					Attributes []kv `json:"attributes"`
+				} `json:"resource"`
+				ScopeLogs []struct {
+					LogRecords []struct {
+						Body       struct{ StringValue string } `json:"body"`
+						Attributes []kv                         `json:"attributes"`
+					} `json:"logRecords"`
+				} `json:"scopeLogs"`
+			} `json:"resourceLogs"`
+		}
+		if err := json.Unmarshal([]byte(line), &doc); err != nil {
+			t.Fatalf("exporter line: %v\n%s", err, line)
+		}
+		for _, rl := range doc.ResourceLogs {
+			for _, sl := range rl.ScopeLogs {
+				for _, lr := range sl.LogRecords {
+					recs = append(recs, exportedRecord{Body: lr.Body.StringValue, Resource: kvs(rl.Resource.Attributes), Attrs: kvs(lr.Attributes)})
+				}
+			}
+		}
+	}
+	if len(recs) < 4 {
+		t.Fatalf("collector exported %d records, want 4:\n%s\ncollector logs:\n%s", len(recs), raw, logs)
+	}
+	return recs
+}
+
+// runCollectorFile runs cfg's filelog receiver (minus its checkpoint store)
+// and the given processors in the pinned contrib image over the files under
+// hostLogs, mounted at mountAt, until its file exporter's output contains
+// want (or two minutes pass), and returns that output and the collector's
+// own logs.
+func runCollectorFile(t *testing.T, cfg collectorDoc, processors map[string]any, order []string, hostLogs, mountAt, want string) (raw, logs string) {
+	t.Helper()
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker unavailable: " + err.Error())
 	}
@@ -162,42 +206,9 @@ func runCollector(t *testing.T, cfg collectorDoc, processors map[string]any, ord
 		}
 	}
 	_ = exec.Command("docker", "stop", "-t", "10", name).Run()
-	raw, _ := os.ReadFile(path)
-	logs, _ := exec.Command("docker", "logs", name).CombinedOutput()
-
-	var recs []exportedRecord
-	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-		if line == "" {
-			continue
-		}
-		var doc struct {
-			ResourceLogs []struct {
-				Resource struct {
-					Attributes []kv `json:"attributes"`
-				} `json:"resource"`
-				ScopeLogs []struct {
-					LogRecords []struct {
-						Body       struct{ StringValue string } `json:"body"`
-						Attributes []kv                         `json:"attributes"`
-					} `json:"logRecords"`
-				} `json:"scopeLogs"`
-			} `json:"resourceLogs"`
-		}
-		if err := json.Unmarshal([]byte(line), &doc); err != nil {
-			t.Fatalf("exporter line: %v\n%s", err, line)
-		}
-		for _, rl := range doc.ResourceLogs {
-			for _, sl := range rl.ScopeLogs {
-				for _, lr := range sl.LogRecords {
-					recs = append(recs, exportedRecord{Body: lr.Body.StringValue, Resource: kvs(rl.Resource.Attributes), Attrs: kvs(lr.Attributes)})
-				}
-			}
-		}
-	}
-	if len(recs) < 4 {
-		t.Fatalf("collector exported %d records, want 4:\n%s\ncollector logs:\n%s", len(recs), raw, logs)
-	}
-	return recs
+	exported, _ := os.ReadFile(path)
+	collectorLogs, _ := exec.Command("docker", "logs", name).CombinedOutput()
+	return string(exported), string(collectorLogs)
 }
 
 type kv struct {

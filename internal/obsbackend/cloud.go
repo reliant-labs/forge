@@ -160,6 +160,12 @@ func MapCloudError(err error) error {
 		// fault, as a NotFound is.
 		return (&Error{Code: ExitWrong}).Cause(err)
 	}
+	if errors.Is(err, cloud.ErrResponseTooLarge) {
+		// The control plane answered; forge would not read all of it. That
+		// is not "could not be reached", and saying so sends the reader
+		// chasing a network fault.
+		return (&Error{Code: ExitUndetermined}).Cause(err)
+	}
 	var ce *cloud.Error
 	if !errors.As(err, &ce) {
 		return Undetermined("the control plane could not be reached").Cause(err)

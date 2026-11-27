@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/cloud"
 )
 
 const procExportPGOProfile = "controlplane.v1.ObservabilityService/ExportPGOProfile"
@@ -21,7 +23,7 @@ const MaxPGOServices = 50
 // document, whose pprof travels base64. It is the control-plane client's own
 // read limit (internal/cloud); a profile of profilequery.DefaultMaxPGOEdges
 // edges is about 2.5 MiB of it.
-const MaxPGOResponseBytes = 8 << 20
+const MaxPGOResponseBytes = cloud.DefaultMaxResponseBytes
 
 // ExportPGORequest selects the edges to merge.
 type ExportPGORequest struct {
@@ -113,7 +115,7 @@ func (c Cloud) ExportPGOProfile(ctx context.Context, req ExportPGORequest) (Expo
 // MaxPGOResponseBytes: refused here, or cut off at that limit by the client
 // (which then fails to decode at the cut).
 func pgoResponseTooBig(err error) bool {
-	if errors.Is(err, errPGOResponseTooBig) {
+	if errors.Is(err, errPGOResponseTooBig) || errors.Is(err, cloud.ErrResponseTooLarge) {
 		return true
 	}
 	var se *json.SyntaxError

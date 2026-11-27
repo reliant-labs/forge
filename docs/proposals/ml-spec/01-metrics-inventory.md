@@ -79,7 +79,13 @@ adapter data (ml-workloads decision 3). Groups, each mapped per part file:
    data_wait/forward/backward/optimizer/comm_exposed/checkpoint/eval/other). The lifecycle
    phase of the object model is not an attribute: it is joined from the run ledger by run
    and attempt. The draft's `ml.phase` (forge#2884) stays as a deprecated alias of
-   `ml.step.phase`. See the mapping below.
+   `ml.step.phase`. Ingestion normalizes legacy `ml.phase` to `ml.step.phase`;
+   if both are present, `ml.step.phase` wins. Queries and dashboards apply the
+   same fallback to stored legacy data before grouping, so old SDK emissions and
+   historical series remain in phase breakdowns and longitudinal comparisons.
+   Each observation is counted once, never once per alias. Keep this compatibility
+   path throughout v1; retirement requires an owner-approved future major and a
+   migration for legacy emitters and stored data. See the mapping below.
 10. **Absent ≠ zero.** Every row's "When absent" id is a finding in the Coverage
     category; views show "not collected" with that finding, never a zero line.
 

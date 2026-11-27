@@ -132,7 +132,10 @@ Register it. With no install, the command is "npx -y @reliantlabs/forge mcp"
   Cursor        {"mcpServers": {"forge": {"command": "forge", "args": ["mcp"]}}}
                 in .cursor/mcp.json
 
-docs/mcp.md has the config files in full.`,
+docs/mcp.md has the config files in full.
+
+'forge mcp app <env>' is different: it prints how to connect a client to
+THIS app's own rpcs, served as MCP tools at the env's <api>/mcp.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			groups, err := parseMCPTools(tools)
@@ -146,6 +149,7 @@ docs/mcp.md has the config files in full.`,
 	}
 	cmd.Flags().StringVar(&tools, "tools", mcpToolsDefault,
 		"tool groups to list: a comma-separated list of "+strings.Join(mcpToolGroupNames(), ", ")+", or all for every tool up front (core, the default, is the smallest useful set; forge_tools enables the rest in-session)")
+	cmd.AddCommand(newMCPAppCmd())
 	return cmd
 }
 

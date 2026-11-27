@@ -86,8 +86,10 @@ read through this rule:
   generic, opt-in capability of forge's existing node agent,
   `ObservabilityAgent.kubernetes_inventory` (forge#2998), useful to any app on a
   cluster. GPU metrics are a plain `forge.Telemetry` scrape of the DCGM exporter
-  in the env's `observability.telemetry`; `forge.Adopt` only records that the
-  exporter runs (forge#3030).
+  in the env's `observability.telemetry`, and `forge.Adopt` records that the
+  exporter runs. `Adopt`'s own scrape fields (`selector`, `port`, `allow`,
+  `service_name`) shipped in v1.13.0, so they keep working and are deprecated,
+  not removed (forge#3030).
 - **forge never adds an add-on the file does not name.** "When Kueue is
   installed" ([decision 55](#7-owner-decisions-settled-2026-11-26)) means when
   the stack declares `forge.Kueue`, or a person accepts the finding's KCL diff

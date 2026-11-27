@@ -172,6 +172,8 @@ func takesCredential(flag, program, value string) bool {
 		return strings.ContainsAny(value, ":%")
 	case programCredentialFlags[program][flag]:
 		return true
+	case flag == "-p" && (mysqlLike[program] || program == "sshpass"):
+		return true // known passwords, even when they look like ports or paths
 	case flag == "-p" || flag == "-P":
 		return !strings.HasPrefix(value, "-") && !keepableValue(value)
 	case len(name) > 1 && (credentialName.MatchString(name) || credentialShortNames[strings.ToLower(name)]):
@@ -187,8 +189,8 @@ var keepableValue = regexp.MustCompile(`^(?:[0-9]+(?:[:.\-][0-9]+)*(?:/(?:tcp|ud
 var (
 	// --token=v, -passin=v (a quoted value may span lines)
 	wordFlagAssign = regexp.MustCompile(`(?s)^(-{1,2}([A-Za-z0-9_.-]+)=)(.+)$`)
-	// -uuser:pass, -Uuser%pass
-	wordUserAttached = regexp.MustCompile(`^(-[uU])(\S*[:%]\S*)$`)
+	// -uuser:pass, -Uuser%pass (the value may contain whitespace)
+	wordUserAttached = regexp.MustCompile(`(?s)^(-[uU])(.*[:%].*)$`)
 )
 
 // redactAttached is w with an attached credential replaced — a credential

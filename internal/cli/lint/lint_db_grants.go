@@ -32,6 +32,8 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/shadowdb"
+	"github.com/reliant-labs/forge/internal/sqlident"
+	"github.com/reliant-labs/forge/internal/sqllex"
 	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
@@ -139,7 +141,7 @@ func collectDBGrantsFindings(root, migrationsDir string) (dbGrantsReport, error)
 	for _, u := range codegen.UndecidedReadOnlyColumns(tables, services) {
 		key := u.Table + "." + u.Column
 		f := dbGrantsFinding{Schema: u.Schema, Table: u.Table, Column: u.Column, Comment: comments[key], Binary: binary[key]}
-		f.File, f.Line = files.locate(root, u.Table, u.Column)
+		f.File, f.Line = files.locate(root, u.Schema, u.Table, u.Column)
 		rep.Findings = append(rep.Findings, f)
 	}
 	return rep, nil
@@ -183,32 +185,69 @@ func readMigrationSources(dir string) (migrationSources, error) {
 	return out, nil
 }
 
-// locate finds the first line, in a migration that names the table, that
-// declares the column: a column definition at the start of a line (a CREATE
-// TABLE body, or an ADD COLUMN continuing an ALTER TABLE), or a one-line
-// `ALTER TABLE <table> ADD COLUMN <column> …`. Best effort: a column added by
-// a statement this does not recognise has no location.
-func (ms migrationSources) locate(root, table, column string) (string, int) {
-	col := `(?:add\s+column\s+(?:if\s+not\s+exists\s+)?)?"?` + regexp.QuoteMeta(column) + `"?\s+[A-Za-z]`
-	colRE := regexp.MustCompile(`(?i)^\s*` + col +
-		`|\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(?:"?\w+"?\.)?"?` + regexp.QuoteMeta(table) + `"?\s+add\s+(?:column\s+)?(?:if\s+not\s+exists\s+)?"?` + regexp.QuoteMeta(column) + `"?\s+[A-Za-z]`)
-	tableRE := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(table) + `\b`)
+// locate finds the first declaration of the column in a CREATE TABLE body
+// or ALTER TABLE … ADD action of its own table. This is best effort: for a
+// column declared indirectly (e.g. by LIKE or dynamic SQL) omit the location.
+func (ms migrationSources) locate(root, schema, table, column string) (string, int) {
 	for _, m := range ms {
-		if !tableRE.MatchString(m.text) {
-			continue
-		}
-		for i, line := range strings.Split(m.text, "\n") {
-			if colRE.MatchString(line) {
-				rel, err := filepath.Rel(root, m.path)
-				if err != nil {
-					rel = m.path
+		for _, stmt := range sqllex.Split(m.text) {
+			text := blankSQLComments(m.text[stmt.Start:stmt.End])
+			var clauses []string
+			var start int
+			columnRE := grantsColumnRE
+			switch {
+			case grantsCreateTableRE.MatchString(text):
+				match := grantsCreateTableRE.FindStringSubmatchIndex(text)
+				if !grantsRelationMatches(text[match[2]:match[3]], schema, table) {
+					continue
 				}
-				return filepath.ToSlash(rel), i + 1
+				start = match[1]
+				end, ok := matchParen(text, start-1)
+				if !ok {
+					continue
+				}
+				clauses = splitTopLevel(text[start:end])
+			case grantsAlterTableRE.MatchString(text):
+				match := grantsAlterTableRE.FindStringSubmatchIndex(text)
+				if !grantsRelationMatches(text[match[2]:match[3]], schema, table) {
+					continue
+				}
+				start = match[1]
+				clauses = splitTopLevel(text[start:])
+				columnRE = grantsAddColumnRE
+			default:
+				continue
+			}
+			line := stmt.Line + strings.Count(text[:start], "\n")
+			for _, clause := range clauses {
+				match := columnRE.FindStringSubmatchIndex(clause)
+				if len(match) >= 4 && normIdent(clause[match[2]:match[3]]) == column && !isConstraintKeyword(strings.ToLower(clause[match[2]:match[3]])) {
+					rel, err := filepath.Rel(root, m.path)
+					if err != nil {
+						rel = m.path
+					}
+					return filepath.ToSlash(rel), line + strings.Count(clause[:match[2]], "\n")
+				}
+				line += strings.Count(clause, "\n")
 			}
 		}
 	}
 	return "", 0
 }
+
+// An explicit schema must agree with the applied schema. Unqualified names
+// are best effort: their schema depends on the migration's search path.
+func grantsRelationMatches(name, schema, table string) bool {
+	parts := sqlident.Parts(name)
+	return len(parts) > 0 && parts[len(parts)-1] == table && (len(parts) == 1 || parts[len(parts)-2] == schema)
+}
+
+var (
+	grantsCreateTableRE = regexp.MustCompile(`(?is)^create\s+(?:(?:global\s+|local\s+)?(?:temp|temporary|unlogged)\s+)?table\s+(?:if\s+not\s+exists\s+)?(` + sqlident.Qualified + `)\s*\(`)
+	grantsAlterTableRE  = regexp.MustCompile(`(?is)^alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(` + sqlident.Qualified + `)\s*\*?`)
+	grantsColumnRE      = regexp.MustCompile(`^\s*(` + sqlident.Part + `)\s+`)
+	grantsAddColumnRE   = regexp.MustCompile(`(?is)^\s*add\s+(?:column\s+)?(?:if\s+not\s+exists\s+)?(` + sqlident.Part + `)\s+`)
+)
 
 // collectDBGrantsJSON maps db-grants findings onto the JSON contract. Severity
 // error: an undecided credential is the gap this lane exists to close.

@@ -20,7 +20,7 @@ func TestDBGrantsLocate(t *testing.T) {
 		{"refresh_token", "db/migrations/3_alter.up.sql", 3},
 		{"client_secret", "db/migrations/4_multi.up.sql", 2},
 	} {
-		file, line := ms.locate("/p", "tasks", tc.column)
+		file, line := ms.locate("/p", "public", "tasks", tc.column)
 		if file != tc.file || line != tc.line {
 			t.Errorf("locate(tasks.%s) = %s:%d, want %s:%d", tc.column, file, line, tc.file, tc.line)
 		}

@@ -362,6 +362,7 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 			continue
 		}
 		if resp.Digest != ref.Digest {
+			failed = true
 			fmt.Fprintf(warn, "[ledger] warning: %s recorded the SBOM of %s in release %s as %s, but the release records %s: the two copies differ\n", s.endpoint, name, r.Version, resp.Digest, ref.Digest)
 		}
 	}

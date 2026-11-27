@@ -68,6 +68,8 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/forgedelegate"
+	"github.com/reliant-labs/forge/internal/forgepinhook"
+	"github.com/reliant-labs/forge/pkg/forgepin"
 )
 
 // handOffExempt are the commands that run as THIS forge in any project: they
@@ -651,30 +653,20 @@ func (t delegateTarget) pinIsNewer() bool {
 	return pk != "" && bk != "" && semver.Compare(bk, pk) < 0
 }
 
-// PinnedForge is the forge a project pins, resolved and ready to run.
-type PinnedForge struct {
-	// Path is the executable.
-	Path string
-	// Key identifies exactly which forge it is, for a cache of what it
-	// prints: the pinned version ("pin:", a module version that never
-	// changes), a linked checkout and its contents, or for a +dirty pin the
-	// binary file that reports it and that file's size and mtime.
-	Key string
-	// Want says which forge the project wants, for a message.
-	Want string
-	// Source says where Path came from: PinnedSourceSelf (this forge is the
-	// project's), or forgedelegate's KindTools, KindCache or KindBuilt.
-	Source string
-	// Args are the arguments that come before forge's own when running Path:
-	// ["forge"] when Path is this forge's executable and forge is embedded
-	// in it (`reliant forge`), else none. Set by ResolvePinnedForgePath.
-	Args []string
-	// Version is the version Path reports. Set by ResolvePinnedForgePath.
-	Version string
-	// Pin is forge.yaml's forge_version, and Checkout the local forge
-	// checkout the project is linked to, when it is. Set by
-	// ResolvePinnedForgePath.
-	Pin, Checkout string
+// PinnedForge is the forge a project pins, resolved and ready to run. It is
+// pkg/forgepin's Forge, the leaf type a host passes around without linking
+// this package. Source is PinnedSourceSelf, or forgedelegate's KindTools,
+// KindCache or KindBuilt.
+type PinnedForge = forgepin.Forge
+
+// init answers pkg/forgepin.Resolve with ResolvePinnedForge whenever the CLI
+// is linked: pkg/forgepin cannot import this package, whose closure is the
+// whole CLI.
+func init() {
+	forgepinhook.Resolve = func(ctx context.Context, projectRoot, command string, log io.Writer) (forgepinhook.Result, bool, error) {
+		pf, ok, err := ResolvePinnedForge(ctx, projectRoot, command, log)
+		return forgepinhook.Result(pf), ok, err
+	}
 }
 
 // ResolvePinnedForge is the hand-off's decision and resolution without the
@@ -695,7 +687,10 @@ func ResolvePinnedForge(ctx context.Context, projectRoot, command string, log io
 	if err != nil {
 		return PinnedForge{}, false, handOffFailure(projectRoot, t, command, err)
 	}
-	return PinnedForge{Path: res.Path, Key: t.resultKey(res.Path), Want: t.String(), Source: res.Kind}, true, nil
+	return PinnedForge{
+		Path: res.Path, Key: t.resultKey(res.Path), Want: t.String(),
+		Source: res.Kind, Pin: t.pin, Checkout: t.checkout,
+	}, true, nil
 }
 
 // noteUnpinned says which forge runs when no project pin decides it. Only an

@@ -128,8 +128,17 @@ answer looks right) — forge execs the project's forge with the same arguments,
 environment, stdio and exit status, and prints one line on stderr saying so:
 
 ```
-forge: this forge is v0.1.45-…, but the project wants forge_version v0.1.46-… — running forge v0.1.46-… (just built) instead (--allow-version-skew, or FORGE_ALLOW_VERSION_SKEW=1, to run this one)
+forge: running forge_version v0.1.46-…, which forge.yaml pins (just built — this forge is v0.1.45-…; --allow-version-skew, or FORGE_ALLOW_VERSION_SKEW=1, runs it instead)
 ```
+
+The line is news once: it prints at most once a day per project, pin and
+forge binary (a stamp under `<user cache dir>/forge/notices/`), and never when
+the command is run with `--quiet`, which promises only what failed.
+`FORGE_PIN_NOTICE=always` prints it on every run; `forge version --pinned`
+answers which forge the project runs at any time. The same rule holds for the
+one-line notice under `--allow-version-skew`. What reports a problem prints on
+every run, `--quiet` included: the full skew warning (a forge nobody chose
+runs the command), a pin that could not be obtained, and every refusal.
 
 Which forge is "the project's", in order:
 

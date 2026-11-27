@@ -15,14 +15,15 @@ import (
 )
 
 // forge:section MockService
-// forge:hash=1d83bae1183c76638db601c63f3ea50fe0a2556f5a4d52bb30eba1a67dd30379
+// forge:hash=08f1292c26e19606207ee592a09744a9910fdce31b8b652bb7213f77af8e8124
 
 // MockService is a test mock for the Service interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockService.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockService.<Method>Func not set" error.
 type MockService struct {
 	contractkit.Recorder
 	RunFilteredFunc func(context.Context, string, string, string) (Report, error)
@@ -65,6 +66,92 @@ func (m *MockService) PrintJSON(w io.Writer, report Report) error {
 		return m.PrintJSONFunc(w, report)
 	}
 	return contractkit.MockNotSet("MockService", "PrintJSON")
+}
+
+// MockServiceRunFilteredCall is one recorded call of MockService.RunFiltered, one
+// field per parameter.
+type MockServiceRunFilteredCall struct {
+	Ctx         context.Context
+	ProjectName string
+	ProjectDir  string
+	Signal      string
+}
+
+// RunFilteredCalls returns every recorded RunFiltered call, oldest first, with
+// its arguments typed. It reads the same log as Calls("RunFiltered").
+func (m *MockService) RunFilteredCalls() []MockServiceRunFilteredCall {
+	var out []MockServiceRunFilteredCall
+	for _, c := range m.Recorder.Calls("RunFiltered") {
+		var r MockServiceRunFilteredCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.ProjectName, _ = c.Args[1].(string)
+		r.ProjectDir, _ = c.Args[2].(string)
+		r.Signal, _ = c.Args[3].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceRunRuntimeCall is one recorded call of MockService.RunRuntime, one
+// field per parameter.
+type MockServiceRunRuntimeCall struct {
+	Ctx context.Context
+	In  RuntimeInput
+}
+
+// RunRuntimeCalls returns every recorded RunRuntime call, oldest first, with
+// its arguments typed. It reads the same log as Calls("RunRuntime").
+func (m *MockService) RunRuntimeCalls() []MockServiceRunRuntimeCall {
+	var out []MockServiceRunRuntimeCall
+	for _, c := range m.Recorder.Calls("RunRuntime") {
+		var r MockServiceRunRuntimeCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.In, _ = c.Args[1].(RuntimeInput)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServicePrintReportCall is one recorded call of MockService.PrintReport, one
+// field per parameter.
+type MockServicePrintReportCall struct {
+	W       io.Writer
+	Report  Report
+	Verbose bool
+}
+
+// PrintReportCalls returns every recorded PrintReport call, oldest first, with
+// its arguments typed. It reads the same log as Calls("PrintReport").
+func (m *MockService) PrintReportCalls() []MockServicePrintReportCall {
+	var out []MockServicePrintReportCall
+	for _, c := range m.Recorder.Calls("PrintReport") {
+		var r MockServicePrintReportCall
+		r.W, _ = c.Args[0].(io.Writer)
+		r.Report, _ = c.Args[1].(Report)
+		r.Verbose, _ = c.Args[2].(bool)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServicePrintJSONCall is one recorded call of MockService.PrintJSON, one
+// field per parameter.
+type MockServicePrintJSONCall struct {
+	W      io.Writer
+	Report Report
+}
+
+// PrintJSONCalls returns every recorded PrintJSON call, oldest first, with
+// its arguments typed. It reads the same log as Calls("PrintJSON").
+func (m *MockService) PrintJSONCalls() []MockServicePrintJSONCall {
+	var out []MockServicePrintJSONCall
+	for _, c := range m.Recorder.Calls("PrintJSON") {
+		var r MockServicePrintJSONCall
+		r.W, _ = c.Args[0].(io.Writer)
+		r.Report, _ = c.Args[1].(Report)
+		out = append(out, r)
+	}
+	return out
 }
 
 // Compile-time check.

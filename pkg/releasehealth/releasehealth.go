@@ -101,12 +101,12 @@ import (
 type Verdict string
 
 const (
-	// Pass: nothing that fails the release was found, and enough traffic was
-	// seen to say so.
+	// Pass means nothing that fails the release was found, and enough traffic
+	// was seen to say so.
 	Pass Verdict = "PASS"
-	// Fail: a finding whose policy is fail fired.
+	// Fail means a finding whose policy is fail fired.
 	Fail Verdict = "FAIL"
-	// Inconclusive: not proven good and not proven bad.
+	// Inconclusive means not proven good and not proven bad.
 	Inconclusive Verdict = "INCONCLUSIVE"
 )
 

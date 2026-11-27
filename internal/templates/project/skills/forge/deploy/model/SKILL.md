@@ -147,6 +147,17 @@ unit at a time. See deploy/shape; `applier = "flux"`: deploy/flux/self-hosted.
 - **Rollout safety** above one replica: a PodDisruptionBudget and soft
   topology spread. On nodes shared with ranked pods, also declare
   `priorityClassName` — see `deploy/pod-priority`.
+- **`autoscale`** replaces `replicas` with a range:
+  `autoscale = forge.Autoscale {minReplicas = 2, maxReplicas = 6}` renders
+  an `autoscaling/v2` HorizontalPodAutoscaler named after the workload that
+  holds average CPU at `cpuTargetPercent` of the request (default 70,
+  10-95), with stated behaviour (scale down after a 300s window, scale up at
+  most doubling or +4 pods per 60s). The Deployment then states no
+  `spec.replicas`, and the PDB and spread key on `maxReplicas`. Service and
+  worker kinds; `maxReplicas` at most 10; refused beside `replicas`,
+  `storageGiB` and `strategy = "Recreate"`, and on host, compose and
+  build-only. The cluster needs metrics-server (k3d, GKE, EKS and AKS ship
+  it). Depth: `deploy/autoscale`.
 - **`strategy`**: unset is `RollingUpdate`, which surges a new pod before
   the old one stops, so `replicas = 1` still runs two during a rollout.
   When the count is a correctness bound (a sweeper not idempotent under

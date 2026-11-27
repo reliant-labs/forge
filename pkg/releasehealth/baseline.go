@@ -42,9 +42,10 @@ const (
 	NotEvaluatedBrowser = "browser:"
 )
 
-// ReasonThinBaseline: a service saw enough traffic after the promotion to
-// judge, but too little before it to compare against: none could be compared,
-// or (require_baseline every) one could not.
+// ReasonThinBaseline is the InconclusiveCode of a report in which a service
+// saw enough traffic after the promotion to judge, but too little before it
+// to compare against: none could be compared, or (require_baseline every) one
+// could not.
 const ReasonThinBaseline = "thin_baseline"
 
 // gauge is what decides whether a service can be compared: min_requests and

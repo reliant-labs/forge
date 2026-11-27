@@ -11,6 +11,9 @@ import (
 	"github.com/reliant-labs/forge/pkg/observe"
 )
 
+// Credentials is what a person presents to the API-only sign-in flow: a
+// closed set of typed fields, each mapping to exactly one factor.
+//
 // The API-only sign-in flow: how an app authenticates a user WITHOUT ever
 // sending the browser to the identity provider's own login pages.
 //

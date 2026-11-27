@@ -96,12 +96,24 @@ type lintRunCtx struct {
 	// human run shows where it is. Nil in the machine-readable modes.
 	progress io.Writer
 
+	// emit, when set, receives each lane's outcome the moment the lane is
+	// done, in pipeline order (the structured renderer prints it then).
+	// Nil in --json, which renders the whole list at the end.
+	emit func(lintStepOutcome)
+
 	// golangciMemo is this run's golangci-lint resolution (see
 	// golangci_toolchain.go), so the gating lane and the advisory guardrail
 	// share one binary — and at most one provisioning build. A pointer, so
 	// the per-step scoped copies the structured driver makes share it; the
 	// run's constructor sets it.
 	golangciMemo *golangciMemo
+}
+
+// emitOutcome hands o to rc.emit, when there is one.
+func (rc *lintRunCtx) emitOutcome(o lintStepOutcome) {
+	if rc.emit != nil {
+		rc.emit(o)
+	}
 }
 
 // linterStep is one entry in the ordered `forge lint` pipeline. See the
@@ -167,6 +179,11 @@ func lintPipeline() []linterStep {
 			// lint it.
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, g := collectGolangciLintJSON(rc)
+				// A scope whose only errors are imports of broken
+				// packages outside it is not decided, not failed.
+				if ud := golangciUndecided(rc, fs); ud != nil {
+					return nil, false, ud
+				}
 				return fs, g, nil
 			},
 		},

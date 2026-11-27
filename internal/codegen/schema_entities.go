@@ -67,10 +67,37 @@ func BuildSchemaEntities(projectDir string, services []ServiceDef) ([]EntityDef,
 	return entitiesForTables(tables, services), nil
 }
 
+// CRUDEntityTables names the tables behind the CRUD entities of an
+// already-introspected schema: the join BuildSchemaEntities makes, so the
+// tables that get CRUD wiring and pages are exactly the ones named here.
+// `forge env up`'s first-boot seed scopes itself to them.
+//
+// A CRUD-NAMED rpc is not enough. `GetAssignment` over a table marked
+// `forge:no-entity`, over a composite key, or with no Assignment message is
+// custom to the join, so its table is not named — a seed scope that matched
+// rpc names alone filled Ranger's assignments table with undecodable
+// payloads the control plane then read every five seconds.
+//
+// The result is never nil: no CRUD entity is an empty scope, not "every table".
+func CRUDEntityTables(tables []schemadef.Table, services []ServiceDef) []string {
+	out := []string{}
+	for _, e := range joinCRUDEntities(tables, services, func(string) {}) {
+		out = append(out, e.TableName)
+	}
+	return out
+}
+
 // entitiesForTables is the pure half of BuildSchemaEntities: the join
 // itself, with the schema already introspected. Split out so the join's
 // rules can be tested without a shadow database.
 func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []EntityDef {
+	return joinCRUDEntities(tables, services, func(note string) { fmt.Println(note) })
+}
+
+// joinCRUDEntities is entitiesForTables with its one-line notes (a CRUD rpc
+// over a composite key) handed to note instead of printed, for a caller that
+// is not generating and has no use for them.
+func joinCRUDEntities(tables []schemadef.Table, services []ServiceDef, note func(string)) []EntityDef {
 	idx := indexEntityTables(tables)
 
 	seen := map[string]bool{}
@@ -117,8 +144,8 @@ func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []Entity
 			// knows to reach it via the repo_ext seam rather than wonder why
 			// CRUD never showed up.
 			if len(table.PKCols) > 1 {
-				fmt.Printf("ℹ️  %s has a composite primary key (%s) — CRUD projection and ULID id-generation are skipped; the table is plain schema (query it via the repo_ext seam).\n",
-					table.Name, strings.Join(table.PKCols, ", "))
+				note(fmt.Sprintf("ℹ️  %s has a composite primary key (%s) — CRUD projection and ULID id-generation are skipped; the table is plain schema (query it via the repo_ext seam).",
+					table.Name, strings.Join(table.PKCols, ", ")))
 				continue
 			}
 			e := buildEntityDef(name, table, svc)

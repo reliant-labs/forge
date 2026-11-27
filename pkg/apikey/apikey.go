@@ -22,6 +22,10 @@
 // hash (SHA-256) is the correct choice — the slow password hashes (bcrypt,
 // argon2) exist to defend LOW-entropy secrets against brute force and buy
 // nothing here while costing a lookup's worth of CPU per request.
+//
+// Keys start with forge's "fk_" unless the application names its own prefix
+// with a [Format] (apikey.MustFormat("acme_")), whose methods replace
+// Generate and LookupPrefix above; keys already issued as "fk_" keep working.
 package apikey
 
 import (
@@ -35,8 +39,9 @@ import (
 )
 
 const (
-	// KeyPrefix is prepended to every generated key. It makes keys
-	// recognizable in logs and lets secret scanners match on "fk_".
+	// KeyPrefix is prepended to every key [Generate] issues, and to every
+	// key the zero [Format] issues. It makes keys recognizable in logs and
+	// lets secret scanners match on "fk_". Every Format still accepts it.
 	KeyPrefix = "fk_"
 
 	// LookupPrefixLen is the number of post-KeyPrefix characters stored in
@@ -53,11 +58,16 @@ const (
 
 // Generate returns a new random API key of the form "fk_<32 base62 chars>".
 // The plaintext is returned once; store only its Hash and LookupPrefix.
+// A product that issues keys under its own prefix uses [Format.Generate].
 func Generate() (string, error) {
+	return generate(KeyPrefix)
+}
+
+func generate(prefix string) (string, error) {
 	alphabetLen := big.NewInt(int64(len(base62Alphabet)))
 	var sb strings.Builder
-	sb.Grow(len(KeyPrefix) + randomLen)
-	sb.WriteString(KeyPrefix)
+	sb.Grow(len(prefix) + randomLen)
+	sb.WriteString(prefix)
 	for i := 0; i < randomLen; i++ {
 		n, err := rand.Int(rand.Reader, alphabetLen)
 		if err != nil {
@@ -76,12 +86,17 @@ func Hash(key string) string {
 
 // LookupPrefix returns the indexed lookup handle for key (the LookupPrefixLen
 // characters following KeyPrefix). It doubles as a cheap format check:
-// malformed input is rejected before any DB work.
+// malformed input is rejected before any DB work. A product that issues keys
+// under its own prefix uses [Format.LookupPrefix].
 func LookupPrefix(key string) (string, error) {
-	if !strings.HasPrefix(key, KeyPrefix) || len(key) < len(KeyPrefix)+LookupPrefixLen {
+	return lookupPrefix(key, KeyPrefix)
+}
+
+func lookupPrefix(key, prefix string) (string, error) {
+	if prefix == "" || !strings.HasPrefix(key, prefix) || len(key) < len(prefix)+LookupPrefixLen {
 		return "", fmt.Errorf("apikey: malformed key")
 	}
-	return key[len(KeyPrefix) : len(KeyPrefix)+LookupPrefixLen], nil
+	return key[len(prefix) : len(prefix)+LookupPrefixLen], nil
 }
 
 // Verify reports whether key hashes to storedHash, using a constant-time

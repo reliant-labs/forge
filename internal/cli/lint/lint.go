@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -25,6 +26,7 @@ import (
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/templates"
 	"github.com/reliant-labs/forge/internal/toolpin"
+	"github.com/reliant-labs/forge/pkg/hostslot"
 )
 
 // lintFlags holds the flag values for the lint command.
@@ -263,7 +265,10 @@ Examples:
                                  # packages; whole-project linters (frontend
                                  # lint, graph, component-drift, config-reach) are
                                  # skipped and named in the verdict, so run an
-                                 # unscoped 'forge lint' before merging
+                                 # unscoped 'forge lint' before merging.
+                                 # A handler dir also reports its service's
+                                 # proto findings (and back), and the verdict
+                                 # counts errors left outside the scope
 
 The advisory rules above are warnings by default — they fail the build only
 when lint.rules sets them to error.
@@ -320,7 +325,7 @@ func runLintCommand(cmd *cobra.Command, flags lintFlags, args []string) error {
 	// A full lint (golangci-lint, every frontend's eslint and tsc) is heavy:
 	// take a host heavy slot (pkg/hostslot) so it queues behind the other
 	// heavy jobs on this machine instead of slowing all of them down.
-	release, err := cmdutil.HoldHeavySlot(cmd.Context(), cmd.ErrOrStderr())
+	release, err := cmdutil.HoldHeavySlotInLane(cmd.Context(), cmd.ErrOrStderr(), lintSlotLane(flags.scope, paths))
 	if err != nil {
 		return err
 	}
@@ -342,6 +347,22 @@ func runLintCommand(cmd *cobra.Command, flags lintFlags, args []string) error {
 	// lint.rules, --scope and the gap policy mean the same thing in each
 	// (lint_structured.go, lint_rules.go).
 	return runLintStructured(cmd.Context(), flags, paths)
+}
+
+// lintSlotLane is the heavy-slot lane a run waits in. A run narrowed to named
+// paths — --scope, or Go package paths (`forge lint ./internal/x/...`) — is
+// the express lane's own example of work bounded to minutes: its Go lanes
+// run on those packages only and the whole-project lanes are skipped. In the
+// bulk lane it queued behind every hour-long whole-repo lint and test run on
+// the machine; on a shared box with every slot held, agents measured a
+// 15-second scoped lint at 2–4 minutes, nearly all of it waiting (Ranger
+// build, friction #10). A whole-project run stays bulk; FORGE_SLOT_LANE, when
+// set, decides either way (cmdutil.HoldHeavySlotInLane).
+func lintSlotLane(scope, paths []string) string {
+	if len(scope) > 0 || keepForPaths(paths) != nil {
+		return hostslot.LaneExpress
+	}
+	return ""
 }
 
 // registerLintFlags declares every `forge lint` flag and the visible /
@@ -420,7 +441,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Same as --check: write nothing, print the diff each fix would apply, and fail if any is pending")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
 	cmd.Flags().BoolVarP(&flags.quiet, "quiet", "q", false, "Print only what failed: a one-line summary per failing linter, its error findings, and the verdict as the LAST line (a clean run is one line). With --fix, fixes are applied silently; combines with the targeted flags and --scope")
-	cmd.Flags().StringSliceVar(&flags.scope, "scope", nil, "Report only findings in files under `PATH` (repeatable or comma-separated, project-relative). Go linters run on PATH's packages only; file-anchored linters report only findings under PATH; whole-project linters (frontend lint, graph, component-drift, config-reach) cannot be scoped, are skipped, and are named in the verdict. With --fix, only files under PATH are rewritten")
+	cmd.Flags().StringSliceVar(&flags.scope, "scope", nil, "Report only findings in files under `PATH` (repeatable or comma-separated, project-relative). Go linters run on PATH's packages only; file-anchored linters report only findings under PATH; whole-project linters (frontend lint, graph, component-drift, config-reach) cannot be scoped, are skipped, and are named in the verdict. A path in one half of a service (internal/handlers/<svc>, proto/services/<svc>) also reports the findings in its other half, and the verdict counts the errors left outside the scope. With --fix, only files under PATH are rewritten")
 	// No backticks: cobra would render the first quoted span as the flag's
 	// argument placeholder (see --optional-deps-guard).
 	cmd.Flags().BoolVar(&flags.showSuppressed, "show-suppressed", false, "List every suppression the project declares, with file:line, what it covers and the stated reason: forge.yaml lint.rules (off/warn) and contracts.exclude, //forge:exclude-contract markers, forge:lint-disable* and nolint directives, and the migration and optional-dep pragmas. Read-only: runs no linter and exits 0; combines with --json and --scope")
@@ -1005,6 +1026,10 @@ type lintVerdict struct {
 	// allowed are lanes that could not run and were accepted by name
 	// (--allow-skip / lint.allow_skip): SKIPPED (allowed).
 	allowed []laneGap
+	// undecided are scoped lanes that could not judge the scope because it
+	// imports broken packages outside it (lint_scope_undecided.go): named,
+	// never counted as passed, not a failure of the slice.
+	undecided []string
 	// failed are the lanes that ran and fail the build.
 	failed []string
 	// unscoped are whole-project lanes a --scope run did not run.
@@ -1014,8 +1039,16 @@ type lintVerdict struct {
 	off []string
 	// scope is the --scope value, "" for a whole-project run.
 	scope string
-	// hiddenWarnings counts findings --quiet did not print.
+	// outside counts the error findings a scoped run did not report because
+	// their files lie outside the scope, and outsideLanes names the lanes
+	// that found them. A scoped pass must not read as "an unscoped run
+	// passes too" when the lanes already know it will not.
+	outside      int
+	outsideLanes []string
+	// hiddenWarnings counts findings --quiet did not print, and hiddenRules
+	// counts them by rule, so the verdict can say what they are.
 	hiddenWarnings int
+	hiddenRules    map[string]int
 	// graced are the findings that warn only because the project's pin has
 	// not been through a release with their rule (lint_rollout.go).
 	graced []gracedRule
@@ -1053,6 +1086,9 @@ func (v lintVerdict) render(w io.Writer) error {
 
 	if len(v.ran) == 0 {
 		var detail []string
+		if len(v.undecided) > 0 {
+			detail = append(detail, "not decided (imports outside the scope do not compile): "+strings.Join(v.undecided, ", "))
+		}
 		if len(v.advisoryUnavailable) > 0 {
 			detail = append(detail, "could not run: "+strings.Join(v.advisoryUnavailable, ", "))
 		}
@@ -1085,6 +1121,10 @@ func (v lintVerdict) render(w io.Writer) error {
 	if len(v.allowed) > 0 {
 		extras = append(extras, fmt.Sprintf("%d SKIPPED (allowed): %s", len(v.allowed), describeAllowed(v.allowed)))
 	}
+	if len(v.undecided) > 0 {
+		extras = append(extras, fmt.Sprintf("%d NOT DECIDED (%s: imports outside the scope do not compile)",
+			len(v.undecided), strings.Join(v.undecided, ", ")))
+	}
 	if len(v.skipped) > 0 {
 		extras = append(extras, fmt.Sprintf("%d skipped (%s)", len(v.skipped), strings.Join(v.skipped, ", ")))
 	}
@@ -1097,6 +1137,12 @@ func (v lintVerdict) render(w io.Writer) error {
 
 	// An advisory lane that could not run demotes the headline: it is a
 	// hole in the coverage, even though it cannot fail the run.
+	if len(v.undecided) > 0 && len(v.advisoryUnavailable) == 0 {
+		// Not a pass of the whole slice: the headline says so, as it does
+		// for a lane that could not run.
+		fmt.Fprintf(w, "⚠️  %d gating linter(s) passed; %s%s\n", len(v.ran), strings.Join(extras, "; "), v.suffix())
+		return nil
+	}
 	if len(v.advisoryUnavailable) > 0 {
 		// The hint goes ABOVE the verdict so the verdict stays the last line.
 		fmt.Fprintln(w, "   ↳ a lane that could not run is not a lane that passed — fix the cause above, or pass --strict to fail on it")
@@ -1125,10 +1171,76 @@ func (v lintVerdict) suffix() string {
 				strings.Join(v.unscoped, ", "))
 		}
 	}
+	if v.outside > 0 {
+		fmt.Fprintf(&b, "; %s outside the scope not shown (%s) — an unscoped `forge lint` reports them",
+			plural(v.outside, "error"), strings.Join(v.outsideLanes, ", "))
+	}
 	if v.hiddenWarnings > 0 {
-		fmt.Fprintf(&b, "; %s not shown (--quiet)", plural(v.hiddenWarnings, "advisory finding"))
+		fmt.Fprintf(&b, "; %s not shown (--quiet", plural(v.hiddenWarnings, "advisory finding"))
+		if rules := describeHiddenRules(v.hiddenRules); rules != "" {
+			fmt.Fprintf(&b, ": %s", rules)
+		}
+		b.WriteString("; run without --quiet to see them)")
 	}
 	return b.String()
+}
+
+// hide records findings --quiet does not print: counted as issueCount
+// counts them, and by rule.
+func (v *lintVerdict) hide(fs []lintJSONFinding) {
+	n := issueCount(fs)
+	if n == 0 {
+		return
+	}
+	v.hiddenWarnings += n
+	if v.hiddenRules == nil {
+		v.hiddenRules = map[string]int{}
+	}
+	anchored := 0
+	for _, f := range fs {
+		if f.File != "" || f.Rule != "external" {
+			v.hiddenRules[f.Rule]++
+			anchored++
+		}
+	}
+	if anchored == 0 {
+		v.hiddenRules["external"] += n
+	}
+}
+
+// hiddenRulesShown is how many rules the --quiet note names.
+const hiddenRulesShown = 3
+
+// describeHiddenRules names the rules --quiet hid, most findings first:
+// "forge-idempotency-read-undeclared ×3, forge-config-deps".
+//
+// The note used to say only "3 advisory findings not shown (--quiet)", so an
+// agent gating with --quiet learned that something was hidden, but not what,
+// and not how to see it (Ranger build, friction #10).
+func describeHiddenRules(byRule map[string]int) string {
+	rules := make([]string, 0, len(byRule))
+	for r := range byRule {
+		rules = append(rules, r)
+	}
+	sort.Slice(rules, func(i, j int) bool {
+		if byRule[rules[i]] != byRule[rules[j]] {
+			return byRule[rules[i]] > byRule[rules[j]]
+		}
+		return rules[i] < rules[j]
+	})
+	parts := make([]string, 0, hiddenRulesShown+1)
+	for i, r := range rules {
+		if i == hiddenRulesShown {
+			parts = append(parts, fmt.Sprintf("and %d more", len(rules)-hiddenRulesShown))
+			break
+		}
+		if n := byRule[r]; n > 1 {
+			parts = append(parts, fmt.Sprintf("%s ×%d", r, n))
+		} else {
+			parts = append(parts, r)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // golangciRunArgs is the ONE place a `golangci-lint run` argv is assembled,

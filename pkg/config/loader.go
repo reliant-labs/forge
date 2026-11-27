@@ -305,82 +305,92 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 		if opt.GetSensitive() {
 			continue
 		}
-		name := opt.GetFlag()
-		def := opt.GetDefaultValue()
-		desc := flagUsage(opt) // the description, then the env vars that also set it
+		if err := registerLeafFlag(flags, fd, opt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-		if fd.IsMap() {
-			return fmt.Errorf(
-				"config field %s: map fields cannot be bound to a flag — set it in the config file layer instead (--%s)",
-				fd.Name(), ConfigFlag)
+// registerLeafFlag registers the one flag of a config leaf fd whose options
+// opt carry a flag name, typed by the field's kind (see RegisterFlagsFor).
+// The caller has already ruled out blocks and sensitive fields.
+func registerLeafFlag(flags *pflag.FlagSet, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions) error {
+	name := opt.GetFlag()
+	def := opt.GetDefaultValue()
+	desc := flagUsage(opt) // the description, then the env vars that also set it
+
+	if fd.IsMap() {
+		return fmt.Errorf(
+			"config field %s: map fields cannot be bound to a flag — set it in the config file layer instead (--%s)",
+			fd.Name(), ConfigFlag)
+	}
+	// A repeated field registers as a STRING flag carrying the same
+	// comma-separated form the env layer uses, whatever its element kind
+	// — LoadInto parses it back through parseList. Typing it by element
+	// kind would be wrong twice over: an Int32 flag cannot accept
+	// "8080,9090" at all, and pflag's StringSlice does not round-trip
+	// here, because its Value.String() renders "[a,b]" and the loader
+	// would then read the brackets as data.
+	if fd.IsList() {
+		flags.Var(&listFlag{value: def}, name, desc)
+		return nil
+	}
+	if isDurationField(fd) {
+		flags.String(name, def, desc)
+		return nil
+	}
+	switch fd.Kind() {
+	case protoreflect.StringKind:
+		flags.String(name, def, desc)
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		v, err := parseDefaultInt(def, 32)
+		if err != nil {
+			return fmt.Errorf("config field %s: invalid int32 default %q: %w", fd.Name(), def, err)
 		}
-		// A repeated field registers as a STRING flag carrying the same
-		// comma-separated form the env layer uses, whatever its element kind
-		// — LoadInto parses it back through parseList. Typing it by element
-		// kind would be wrong twice over: an Int32 flag cannot accept
-		// "8080,9090" at all, and pflag's StringSlice does not round-trip
-		// here, because its Value.String() renders "[a,b]" and the loader
-		// would then read the brackets as data.
-		if fd.IsList() {
-			flags.Var(&listFlag{value: def}, name, desc)
-			continue
+		flags.Int32(name, int32(v), desc)
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		v, err := parseDefaultInt(def, 64)
+		if err != nil {
+			return fmt.Errorf("config field %s: invalid int64 default %q: %w", fd.Name(), def, err)
 		}
-		if isDurationField(fd) {
-			flags.String(name, def, desc)
-			continue
+		flags.Int64(name, v, desc)
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		v, err := parseDefaultUint(def, 32)
+		if err != nil {
+			return fmt.Errorf("config field %s: invalid uint32 default %q: %w", fd.Name(), def, err)
 		}
-		switch fd.Kind() {
-		case protoreflect.StringKind:
-			flags.String(name, def, desc)
-		case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
-			v, err := parseDefaultInt(def, 32)
-			if err != nil {
-				return fmt.Errorf("config field %s: invalid int32 default %q: %w", fd.Name(), def, err)
-			}
-			flags.Int32(name, int32(v), desc)
-		case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-			v, err := parseDefaultInt(def, 64)
-			if err != nil {
-				return fmt.Errorf("config field %s: invalid int64 default %q: %w", fd.Name(), def, err)
-			}
-			flags.Int64(name, v, desc)
-		case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
-			v, err := parseDefaultUint(def, 32)
-			if err != nil {
-				return fmt.Errorf("config field %s: invalid uint32 default %q: %w", fd.Name(), def, err)
-			}
-			flags.Uint32(name, uint32(v), desc)
-		case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-			v, err := parseDefaultUint(def, 64)
-			if err != nil {
-				return fmt.Errorf("config field %s: invalid uint64 default %q: %w", fd.Name(), def, err)
-			}
-			flags.Uint64(name, v, desc)
-		case protoreflect.BoolKind:
-			v := false
-			if def != "" {
-				b, err := strconv.ParseBool(def)
-				if err != nil {
-					return fmt.Errorf("config field %s: invalid bool default %q: %w", fd.Name(), def, err)
-				}
-				v = b
-			}
-			flags.Bool(name, v, desc)
-		case protoreflect.FloatKind:
-			v, err := parseDefaultFloat(def, 32)
-			if err != nil {
-				return fmt.Errorf("config field %s: invalid float default %q: %w", fd.Name(), def, err)
-			}
-			flags.Float32(name, float32(v), desc)
-		case protoreflect.DoubleKind:
-			v, err := parseDefaultFloat(def, 64)
-			if err != nil {
-				return fmt.Errorf("config field %s: invalid double default %q: %w", fd.Name(), def, err)
-			}
-			flags.Float64(name, v, desc)
-		default:
-			return fmt.Errorf("config field %s: unsupported kind %s for flag registration", fd.Name(), fd.Kind())
+		flags.Uint32(name, uint32(v), desc)
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		v, err := parseDefaultUint(def, 64)
+		if err != nil {
+			return fmt.Errorf("config field %s: invalid uint64 default %q: %w", fd.Name(), def, err)
 		}
+		flags.Uint64(name, v, desc)
+	case protoreflect.BoolKind:
+		v := false
+		if def != "" {
+			b, err := strconv.ParseBool(def)
+			if err != nil {
+				return fmt.Errorf("config field %s: invalid bool default %q: %w", fd.Name(), def, err)
+			}
+			v = b
+		}
+		flags.Bool(name, v, desc)
+	case protoreflect.FloatKind:
+		v, err := parseDefaultFloat(def, 32)
+		if err != nil {
+			return fmt.Errorf("config field %s: invalid float default %q: %w", fd.Name(), def, err)
+		}
+		flags.Float32(name, float32(v), desc)
+	case protoreflect.DoubleKind:
+		v, err := parseDefaultFloat(def, 64)
+		if err != nil {
+			return fmt.Errorf("config field %s: invalid double default %q: %w", fd.Name(), def, err)
+		}
+		flags.Float64(name, v, desc)
+	default:
+		return fmt.Errorf("config field %s: unsupported kind %s for flag registration", fd.Name(), fd.Kind())
 	}
 	return nil
 }

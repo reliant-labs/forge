@@ -366,12 +366,20 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 	if err != nil {
 		projectRoot = ""
 	}
+	quiet := quietRun(cmd.Flags(), nil)
 	if !handOffDecided && !pinDelegationDisabled {
 		ctx := cmd.Context()
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		handed, err := handOff(ctx, w, rel, machineWideRun(rel, cmd.Flags()), implicitTargetRun(rel, cmd.Flags()), allow, projectRoot, forgeInvocationArgs())
+		inv := invocation{
+			rel:            rel,
+			allow:          allow,
+			machineWide:    machineWideRun(rel, cmd.Flags()),
+			implicitTarget: implicitTargetRun(rel, cmd.Flags()),
+			quiet:          quiet,
+		}
+		handed, err := handOff(ctx, w, inv, projectRoot, forgeInvocationArgs())
 		if err != nil || handed {
 			return err
 		}
@@ -397,6 +405,13 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 	}
 	if childOfThisForge() {
 		// The parent upgrade made the pin decision and said so.
+		return nil
+	}
+	if overridden && !upgradeRuns(rel) && !pinNoticeDue("override", projectRoot, pin, binary, quiet) {
+		// The override's one-liner confirms a choice the caller made: like
+		// the hand-off notice, once a day and never under --quiet
+		// (forge_pin_notice.go). The full warning below, for a forge nobody
+		// chose, prints on every run.
 		return nil
 	}
 	_, _ = fmt.Fprint(w, pinSkewNotice(cmd, rel, projectRoot, pin, binary, overridden))

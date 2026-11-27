@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -238,6 +239,7 @@ type Validator struct {
 	cfg          Config
 	skipMethods  map[string]bool
 	keyValidator KeyValidator
+	keyFormat    atomic.Pointer[apikey.Format]
 	// chain, when non-nil, is the ordered TokenValidator fallback used in
 	// place of the legacy single-secret JWT path. Built once at NewValidator
 	// time so per-request authentication is allocation-free.
@@ -314,6 +316,15 @@ func (v *Validator) Provider() string { return v.cfg.Provider }
 // SetKeyValidator replaces the configured [KeyValidator]. Useful when the
 // validator is constructed before the storage backend is ready.
 func (v *Validator) SetKeyValidator(kv KeyValidator) { v.keyValidator = kv }
+
+// UseKeyFormat configures the lookup prefix recorded in claims for the
+// header-based API key path. This path still delegates keys in any format to
+// the key validator; keys outside f's prefix and "fk_" carry no lookup
+// prefix. Without this call, only "fk_" keys carry a lookup prefix. Safe to
+// call concurrently with [Validator.AuthenticateHeaders].
+func (v *Validator) UseKeyFormat(f apikey.Format) {
+	v.keyFormat.Store(&f)
+}
 
 // Close stops the background JWKS refresh (and, with a snapshot, the live
 // retry) a JWKS-backed Validator started.
@@ -506,9 +517,13 @@ func (v *Validator) authenticateAPIKey(ctx context.Context, headers http.Header)
 	if claims == nil {
 		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid API key: key validator returned no claims"))
 	}
-	// This path takes any key format, so a key without forge's prefix
-	// carries no lookup prefix.
-	prefix, _ := apikey.LookupPrefix(apiKey)
+	// This path takes any key format, so a key the configured Format does
+	// not accept carries no lookup prefix.
+	format := apikey.Format{}
+	if f := v.keyFormat.Load(); f != nil {
+		format = *f
+	}
+	prefix, _ := format.LookupPrefix(apiKey)
 	return withCredential(claims, APIKeyCredential(prefix)), nil
 }
 

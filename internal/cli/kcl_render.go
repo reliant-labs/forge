@@ -230,6 +230,10 @@ type KCLEntities struct {
 	// UptimeChecks are Bundle.uptime resolved: the declared checks plus the
 	// ones forge derives for a hosted env. Empty when the env has none.
 	UptimeChecks []release.ShapeUptimeCheck `json:"uptime_checks,omitempty"`
+	// StatusPage is Bundle.status_page, resolved against UptimeChecks (every
+	// check a component names is one of them). Nil when the env declares
+	// none.
+	StatusPage *release.ShapeStatusPage `json:"status_page,omitempty"`
 
 	// Telemetry is every forge.Telemetry the env declares (output.telemetry),
 	// decoded and normalized: what a collector consumes. Nil when none is
@@ -747,6 +751,9 @@ type HelmChartEntity struct {
 	// Patches are merge patches for the objects the chart renders, keyed
 	// `Kind/name` (see cluster.HelmChartSpec.Patches).
 	Patches map[string]any `json:"patches,omitempty"`
+	// Labels are stamped on every object the chart renders: set on the chart
+	// an MLStack Install lowers to (kcl/ml.k), absent on a declared one.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // PruneEnabled reports the chart's prune setting: on unless declared off.
@@ -1396,11 +1403,17 @@ type FrontendEntity struct {
 	// true carries the Forge Changes the source's changes.yaml declares into
 	// the env's shape; false keeps them out. The render emits the key only
 	// when it is false, so every other frontend renders byte-identically.
-	ChangesFromSource *bool       `json:"changes_from_source,omitempty"`
-	DevRunner         string      `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
-	Port              int         `json:"port,omitempty"`
-	EnvFile           string      `json:"env_file,omitempty"`
-	EnvVars           []KCLEnvVar `json:"env_vars,omitempty"`
+	ChangesFromSource *bool `json:"changes_from_source,omitempty"`
+	// ReleaseURLs is the KCL `release_urls`: nil (unset) or true leaves the
+	// platform's per-release URLs on for an OnHosted frontend; false turns
+	// them off, recorded in the env's shape (release.Shape.HostedFrontends).
+	// The render emits the key only when it is false, so every other
+	// frontend renders byte-identically.
+	ReleaseURLs *bool       `json:"release_urls,omitempty"`
+	DevRunner   string      `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
+	Port        int         `json:"port,omitempty"`
+	EnvFile     string      `json:"env_file,omitempty"`
+	EnvVars     []KCLEnvVar `json:"env_vars,omitempty"`
 	// Config is the typed, well-known knobs block (kcl/schema.k
 	// FrontendConfig). nil when the frontend declares no `config`. forge
 	// expands it into the SAME env stream as EnvVars via frontendConfigEnv,
@@ -1794,6 +1807,7 @@ type kclRenderRaw struct {
 	DataAccess               *release.ShapeDataAccess                  `json:"data_access,omitempty"`
 	ReleaseHealth            *release.ShapeReleaseHealth               `json:"release_health,omitempty"`
 	UptimeChecks             []release.ShapeUptimeCheck                `json:"uptime_checks,omitempty"`
+	StatusPage               *release.ShapeStatusPage                  `json:"status_page,omitempty"`
 	Identity                 *release.ShapeIdentity                    `json:"identity,omitempty"`
 	Identities               []release.ShapeIdentity                   `json:"identities,omitempty"`
 	Telemetry                json.RawMessage                           `json:"telemetry,omitempty"`
@@ -2246,6 +2260,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		DataAccess:               raw.DataAccess,
 		ReleaseHealth:            raw.ReleaseHealth,
 		UptimeChecks:             raw.UptimeChecks,
+		StatusPage:               raw.StatusPage,
 		Identity:                 raw.Identity,
 		Identities:               raw.Identities,
 		RenderedSecrets:          raw.RenderedSecrets,

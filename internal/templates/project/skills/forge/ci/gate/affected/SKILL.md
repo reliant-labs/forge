@@ -114,6 +114,61 @@ ci:
   the whole `test` script instead of `test:related`. `full: true` still means
   the whole unit lane.
 
+## Tests that read repo files: `ci.gate.affected_readers`
+
+A Go test that reads a repo file at run time (`os.ReadFile(filepath.Join(root,
+"deploy", "kcl", "main.k"))`) is invisible to the package graph, so a change to
+that file runs the whole suite. Opt in to the reader scan and forge reads each
+test package's Go sources (test and non-test files) for string literals that
+name a tracked file or directory:
+
+```yaml
+ci:
+  gate:
+    affected_readers: true
+```
+
+An owned file (including Go source) or a non-Go file that changes also selects
+the packages that name it or a directory holding it. Reader selections add to
+package ownership and rules; they are not deferred by the transitive cap. The
+gate's selection lines say which (`ci.gate.affected_readers: deploy/kcl/main.k
+changed → ex.com/m/internal/render (names deploy/kcl)`). Explicit
+`affected_ignore` still opts out of reader selection. An unplaced Go file still
+falls back to the full suite unless a rule claims it; an unclaimed non-Go file
+that no package owns or names also falls back to the full suite.
+
+What counts as naming a path: a package is scanned only if its sources locate
+the repo root (`runtime.Caller`, `os.Getwd`, a `".."`, `git rev-parse`,
+`"go.mod"`, a `repoRoot(` helper). A `filepath.Join`/`path.Join` is judged by its
+first argument: all-literal joins are relative to the package directory, joins
+onto a root-derived value are relative to the root, and joins onto anything else
+(`t.TempDir()`, a parameter) name nothing. Other multi-segment literals naming a
+tracked path count anywhere; a bare word counts only as a root-level file or the
+lone literal argument of a path call. Limits: the scan is syntactic and per
+package, so a path built at run time (a loop variable, a flag, another package's
+constant) or read by a child process from a path the test never spells is not
+seen; route those with `affected_rules`. It is Go-only: frontend tests are not
+scanned.
+
+## Nested modules the root replaces: `ci.gate.affected_modules`
+
+A root `go.mod` line `replace example.com/app/sdk/go => ./sdk/go` builds that
+directory's own module into the app, but `go list ./...` stops at its
+`go.mod`, so by default every change under it runs the full suite. Opt in:
+
+```yaml
+ci:
+  gate:
+    affected_modules: auto
+```
+
+Then a non-test `.go` file there maps to `<module path>/<dir>`, so the root
+packages that link it are tested, and the module's own affected tests run in
+a `test-mod-sdk-go` row (`go test` in `sdk/go`). Its `go.mod`/`go.sum` runs
+that module's whole suite; the root goes full only when its own `go.mod`/`go.sum`
+changed too. Any other file there still goes through the root's rules and
+also runs the module's whole suite.
+
 ## Capping the reach: `ci.gate.affected_reach`
 
 By default a changed package selects every test package whose binary links

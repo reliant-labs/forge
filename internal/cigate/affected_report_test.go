@@ -22,3 +22,14 @@ func TestAffectedDocument_ReportsLockfileAndClosure(t *testing.T) {
 		t.Error("lockfile_checks must always be a list")
 	}
 }
+
+func TestAffectedDocument_ReportsModules(t *testing.T) {
+	a := Affected{Modules: []ModuleTests{{Dir: "sdk/go", Path: "ex.com/m/sdk/go", Packages: []string{"ex.com/m/sdk/go/x"}}}}
+	d := a.Document()
+	if len(d.Modules) != 1 || d.Modules[0].Dir != "sdk/go" {
+		t.Errorf("modules = %+v", d.Modules)
+	}
+	if (&Affected{}).Document().Modules == nil {
+		t.Error("modules must always be a list")
+	}
+}

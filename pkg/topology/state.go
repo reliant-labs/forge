@@ -21,18 +21,19 @@ import (
 type ImageState int
 
 const (
-	// NotVerified: the ledger declares this digest and nothing has been
+	// NotVerified means the ledger declares this digest and nothing has been
 	// compared against a running system. Says NOTHING about what is running.
 	NotVerified ImageState = iota
-	// Match: the running digest is the declared one.
+	// Match means the running digest is the declared one.
 	Match
-	// Drift: something else is running.
+	// Drift means something else is running.
 	Drift
-	// Missing: the image is declared and nothing runs it.
+	// Missing means the image is declared and nothing runs it.
 	Missing
-	// Untagged: a workload runs a mutable tag, so the digest cannot be proven.
+	// Untagged means a workload runs a mutable tag, so the digest cannot be
+	// proven.
 	Untagged
-	// Unreachable: the system could not be read (context, credentials,
+	// Unreachable means the system could not be read (context, credentials,
 	// network). Nothing was learned.
 	Unreachable
 )

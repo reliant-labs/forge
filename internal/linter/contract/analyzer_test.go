@@ -1,6 +1,7 @@
 package contract_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	"golang.org/x/tools/go/analysis/analysistest"
@@ -122,6 +123,23 @@ func TestRequireContract_NotInternal(t *testing.T) {
 	testkit.Slow(t, "execs go")
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "notinternal")
+}
+
+// TestRequireContract_OnlyTheModuleRootInternalTree: the rule covers the
+// module's root internal/ — the tree forge composes and generates contract
+// mocks for — and not a nested internal/ that is private to pkg/ or cmd/.
+// Red before: ranger's pkg/internal/rangerconn, the Connect plumbing under
+// its public SDK, was flagged because its path has an internal segment.
+// Module mode (testdata/modscope has a go.mod), so import paths carry the
+// module path as in a real project.
+func TestRequireContract_OnlyTheModuleRootInternalTree(t *testing.T) {
+	testkit.Slow(t, "execs go")
+	dir := filepath.Join(analysistest.TestData(), "modscope")
+	analysistest.Run(t, dir, contract.RequireContractAnalyzer,
+		"example.com/sdk/internal/svc",
+		"example.com/sdk/pkg/internal/conn",
+		"example.com/sdk/pkg/client/internal/conn",
+		"example.com/sdk/cmd/tool/internal/helper")
 }
 
 // Regression: a package whose only exported methods satisfy STANDARD-LIBRARY

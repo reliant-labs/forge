@@ -2,6 +2,7 @@ package vulnscan
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -40,6 +41,10 @@ type Document struct {
 	// could be rescanned (no scanner, no database, a stale database), and
 	// why the verdict is undetermined.
 	Notes []string `json:"notes,omitempty"`
+	// SBOMs are the SBOM files the scan wrote to its output directory, one
+	// per artifact that has one (`forge vuln gate --out`); absent from
+	// every other verb's document.
+	SBOMs []SBOMFile `json:"sboms,omitempty"`
 }
 
 // DocumentDB is the freshness of a document's findings.
@@ -99,6 +104,40 @@ type DocumentFinding struct {
 	Exemption *Exemption `json:"exemption,omitempty"`
 	// Action is what the vuln_gate rule makes of it: block, warn or none.
 	Action Action `json:"action"`
+	// Rule is what decided Action: block_kev, block_severity,
+	// warn_severity, or exemption. Absent when nothing fired, or when an
+	// authoritative ledger blocked it without saying which field fired.
+	Rule Rule `json:"rule,omitempty"`
+	// Occurrences are each place it was found: an artifact, and a path of
+	// the package inside it, one per pair. What a scoped exemption's
+	// artifacts and locations are matched against (forge.VulnExemption).
+	Occurrences []Occurrence `json:"occurrences,omitempty"`
+}
+
+// Occurrence is one place a finding was found. Artifact is absent for a
+// finding attributed to the release as a whole, Location when the scan
+// names no path.
+type Occurrence struct {
+	Artifact string `json:"artifact,omitempty"`
+	Location string `json:"location,omitempty"`
+}
+
+// SBOMFile is an SBOM a scan wrote to its output directory (`forge vuln gate
+// --out`), or copied there from the SBOM it was given.
+type SBOMFile struct {
+	// Artifact is the artifact the SBOM describes, as the findings name it.
+	Artifact string `json:"artifact"`
+	// Path is the file, relative to the output directory.
+	Path string `json:"path"`
+	// Digest is the sha256 of the file's bytes (`sha256:<hex>`).
+	Digest string `json:"digest"`
+	// Format is the SBOM's format (`cyclonedx-json@1.6`, `spdx-json@2.3`).
+	Format string `json:"format"`
+	// Generator is the tool that wrote it (`syft@v1.57.2`), when known.
+	Generator string `json:"generator,omitempty"`
+	// Source is what was described: image, binary, lockfile (a directory),
+	// or ci-provided (an SBOM the caller supplied).
+	Source string `json:"source"`
 }
 
 // ArtifactScan is one artifact of a release and what is known of it.
@@ -178,8 +217,11 @@ type DocumentInput struct {
 	// declared mode (EvaluateInput.GradedAs).
 	GradedAs  release.DeliveryMode
 	Artifacts []ArtifactScan
-	Filter    Filter
-	Now       time.Time
+	// NotApplicable are the release's artifacts no SBOM describes
+	// (Coverage.NotApplicable); never part of Artifacts.
+	NotApplicable []NotApplicableArtifact
+	Filter        Filter
+	Now           time.Time
 	// Notes are carried into the document (Document.Notes).
 	Notes []string
 	// Stale marks the findings stale whatever the database's build time
@@ -225,7 +267,16 @@ func ScanIsCurrent(s *Scan, now time.Time) bool {
 func BuildDocument(in DocumentInput) Document {
 	doc := Document{Schema: DocumentSchema, Env: in.Env, Release: in.Release, Findings: []DocumentFinding{}, Notes: append([]string(nil), in.Notes...)}
 	doc.Coverage.Artifacts = len(in.Artifacts)
+	doc.Coverage.NotApplicable = append([]NotApplicableArtifact(nil), in.NotApplicable...)
 	byKey := map[string]*DocumentFinding{}
+	occ := map[string][]release.VulnOccurrence{}
+	addOcc := func(k string, f Finding, artifact string) {
+		for _, o := range occurrencesOf(f, []string{artifact}) {
+			if !slices.Contains(occ[k], o) {
+				occ[k] = append(occ[k], o)
+			}
+		}
+	}
 	var order []string
 	var oldest *Scan
 	for _, a := range in.Artifacts {
@@ -254,6 +305,7 @@ func BuildDocument(in DocumentInput) Document {
 			if seen.IsZero() {
 				seen = a.Latest.ScannedAt
 			}
+			addOcc(k, f, a.Artifact)
 			if d, ok := byKey[k]; ok {
 				d.Artifacts = appendUnique(d.Artifacts, a.Artifact)
 				if seen.Before(d.FirstSeen) {
@@ -268,12 +320,14 @@ func BuildDocument(in DocumentInput) Document {
 	for _, rf := range in.ReleaseFindings {
 		k := rf.Finding.Key()
 		if d, ok := byKey[k]; ok {
+			// An artifact's finding: the artifact already says where it is.
 			if !rf.FirstSeen.IsZero() && (d.FirstSeen.IsZero() || rf.FirstSeen.Before(d.FirstSeen)) {
 				d.FirstSeen = rf.FirstSeen
 			}
 			continue
 		}
 		byKey[k] = &DocumentFinding{Finding: rf.Finding, Artifacts: []string{}, FirstSeen: rf.FirstSeen}
+		addOcc(k, rf.Finding, "")
 		order = append(order, k)
 	}
 	// The document is as fresh as its oldest artifact: when that
@@ -292,7 +346,7 @@ func BuildDocument(in DocumentInput) Document {
 	for _, k := range order {
 		all = append(all, byKey[k].Finding)
 	}
-	ev := Evaluate(EvaluateInput{Gate: in.Gate, GradedAs: in.GradedAs, Findings: all, Coverage: doc.Coverage, Stale: doc.DB.Stale, Now: in.Now, Judged: in.Judged})
+	ev := Evaluate(EvaluateInput{Gate: in.Gate, GradedAs: in.GradedAs, Findings: all, Coverage: doc.Coverage, Stale: doc.DB.Stale, Now: in.Now, Judged: in.Judged, Occurrences: occ})
 	doc.Gate = ev.Gate
 	doc.Gate.JudgedBy = in.JudgedBy
 	switch {
@@ -304,8 +358,9 @@ func BuildDocument(in DocumentInput) Document {
 	}
 	for i, j := range ev.Findings {
 		d := byKey[order[i]]
-		d.Action, d.Exemption = j.Action, j.Exemption
+		d.Action, d.Rule, d.Exemption = j.Action, j.Rule, j.Exemption
 		sort.Strings(d.Artifacts)
+		d.Occurrences = documentOccurrences(occ[order[i]])
 		if in.Filter.keep(*d) {
 			doc.Findings = append(doc.Findings, *d)
 			doc.Counts.add(d.Severity)
@@ -313,6 +368,24 @@ func BuildDocument(in DocumentInput) Document {
 	}
 	sortDocumentFindings(doc.Findings)
 	return doc
+}
+
+// documentOccurrences is where a finding was found, as the document lists
+// it: sorted, and absent when nothing names an artifact or a path.
+func documentOccurrences(in []release.VulnOccurrence) []Occurrence {
+	var out []Occurrence
+	for _, o := range in {
+		if o.Artifact != "" || o.Location != "" {
+			out = append(out, Occurrence{Artifact: o.Artifact, Location: o.Location})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Artifact != out[j].Artifact {
+			return out[i].Artifact < out[j].Artifact
+		}
+		return out[i].Location < out[j].Location
+	})
+	return out
 }
 
 // firstSeenIn maps each finding key to the first scan in history that

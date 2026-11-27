@@ -737,12 +737,15 @@ func writeDBAnalyzeText(w io.Writer, doc *dbanalyze.Document) {
 func writeDBAnalyzeQueriesText(w io.Writer, doc *dbanalyze.Document) {
 	for _, q := range doc.Queries {
 		where := "(no caller)"
-		if len(q.Callers) > 0 {
+		if q.QueryDetail != nil && len(q.Callers) > 0 {
 			where = fmt.Sprintf("%s:%d", q.Callers[0].Caller.File, q.Callers[0].Caller.Line)
 		}
 		fmt.Fprintf(w, "\n%s  %s\n", where, oneLine(q.SQL, 72))
 		if q.Error != "" {
 			fmt.Fprintf(w, "    not planned: %s\n", q.Error)
+			continue
+		}
+		if q.QueryDetail == nil {
 			continue
 		}
 		for _, a := range q.Access {

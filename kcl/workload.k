@@ -215,7 +215,33 @@ LLM_ENV_KEYS: {str:str} = {
     ANTHROPIC_API_KEY = "api_key"
 }
 
-type EnvValue = str | SecretRef | ConfigMapRef | FieldRef | ManagedSecret | DatabaseRef | WorkloadURL | IdentityRef | BucketRef | LLMRef
+schema EmailRef:
+    """One connection fact of a `forge.Email` in this env, as an env value:
+
+        env = {MAIL_FROM = forge.EmailRef {name = "mail", key = "from"}}
+
+    You rarely write one by hand: `forge.email_env("MAIL", "mail")` returns
+    all eight (MAIL_SMTP_HOST, MAIL_SMTP_PORT, MAIL_SMTP_TLS,
+    MAIL_SMTP_USERNAME, MAIL_SMTP_PASSWORD, MAIL_FROM, MAIL_FROM_DOMAIN,
+    MAIL_API_URL).
+
+    `key` is one of EMAIL_REF_KEYS. What it lowers to depends on where the
+    Email is delivered and where the referrer runs: literals for the env's
+    Mailpit (a host process only), and for a forge.EmailOnSMTP its declared
+    values, the credentials as the literal or reference it declares.
+    """
+    name: str
+    key: str
+
+    check:
+        key in EMAIL_REF_KEYS, "EmailRef.key '${key}' must be one of ${EMAIL_REF_KEYS}"
+
+# The connection facts a forge.EmailRef can name, in the order
+# forge.email_env emits them. The variable names they make are the contract
+# an app reads in every env, so a key is only ever added.
+EMAIL_REF_KEYS: [str] = ["smtp_host", "smtp_port", "smtp_tls", "smtp_username", "smtp_password", "from", "from_domain", "api_url"]
+
+type EnvValue = str | SecretRef | ConfigMapRef | FieldRef | ManagedSecret | DatabaseRef | WorkloadURL | IdentityRef | BucketRef | LLMRef | EmailRef
 
 # ---------------------------------------------------------------------------
 # Runtimes. The `type` discriminator is what the JSON contract dispatches on
@@ -703,6 +729,17 @@ schema Workload:
     # subcommand. The same args select it on every runtime.
     args?: [str]
     replicas: int = 1
+    # A replica RANGE instead of `replicas`: a HorizontalPodAutoscaler moves
+    # the Deployment between minReplicas and maxReplicas (at most 10) to hold
+    # the pods' average CPU at cpuTargetPercent of their request (default 70).
+    #
+    #   autoscale = forge.Autoscale {minReplicas = 2, maxReplicas = 6}
+    #
+    # Service and worker kinds only. The autoscaler owns the count, so leave
+    # `replicas` unset; refused beside storageGiB and strategy = "Recreate".
+    # forge.OnCluster renders it; forge.OnHosted needs a control plane that
+    # applies it; host, compose and build-only refuse it.
+    autoscale?: tiers.Autoscale
     resources?: tiers.Resources
     # name -> a literal, or a reference: forge.SecretRef | ConfigMapRef |
     # FieldRef | ManagedSecret | DatabaseRef | WorkloadURL. Insertion order
@@ -772,6 +809,15 @@ schema Workload:
     successfulJobsHistoryLimit?: int
     failedJobsHistoryLimit?: int
     ttlSecondsAfterFinished?: int
+    # How a cron's ticks fire: concurrencyPolicy ("Allow" | "Forbid" |
+    # "Replace", what happens when a run is still going at the next tick),
+    # startingDeadlineSeconds (10-86400, how late a tick may still start) and
+    # timeZone (an IANA name such as "Europe/Berlin" the schedule is read in).
+    # Each renders only when set; unset keeps Kubernetes' defaults (Allow, no
+    # deadline, the controller's zone). Cron only.
+    concurrencyPolicy?: str
+    startingDeadlineSeconds?: int
+    timeZone?: str
 
     check:
         not delivery_unit or regex.match(delivery_unit, r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$"), \
@@ -839,6 +885,8 @@ schema Workload:
             "Workload.activeDeadlineSeconds bounds a run to completion — only kind='job' or 'cron' completes; '${name}' is a '${kind}'"
         (successfulJobsHistoryLimit == Undefined and failedJobsHistoryLimit == Undefined and ttlSecondsAfterFinished == Undefined) or kind == "cron", \
             "Workload.successfulJobsHistoryLimit, failedJobsHistoryLimit and ttlSecondsAfterFinished keep or expire a cron's finished Jobs — only kind='cron' has a Job history; '${name}' is a '${kind}'"
+        (concurrencyPolicy == Undefined and startingDeadlineSeconds == Undefined and timeZone == Undefined) or kind == "cron", \
+            "Workload.concurrencyPolicy, startingDeadlineSeconds and timeZone say how a cron's schedule fires — only kind='cron' has a schedule; '${name}' is a '${kind}'"
         not ports or caps.supports(kind, caps.CAP_PORTS), \
             "Workload.ports is not supported for kind='${kind}' — a tool is never scheduled and a batch kind (cron/job) runs to completion, so there is no pod anything can dial. Use kind='service'."
         replicas == 1 or caps.supports(kind, caps.CAP_REPLICAS), \
@@ -855,3 +903,20 @@ schema Workload:
             "Workload.crds is only supported for kind='operator' — got '${kind}'. `crds` names the custom resources a controller-runtime manager owns."
         not storageGiB or storageGiB == 0 or replicas == 1, \
             "Workload '${name}': storageGiB needs replicas = 1 — one disk is attached to one pod (a Recreate rollout)"
+
+        # --- autoscale (v1alpha1.WorkloadSpec.Validate states the same) ---
+        not autoscale or kind in ["service", "worker"], \
+            "Workload '${name}': autoscale is not supported for kind='${kind}' — only a service or a worker scales on load: an operator elects one leader, so more pods buy it nothing, and a batch kind (job/cron) or a tool has no Deployment to scale. Use replicas."
+        not autoscale or autoscale.minReplicas <= autoscale.maxReplicas, \
+            "Workload '${name}': autoscale.minReplicas (${autoscale.minReplicas if autoscale else 0}) must not exceed autoscale.maxReplicas (${autoscale.maxReplicas if autoscale else 0})"
+        not autoscale or replicas == 1, \
+            "Workload '${name}': replicas = ${replicas} is set beside autoscale — autoscale owns the replica count; set autoscale.minReplicas"
+        not autoscale or not storageGiB, \
+            "Workload '${name}': autoscale is not allowed with storageGiB — the volume is ReadWriteOnce, so a second replica can never mount it. Drop autoscale, or keep the data somewhere every replica can reach (a managed database or bucket)."
+        not autoscale or strategy != "Recreate", \
+            "Workload '${name}': autoscale is not allowed with strategy = \"Recreate\" — Recreate declares the replica count a correctness bound (one version, one pod set), which a count the autoscaler moves contradicts. Drop one."
+
+# forge.Autoscale: the generated tiers.Autoscale, re-exported so an author
+# writes `autoscale = forge.Autoscale {minReplicas = 2, maxReplicas = 6}`
+# without a second import (fw.Autoscale is the same schema).
+Autoscale = tiers.Autoscale

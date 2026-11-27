@@ -13,6 +13,8 @@
 // release binary — so its version is read from its package.json instead.
 // Anything named `forge` that does not answer as Reliant Forge (Laravel
 // Forge, Foundry's forge) is ignored, never reported.
+//
+//forge:exclude-contract: a value-type Scanner whose seams are its own fields (PathEnv, GOOS, Self, Probe); its one consumer, internal/cli, substitutes the whole scan through a func var, so there is no injected Service for a contract to describe
 package pathshadow
 
 import (

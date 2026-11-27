@@ -37,7 +37,9 @@ func TestGenerateOutcome_CleanRunIsGreen(t *testing.T) {
 		if !strings.HasPrefix(got, "✅ Code generation complete — 5 file(s) ") {
 			t.Errorf("%s: a clean run's line = %q, want the green check", name, got)
 		}
-		if strings.Contains(got, "but") || strings.Count(got, "\n") != 1 {
+		// The lines after the closing line name the changed files
+		// (printChangedFiles); none of them is a caveat.
+		if strings.Contains(got, "but") || strings.Count(got, "\n") != 1+sum.Changed() {
 			t.Errorf("%s: a clean run's line carries a caveat: %q", name, got)
 		}
 	}

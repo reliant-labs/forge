@@ -260,10 +260,16 @@ func RegisterServiceV2(m *MuxV2, svc any, mountOpts ...Option) []string {
 // unimplemented too, but deployed clients route on the status). An unknown
 // SERVICE is unchanged: no pattern matches, and the mux answers 404 itself.
 //
+// It also serves JSON with forge's protobuf JSON codec (JSONCodecOptionV2),
+// ahead of opts: a Duration sent as "1h" is still refused, with the spelling
+// to send ("3600s") in the error. A WithCodecs in opts replaces it.
+//
 // MuxV2 mounts every server through it. Use it for any v2 server mounted by
 // hand.
 func MountV2(mux connecthttp.ServeMux, server *connectv2.Server, opts ...connecthttp.Option) {
-	connecthttp.Mount(v1UnknownMethod{mux: mux}, server, opts...)
+	all := make([]connecthttp.Option, 0, len(opts)+1)
+	all = append(append(all, JSONCodecOptionV2()), opts...)
+	connecthttp.Mount(v1UnknownMethod{mux: mux}, server, all...)
 }
 
 // v1UnknownMethod is the connecthttp.ServeMux MountV2 mounts through: it

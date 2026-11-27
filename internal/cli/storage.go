@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -98,17 +99,7 @@ func newStorageCmd() *cobra.Command {
 		cfg, err := storage.Load(p)
 		return cfg, p, err
 	}
-	group.AddCommand(&cobra.Command{Use: "check [path...]", Args: cobra.ArbitraryArgs, Short: "Refuse a build below the physical host free-space reserve", RunE: func(cmd *cobra.Command, paths []string) error {
-		p, _, err := load()
-		if err != nil {
-			return err
-		}
-		if len(paths) == 0 {
-			paths = []string{"."}
-		}
-		_, err = storage.CheckBuildSpace(p, paths...)
-		return err
-	}})
+	group.AddCommand(newStorageCheckCmd(load))
 	group.AddCommand(&cobra.Command{Use: "status", Args: cobra.NoArgs, Short: "Report physical host capacity, Docker usage and node cleanup settings", RunE: func(cmd *cobra.Command, _ []string) error {
 		p, _, err := load()
 		if err != nil {
@@ -232,6 +223,36 @@ func newStorageCmd() *cobra.Command {
 	return cmdutil.StrictGroup(group)
 }
 
+// newStorageCheckCmd keeps lane admission and its flags together.
+func newStorageCheckCmd(load func() (storage.Policy, string, error)) *cobra.Command {
+	var checkReserve uint64
+	var checkLane string
+	check := &cobra.Command{Use: "check [path...]", Args: cobra.ArbitraryArgs, Short: "Refuse a build below the physical host free-space reserve", RunE: func(cmd *cobra.Command, paths []string) error {
+		p, _, err := load()
+		if err != nil {
+			return err
+		}
+		if !cmd.Flags().Changed("lane") {
+			checkLane = os.Getenv(storageLaneEnv)
+		}
+		lane, err := parseBuildLane(checkLane)
+		if err != nil {
+			return err
+		}
+		override, err := reserveOverride(checkReserve)
+		if err != nil {
+			return err
+		}
+		if len(paths) == 0 {
+			paths = []string{"."}
+		}
+		return admitBuild(p, lane, override, cmd.ErrOrStderr(), paths...)
+	}}
+	check.Flags().Uint64Var(&checkReserve, "reserve", 0, "refuse below this many GiB free for this run only, instead of the policy's reserve (default: $"+storage.ReserveOverrideEnv+", else the policy)")
+	check.Flags().StringVar(&checkLane, "lane", "heavy", "what the build writes: heavy (images, whole-project builds: the policy reserve), host (one binary for a host process: refused below "+fmt.Sprint(storage.HostBuildReserveGiB)+" GiB, warned below the policy reserve) or light (no go or image build: "+fmt.Sprint(storage.LightBuildReserveGiB)+" GiB); default $"+storageLaneEnv+", which forge env up sets to host for its host processes")
+	return check
+}
+
 // newStorageWorktreesCmd is `forge storage worktrees`. It reads no storage
 // policy — worktree cleanup is scoped by its own flags — so it is built apart
 // from the policy-loading subcommands above.
@@ -262,7 +283,100 @@ var checkBuildStorageFn = func(project string) error {
 // go build, no image build): admitted under storage.LightBuildReserveGiB
 // rather than the heavy-build reserve.
 var checkLightBuildStorageFn = func(project string) error {
-	return checkBuildStorageWith(project, os.Stderr, true)
+	return checkBuildStorageLane(project, os.Stderr, laneLight)
+}
+
+// checkHostBuildStorageFn is checkBuildStorageFn for the HOST lane: the go
+// build of a process `forge env up` runs on this machine (and air's rebuild of
+// it), admitted under storage.HostBuildReserveGiB with a warning between that
+// floor and the policy's reserve. Image builds and every other heavy lane
+// check the full reserve themselves when they start.
+var checkHostBuildStorageFn = func(project string) error {
+	return checkBuildStorageLane(project, os.Stderr, laneHost)
+}
+
+// buildLane is how much disk a build may write, which decides the reserve it
+// is admitted under. The policy's host_reserve_gib is sized for the heavy lane
+// (image builds, cluster nodes, whole-project go builds); a lighter lane is
+// held to a smaller floor (storage.Policy.HostBuild / LightBuild).
+type buildLane string
+
+const (
+	laneHeavy buildLane = "heavy" // image, external and release builds: the full policy reserve
+	laneHost  buildLane = "host"  // one binary for a host process: storage.HostBuildReserveGiB
+	laneLight buildLane = "light" // no go build, no image build: storage.LightBuildReserveGiB
+)
+
+// storageLaneEnv names the lane a bare `forge storage check` admits under
+// when --lane is not given. `forge env up` sets it to "host" in the
+// environment of every host process it launches, so the scaffolded
+// .air.toml's `forge storage check ./tmp` — in every existing project, with no
+// file edit — admits air's rebuild of one binary under the host floor rather
+// than the heavy reserve.
+const storageLaneEnv = "FORGE_STORAGE_LANE"
+
+func parseBuildLane(s string) (buildLane, error) {
+	switch l := buildLane(strings.TrimSpace(s)); l {
+	case "":
+		return laneHeavy, nil
+	case laneHeavy, laneHost, laneLight:
+		return l, nil
+	default:
+		return "", fmt.Errorf("unknown storage lane %q: want heavy, host or light", s)
+	}
+}
+
+// floor is the policy a build in lane l is REFUSED under.
+func (l buildLane) floor(p storage.Policy) storage.Policy {
+	switch l {
+	case laneHost:
+		return p.HostBuild()
+	case laneLight:
+		return p.LightBuild()
+	default:
+		return p
+	}
+}
+
+// admitBuild is the admission decision every lane shares. With an override
+// (--reserve, or storage.ReserveOverrideEnv) the build is refused below
+// exactly that many GiB, whatever the lane: someone chose it for this run.
+// Otherwise the lane's floor refuses, and a lighter lane that starts between
+// its floor and the policy's reserve proceeds with one warning line, so the
+// machine's shortfall is never silent.
+func admitBuild(p storage.Policy, lane buildLane, override uint64, warn io.Writer, paths ...string) error {
+	if override > 0 {
+		p.HostReserveGiB = override
+		_, err := buildSpaceFn(p, paths...)
+		return err
+	}
+	floor := lane.floor(p)
+	if _, err := buildSpaceFn(floor, paths...); err != nil {
+		return err
+	}
+	if floor.HostReserveGiB >= p.HostReserveGiB {
+		return nil
+	}
+	var short *storage.ReserveError
+	if _, err := buildSpaceFn(p, paths...); errors.As(err, &short) {
+		fmt.Fprintf(warn, "warning: host disk %s has %.1f GiB free, below the machine's %d GiB storage reserve; building anyway: a %s build is refused only below %d GiB ('forge storage gc --apply' frees space)\n",
+			short.Path, float64(short.Available)/float64(storage.GiB), short.ReserveGiB, lane, floor.HostReserveGiB)
+	}
+	return nil
+}
+
+// buildSpaceFn measures the disks a build writes against a policy; a seam so
+// admitBuild's lanes are testable on any host's real free space.
+var buildSpaceFn = storage.CheckBuildSpace
+
+// reserveOverride is the per-run reserve: the flag when it is set, else
+// storage.ReserveOverrideEnv, else 0 (the policy decides).
+func reserveOverride(flagGiB uint64) (uint64, error) {
+	if flagGiB > 0 {
+		return flagGiB, nil
+	}
+	n, _, err := storage.ReserveOverride(os.Getenv)
+	return n, err
 }
 
 // enforceReserveEnv turns the host reserve back into a refusal on a CI
@@ -291,12 +405,12 @@ const enforceReserveEnv = "FORGE_STORAGE_ENFORCE_RESERVE"
 // line above. A persistent self-hosted runner IS a machine that fills, so
 // FORGE_STORAGE_ENFORCE_RESERVE=1 restores the refusal there.
 func checkBuildStorage(project string, warn io.Writer) error {
-	return checkBuildStorageWith(project, warn, false)
+	return checkBuildStorageLane(project, warn, laneHeavy)
 }
 
-// checkBuildStorageWith is checkBuildStorage, under the light-build reserve
-// when light is set (storage.Policy.LightBuild).
-func checkBuildStorageWith(project string, warn io.Writer, light bool) error {
+// checkBuildStorageLane is checkBuildStorage, admitted under lane's floor
+// (admitBuild) and the per-run override.
+func checkBuildStorageLane(project string, warn io.Writer, lane buildLane) error {
 	path, err := storage.DefaultPath()
 	if err != nil {
 		return err
@@ -305,10 +419,11 @@ func checkBuildStorageWith(project string, warn io.Writer, light bool) error {
 	if err != nil {
 		return err
 	}
-	if light {
-		p = p.LightBuild()
+	override, err := reserveOverride(0)
+	if err != nil {
+		return err
 	}
-	_, err = storage.CheckBuildSpace(p, project)
+	err = admitBuild(p, lane, override, warn, project)
 	var short *storage.ReserveError
 	if !errors.As(err, &short) || !buildinfo.IsCI() || os.Getenv(enforceReserveEnv) != "" {
 		return err

@@ -106,6 +106,10 @@ type RunnerSpec struct {
 	// CoverDir is the GOCOVERDIR an instrumented binary writes its coverage
 	// to; empty when the binary is not instrumented. See WithCoverage.
 	CoverDir string
+	// AirExcludeDirs are directories, relative to the air root, the air
+	// runner excludes on top of its config's exclude_dir: the ones
+	// AirUnwatchedDirs derived at launch. Empty adds nothing.
+	AirExcludeDirs []string
 
 	// Command, when non-empty, is the workload's spec.command: an explicit
 	// entrypoint run verbatim with Args, for any runner but air. It is how
@@ -328,6 +332,7 @@ func goBuildOutput(cmd string) string {
 //	delve                                  dlv exec --headless --listen=127.0.0.1:<port> --api-version=2
 //	                                         --accept-multiclient --continue ./bin/<out> [-- Args...]
 //	air                                    air -c <AirConfig|.air.toml>   (Args: see IgnoresArgs)
+//	                                         [-build.exclude_dir <the config's list + AirExcludeDirs>]
 //
 // go-run, binary and delve with no Go build and no Command are an ERROR,
 // as is an unknown runner. There is no fallback: the historical default
@@ -368,7 +373,7 @@ func buildCmdFor(ctx context.Context, goos, name string, spec RunnerSpec) (*exec
 		if cfg == "" {
 			cfg = DefaultAirConfig
 		}
-		argv = []string{"air", "-c", cfg}
+		argv = append([]string{"air", "-c", cfg}, spec.airExcludeArgs()...)
 	case len(spec.Command) > 0:
 		argv = append(append([]string{}, spec.Command...), spec.Args...)
 	case strings.TrimSpace(spec.GoPkg) == "":

@@ -11,7 +11,7 @@ forge agent mcp	cmd	project-dir/C:string
 forge agent report-bug	cmd	actual:string anonymous:bool dry-run:bool evidence:string expected:string json:bool output/o:string project-dir/C:string severity:string summary:string title:string
 forge agent skill	group	allow-version-skew:bool project-dir/C:string
 forge agent skill list	cmd	all:bool allow-version-skew:bool include-migrations:bool json:bool project-dir/C:string with-bodies:bool
-forge agent skill load	cmd	allow-version-skew:bool project-dir/C:string
+forge agent skill load	cmd	allow-version-skew:bool context:int ignore-case/i:bool project-dir/C:string regex:string section:string
 forge agent skill search	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge api	group	allow-version-skew:bool project-dir/C:string
 forge api curl	cmd	allow-version-skew:bool auth-token:string body:string host:string port:int project-dir/C:string
@@ -269,7 +269,7 @@ forge machine slot	group	project-dir/C:string
 forge machine slot run	cmd	class:string project-dir/C:string slots:int
 forge machine slot status	cmd	class:string json:bool project-dir/C:string
 forge machine storage	group	policy:string project-dir/C:string
-forge machine storage check	cmd	policy:string project-dir/C:string
+forge machine storage check	cmd	lane:string policy:string project-dir/C:string reserve:uint64
 forge machine storage configure-nodes	cmd	apply:bool policy:string project-dir/C:string
 forge machine storage daemon	cmd	interval:duration policy:string project-dir/C:string
 forge machine storage gc	cmd	apply:bool dry-run:bool policy:string project-dir/C:string scheduled:bool
@@ -420,7 +420,7 @@ forge secret set	cmd	allow-version-skew:bool env:string from-file:string kube-co
 forge secret unset	cmd	allow-version-skew:bool env:string project-dir/C:string
 forge skill	group	allow-version-skew:bool project-dir/C:string
 forge skill list	cmd	all:bool allow-version-skew:bool include-migrations:bool json:bool project-dir/C:string with-bodies:bool
-forge skill load	cmd	allow-version-skew:bool project-dir/C:string
+forge skill load	cmd	allow-version-skew:bool context:int ignore-case/i:bool project-dir/C:string regex:string section:string
 forge skill search	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge slot	group	project-dir/C:string
 forge slot run	cmd	class:string project-dir/C:string slots:int
@@ -428,7 +428,7 @@ forge slot status	cmd	class:string json:bool project-dir/C:string
 forge start	cmd	allow-version-skew:bool project-dir/C:string
 forge start app	cmd	allow-version-skew:bool project-dir/C:string
 forge storage	group	policy:string project-dir/C:string
-forge storage check	cmd	policy:string project-dir/C:string
+forge storage check	cmd	lane:string policy:string project-dir/C:string reserve:uint64
 forge storage configure-nodes	cmd	apply:bool policy:string project-dir/C:string
 forge storage daemon	cmd	interval:duration policy:string project-dir/C:string
 forge storage gc	cmd	apply:bool dry-run:bool policy:string project-dir/C:string scheduled:bool

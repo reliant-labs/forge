@@ -62,7 +62,7 @@ CREATE TABLE notes (
 	cfg := seedplan.DefaultConfig()
 	cfg.Tables = []string{"widgets"} // the CRUD-entity scope; notes is hand-written schema
 
-	autoSeedFirstBoot(ctx, db, migDir, "", cfg)
+	autoSeedFirstBoot(ctx, db, migDir, "", cfg, noEntityLookup(t))
 
 	var widgets int
 	if err := db.QueryRow(`SELECT count(*) FROM widgets`).Scan(&widgets); err != nil {
@@ -81,7 +81,7 @@ CREATE TABLE notes (
 	if _, err := db.Exec(`UPDATE notes SET body = 'edited' WHERE id = 'mine'`); err != nil {
 		t.Fatal(err)
 	}
-	autoSeedFirstBoot(ctx, db, migDir, "", cfg)
+	autoSeedFirstBoot(ctx, db, migDir, "", cfg, noEntityLookup(t))
 	if err := db.QueryRow(`SELECT body FROM notes WHERE id = 'mine'`).Scan(&body); err != nil {
 		t.Fatal(err)
 	}

@@ -8,6 +8,9 @@ import (
 	"encoding/json"
 )
 
+// Schema is the catalog document's schema id. GeneratedPath is where forge
+// generate writes the committed catalog, relative to the module root, and
+// BundlePath is the copy's path inside a release bundle.
 const (
 	Schema        = "forge.dev/service-catalog/v1"
 	GeneratedPath = "gen/forge_service_catalog.json"
@@ -60,6 +63,10 @@ func (s Source) MarshalJSON() ([]byte, error) {
 	}{s.Path, s.Line})
 }
 
+// Process is one composition root of the module, with the command that runs
+// it: the components it reaches, the services its route sets serve, and the
+// clients it can call. One executable's `server api` and `server worker` are
+// two processes.
 type Process struct {
 	ID         string   `json:"id"`
 	Root       string   `json:"root"`
@@ -70,6 +77,8 @@ type Process struct {
 	Source     Source   `json:"source"`
 }
 
+// Serve is a protobuf service a process's route set declares it serves. It is
+// a declared capability, not proof a live listener mounted it.
 type Serve struct {
 	Component  string `json:"component"` // handler component; method names join to Component.Methods
 	Service    string `json:"service"`   // fully-qualified protobuf service
@@ -78,6 +87,7 @@ type Serve struct {
 	Resolution string `json:"resolution"` // declared_route_set; not runtime observation
 }
 
+// Service is one protobuf service and its methods.
 type Service struct {
 	Name      string   `json:"name"`
 	ProtoFile string   `json:"proto_file"`
@@ -88,6 +98,7 @@ type Service struct {
 	Descriptor json.RawMessage `json:"descriptor"`
 }
 
+// Method is one rpc of a [Service], as its proto declares it.
 type Method struct {
 	ID              string `json:"id"` // full proto service + "/" + method
 	Name            string `json:"name"`
@@ -99,6 +110,8 @@ type Method struct {
 	AuthRequired    bool   `json:"auth_required"`
 }
 
+// Component is one node of the typed composition graph: a component, a
+// provider, a route set or the operators.
 type Component struct {
 	ID      string       `json:"id"`
 	Name    string       `json:"name"`
@@ -111,12 +124,18 @@ type Component struct {
 	ImplementationCandidates []Implementation `json:"implementation_candidates"`
 }
 
+// Implementation is a concrete type in a component's package that satisfies
+// the component's interface type: a candidate, not proof a constructor returns
+// it.
 type Implementation struct {
 	Type    string       `json:"type"`
 	Source  Source       `json:"source"`
 	Methods []CodeMethod `json:"methods"`
 }
 
+// CodeMethod is one Go method of a component, implementation or binding. The
+// catalog records none today (the bundle_method_sets_omitted diagnostic), so
+// every methods list is empty.
 type CodeMethod struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
@@ -126,6 +145,9 @@ type CodeMethod struct {
 	Source     Source `json:"source"`
 }
 
+// Binding is one interface-typed Deps field of a component: the interface it
+// consumes, the producers assignable to it, and the providers its compose.go
+// expression reads.
 type Binding struct {
 	Consumer   string       `json:"consumer"`
 	Field      string       `json:"field"`
@@ -136,6 +158,9 @@ type Binding struct {
 	Resolution string       `json:"resolution"` // composition_expression or unresolved
 }
 
+// Client is one typed client registration in a provider: the protobuf service
+// it can call and the config field naming its target. Reach means can-call,
+// never that any method was called.
 type Client struct {
 	ID          string `json:"id"`
 	Provider    string `json:"provider"`
@@ -146,6 +171,8 @@ type Client struct {
 	Resolution  string `json:"resolution"` // declared; no target URL inference
 }
 
+// Diagnostic is one gap in the catalog's evidence: Code names it (such as
+// type_unresolved or binding_unresolved), Component the component it concerns.
 type Diagnostic struct {
 	Code      string `json:"code"`
 	Component string `json:"component,omitempty"`

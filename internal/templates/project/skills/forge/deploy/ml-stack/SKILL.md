@@ -25,7 +25,11 @@ ml_stacks = [forge.MLStack {
     observed_at = "2026-11-26"
     accelerators = [forge.Accelerators {
         vendor = "nvidia"
-        metrics = forge.Adopt {kind = "dcgm-exporter", namespace = "gpu-operator", version = "3.3.9"}
+        metrics = forge.Adopt {
+            kind = "dcgm-exporter", namespace = "gpu-operator", version = "3.3.9"
+            selector = {"app": "nvidia-dcgm-exporter"}, port = 9400
+            allow = ["DCGM_FI_DEV_GPU_UTIL", "DCGM_FI_DEV_FB_USED"]
+        }
     }]
     queue = forge.Install {
         kind = "kueue"
@@ -45,8 +49,9 @@ Check with `forge env render <env>`.
 
 ## Policy: discover, then adopt, then install only what is missing
 
-- `forge.Adopt {kind, namespace?, version?, note?}`: already runs; forge reads
-  it, never upgrades or owns it.
+- `forge.Adopt {kind, namespace?, version?, note?, selector?, port?, allow?,
+  service_name?}`: already runs; forge reads it, never upgrades or owns it. With
+  `selector` and `port` it is also scraped (below).
 - `forge.Install {kind, chart, reason?}`: forge installs a pinned chart on the
   stack's cluster. `delivery = "bundle"` (no CRDs: rendered into the env's bundle
   and pruned with it) or `"bootstrap"` (default; an operator with CRDs, applied
@@ -60,14 +65,29 @@ Check with `forge env render <env>`.
 - forge ships no per-vendor presets: metric allow lists and ports are the
   author's data.
 
+## Scraping a component (released in v1.13.0)
+
+`selector` (pod labels, all must match) plus `port` on an Adopt or Install lower,
+when the env's observability is on, to a `forge.Telemetry`: service_name
+`ml-<kind>` (suffixed with the cluster when an env has several stacks, or set
+`service_name`), scope `platform`, the stack's cluster, `namespaces` = the
+component's namespace (an Install's chart namespace), one metrics scrape on
+`port` keeping only `allow` (a list of Prometheus names; unset keeps all). An
+env-declared `Telemetry` with the same service_name replaces the generated one.
+Render refuses `port` without `selector`, `allow`/`service_name` without `port`,
+and a bad metric name. An Adopt with no port scrapes nothing.
+
+**Preferred path is changing:** forge#3030 (open, being reworked) deprecates
+these fields, keeping them working with a warning, in favour of
+`Observability.telemetry`. Once it lands, write scrapes as `forge.Telemetry` in
+the env's `observability` and treat Adopt as an inventory statement. Until then
+the fields above are the released behaviour; do not tell a user they do not exist.
+
 ## Not built — do not promise
 
 - A discovery command that inventories a cluster and proposes the ml.k
   (forge#2893, open). Until it merges there is no such command: write the stack
   by hand.
-- Scrape fields on Adopt/Install (`selector`, `port`, `allow`, `service_name`)
-  exist on main today but forge#3030 (open) removes them in favour of
-  `Observability.telemetry`. Do not teach them.
 - The console ML views, access request UI, cluster inventory on the collector,
   model releases, previews, evals: design only (`docs/proposals/ml-workloads.md`,
   `reliant-for-ml.md`).

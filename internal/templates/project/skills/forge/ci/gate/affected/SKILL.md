@@ -169,6 +169,13 @@ that module's whole suite; the root goes full only when its own `go.mod`/`go.sum
 changed too. Any other file there still goes through the root's rules and
 also runs the module's whole suite.
 
+A matching `affected_rules` package selection adds tests to the changed
+module's row. Paths and directory patterns are relative to the project
+root: `paths: ["sdk/go/**"]` with `packages: ["./sdk/go/..."]` selects all
+listed test packages in that module, including its root package. Ownership
+and import-based selections still apply, and `except` still excludes paths
+from the rule.
+
 ## Capping the reach: `ci.gate.affected_reach`
 
 By default a changed package selects every test package whose binary links

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
@@ -16,6 +18,25 @@ import (
 // forge.FrontendURL from. A var so the CLI tests state the control plane's
 // answer instead of needing one.
 var frontendURLStatusReader hostedStatusReader = readHostedStatusFromDeclaration
+
+// frontendForBuild is the ONE preparation every frontend build forge runs
+// applies to the rendered frontend before it computes the build env
+// (frontendBuildEnv): the project it belongs to, and its forge.FrontendURL
+// references resolved for envName (resolveBuildFrontendURLs). Its callers are
+// the hosted release build (pushHostedStaticSite, which `forge env build
+// --release` and a snapshot composition reach) and `forge env deploy`'s own
+// builds (frontendDeployTargets: BuildOnly, Firebase, your bucket).
+//
+// Nothing else builds a frontend with a kept reference: the render refuses
+// one on a dev server (forge.OnHost), a workload's env cannot hold a
+// FrontendURL at all (its type admits none), and a snapshot refuses one
+// (validateSnapshotFrontend).
+func frontendForBuild(ctx context.Context, w io.Writer, envName string, e *KCLEntities, f FrontendEntity) FrontendEntity {
+	if e != nil {
+		f.Project = e.Project
+	}
+	return resolveBuildFrontendURLs(ctx, w, envName, e, f)
+}
 
 // resolveBuildFrontendURLs returns f with every forge.FrontendURL the render
 // kept (one naming a hosted frontend: kcl/schema.k FrontendURL) resolved into
@@ -106,9 +127,9 @@ func hostedFrontendURL(ws []deploytarget.HostedWorkloadStatus, name, basePath st
 		}
 		if site == nil {
 			u, err := url.Parse(w.URL)
-			if err != nil || u.Host == "" || u.User != nil || u.Opaque != "" || (u.Scheme != "https" && u.Scheme != "http") {
+			if err != nil || u.User != nil || u.Opaque != "" || (u.Scheme != "https" && u.Scheme != "http") || !validAuthority(u.Host) {
 				if w.URL != "" {
-					warnings = append(warnings, fmt.Sprintf("platform URL %q is not an absolute http(s) URL; leaving the origin empty", w.URL))
+					warnings = append(warnings, fmt.Sprintf("platform URL %q is not an absolute http(s) URL with a valid host and port; leaving the origin empty", w.URL))
 				}
 				return "", warnings
 			}
@@ -148,16 +169,74 @@ func joinBasePath(site *url.URL, basePath string) *url.URL {
 	return &out
 }
 
+// validAuthority reports whether hostport, a URL's host[:port], is one a
+// site may be served from: a DNS hostname (one label or more, so a dev
+// platform's "localhost" passes), an IPv4 address, or a bracketed IPv6
+// address with no zone, then optionally ":" and a decimal port in 1-65535.
+// url.Parse lets an out-of-range port, an empty port and an unvalidated
+// bracket literal through.
+func validAuthority(hostport string) bool {
+	host, port, ok := splitAuthority(hostport)
+	if !ok {
+		return false
+	}
+	if strings.HasPrefix(hostport, "[") {
+		// Only an IPv6 address belongs in brackets, and a zone id names an
+		// interface of one machine, never a public site.
+		if ip := net.ParseIP(host); ip == nil || ip.To4() != nil || strings.Contains(host, "%") {
+			return false
+		}
+	} else if net.ParseIP(host) == nil && !isDNSHostname(host, 1) {
+		return false
+	}
+	if port == "" {
+		return true
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n >= 1 && n <= 65535 && strings.TrimLeft(port, "0123456789") == ""
+}
+
+// splitAuthority splits host[:port] (an IPv6 host in brackets) into its host
+// and port, refusing an unclosed bracket, text after the bracket that is not
+// ":port", and a ":" with no port after it.
+func splitAuthority(hostport string) (host, port string, ok bool) {
+	rest := hostport
+	if strings.HasPrefix(hostport, "[") {
+		end := strings.Index(hostport, "]")
+		if end < 0 {
+			return "", "", false
+		}
+		host, rest = hostport[1:end], hostport[end+1:]
+		if rest == "" {
+			return host, "", true
+		}
+		if !strings.HasPrefix(rest, ":") {
+			return "", "", false
+		}
+		port = rest[1:]
+		return host, port, port != ""
+	}
+	i := strings.LastIndex(hostport, ":")
+	if i < 0 {
+		return hostport, "", true
+	}
+	return hostport[:i], hostport[i+1:], hostport[i+1:] != ""
+}
+
 // isBareHostname reports whether s is a hostname alone, as a custom domain
 // must be: no scheme, userinfo, port, path, query or fragment, and only
-// DNS labels (letters, digits, hyphens; 1-63 characters, not starting or
-// ending with a hyphen) separated by dots, with at least two labels.
-func isBareHostname(s string) bool {
-	if len(s) > 253 {
+// DNS labels separated by dots, with at least two labels.
+func isBareHostname(s string) bool { return isDNSHostname(s, 2) }
+
+// isDNSHostname reports whether s is at least minLabels DNS labels (letters,
+// digits, hyphens; 1-63 characters, not starting or ending with a hyphen)
+// separated by dots, 253 characters at most.
+func isDNSHostname(s string, minLabels int) bool {
+	if s == "" || len(s) > 253 {
 		return false
 	}
 	labels := strings.Split(s, ".")
-	if len(labels) < 2 {
+	if len(labels) < minLabels {
 		return false
 	}
 	for _, l := range labels {

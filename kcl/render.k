@@ -4012,6 +4012,12 @@ _frontend_url_lowered = lambda name: str, ref: FrontendURL, f: Frontend, bundle:
     assert not (_type == "host" and f.runtime and f.runtime.type != "host"), \
         "${_where}: forge.FrontendURL '${ref.frontend}' is a dev server (forge.OnHost), and frontend '${f.name}' publishes a build on the ${f.runtime.type} runtime: " \
         + "the build would carry http://localhost as its origin. Name a hosted frontend, or set ${name} to a literal value."
+    # A hosted target's hostname is resolved only by a build forge runs (a
+    # hosted release, a bucket/Firebase/BuildOnly deploy). A dev server is
+    # not one, so it would see the variable empty.
+    assert not (_type == "hosted" and f.runtime and f.runtime.type == "host"), \
+        "${_where}: forge.FrontendURL '${ref.frontend}' is a hosted site, and frontend '${f.name}' is a dev server (forge.OnHost), which forge does not build: " \
+        + "nothing would resolve the hosted hostname. Name a dev-served frontend of this env, or set ${name} to a literal value."
     {"value": "http://localhost:" + str(_t.port) + (_t.base_path if _t.base_path else "")} if _type == "host" \
         else {"frontend_url": {"frontend": ref.frontend}}
 }

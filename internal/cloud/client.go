@@ -55,6 +55,10 @@ type Client struct {
 	// token for: declared by the caller, or learned from a refusal.
 	scopes scopeTable
 
+	// responseLimits maps a procedure to the most bytes of a reply this
+	// client reads (DeclareResponseLimit); DefaultMaxResponseBytes otherwise.
+	responseLimits responseLimitTable
+
 	// credMu guards Credential, which a refresh from the credential helper
 	// replaces.
 	credMu sync.Mutex
@@ -172,10 +176,22 @@ func (c *Client) callWith(ctx context.Context, procedure string, req, out any, t
 	defer func() { _ = resp.Body.Close() }()
 
 	// Bounded read: a misconfigured endpoint that returns a huge HTML
-	// error page should not be streamed into memory in full.
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	// error page should not be streamed into memory in full. One byte past
+	// the limit is read so an answer that does not fit is told apart from
+	// one that ends exactly at it.
+	limit := c.responseLimits.limit(procedure)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return fmt.Errorf("read %s response: %w", procedure, err)
+	}
+	if int64(len(raw)) > limit {
+		if resp.StatusCode == http.StatusOK {
+			// A cut-off answer would fail to decode at the cut as
+			// "unexpected end of JSON input", which names neither the cause
+			// nor the fix.
+			return &ResponseTooLargeError{Procedure: procedure, Limit: limit}
+		}
+		raw = raw[:limit]
 	}
 	if resp.StatusCode != http.StatusOK {
 		err := c.connectError(procedure, resp, raw)

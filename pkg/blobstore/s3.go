@@ -3,7 +3,6 @@
 package blobstore
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -516,8 +515,12 @@ func bufferPart(r io.Reader, limit int64) (chunks [][]byte, n int64, ended bool,
 		if m > 0 {
 			chunks = append(chunks, c[:m])
 		}
+		// io.ReadFull returns io.EOF and io.ErrUnexpectedEOF themselves, and
+		// only when r ended. Compare by identity: an error that merely
+		// wraps one (putBody's "reading the body: unexpected EOF", a
+		// reader's own failure) is the body failing, never its end.
 		switch {
-		case errors.Is(rerr, io.EOF) || errors.Is(rerr, io.ErrUnexpectedEOF):
+		case rerr == io.EOF || rerr == io.ErrUnexpectedEOF: //nolint:errorlint // io.ReadFull's own sentinels, never wrapped; see above
 			return chunks, n, true, nil
 		case rerr != nil:
 			return nil, n, false, rerr
@@ -537,20 +540,59 @@ func s3BufferLimit(maxBytes int64) int64 {
 	return s3PartSize
 }
 
-// chunksReader reads chunks in order. One chunk (or none) is a
-// bytes.Reader, which is seekable, so minio-go may retry its PUT.
-func chunksReader(chunks [][]byte) io.Reader {
-	switch len(chunks) {
-	case 0:
-		return bytes.NewReader(nil)
-	case 1:
-		return bytes.NewReader(chunks[0])
+// chunkReader reads chunks in order as one seekable stream. minio-go
+// retries a failed PUT only when it can seek its body back to the start, so
+// a buffered body of any size stays retryable without being copied into one
+// contiguous buffer.
+type chunkReader struct {
+	chunks    [][]byte
+	size, pos int64
+}
+
+func chunksReader(chunks [][]byte) *chunkReader {
+	r := &chunkReader{chunks: chunks}
+	for _, c := range chunks {
+		r.size += int64(len(c))
 	}
-	rs := make([]io.Reader, len(chunks))
-	for i, c := range chunks {
-		rs[i] = bytes.NewReader(c)
+	return r
+}
+
+func (r *chunkReader) Read(p []byte) (int, error) {
+	if r.pos >= r.size {
+		return 0, io.EOF
 	}
-	return io.MultiReader(rs...)
+	n, skip := 0, r.pos
+	for _, c := range r.chunks {
+		if skip >= int64(len(c)) {
+			skip -= int64(len(c))
+			continue
+		}
+		n += copy(p[n:], c[skip:])
+		skip = 0
+		if n == len(p) {
+			break
+		}
+	}
+	r.pos += int64(n)
+	return n, nil
+}
+
+// Seek implements io.Seeker.
+func (r *chunkReader) Seek(offset int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+	case io.SeekCurrent:
+		offset += r.pos
+	case io.SeekEnd:
+		offset += r.size
+	default:
+		return 0, errors.New("blobstore: chunkReader.Seek: invalid whence")
+	}
+	if offset < 0 {
+		return 0, errors.New("blobstore: chunkReader.Seek: negative position")
+	}
+	r.pos = offset
+	return offset, nil
 }
 
 // PutObject implements ObjectWriter. A body of known size is one PUT (a
@@ -578,7 +620,9 @@ func (s *S3) PutObject(ctx context.Context, key string, body io.Reader, opts Put
 		if size == 0 {
 			chunks, n, ended, err := bufferPart(b, s3BufferLimit(opts.MaxBytes))
 			switch {
-			case err != nil:
+			case err != nil || b.err != nil:
+				// A body that broke a bound or failed to read is refused,
+				// whatever bufferPart made of the error it saw.
 				return Object{}, fmt.Errorf("blobstore: put %q in bucket %q: %w", key, s.bucket, b.failed(err))
 			case ended:
 				r, size = chunksReader(chunks), n

@@ -3,6 +3,7 @@
 package blobstore_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5" //nolint:gosec // an ETag, as S3 computes it; not a security boundary
 	"encoding/hex"
@@ -63,6 +64,9 @@ type fakeS3Objects struct {
 	// a service that does not implement Range would. overlong answers it
 	// with 206 but the bytes from the offset to the end, past its end.
 	ignoreRange, overlong bool
+	// failPuts answers that many PUTs with a 500 after reading their body,
+	// as a service failing transiently would; puts counts every PUT.
+	failPuts, puts int
 }
 
 type fakeS3Object struct {
@@ -86,6 +90,14 @@ func (f *fakeS3Objects) serve(t *testing.T) *httptest.Server {
 			data, err := io.ReadAll(r.Body)
 			if err != nil || int64(len(data)) != r.ContentLength {
 				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			f.puts++
+			if f.failPuts > 0 {
+				f.failPuts--
+				w.Header().Set("Content-Type", "application/xml")
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>InternalError</Code></Error>`)
 				return
 			}
 			f.objects[key] = fakeS3Object{data: data, contentType: r.Header.Get("Content-Type")}
@@ -148,6 +160,32 @@ func newObjectS3(t *testing.T) (*blobstore.S3, *fakeS3Objects) {
 		t.Fatal(err)
 	}
 	return s, fake
+}
+
+// A buffered body of unknown size spanning several chunks is still one
+// seekable body, so minio-go retries its PUT after a transient failure and
+// the retry stores every byte.
+func TestS3PutObjectRetriesABufferedBody(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, fake := newObjectS3(t)
+	body := bytes.Repeat([]byte("0123456789abcdef"), 300<<10/16) // 300 KiB: three chunks
+	fake.mu.Lock()
+	fake.failPuts = 1
+	fake.mu.Unlock()
+	o, err := s.PutObject(ctx, "t/retried", bytes.NewBuffer(body), blobstore.PutObjectOptions{ContentType: "application/octet-stream"})
+	if err != nil || o.Size != int64(len(body)) || o.SHA256 != sha256Hex(body) {
+		t.Fatalf("PutObject after a transient 500 = %+v, %v", o, err)
+	}
+	got, _, err := readOpen(t, s, "t/retried", blobstore.OpenOptions{})
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("stored %d bytes, %v; want the whole %d-byte body", len(got), err, len(body))
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.puts != 2 {
+		t.Fatalf("%d PUTs, want 2 (one failed, one retried)", fake.puts)
+	}
 }
 
 // A ranged Open trusts only a ranged answer: a service that ignores Range

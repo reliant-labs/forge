@@ -94,10 +94,13 @@ func (l Local) UserActivity(ctx context.Context, req UserActivityRequest) (UserA
 	if req.Explain {
 		return res, nil
 	}
-	rows, err := l.rows(ctx, st)
+	// Not l.rows: that maps a failure for a SESSION read, and would name the
+	// session tables when it is product_events that is missing.
+	r, err := l.run(ctx, st, DefaultLimits())
 	if err != nil {
 		return res, usersErr(err)
 	}
+	rows := RowsOf(r)
 	envs, err := q.Parse(rows)
 	_ = rows.Close()
 	if err != nil {

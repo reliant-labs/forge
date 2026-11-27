@@ -1,9 +1,10 @@
 # Changes from pinned sources: carry a source-built frontend's `changes.yaml` into the release
 
 **Status:** decided (owner, 2026-11-25): forge carries a pinned source's
-`changes.yaml` into the release, option (b), with the recommended answers to
-decisions 1–4 ([section 7](#7-decisions)). Being implemented as a `feat(changes)`
-pull request. The owner may still override any of 1–4.
+`changes.yaml` into the release, option (b). On 2026-11-26 the owner also
+settled decisions 1–4 on their recommended answers ("take your recommendations
+on all"; [section 7](#7-decisions)). Being implemented as a `feat(changes)`
+pull request.
 **Date:** 2026-11-25
 **Related:** [changes.md](changes.md) (Forge Changes, decision 1: a project-root
 `changes.yaml`), [../changes.md](../changes.md) (the declaration file),
@@ -139,7 +140,11 @@ If an opt-out is wanted, it is an additive optional KCL field on `forge.Frontend
 | Read only `subdir/changes.yaml`                                                                                                   | It does not match where the source repository's `forge generate` reads it (its root), so the accessors and the release could disagree.                                                                                                                                                                                                                                   |
 | Root always wins over a source                                                                                                    | It silently serves variants the sourced code may not know (section 3).                                                                                                                                                                                                                                                                                                   |
 
-## 6. Open owner decisions
+## 6. Owner decisions (decided)
+
+All settled: decision 0 by the owner on 2026-11-25, decisions 1–4 on their
+recommendation on 2026-11-26 ([section 7](#7-decisions)). The table keeps the
+options that were weighed, as the record of why.
 
 | #   | Decision                             | Options                                                                                                                      | Recommendation                                                                                                                   | Blocks                                                      |
 | --- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
@@ -152,16 +157,24 @@ If an opt-out is wanted, it is an additive optional KCL field on `forge.Frontend
 ## 7. Decisions
 
 Recorded 2026-11-25. The owner chose "Forge carries it over", option (b) of
-decision 0, which includes writing this proposal and then building it. For
-decisions 1–4 the recommendations stand until the owner says otherwise.
+decision 0, which includes writing this proposal and then building it.
+
+**Settled (owner, 2026-11-26):** the owner accepted the recommendation of
+decisions 1–4 ("take your recommendations on all"), so none is open to
+override any more:
+
+1. On by default for every `GitSource` frontend, with an optional opt-out field.
+2. A conflicting declaration of one key warns for one minor, then refuses.
+3. `GitSource` frontends only; no out-of-tree `path`.
+4. No provenance in the shape; `forge env shape` prints it locally.
 
 | #   | Decided                                                                                                                                                                                                                                                                                                                         | By                                 |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
 | 0   | (b): forge reads each pinned source's `changes.yaml` into the release. No mirror in control-plane.                                                                                                                                                                                                                              | Owner                              |
-| 1   | (a): on for every `GitSource` frontend. The opt-out is the optional KCL field `forge.Frontend.changes_from_source`; only `False` renders, so every other frontend renders byte-identically.                                                                                                                                     | Recommendation, owner may override |
-| 2   | (b): a conflict is the rule `changes-source-conflict`, declared in forge's lint rollout table (`internal/cli/lint/lint_rollout_table.go`) and graded with `lint.GradeRule`, like `vuln-gate`. It ships in v1.12.0, where it warns and the first declaration ships, and gates from v1.13.0. `lint.rules` dials it like any rule. | Recommendation, owner may override |
-| 3   | (a): `GitSource` frontends only.                                                                                                                                                                                                                                                                                                | Recommendation, owner may override |
-| 4   | (a): no origin in the shape. `forge env shape` prints the origin of each change a source contributed.                                                                                                                                                                                                                           | Recommendation, owner may override |
+| 1   | (a): on for every `GitSource` frontend. The opt-out is the optional KCL field `forge.Frontend.changes_from_source`; only `False` renders, so every other frontend renders byte-identically.                                                                                                                                     | Owner, 2026-11-26 (recommendation) |
+| 2   | (b): a conflict is the rule `changes-source-conflict`, declared in forge's lint rollout table (`internal/cli/lint/lint_rollout_table.go`) and graded with `lint.GradeRule`, like `vuln-gate`. It ships in v1.12.0, where it warns and the first declaration ships, and gates from v1.13.0. `lint.rules` dials it like any rule. | Owner, 2026-11-26 (recommendation) |
+| 3   | (a): `GitSource` frontends only.                                                                                                                                                                                                                                                                                                | Owner, 2026-11-26 (recommendation) |
+| 4   | (a): no origin in the shape. `forge env shape` prints the origin of each change a source contributed.                                                                                                                                                                                                                           | Owner, 2026-11-26 (recommendation) |
 
 Prod's launch of `pending-provider-copy` (reliant #3639) waits for the
 implementation's release, then control-plane's forge pin bump and a control-plane

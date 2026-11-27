@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync/atomic"
 
 	"github.com/reliant-labs/forge/pkg/apikey"
@@ -63,8 +62,10 @@ func (f KeyValidatorFunc) ValidateKey(ctx context.Context, key string) (*Claims,
 // [Claims]. It accepts the two credentials a forge service takes, and the
 // credential's SHAPE picks which validator checks it:
 //
-//   - an API key — a credential starting with [apikey.KeyPrefix] ("fk_"),
-//     the form [apikey.Generate] issues — goes to the [KeyValidator]
+//   - an API key — a credential the installed [apikey.Format] accepts
+//     ([apikey.Format.IsKey]: its prefix, or forge's default "fk_", which
+//     every Format accepts so keys issued before a rename keep working; see
+//     [Authenticator.UseKeyFormat]) — goes to the [KeyValidator]
 //     installed with [Authenticator.UseKeyValidator], with the request's
 //     context, because checking a key is a read of the application's own
 //     store;
@@ -80,7 +81,9 @@ func (f KeyValidatorFunc) ValidateKey(ctx context.Context, key string) (*Claims,
 // "Authorization: Bearer fk_…" (many API clients can only send the
 // latter), and no header can route a credential around the validator for
 // its kind. The routing cannot be ambiguous: a JWT is three base64url
-// segments, and base64url of a JSON header begins "eyJ", never "fk_".
+// segments, and base64url of a JSON header begins "eyJ", never "fk_" or any
+// other key prefix ([apikey.NewFormat] admits lowercase prefixes only, and
+// none that is a session id's).
 //
 // # Late binding
 //
@@ -118,6 +121,7 @@ func (f KeyValidatorFunc) ValidateKey(ctx context.Context, key string) (*Claims,
 type Authenticator struct {
 	tokens   func(token string) (*Claims, error)
 	keys     atomic.Pointer[keyValidatorSlot]
+	format   atomic.Pointer[apikey.Format]
 	sessions atomic.Pointer[sessionResolverSlot]
 	userInfo atomic.Pointer[UserInfo]
 }
@@ -150,6 +154,25 @@ func (a *Authenticator) UseKeyValidator(kv KeyValidator) {
 		return
 	}
 	a.keys.Store(&keyValidatorSlot{kv: kv})
+}
+
+// UseKeyFormat sets the shape of the API keys this server accepts, replacing
+// any set before; the default is the zero [apikey.Format], forge's "fk_".
+// Install the Format the application issues its keys with, so a credential
+// with its prefix is routed to the key validator. Keys with forge's "fk_"
+// are recognized under every Format, so switching from the default
+// preserves routing for existing "fk_" keys. Safe to call concurrently with
+// [Authenticator.Authenticate].
+func (a *Authenticator) UseKeyFormat(f apikey.Format) {
+	a.format.Store(&f)
+}
+
+// keyFormat returns the installed key format, or the zero (default) Format.
+func (a *Authenticator) keyFormat() apikey.Format {
+	if f := a.format.Load(); f != nil {
+		return *f
+	}
+	return apikey.Format{}
 }
 
 // UseSessions installs the resolver server-side browser sessions are read
@@ -185,8 +208,8 @@ func (a *Authenticator) UseUserInfo(u *UserInfo) {
 // request's context; it reaches the key validator. See [Authenticator] for
 // how a credential is routed and every way it fails.
 func (a *Authenticator) Authenticate(ctx context.Context, credential string) (*Claims, error) {
-	if strings.HasPrefix(credential, apikey.KeyPrefix) {
-		return a.authenticateKey(ctx, credential)
+	if format := a.keyFormat(); format.IsKey(credential) {
+		return a.authenticateKey(ctx, format, credential)
 	}
 	cred := TokenCredential()
 	if slot := a.sessions.Load(); slot != nil && session.IsID(credential) {
@@ -216,12 +239,12 @@ func (a *Authenticator) Authenticate(ctx context.Context, credential string) (*C
 	return claims, nil
 }
 
-func (a *Authenticator) authenticateKey(ctx context.Context, key string) (*Claims, error) {
+func (a *Authenticator) authenticateKey(ctx context.Context, format apikey.Format, key string) (*Claims, error) {
 	slot := a.keys.Load()
 	if slot == nil {
 		return nil, ErrAPIKeysDisabled
 	}
-	prefix, err := apikey.LookupPrefix(key)
+	prefix, err := format.LookupPrefix(key)
 	if err != nil {
 		return nil, ErrMalformedAPIKey
 	}

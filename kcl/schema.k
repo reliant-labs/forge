@@ -97,6 +97,9 @@ schema EnvVar:
     # `valueFrom.fieldRef.fieldPath`. Empty => not a fieldRef var. This is
     # the k8s-adapter target of the agnostic `EnvSource.from_field`.
     field_ref: str = ""
+    # The public URL of a frontend of this environment, resolved for a
+    # BUILD (see FrontendURL). Only a frontend's `env_vars` honour it.
+    frontend_url?: FrontendURL
     # secret_optional marks a `secret_ref` whose value is allowed to be
     # ABSENT from the environment's secret store.
     #
@@ -124,16 +127,16 @@ schema EnvVar:
         name, "EnvVar.name is required"
         not secret_optional or secret_ref, \
             "EnvVar.secret_optional is only meaningful with secret_ref — it exempts a DECLARED secret from the store pre-flight, and there is nothing to exempt without one"
-        value != Undefined or secret_ref or config_map_ref or field_ref, \
-            "EnvVar must set value (empty string is OK), secret_ref, config_map_ref, or field_ref"
+        value != Undefined or secret_ref or config_map_ref or field_ref or frontend_url, \
+            "EnvVar must set value (empty string is OK), secret_ref, config_map_ref, field_ref, or frontend_url"
         # EXACTLY one channel. k8s rejects an env entry carrying both
         # `value` and `valueFrom` ("may not be specified when `value` is
         # not empty") — and it rejects it only SERVER-side, so
         # `kubectl apply --dry-run=client` passes and the deploy dies
         # against the real cluster. Caught here, at the point the
         # ambiguity is written.
-        len([c for c in [1 if value != Undefined else 0, 1 if secret_ref else 0, 1 if config_map_ref else 0, 1 if field_ref else 0] if c == 1]) == 1, \
-            "EnvVar '${name}' sets more than one source — pick exactly one of value / secret_ref / config_map_ref / field_ref (k8s rejects an env entry with both value and valueFrom)"
+        len([c for c in [1 if value != Undefined else 0, 1 if secret_ref else 0, 1 if config_map_ref else 0, 1 if field_ref else 0, 1 if frontend_url else 0] if c == 1]) == 1, \
+            "EnvVar '${name}' sets more than one source — pick exactly one of value / secret_ref / config_map_ref / field_ref / frontend_url (k8s rejects an env entry with both value and valueFrom)"
 
 # Author-facing helpers that PRODUCE fw.Resources' neutral values (CPU in
 # millicores, memory in BYTES), so nobody writes raw numbers:
@@ -4540,6 +4543,48 @@ schema WorkloadURL(tiers.WorkloadURLRef):
     check:
         name == workload, "WorkloadURL: set `workload` only; `name` is derived from it"
 
+schema FrontendURL:
+    """The public URL of a frontend of this environment, by NAME, as a
+    BUILD-time value: the origin a static build writes into the HTML it
+    emits (a canonical link, og:url, robots.txt's Sitemap: line).
+
+        env_vars = [forge.EnvVar {
+            name = "SITE_URL"
+            frontend_url = forge.FrontendURL {frontend = "web"}
+        }]
+
+    The twin of WorkloadURL, for the one place a reference cannot wait for
+    the control plane: a build. Crawlers read the HTML as served, so the
+    origin must be IN the built files, and `runtime_config` (which reaches
+    only JavaScript) cannot carry it.
+
+    Who resolves it depends on where the TARGET runs:
+
+      * forge.OnHosted: forge, whenever it builds the REFERRER (a hosted
+        release, or a bucket / Firebase / BuildOnly deploy), from the
+        environment's live status: the target's first live custom domain,
+        else its platform hostname. A dev server (forge.OnHost) referrer is
+        refused: forge does not build it, so nothing would resolve it.
+        A release is built once and promoted by
+        digest, so every env that serves it carries the origin of the env it
+        was BUILT for; build in the env whose URL search engines should
+        index (prod). An env that has never been deployed has no hostname
+        yet: the value is empty, forge says so, and the next release
+        carries it.
+      * forge.OnHost: the render, to the dev server's URL
+        (http://localhost:<port><base_path>).
+      * anything else (your bucket, Firebase, BuildOnly) is refused: forge
+        does not know the hostname your CDN or Firebase site answers on, so
+        set the variable to a literal `value` instead.
+
+    Only a frontend's `env_vars` may carry one. An unknown name is refused
+    at render.
+    """
+    frontend: str
+
+    check:
+        frontend, "FrontendURL.frontend is required: the name of a frontend of this environment"
+
 # A funnel or activation window ("30m", "7d") in seconds. Only call it on a
 # value that matched _WINDOW_RE.
 _WINDOW_RE = r"^[1-9][0-9]{0,3}[smhd]$"
@@ -5286,6 +5331,22 @@ schema Frontend:
     # env's Bundle declares. A backend elsewhere is a literal URL in
     # runtime_config, which the browser calls cross-origin.
     apis: {str:str | WorkloadURL} = {}
+
+    # Per-release URLs, on forge.OnHosted: the platform serves every release
+    # this env still retains at a URL of its own, on the preview domain
+    # (https://<unguessable>--<site>.<preview domain>), so a past release can
+    # be opened and compared without promoting it. Each URL sends noindex,
+    # serves this env's CURRENT config.js with the release's own files,
+    # _headers and _redirects, and stops answering once the release is
+    # collected. The platform's console links them from each deploy.
+    #
+    # Unset means on. False turns them off for this frontend in this env:
+    # an old release may still hold what a newer one removed, and this is how
+    # an env says none of its releases may be reachable but the live one.
+    # On every other runtime nothing serves release URLs, so False holds
+    # there by construction and is accepted; declare it once on a frontend
+    # bound per env.
+    release_urls?: bool
 
     check:
         name, "Frontend.name is required"
@@ -7356,7 +7417,7 @@ _render_data_access = lambda data_access: DataAccess, lifecycle: str -> {str:str
 }
 
 # The release-health finding codes (pkg/release Health*).
-_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency", "changed_op_errors", "changed_op_latency"]
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency", "changed_op_errors", "changed_op_latency", "seo_regressed", "a11y_regressed"]
 
 # A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
 _release_health_seconds = lambda w: str -> int {
@@ -7431,7 +7492,17 @@ schema ReleaseHealth:
     changed_op_min_errors, 5, errors after the promotion) and
     changed_op_latency (its p95 grew by more than changed_op_max_p95_ratio,
     2); each names the newest commit that changed the op, and both warn
-    unless listed in `fail_on`.
+    unless listed in `fail_on`. For a hosted static frontend the control
+    plane audits after each promotion (Site insights), each compared with
+    the same env's audit of the previous release: seo_regressed (the site's
+    or a route's SEO score dropped by more than `seo_max_score_drop` points,
+    or a new error-severity SEO finding appeared: the env became noindex,
+    robots.txt disallows /, a canonical names another host, an internal
+    link answers 404) and a11y_regressed (the accessibility score dropped
+    by more than `a11y_max_score_drop` points, or a new critical axe
+    violation appeared). Both warn unless listed in `fail_on`; a release
+    with no previous audit has none, and one whose audit has not finished
+    lists site_audit in `not_evaluated`.
 
     Recorded in the release shape (`release_health`) when any value differs
     from the default, so every reader judges by this one declaration.
@@ -7445,6 +7516,8 @@ schema ReleaseHealth:
     error_rate_min_errors: int = 10
     baseline_window: str = "24h"
     alert_baseline_min_firings: int = 1
+    seo_max_score_drop: int = 10
+    a11y_max_score_drop: int = 10
     fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed", "browser_errors", "browser_failed_requests", "browser_page_load"]
     warn_on: [str] = []
     require_baseline: str = "any"
@@ -7465,6 +7538,10 @@ schema ReleaseHealth:
             "ReleaseHealth.baseline_window \"${baseline_window}\": use a number and s, m or h (\"24h\"), from the window (${window}) to 168h"
         alert_baseline_min_firings >= 0, \
             "ReleaseHealth.alert_baseline_min_firings ${alert_baseline_min_firings} must be at least 0 (0 counts every alert opened after the promotion)"
+        0 <= seo_max_score_drop <= 100, \
+            "ReleaseHealth.seo_max_score_drop ${seo_max_score_drop} must be 0 to 100 score points (0 fires on any drop)"
+        0 <= a11y_max_score_drop <= 100, \
+            "ReleaseHealth.a11y_max_score_drop ${a11y_max_score_drop} must be 0 to 100 score points (0 fires on any drop)"
         all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
             "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"
@@ -7882,10 +7959,64 @@ schema ObservabilityAgent:
     namespace: str = "forge-observability"
     image: str = OTEL_COLLECTOR_IMAGE
     memory_limit_mib: int = 256
+    # Opt-in: each agent cluster's Kubernetes inventory and events (see
+    # KubernetesInventory). Unset, the default, renders none.
+    kubernetes_inventory?: KubernetesInventory
 
     check:
         regex.match(namespace, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "ObservabilityAgent.namespace must be an RFC-1123 label"
         memory_limit_mib >= 64, "ObservabilityAgent.memory_limit_mib must be >= 64"
+
+schema KubernetesInventory:
+    """Opt-in: a cluster's own Kubernetes objects, shipped beside the node
+    agent's telemetry. Declare it to deploy it; unset renders nothing.
+
+        observability = forge.Observability {
+            destination = forge.ObservabilityDestination {endpoint = "https://otlp.example.com"}
+            agent = forge.ObservabilityAgent {
+                kubernetes_inventory = forge.KubernetesInventory {}
+            }
+        }
+
+    On every cluster forge's node agent runs on (a cluster the env deploys
+    to or scrapes, with an observability destination), it renders:
+
+      * the cluster collector: one single-replica Deployment
+        `cluster-collector` (with its ConfigMap and ServiceAccount) in the
+        agent's namespace, exporting to the same destination with the same
+        credential. Its OTel `k8sobjects` receiver lists Nodes every
+        `node_interval` and apps DaemonSets and Deployments every
+        `workload_interval`, and watches events.k8s.io Events (unless
+        `events = False`). Each object is one log record whose body is the
+        object projected onto an allowlist of inventory fields (names,
+        uids, labels naming the component, container names and images,
+        replica and node counts, capacity, condition types and reasons,
+        Event reasons; never env values, args, commands, annotations,
+        messages or an Event's note), an Event inside its watch envelope
+        `{type, object}`, with k8sobjects' `k8s.resource.name` attribute
+        ("nodes", "daemonsets", "deployments", "events") and the resource
+        attribute `k8s.cluster.name` (the cluster's kube context). A config
+        change rolls the collector (its pod template carries the config's
+        SHA-256). Its ClusterRole `<namespace>-cluster-collector` is
+        read-only: get/list/watch nodes, apps daemonsets/deployments and,
+        with `events`, events.k8s.io events; never Secrets;
+      * on the node agent's scrapes (each `forge.Telemetry` metrics
+        target it pulls), the resource attributes `k8s.cluster.name` and
+        `k8s.node.name` (the agent's own node: it pulls only its node's
+        pods), so scraped rows join the inventory's Nodes.
+
+    The rows are logs, so the env's `signals.logs` must be on.
+    """
+    # How often Nodes are listed, and DaemonSets and Deployments are.
+    node_interval: str = "60s"
+    workload_interval: str = "300s"
+    # Watch events.k8s.io Events (node conditions and the like surfaced as
+    # Events).
+    events: bool = True
+
+    check:
+        regex.match(node_interval, r"^[0-9]+(ms|s|m|h)$"), "KubernetesInventory.node_interval '${node_interval}' must be a duration like 60s"
+        regex.match(workload_interval, r"^[0-9]+(ms|s|m|h)$"), "KubernetesInventory.workload_interval '${workload_interval}' must be a duration like 300s"
 
 # Alert durations are one or more <int><unit> groups, unit in s m h ("90s", "5m",
 # "1h30m"): exactly what Go's time.ParseDuration reads, so the evaluator and
@@ -8228,6 +8359,8 @@ schema Observability:
     telemetry_collector?: TelemetryCollector
 
     check:
+        not agent.kubernetes_inventory or signals.logs, \
+            "Observability.agent.kubernetes_inventory ships the cluster's objects as logs, and signals.logs = False drops every log. Turn logs on or drop kubernetes_inventory"
         enabled or len(telemetry) == 0, \
             "Observability.telemetry is declared with enabled = False: there is no pipeline to collect it into. Drop it or set enabled = True"
         all t in telemetry { t.service_name }, \
@@ -9501,6 +9634,13 @@ schema Bundle:
     # `source` needs one on the cluster it lands on; it may be declared by
     # another env's bundle, in which case the deploy preflight checks it.
     external_secrets_operators: [ExternalSecretsOperator] = []
+    # The ML components each cluster declares (forge.MLStack, kcl/ml.k),
+    # any subset of them, one stack per cluster: each declared component is
+    # adopted (read where it runs) or installed (a pinned chart forge labels
+    # as its own), and only what a stack declares renders. `forge ml
+    # discover` proposes it. Empty renders nothing.
+    ml_stacks: [MLStack] = []
+    _agent_workloads = _obs_workloads(workloads, ml_stacks, observability)
     # Where the values the secret store needs BEFORE it can serve a read live
     # (its unseal key, its database password, its recovery escrow): outside
     # the store, because they cannot live in what they bootstrap. UNSET =
@@ -9695,16 +9835,16 @@ schema Bundle:
             "Bundle.flux_delivery configures the in-cluster Flux of an `applier = \"flux\"` env, and this env declares applier = ${applier}. Declare applier = \"flux\", or drop flux_delivery"
         applier != "flux" or not control_plane, \
             "Bundle sets applier = \"flux\" and control_plane: an env with a control plane is delivered by its hub (`hub_converges`), never by a second Flux forge installs. applier = \"flux\" is for an env with no control plane"
-        applier != "flux" or len(_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets)) == 1, \
-            "Bundle sets applier = \"flux\", which needs exactly ONE cluster: the Flux forge installs applies in the cluster it runs in. This env targets ${_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets) or 'none'}"
+        applier != "flux" or len(_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks, observability)) == 1, \
+            "Bundle sets applier = \"flux\", which needs exactly ONE cluster: the Flux forge installs applies in the cluster it runs in. This env targets ${_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks, observability) or 'none'}"
         applier != "flux" or not env or (regex.match(_flux_delivery_ns(flux_delivery, project, env), r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(_flux_delivery_ns(flux_delivery, project, env)) <= 63), \
             "Bundle sets applier = \"flux\" and its delivery namespace '${_flux_delivery_ns(flux_delivery, project, env)}' (forge-delivery-<project>-<env>) is not a namespace name of at most 63 characters. Name one: flux_delivery = forge.FluxDelivery {namespace = \"...\"}"
         applier != "flux" or len([h.name for h in helm_charts if h.oci == _FLUX_CHART_OCI]) == 0, \
             "Bundle sets applier = \"flux\" and also declares the Flux chart (${[h.name for h in helm_charts if h.oci == _FLUX_CHART_OCI]}): applier = \"flux\" installs Flux itself (target flux-delivery), and two Flux installs in one cluster fight over the same CRDs. Drop the helm_charts entry; tune the install through flux_delivery"
         not lifecycle or len(_unmanaged_contexts(clusters, workloads, databases, \
                 cluster_target, gateways, http_routes, grpc_routes, helm_charts, \
-                manifests, generated, rendered_secrets)) == 0, \
-            "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets))} is not one"
+                manifests, generated, rendered_secrets, ml_stacks, observability)) == 0, \
+            "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks, observability))} is not one"
         # SEVERAL IDENTITIES (Bundle.identities): which instances exist is
         # judged before anything derived from them (their Secrets, below).
         not (identity and len(identities) > 0), \
@@ -9719,20 +9859,24 @@ schema Bundle:
         # CONNECTED CLUSTER TO DELIVER IT TO. Both are declared facts, so both
         # are refused here, while the author is looking at the KCL, rather than
         # as a deploy that is accepted and never delivers.
-        len(_cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0 or control_plane, \
-            "Bundle.control_plane_secrets ${[s.name for s in _cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))]} need control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what mints, delivers and renews them"
-        len(_cps_unbound(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)) == 0, \
-            _cps_unbound_msg(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)
-        not (observability and observability.enabled and observability.destination and observability.destination.token_from_control_plane) or len(_cluster_targets(workloads)) > 0, \
+        len(_cps_all(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0 or control_plane, \
+            "Bundle.control_plane_secrets ${[s.name for s in _cps_all(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))]} need control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what mints, delivers and renews them"
+        len(_cps_unbound(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)) == 0, \
+            _cps_unbound_msg(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)
+        not (observability and observability.enabled and observability.destination and observability.destination.token_from_control_plane) or len(_cluster_targets(_agent_workloads)) > 0, \
             "Bundle.observability.destination.token_from_control_plane = True needs a cluster workload: the credential is delivered to the node agent, which forge renders only on a cluster the env deploys to"
-        len(_cps_duplicates(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_duplicates(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} declared twice for the same cluster and namespace — the control plane would write one Secret from two declarations"
-        len(_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} — a cluster and namespace has at most one telemetry_token (a workload reads exactly one OTLP credential)"
-        len(_cps_also_provided(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_also_provided(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
+        len(_cps_duplicates(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_duplicates(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} declared twice for the same cluster and namespace — the control plane would write one Secret from two declarations"
+        len(_cps_second_telemetry_token(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_second_telemetry_token(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} — a cluster and namespace has at most one telemetry_token (a workload reads exactly one OTLP credential)"
+        len(_cps_also_provided(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_also_provided(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
         # SECRETS (forge.OpenBao, forge.ExternalSecretsOperator, StoreSource).
         # The structural rules live on the schemas; these need the Bundle.
+        len(_duplicates([s.cluster.cluster for s in ml_stacks])) == 0, \
+            "Bundle.ml_stacks declares two stacks on cluster ${_duplicates([s.cluster.cluster for s in ml_stacks])}: one forge.MLStack per cluster context. Merge them into one"
+        len(_duplicates([x.svc for x in _ml_scrapes(ml_stacks)])) == 0, \
+            "Bundle.ml_stacks scrapes two components as service ${_duplicates([x.svc for x in _ml_scrapes(ml_stacks)])}: a scrape's service.name is unique in the env. Set service_name on one of them (forge.Adopt or forge.Install)"
         len(_duplicates([_eso_context(e) for e in external_secrets_operators])) == 0, \
             "Bundle.external_secrets_operators installs ESO twice on ${_duplicates([_eso_context(e) for e in external_secrets_operators])}: one cluster has one External Secrets Operator (several fight over the cluster-scoped CRDs and webhook configurations). Remove the duplicate; configure the one with `values`"
         len(_openbao_sources(required_secrets)) == 0 or openbao, \
@@ -9766,7 +9910,7 @@ schema Bundle:
         # checked live by the deploy preflight) or a rendered_secrets entry.
         # A local env without cluster workloads uses the secret store instead,
         # which `forge env up` checks before it starts anything.
-        _headers_secret_supplied(workloads, observability, required_secrets, rendered_secrets, _cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))), \
+        _headers_secret_supplied(_agent_workloads, observability, required_secrets, rendered_secrets, _cps_all(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))), \
             _headers_secret_msg(observability)
         # ONE LOG SHIPPING PATH. The node agent (cluster) and the local
         # collector (host) already ship container/process logs; a workload that

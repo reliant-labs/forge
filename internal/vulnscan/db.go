@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -121,7 +122,25 @@ type DB struct {
 	// Log receives progress lines (a download, a wait for another
 	// process's update); nil is os.Stderr.
 	Log io.Writer
+
+	// ReadOnly uses Dir as a database something else keeps fresh: a
+	// machine's database mounted read-only into a gate. Nothing is written
+	// into Dir. grype's config goes to ConfigDir, a read takes the
+	// directory's lock only when its lock file already exists, and an
+	// update or import is refused.
+	ReadOnly bool
+	// ConfigDir is where grype's (empty) config is written; "" is Dir. A
+	// ReadOnly database needs one, since Dir cannot take the file.
+	ConfigDir string
+	// Offline forbids every network read: Ensure never reads the listing
+	// or runs a download, whatever its options, and judges the database on
+	// disk as it is. A missing or stale database is then ErrNoDB or
+	// ErrStale, as with no network.
+	Offline bool
 }
+
+// ErrOffline is a network read refused because the database is Offline.
+var ErrOffline = errors.New("the vulnerability database is offline: no network read is allowed")
 
 // Open returns the database at DefaultDir, resolving grype with tool.
 func Open(tool ToolFunc) (*DB, error) {
@@ -173,10 +192,15 @@ func (d *DB) OnDisk() bool {
 	return err == nil && fi.Mode().IsRegular() && fi.Size() > 0
 }
 
-func (d *DB) grypeDir() string   { return filepath.Join(d.Dir, "grype") }
-func (d *DB) configPath() string { return filepath.Join(d.Dir, "grype.yaml") }
-func (d *DB) statePath() string  { return filepath.Join(d.Dir, "state.json") }
-func (d *DB) lockPath() string   { return filepath.Join(d.Dir, "lock") }
+func (d *DB) grypeDir() string { return filepath.Join(d.Dir, "grype") }
+func (d *DB) configPath() string {
+	if d.ConfigDir != "" {
+		return filepath.Join(d.ConfigDir, "grype.yaml")
+	}
+	return filepath.Join(d.Dir, "grype.yaml")
+}
+func (d *DB) statePath() string { return filepath.Join(d.Dir, "state.json") }
+func (d *DB) lockPath() string  { return filepath.Join(d.Dir, "lock") }
 
 // emptyConfig is the grype config every invocation reads instead of the
 // user's or the project's: nothing in it, so grype's defaults and forge's
@@ -189,7 +213,16 @@ func (d *DB) prepare() error {
 	if strings.TrimSpace(d.Dir) == "" {
 		return errors.New("vulnerability database directory is not set")
 	}
-	if err := os.MkdirAll(d.grypeDir(), 0o755); err != nil {
+	if d.ReadOnly {
+		// Dir is someone else's: create nothing in it. A directory that is
+		// not there is not created either; grype then reports no database.
+		if strings.TrimSpace(d.ConfigDir) == "" {
+			return errors.New("a read-only vulnerability database needs a directory for grype's config (ConfigDir)")
+		}
+		if err := os.MkdirAll(d.ConfigDir, 0o700); err != nil {
+			return fmt.Errorf("create %s: %w", d.ConfigDir, err)
+		}
+	} else if err := os.MkdirAll(d.grypeDir(), 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", d.grypeDir(), err)
 	}
 	if b, err := os.ReadFile(d.configPath()); err == nil && string(b) == emptyConfig {
@@ -236,7 +269,13 @@ func (d *DB) grype(ctx context.Context, stdout io.Writer, args ...string) (versi
 	}
 	var stderr bytes.Buffer
 	full := append([]string{"-c", d.configPath(), "-q"}, args...)
-	err = d.run(ctx, Command{Path: path, Args: full, Env: d.env(), Dir: d.Dir, Stdout: stdout, Stderr: &stderr})
+	dir := d.Dir
+	if d.ReadOnly {
+		// Dir may not even exist (no database mounted); the private config
+		// directory holds no .grype.yaml either.
+		dir = d.ConfigDir
+	}
+	err = d.run(ctx, Command{Path: path, Args: full, Env: d.env(), Dir: dir, Stdout: stdout, Stderr: &stderr})
 	if err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return version, fmt.Errorf("grype %s: %w: %s", strings.Join(args, " "), err, lastLines(msg, 5))
@@ -380,6 +419,9 @@ type Listing struct {
 // Latest reads the listing.
 func (d *DB) Latest(ctx context.Context) (Listing, error) {
 	var l Listing
+	if d.Offline {
+		return l, ErrOffline
+	}
 	ctx, cancel := context.WithTimeout(ctx, listingTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.ListingURL(), nil)
@@ -427,10 +469,16 @@ type EnsureOptions struct {
 //
 // Concurrent forge processes are serialized by the directory's lock: one
 // refreshes while the others wait for it (and say so), then use its result.
+//
+// An Offline or ReadOnly database is never refreshed, whatever opts say: it
+// is judged as it is on disk.
 func (d *DB) Ensure(ctx context.Context, opts EnsureOptions) (Status, error) {
 	st, err := d.Status(ctx)
 	if err != nil {
 		return st, err
+	}
+	if d.Offline || d.ReadOnly {
+		opts = EnsureOptions{}
 	}
 	now := d.now()
 	if !d.refreshDue(st, opts, now) {
@@ -552,10 +600,29 @@ func (d *DB) Import(ctx context.Context, file string) (Status, error) {
 // shared for a read. A waiter that cannot take it at once says so on Log,
 // then blocks until it can or ctx ends.
 func (d *DB) lock(ctx context.Context, exclusive bool) (func(), error) {
+	if d.ReadOnly && exclusive {
+		return nil, fmt.Errorf("the vulnerability database in %s is read-only here: update or import it where it is kept", d.Dir)
+	}
 	if err := d.prepare(); err != nil {
 		return nil, err
 	}
-	l := flock.New(d.lockPath())
+	opts := []flock.Option{}
+	if d.ReadOnly {
+		// Share the keeper's lock when its lock file is there, opened
+		// without O_CREATE so nothing is written. When it is not (a copy,
+		// a mount without it), read unlocked: a database swapped mid-read
+		// makes grype fail, which is "not scanned", never a pass.
+		if _, err := os.Stat(d.lockPath()); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return func() {}, nil
+			}
+			// Any other failure (permission, I/O) is no proof the keeper is
+			// not swapping the database: refuse, so the scan is unscanned.
+			return nil, fmt.Errorf("lock the vulnerability database %s: %w", d.lockPath(), err)
+		}
+		opts = append(opts, flock.SetFlag(os.O_RDONLY))
+	}
+	l := flock.New(d.lockPath(), opts...)
 	try := l.TryRLock
 	tryCtx := l.TryRLockContext
 	if exclusive {
@@ -563,6 +630,9 @@ func (d *DB) lock(ctx context.Context, exclusive bool) (func(), error) {
 	}
 	ok, err := try()
 	if err != nil {
+		// Read-only or not, a lock that cannot be taken is not a lock: the
+		// caller reports the scan unscanned rather than read a database
+		// that may be mid-replacement.
 		return nil, fmt.Errorf("lock the vulnerability database %s: %w", d.lockPath(), err)
 	}
 	if !ok {

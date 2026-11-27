@@ -108,10 +108,16 @@ func (f *fakeFederation) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if ttl == 0 {
 		ttl = 15 * time.Minute
 	}
+	// The minted token carries the scopes asked for, as the control plane's
+	// does once it admits them.
+	scopes := body["scopes"]
+	if scopes == nil {
+		scopes = []string{"tests:write"}
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"token":     fmt.Sprintf("rlat_minted-%d", f.minted),
 		"expiresAt": time.Now().Add(ttl).UTC().Format(time.RFC3339Nano),
-		"scopes":    []string{"tests:write"},
+		"scopes":    scopes,
 		"orgId":     "org-1",
 		"subject":   "github:acme/shop@refs/heads/main run 7/1",
 	})
@@ -205,6 +211,50 @@ func TestResolveCredentialFor_ExchangesTheJobsIDToken(t *testing.T) {
 	}
 	if f.mask.String() != "::add-mask::rlat_minted-1\n" {
 		t.Fatalf("mask output %q, want one add-mask line", f.mask.String())
+	}
+}
+
+// 2b. sbom:write is federatable (on a protected ref; the control plane judges
+// the ref), so it reaches the OIDC path too, asks for sbom:write alone, and is
+// cached apart from tests:write: a token minted for one scope never answers
+// for the other.
+func TestResolveCredentialFor_SBOMWriteExchangesTheJobsIDToken(t *testing.T) {
+	t.Parallel()
+	f := newOIDCFixture(t)
+	got, err := f.resolve(accesstoken.ScopeSBOMWrite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Source != SourceCIIdentity || len(got.Scopes) != 1 || got.Scopes[0] != "sbom:write" {
+		t.Fatalf("credential: %+v", got)
+	}
+	bodies, _ := f.cp.seen()
+	if len(bodies) != 1 || fmt.Sprint(bodies[0]["scopes"]) != "[sbom:write]" {
+		t.Fatalf("exchange bodies: %v", bodies)
+	}
+	tests, err := f.resolve(accesstoken.ScopeTestsWrite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tests.Token == got.Token {
+		t.Fatalf("tests:write reused the sbom:write token %q", got.Token)
+	}
+	if n := f.actions.calls(); n != 2 {
+		t.Fatalf("ID-token requests = %d, want one per scope", n)
+	}
+}
+
+// 2c. A token CI set still wins for sbom:write.
+func TestResolveCredentialFor_EnvTokenWinsForSBOMWrite(t *testing.T) {
+	t.Parallel()
+	f := newOIDCFixture(t)
+	f.env[DefaultTokenEnv] = "rlat_from-env"
+	got, err := f.resolve(accesstoken.ScopeSBOMWrite)
+	if err != nil || got.Token != "rlat_from-env" || got.Source != SourceEnv {
+		t.Fatalf("the env token must win: %+v %v", got, err)
+	}
+	if n := f.actions.calls(); n != 0 {
+		t.Fatalf("the ID-token endpoint was called %d times", n)
 	}
 }
 

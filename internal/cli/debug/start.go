@@ -211,14 +211,19 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 		return fmt.Errorf("creating debug output dir: %w", err)
 	}
 
-	fmt.Printf("Building %s with debug flags...\n", buildPath)
+	// --json promises stdout is one JSON document: build chatter goes to stderr.
+	progress := os.Stdout
+	if o.jsonOutput {
+		progress = os.Stderr
+	}
+	fmt.Fprintf(progress, "Building %s with debug flags...\n", buildPath)
 	// -trimpath=false overrides a -trimpath in GOFLAGS (the Reliant workspace
 	// image makes it the toolchain default): `forge debug break` hands delve
 	// an ABSOLUTE file path first, and a trimmed binary records only
 	// module-relative ones.
 	buildCmd := goexec.Graceful(exec.CommandContext(ctx, "go", "build", "-gcflags=all=-N -l", "-trimpath=false", "-o", outputBinary, buildPath))
 	buildCmd.Env = goexec.Env()
-	buildCmd.Stdout = os.Stdout
+	buildCmd.Stdout = progress
 	buildCmd.Stderr = os.Stderr
 	if err := buildCmd.Run(); err != nil {
 		return fmt.Errorf("building debug binary: %w", err)

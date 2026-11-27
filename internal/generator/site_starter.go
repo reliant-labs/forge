@@ -46,24 +46,36 @@ func SiteStarterFrontend(kind, name string) (SiteFrontend, bool) {
 // SiteStarterKindNames lists the kinds SiteStarterFrontend accepts, sorted.
 func SiteStarterKindNames() []string { return []string{"nextjs", "vite-spa"} }
 
-// siteStarterReused are files a site starter shares with the app frontend
-// of the same framework, rendered from the app tree rather than copied into
-// the site's: the dev-server half of browser log forwarding, the Tailwind
-// PostCSS wiring, and the icon, favicon.ico and robots.txt a fresh site
-// serves instead of 404s. One file, so a fix to it reaches both.
+// siteStarterReused are files a site starter shares with another tree,
+// rendered from that tree rather than copied into the site's, so a fix to
+// one reaches both: from the app frontend of the same framework, the
+// dev-server half of browser log forwarding, the Tailwind PostCSS wiring and
+// the jsx-a11y base its eslint config imports; from site/shared, the
+// placeholder favicon.svg and og.png (1200×630) both site starters link.
+// Each placeholder carries siteaudit.PlaceholderImageMarker, so `forge site
+// audit` names a site that still ships one. favicon.ico answers the browser's
+// /favicon.ico request instead of a 404.
+//
+// robots.txt: the Next.js starter generates it at build time
+// (src/app/robots.ts), because its Sitemap: line needs the absolute SITE_URL;
+// a public/robots.txt beside that route fails the build. The Vite starter
+// still ships the static one.
 var siteStarterReused = map[string][]struct{ from, to string }{
 	"vite": {
 		{from: "vite-spa/" + inlinedDevLogPlugin, to: inlinedDevLogPlugin},
-		{from: "vite-spa/public/icon.svg", to: "public/icon.svg"},
+		{from: "shared-web/eslint.a11y.mjs", to: "eslint.a11y.mjs"},
+		{from: "site/shared/public/favicon.svg", to: "public/favicon.svg"},
+		{from: "site/shared/public/og.png", to: "public/og.png"},
 		{from: "shared-web/public/favicon.ico", to: "public/favicon.ico"},
 		{from: "shared-web/public/robots.txt", to: "public/robots.txt"},
 	},
 	"nextjs": {
 		{from: "nextjs/src/app/%5F_forge/log/route.ts", to: "src/app/%5F_forge/log/route.ts"},
 		{from: "nextjs/postcss.config.mjs", to: "postcss.config.mjs"},
-		{from: "nextjs/src/app/icon.svg", to: "src/app/icon.svg"},
+		{from: "shared-web/eslint.a11y.mjs", to: "eslint.a11y.mjs"},
+		{from: "site/shared/public/favicon.svg", to: "public/favicon.svg"},
+		{from: "site/shared/public/og.png", to: "public/og.png"},
 		{from: "shared-web/public/favicon.ico", to: "public/favicon.ico"},
-		{from: "shared-web/public/robots.txt", to: "public/robots.txt"},
 	},
 }
 

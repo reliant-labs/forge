@@ -733,3 +733,130 @@ func TestTestReportUploadOIDCBeatsARunnersLogin(t *testing.T) {
 		})
 	}
 }
+
+// trReportStderr is trReport with the command's stderr, where the upload's
+// note and its GitHub Actions warning go.
+func trReportStderr(t *testing.T, args ...string) (testreport.Report, int, string) {
+	t.Helper()
+	cmd := newTestReportCmd()
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs(append([]string{"--json"}, args...))
+	code := exitcode.Of(cmd.Execute())
+	var rep testreport.Report
+	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
+		t.Fatalf("not one JSON document (exit %d): %v\n%s\nstderr:\n%s", code, err, out.String(), errOut.String())
+	}
+	return rep, code, errOut.String()
+}
+
+// In GitHub Actions, a wanted upload that did not fully happen is also a
+// warning annotation on the run's summary, beside the stderr note; it never
+// moves the exit code, and an upload that happened says nothing more.
+func TestTestReportUploadAnnotatesInGitHubActions(t *testing.T) {
+	const notUploaded = "::warning title=Test results not uploaded::forge test report: upload "
+	for _, tc := range []struct {
+		name    string
+		fake    *fakeTestsService
+		flag    string // "" is no flag, in CI
+		actions bool
+		partial bool
+		status  string
+		want    int
+		// annotation is the warning's prefix; "" is none.
+		annotation string
+	}{
+		{"skipped", &fakeTestsService{record: "ok"}, "--upload", true, false, testUploadSkipped, exitOK, notUploaded + "skipped: "},
+		{"skipped by default in CI", &fakeTestsService{record: "ok"}, "", true, false, testUploadSkipped, exitOK, notUploaded + "skipped: "},
+		{"failed", &fakeTestsService{features: []string{hostedTestFeatureResults}, record: "refuse"}, "--upload", true, false, testUploadFailed, exitOK, notUploaded + "failed: "},
+		{"failed and required", &fakeTestsService{features: []string{hostedTestFeatureResults}, record: "refuse"}, "--upload=required", true, false, testUploadFailed, exitRefused, notUploaded + "failed: "},
+		{"partial", &fakeTestsService{features: []string{hostedTestFeatureResults}}, "--upload", true, true, testUploadPartial, exitOK,
+			"::warning title=Test results only partly uploaded::forge test report: upload partial: "},
+		{"uploaded", &fakeTestsService{features: []string{hostedTestFeatureResults}}, "--upload", true, false, testUploadOK, exitOK, ""},
+		{"skipped outside GitHub Actions", &fakeTestsService{record: "ok"}, "--upload", false, false, testUploadSkipped, exitOK, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			trUploadProject(t, trStream("pass"), 0, tc.fake, nil)
+			testUploadInCI = func() bool { return true }
+			testUploadInGitHubActions = func() bool { return tc.actions }
+			if tc.partial {
+				prev := testUploadAssemble
+				testUploadAssemble = func(context.Context, testlocal.Options) (*testlocal.Assembly, error) {
+					return nil, &testreport.SourceMismatchError{}
+				}
+				t.Cleanup(func() { testUploadAssemble = prev })
+			}
+			var args []string
+			if tc.flag != "" {
+				args = append(args, tc.flag)
+			}
+			rep, code, stderr := trReportStderr(t, args...)
+			if code != tc.want || rep.ExitCode != tc.want {
+				t.Fatalf("exit %d (document %d), want %d:\n%s", code, rep.ExitCode, tc.want, stderr)
+			}
+			if rep.Upload == nil || rep.Upload.Status != tc.status {
+				t.Fatalf("upload %+v, want status %s", rep.Upload, tc.status)
+			}
+			// The note stays, and the warning repeats it exactly.
+			var note, warning string
+			for _, line := range strings.Split(stderr, "\n") {
+				switch {
+				case strings.HasPrefix(line, "forge test report: upload"):
+					note = line
+				case strings.HasPrefix(line, "::warning"):
+					if warning != "" {
+						t.Fatalf("more than one warning:\n%s", stderr)
+					}
+					warning = line
+				}
+			}
+			if note == "" {
+				t.Fatalf("the stderr note is gone:\n%s", stderr)
+			}
+			switch {
+			case tc.annotation == "" && warning != "":
+				t.Fatalf("annotated an upload it should not have:\n%s", stderr)
+			case tc.annotation != "" && (!strings.HasPrefix(warning, tc.annotation) || !strings.HasSuffix(warning, "::"+note)):
+				t.Fatalf("want a warning starting %q carrying the note %q, got:\n%s", tc.annotation, note, stderr)
+			}
+		})
+	}
+}
+
+// tests.upload: never with no flag is no upload, silently, in GitHub Actions
+// too; an explicit --upload it refuses is a wanted upload, and says so.
+func TestTestReportUploadNeverIsSilentInGitHubActions(t *testing.T) {
+	fake := &fakeTestsService{features: []string{hostedTestFeatureResults}}
+	root := trUploadProject(t, trStream("pass"), 0, fake, nil)
+	trWrite(t, filepath.Join(root, "forge.yaml"), "name: shop\nmodule_path: example.com/m\ntests:\n  upload: never\n")
+	testUploadInCI = func() bool { return true }
+	testUploadInGitHubActions = func() bool { return true }
+
+	rep, code, stderr := trReportStderr(t)
+	if code != exitOK || rep.Upload != nil || stderr != "" {
+		t.Fatalf("tests.upload: never spoke: exit %d upload %+v stderr:\n%s", code, rep.Upload, stderr)
+	}
+	rep, code, stderr = trReportStderr(t, "--upload")
+	if code != exitOK || rep.Upload == nil || rep.Upload.Status != testUploadSkipped ||
+		!strings.Contains(stderr, "::warning title=Test results not uploaded::forge test report: upload skipped: forge.yaml sets tests.upload: never") {
+		t.Fatalf("an explicit --upload refused by tests.upload: never: exit %d upload %+v stderr:\n%s", code, rep.Upload, stderr)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("tests.upload: never reached the control plane: %v", fake.calls)
+	}
+}
+
+// A workflow command's message and title are escaped as the runner unescapes
+// them, so a reason with a newline stays one annotation and a title with a
+// colon does not end early.
+func TestGitHubWarningEscapes(t *testing.T) {
+	got := githubWarning("a: b, c", "100% sure\r\nsecond line")
+	want := "::warning title=a%3A b%2C c::100%25 sure%0D%0Asecond line"
+	if got != want {
+		t.Fatalf("githubWarning = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "\n") {
+		t.Fatal("a newline in the message split the command")
+	}
+}

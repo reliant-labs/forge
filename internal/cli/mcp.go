@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -64,7 +65,8 @@ const (
 )
 
 func newMCPCmd() *cobra.Command {
-	return &cobra.Command{
+	var tools string
+	cmd := &cobra.Command{
 		Use:   "mcp",
 		Short: "Run forge as an MCP server on stdio, so any agent harness can drive it",
 		Long: `Run forge as a Model Context Protocol server on stdio.
@@ -75,36 +77,46 @@ memory file telling it how. The server says what forge is and what it does for
 the repo the agent is in, forge project or not, and sends the model to the
 benefits tool and the 'adopt' skill (the 'forge' skill in a forge project).
 
-Tools (each but explain_error takes an optional "dir": the repo to act on;
-default is the directory the server was started in, or -C):
+Tools, by group (each but explain_error and forge_tools takes an optional
+"dir": the repo to act on; default is the directory the server was started
+in, or -C). --tools picks the groups: all (the default), or a comma list such
+as core or core,ops. core is the smallest useful set; started without a group,
+the server also lists forge_tools, which enables the rest in-session
+(notifications/tools/list_changed). The default is planned to become core in
+a later minor; --tools all stays.
 
-  read-only   benefits       what forge does for this repo, with the first step
-                             and the agent time to each; any repo
-              capabilities   every verb, lint analyzer, marker and schema
-              schema         a published JSON Schema (env: the env document)
-              annotations    the entity-authoring vocabulary
-              libraries      forge/pkg and web-runtime APIs
-              audit          what THIS project currently is
-              shapes         where every rpc/message/table/handler is, with file:line
-              blast_radius   the ops a diff changes, with their traffic when an env is given
-              skill_list     the skill catalog
-              skill_search   find a skill by keyword
-              skill_load     print one skill
-              deploy_status  the claimable deploy of an env: URL, claim link, state
-              db_query       one read-only SQL statement against an env's app
-                             database (forge db query --json, same policy, audit
-                             and read-only role)
-              obs_status, obs_issues, obs_issue, obs_logs, obs_check
-                             an env's telemetry and release verdict (forge obs
-                             … --json); the hosted connector's tools, by name
-              explain_error  a forge failure's meaning and the exact next command
-  mutating    lint           forge lint --quiet [--scope PATH...]
-              generate       forge generate [--dry-run | --check]
-              deploy_claimable
-                             forge env deploy <env> --claimable: a live URL plus a
-                             claim link, no account; adopts a Vite/Next.js app with
-                             no forge.yaml in place first. Streams progress
-                             (notifications/progress) and stops on cancel
+  core      audit          what THIS project currently is
+            shapes         where every rpc/message/table/handler is, with file:line
+            skill_search   find a skill by keyword
+            skill_load     print one skill
+            lint *         forge lint --quiet [--scope PATH...]
+            generate *     forge generate [--dry-run | --check]
+  catalog   benefits       what forge does for this repo, with the first step
+                           and the agent time to each; any repo
+            why            the reasons to use forge, with their evidence
+            capabilities   every verb, lint analyzer, marker and schema
+            schema         a published JSON Schema (env: the env document)
+            annotations    the entity-authoring vocabulary
+            libraries      forge/pkg and web-runtime APIs
+            skill_list     the skill catalog
+  support   explain_error  a forge failure's meaning and the exact next command
+            report_bug *   file a defect in forge with the Reliant team
+  ops       blast_radius   the ops a diff changes, with their traffic when an env is given
+            db_query       one read-only SQL statement against an env's app
+                           database (forge db query --json, same policy, audit
+                           and read-only role)
+            obs_status, obs_issues, obs_issue, obs_logs, obs_check
+                           an env's telemetry and release verdict (forge obs
+                           … --json); the hosted connector's tools, by name
+  deploy    deploy_claimable *
+                           forge env deploy <env> --claimable: a live URL plus a
+                           claim link, no account; adopts a Vite/Next.js app with
+                           no forge.yaml in place first. Streams progress
+                           (notifications/progress) and stops on cancel
+            deploy_status  the claimable deploy of an env: URL, claim link, state
+
+  * not read-only: lint refreshes caches, generate writes generated files,
+    report_bug sends a report, deploy_claimable publishes.
 
 Each tool runs the same command in-process; it does not shell out to a forge
 binary, and it does not hand a project pinned to another forge over to that
@@ -122,11 +134,18 @@ Register it. With no install, the command is "npx -y @reliantlabs/forge mcp"
 docs/mcp.md has the config files in full.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			groups, err := parseMCPTools(tools)
+			if err != nil {
+				return err
+			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			return runMCP(ctx, cmd.InOrStdin(), os.Stdout)
+			return runMCP(ctx, cmd.InOrStdin(), os.Stdout, groups)
 		},
 	}
+	cmd.Flags().StringVar(&tools, "tools", mcpToolsAll,
+		"tool groups to list: all, or a comma-separated list of "+strings.Join(mcpToolGroupNames(), ", ")+" (core is the smallest useful set)")
+	return cmd
 }
 
 // runMCP serves MCP over in/out until in closes or ctx ends.
@@ -135,7 +154,9 @@ docs/mcp.md has the config files in full.`,
 // Commands print to os.Stdout directly (generate does), so the protocol gets
 // the real stdout and os.Stdout is pointed at stderr for the rest of the
 // process; tool calls capture both streams themselves (mcpRunner.exec).
-func runMCP(ctx context.Context, in io.Reader, protocolOut *os.File) error {
+//
+// groups are the tool groups to register (parseMCPTools); nil is every group.
+func runMCP(ctx context.Context, in io.Reader, protocolOut *os.File, groups []string) error {
 	os.Stdout = os.Stderr
 
 	// Every tool call must run the forge this binary is, never exec the
@@ -147,7 +168,7 @@ func runMCP(ctx context.Context, in io.Reader, protocolOut *os.File) error {
 	if err != nil {
 		return err
 	}
-	srv := newMCPServer(r)
+	srv := newMCPServer(r, groups)
 	fmt.Fprintf(os.Stderr, "forge mcp: serving on stdio (project %s)\n", r.defaultDir)
 	return srv.Run(ctx, newDrainingTransport(&mcp.IOTransport{
 		Reader: io.NopCloser(in),
@@ -260,13 +281,24 @@ type nopWriteCloser struct{ io.Writer }
 
 func (nopWriteCloser) Close() error { return nil }
 
-func newMCPServer(r *mcpRunner) *mcp.Server {
+// newMCPServer builds the server with the named tool groups registered; nil
+// is every group. Leaving any out adds forge_tools, which enables the rest.
+func newMCPServer(r *mcpRunner, groups []string) *mcp.Server {
+	if groups == nil {
+		groups = mcpToolGroupNames()
+	}
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "forge",
 		Title:   "Reliant Forge",
 		Version: buildinfo.Version(),
-	}, &mcp.ServerOptions{Instructions: mcpInstructions})
-	addForgeTools(srv, r)
+	}, &mcp.ServerOptions{Instructions: mcpInstructionsFor(groups)})
+	// The SDK advertises tools.listChanged whenever tools exist, which is
+	// what lets forge_tools add them mid-session.
+	ts := &mcpToolset{srv: srv, r: r, enabled: map[string]bool{}}
+	ts.enable(groups...)
+	if len(groups) < len(mcpToolGroups) {
+		addForgeToolsTool(ts)
+	}
 	return srv
 }
 

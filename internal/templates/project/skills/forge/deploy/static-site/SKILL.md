@@ -250,6 +250,11 @@ Reliant session. Your own hostname: load `deploy/domains`.
 
 ## SEO and accessibility
 
+A new site starts with the head tags, social card, structured data and
+jsx-a11y lint its first audit checks. Its canonical origin is `SITE_URL`, a
+build-time `forge.FrontendURL` each env declares. Load
+`deploy/static-site/seo` for what is scaffolded and how to keep it right.
+
 `forge site audit` judges the built site the way search engines, link previews
 and assistive technology see it, with the rules Reliant's site insights run
 after every promotion of a hosted site:

@@ -13,6 +13,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cigate"
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/goexec"
 )
@@ -50,25 +51,55 @@ func runGatePlan(cmd *cobra.Command, flags gateFlags) error {
 	case truthy(os.Getenv(cigate.FullEnv)) && len(flags.files) == 0:
 		force = cigate.FullEnv + "=1"
 	}
-	a := cigate.ComputeAffected(cmd.Context(), cigate.AffectedInput{
-		Root: root, BaseRef: base, Env: goexec.CheckEnv(cigate.GateEnv(cfg)...), Force: force,
-		Ignore: cfg.CI.Gate.AffectedIgnore, Rules: cfg.CI.Gate.AffectedRules, Readers: cfg.CI.Gate.AffectedReaders, Modules: cfg.CI.Gate.AffectedModules, Reach: cfg.CI.Gate.AffectedReach, Files: flags.files,
-	})
+	a := cigate.ComputeAffected(cmd.Context(), planAffectedInput(cfg.CI.Gate, root, base, force, goexec.CheckEnv(cigate.GateEnv(cfg)...), flags.files))
 	// The rows the diff decides beyond the unit lane: paths_go_closure
 	// hits and lockfile-<frontend> rows, so --plan reports them too.
 	ciData := generator.CIWorkflowDataFor(root, cfg, generator.CIInputs{Frontends: ciFrontends(root, cfg)})
-	if checks, perr := cigate.Plan(cigate.PlanInput{Root: root, CI: ciData, Cfg: cfg, Warn: func(string) {}}); perr == nil {
+	checks, perr := cigate.Plan(cigate.PlanInput{Root: root, CI: ciData, Cfg: cfg, Warn: func(string) {}})
+	if perr == nil {
 		env := goexec.CheckEnv(cigate.GateEnv(cfg)...)
 		a = cigate.ResolveGoClosures(cmd.Context(), root, env, checks, a, nil)
 		a = cigate.WithLockfileReport(a, cigate.WithLockfileChecks(checks, a, root, ciData.Frontends))
 	}
+	doc := a.Document()
+	// The path-gated rows (paths, paths_go_closure): which the gate would
+	// run for these changes, and why not the others.
+	if perr == nil {
+		doc.Checks = planChecks(checks, a)
+	}
 	if flags.json {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
-		return enc.Encode(a.Document())
+		return enc.Encode(doc)
 	}
 	writeAffectedPlan(cmd.OutOrStdout(), a)
 	return nil
+}
+
+// planAffectedInput is the affected-mode input --plan computes from: every
+// ci.gate key the gate run reads (ignore, rules, reach, readers, modules),
+// so the plan never selects differently from the run it predicts.
+func planAffectedInput(g config.CIGateConfig, root, base, force string, env, files []string) cigate.AffectedInput {
+	return cigate.AffectedInput{Root: root, BaseRef: base, Env: env, Force: force, Files: files,
+		Ignore: g.AffectedIgnore, Rules: g.AffectedRules, Reach: g.AffectedReach, Readers: g.AffectedReaders, Modules: g.AffectedModules}
+}
+
+// planChecks is each path-gated row (paths, paths_go_closure) and whether
+// the gate would run it for a's changes; a note says why one would not.
+func planChecks(checks []cigate.Check, a cigate.Affected) []cigate.PlanCheck {
+	full := a.Full && len(a.Changed) == 0
+	var out []cigate.PlanCheck
+	for _, c := range cigate.GateByPaths(checks, a) {
+		if len(c.Paths) == 0 && len(c.GoClosure) == 0 {
+			continue
+		}
+		pc := cigate.PlanCheck{Name: c.Name, Runs: c.NotApplicable == "" || full, Note: c.Note}
+		if c.NotApplicable != "" {
+			pc.Note = c.NotApplicable
+		}
+		out = append(out, pc)
+	}
+	return out
 }
 
 // writeAffectedPlan prints the decision for a person.

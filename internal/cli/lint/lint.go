@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -1044,8 +1045,10 @@ type lintVerdict struct {
 	// passes too" when the lanes already know it will not.
 	outside      int
 	outsideLanes []string
-	// hiddenWarnings counts findings --quiet did not print.
+	// hiddenWarnings counts findings --quiet did not print, and hiddenRules
+	// counts them by rule, so the verdict can say what they are.
 	hiddenWarnings int
+	hiddenRules    map[string]int
 	// graced are the findings that warn only because the project's pin has
 	// not been through a release with their rule (lint_rollout.go).
 	graced []gracedRule
@@ -1173,9 +1176,71 @@ func (v lintVerdict) suffix() string {
 			plural(v.outside, "error"), strings.Join(v.outsideLanes, ", "))
 	}
 	if v.hiddenWarnings > 0 {
-		fmt.Fprintf(&b, "; %s not shown (--quiet)", plural(v.hiddenWarnings, "advisory finding"))
+		fmt.Fprintf(&b, "; %s not shown (--quiet", plural(v.hiddenWarnings, "advisory finding"))
+		if rules := describeHiddenRules(v.hiddenRules); rules != "" {
+			fmt.Fprintf(&b, ": %s", rules)
+		}
+		b.WriteString("; run without --quiet to see them)")
 	}
 	return b.String()
+}
+
+// hide records findings --quiet does not print: counted as issueCount
+// counts them, and by rule.
+func (v *lintVerdict) hide(fs []lintJSONFinding) {
+	n := issueCount(fs)
+	if n == 0 {
+		return
+	}
+	v.hiddenWarnings += n
+	if v.hiddenRules == nil {
+		v.hiddenRules = map[string]int{}
+	}
+	anchored := 0
+	for _, f := range fs {
+		if f.File != "" || f.Rule != "external" {
+			v.hiddenRules[f.Rule]++
+			anchored++
+		}
+	}
+	if anchored == 0 {
+		v.hiddenRules["external"] += n
+	}
+}
+
+// hiddenRulesShown is how many rules the --quiet note names.
+const hiddenRulesShown = 3
+
+// describeHiddenRules names the rules --quiet hid, most findings first:
+// "forge-idempotency-read-undeclared ×3, forge-config-deps".
+//
+// The note used to say only "3 advisory findings not shown (--quiet)", so an
+// agent gating with --quiet learned that something was hidden, but not what,
+// and not how to see it (Ranger build, friction #10).
+func describeHiddenRules(byRule map[string]int) string {
+	rules := make([]string, 0, len(byRule))
+	for r := range byRule {
+		rules = append(rules, r)
+	}
+	sort.Slice(rules, func(i, j int) bool {
+		if byRule[rules[i]] != byRule[rules[j]] {
+			return byRule[rules[i]] > byRule[rules[j]]
+		}
+		return rules[i] < rules[j]
+	})
+	parts := make([]string, 0, hiddenRulesShown+1)
+	for i, r := range rules {
+		if i == hiddenRulesShown {
+			parts = append(parts, fmt.Sprintf("and %d more", len(rules)-hiddenRulesShown))
+			break
+		}
+		if n := byRule[r]; n > 1 {
+			parts = append(parts, fmt.Sprintf("%s ×%d", r, n))
+		} else {
+			parts = append(parts, r)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // golangciRunArgs is the ONE place a `golangci-lint run` argv is assembled,

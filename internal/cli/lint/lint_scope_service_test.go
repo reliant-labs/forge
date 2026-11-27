@@ -125,7 +125,7 @@ message RotateKeyResponse {}
 		}
 		rc := &lintRunCtx{ctx: context.Background(), cwd: root, paths: []string{"internal/handlers/jobs"}, scope: scope}
 		full := collectLintOutcomesFrom(rc, []linterStep{convention})
-		targeted, handled, err := collectTargetedOutcomes(rc.ctx, lintFlags{conventions: true}, rc.paths, root, nil, nil, scope, nil)
+		targeted, handled, err := collectTargetedOutcomes(rc.ctx, lintFlags{conventions: true}, rc.paths, root, nil, nil, scope, targetedOutcomeOutput{})
 		if err != nil || !handled {
 			t.Fatalf("targeted collection: handled=%v err=%v", handled, err)
 		}

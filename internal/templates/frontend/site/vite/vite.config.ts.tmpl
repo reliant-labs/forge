@@ -1,6 +1,6 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 {{- if .DevLogFromRuntime}}
 import {
   forgeDevLog,
@@ -37,12 +37,52 @@ const devAllowedHosts = (): string[] => {
   return [...out];
 };
 
+// The site's public origin, e.g. https://example.com. deploy/kcl/<env>/main.k
+// declares it per env (forge.FrontendURL): the dev server's URL in dev, the
+// hosted site's hostname when forge builds a release.
+const siteUrl = (process.env.SITE_URL ?? "").replace(/\/+$/, "");
+
+// siteHead writes the head tags that need the absolute origin into
+// index.html at build time: the canonical link, og:url, og:image and the
+// WebSite JSON-LD. Crawlers and link previews read the HTML as served, so
+// these cannot wait for JavaScript. With SITE_URL empty (a first release,
+// built before the env has a hostname) it writes none of them rather than a
+// wrong origin, and the site audit names what is missing.
+function siteHead(): Plugin {
+  return {
+    name: "site-head",
+    transformIndexHtml() {
+      if (!siteUrl) return [];
+      const home = `${siteUrl}/`;
+      const website = {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        name: "{{.ProjectName}}",
+        url: home,
+      };
+      return [
+        { tag: "link", attrs: { rel: "canonical", href: home }, injectTo: "head" },
+        { tag: "meta", attrs: { property: "og:url", content: home }, injectTo: "head" },
+        { tag: "meta", attrs: { property: "og:image", content: `${siteUrl}/og.png` }, injectTo: "head" },
+        { tag: "script", attrs: { type: "application/ld+json" }, children: JSON.stringify(website), injectTo: "head" },
+      ];
+    },
+  };
+}
+
 export default defineConfig({
   // {{if .DevLogFromRuntime}}forgeDevLog{{else}}devLogPlugin{{end}} is dev-only: it receives the browser console lines that
   // installDevLogging() posts from src/main.tsx and prints them to this dev
   // server's stdout, which `forge env up` tees to
   // .forge/logs/<env>/frontend_<name>.log. Delete both to opt out.
-  plugins: [react(), tailwindcss(), {{if .DevLogFromRuntime}}forgeDevLog(){{else}}devLogPlugin(){{end}}, forgeRuntimeConfig(), forgeOtelProxy()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    {{if .DevLogFromRuntime}}forgeDevLog(){{else}}devLogPlugin(){{end}},
+    forgeRuntimeConfig(),
+    forgeOtelProxy(),
+    siteHead(),
+  ],
   build: {
     // The static export hosted static hosting serves. deploy/kcl/<env>/main.k
     // names this directory as the frontend's public_dir; move both together.

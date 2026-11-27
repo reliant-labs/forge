@@ -20,13 +20,14 @@ import (
 // "deploy", "kcl", "main.k"))`) is invisible to it, so any such file sends the
 // unit lane to the full suite. The reader scan reads each test package's Go
 // sources — test and non-test files — for string literals that name a tracked
-// repo path, and a changed file that no rule claims then selects the packages
-// that name it, or name a directory containing it.
+// repo path. The scan adds those packages when an owned file (including Go
+// source) or a non-Go file changes, even when a rule also selects tests.
+// An explicit ignore still skips implicit ownership and reader selection.
 //
-// A file no package names still runs the full suite, exactly as without the
-// scan: the scan only ever turns a full run into a narrower one when it has a
-// package to point at. It over-approximates on purpose — a test run for no
-// reason costs seconds, a test wrongly skipped costs a red default branch.
+// An unplaced, unclaimed non-Go file no package names still runs the full
+// suite; an unplaced Go file does not use reader matches to narrow it. The
+// scan over-approximates on purpose — a test run for no reason costs seconds,
+// a test wrongly skipped costs a red default branch.
 //
 // What counts as naming a path (ported from reliant's
 // tools/test-affected/graph.go scanSources and rootfacts.go):
@@ -406,10 +407,6 @@ type rootFacts struct {
 	consts map[string]string
 }
 
-// rootLocatorNames are helpers that locate the root by name, wherever they
-// are declared.
-var rootLocatorNames = map[string]bool{"repoRoot": true, "RepoRoot": true, "repoRootFromTest": true, "findRoot": true}
-
 // literal is the string a Join argument spells: a string literal, or a
 // package string constant.
 func (rf *rootFacts) literal(e ast.Expr) (string, bool) {
@@ -471,7 +468,7 @@ func findRootFacts(files []*ast.File) *rootFacts {
 					ast.Inspect(d.Body, func(n ast.Node) bool {
 						if ret, ok := n.(*ast.ReturnStmt); ok {
 							for _, r := range ret.Results {
-								if rf.locates(r, local) {
+								if d.Recv == nil && rf.locates(r, local) {
 									mark(rf.funcs, d.Name.Name)
 								}
 							}
@@ -567,7 +564,10 @@ func (rf *rootFacts) locates(e ast.Expr, local map[string]bool) bool {
 		return rf.fields[x.Sel.Name]
 	case *ast.CallExpr:
 		name := calleeName(x)
-		if rf.funcs[name] || rootLocatorNames[name] {
+		// Only a local free function whose body establishes a root fact is
+		// known here. A same-named method or imported helper is not that
+		// function, and a familiar name alone proves nothing.
+		if id, ok := x.Fun.(*ast.Ident); ok && rf.funcs[id.Name] {
 			return true
 		}
 		if sel, ok := x.Fun.(*ast.SelectorExpr); ok {

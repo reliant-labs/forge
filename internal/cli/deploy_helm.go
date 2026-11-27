@@ -151,6 +151,7 @@ func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity, d
 			Owner:                owner,
 			Prune:                c.PruneEnabled(),
 			Patches:              c.Patches,
+			Labels:               c.Labels,
 			SecretCopies:         copies,
 		})
 	}

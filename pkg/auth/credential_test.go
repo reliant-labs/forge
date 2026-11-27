@@ -194,6 +194,37 @@ func TestValidator_APIKeyProviderMarksTheCredential(t *testing.T) {
 	}
 }
 
+// The legacy header-based Validator uses the configured format for claims
+// metadata without putting a new format restriction on its key validator.
+func TestValidator_UseKeyFormatMarksTheCredential(t *testing.T) {
+	t.Parallel()
+	v, err := NewValidator(Config{
+		Provider: ProviderAPIKey,
+		KeyValidator: KeyValidatorFunc(func(context.Context, string) (*Claims, error) {
+			return &Claims{UserID: "key-owner"}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.UseKeyFormat(apikey.MustFormat("acme_"))
+	for _, tc := range []struct{ key, lookup string }{
+		{"acme_ABCDEFGH000000", "ABCDEFGH"},
+		{"fk_IJKLMNOP000000", "IJKLMNOP"},
+		{"other_QRSTUVWX000000", ""},
+	} {
+		h := http.Header{}
+		h.Set("X-API-Key", tc.key)
+		c, err := v.AuthenticateHeaders(context.Background(), h, InterceptorOptions{})
+		if err != nil {
+			t.Fatalf("authenticate %q: %v", tc.key, err)
+		}
+		if !c.IsAPIKey() || c.Credential.KeyPrefix() != tc.lookup {
+			t.Errorf("%q: credential = %v (prefix %q), want API key with lookup prefix %q", tc.key, c.Credential.Kind(), c.Credential.KeyPrefix(), tc.lookup)
+		}
+	}
+}
+
 func TestClaims_IsAPIKeyOnNil(t *testing.T) {
 	t.Parallel()
 	var c *Claims

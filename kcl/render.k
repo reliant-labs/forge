@@ -2358,8 +2358,21 @@ _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
             }
             "image": _o.agent.image
             "memoryLimitMiB": _o.agent.memory_limit_mib
-        } | _tel_agent_spec(b, t.cluster)
+        } | _tel_agent_spec(b, t.cluster) | _k8s_inventory_spec(_o.agent, t.cluster)
     } for _, t in _targets]
+}
+
+# The `kubernetesInventory` key of a cluster's agent record (kcl/schema.k
+# KubernetesInventory; pkg/deploy.KubernetesInventory): absent unless the env
+# opts in.
+_k8s_inventory_spec = lambda agent: ObservabilityAgent, cluster: str -> {str:} {
+    _k = agent.kubernetes_inventory
+    {"kubernetesInventory": {
+        "cluster": cluster
+        "nodeInterval": _k.node_interval
+        "workloadInterval": _k.workload_interval
+        "events": _k.events
+    }} if _k else {}
 }
 
 # ---------------------------------------------------------------------------

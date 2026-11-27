@@ -32,6 +32,8 @@
 //     of each directory a pattern globs in, so a member appearing or
 //     disappearing (even an empty directory) is a change — and every
 //     member's files. Directories are keyed as well as files throughout.
+//     Recursive globs, negations and other unsupported workspace syntax
+//     disable caching rather than approximate package-manager membership.
 //   - the scripts the lane runs (and whether css_health adds lint:styles),
 //     the forge binary (version, path, size, mtime), node and npm (path,
 //     size, mtime, content) and the environment eslint reads (NODE_*, ESLINT_*).
@@ -83,7 +85,7 @@ const (
 	// frontendLintCacheVersion is part of every key. Bump it whenever the
 	// fingerprint's meaning changes, so a record written under the old rules
 	// never answers under the new ones.
-	frontendLintCacheVersion = 3
+	frontendLintCacheVersion = 4
 
 	// lintNoCacheEnv is --no-cache for runs nobody types (a gate script).
 	lintNoCacheEnv = "FORGE_LINT_NO_CACHE"
@@ -462,6 +464,14 @@ func hashWorkspace(h io.Writer, root, frontendDir string) (int, error) {
 		}
 	}
 	ws := resolveWorkspace(root)
+	for _, pat := range ws.patterns {
+		// filepath.Glob cannot reproduce package managers' recursive globs,
+		// exclusions, brace expansion or extglobs. Never reuse a verdict
+		// based on an approximation of their workspace membership.
+		if strings.Contains(pat, "**") || strings.ContainsAny(pat, "!{}()\\") {
+			return 0, fmt.Errorf("workspace pattern %q cannot be cached safely", pat)
+		}
+	}
 	// Membership itself is an input: the declarations as normalized, the
 	// member set they resolve to, and the entries of every directory a
 	// pattern globs in, so a member that appears or disappears under an
@@ -515,8 +525,9 @@ func hashWorkspace(h io.Writer, root, frontendDir string) (int, error) {
 // declares, from pnpm-workspace.yaml's `packages` and package.json's
 // `workspaces` (array or {packages: [...]}), sorted. A `**` pattern is
 // resolved to the directory before it, which covers every member under it.
-// Negations are ignored: including an excluded directory only costs a
-// re-run, never a false skip.
+// Negations are ignored here. hashWorkspace refuses to cache declarations
+// with recursive patterns or negations, since this approximation does not
+// represent package-manager membership semantics.
 func workspaceMembers(root string) []string { return resolveWorkspace(root).members }
 
 // workspaceDecl is what a workspace root declares and what that resolves to.

@@ -154,7 +154,7 @@ func TestFrontendLintFingerprintHoistedWorkspace(t *testing.T) {
 	stubCacheSys(t)
 	root := t.TempDir()
 	for rel, body := range map[string]string{
-		"pnpm-workspace.yaml":             "packages:\n  - frontends/*\n  - packages/**\n",
+		"pnpm-workspace.yaml":             "packages:\n  - frontends/*\n  - packages/*\n",
 		"package.json":                    `{"private":true}`,
 		"pnpm-lock.yaml":                  "lockfileVersion: '9.0'\n",
 		"node_modules/.modules.yaml":      "layoutVersion: 5\n",
@@ -569,7 +569,6 @@ func TestFrontendLintFingerprintWorkspaceMembership(t *testing.T) {
 	stubCacheSys(t)
 	for name, pattern := range map[string]string{
 		"single star": "packages/*",
-		"double star": "packages/**",
 	} {
 		t.Run(name, func(t *testing.T) {
 			root, dir, c, run := hoistedWorkspace(t, map[string]string{
@@ -626,7 +625,7 @@ func TestFrontendLintFingerprintWorkspaceMembership(t *testing.T) {
 		prev := mustKey(t, c, dir, run)
 		for _, step := range []struct{ file, body string }{
 			{"pnpm-workspace.yaml", "packages:\n  - frontends/*\n"},
-			{"pnpm-workspace.yaml", "packages:\n  - frontends/*\n  - packages/*\n  - '!packages/ui'\n"},
+			{"pnpm-workspace.yaml", "packages:\n  - frontends/*\n  - packages/*\n  - tools/*\n"},
 			{"package.json", `{"private":true,"workspaces":["tools/*"]}`},
 			{"package.json", `{"private":true,"workspaces":{"packages":["tools/*","libs/*"]}}`},
 		} {
@@ -638,6 +637,43 @@ func TestFrontendLintFingerprintWorkspaceMembership(t *testing.T) {
 			prev = got
 		}
 	})
+}
+
+// Unsupported workspace syntax must never yield a reusable key, including
+// before and after nested workspace members are created or removed.
+func TestFrontendLintCacheUnsupportedWorkspacePatterns(t *testing.T) {
+	stubCacheSys(t)
+	for _, pattern := range []string{"packages/**", "apps/*/web/**", "!packages/old", "packages/{ui,core}", "packages/+(ui|core)"} {
+		t.Run(pattern, func(t *testing.T) {
+			root, dir, c, run := hoistedWorkspace(t, map[string]string{
+				"pnpm-workspace.yaml": "packages:\n  - frontends/*\n  - '" + pattern + "'\n",
+			})
+			assertUncached := func() {
+				t.Helper()
+				key, _, err := c.fingerprint(dir, run)
+				if err == nil || key != "" {
+					t.Fatalf("unsupported pattern yielded a reusable key: key=%q err=%v", key, err)
+				}
+				if c.recordPass(dir, run, "previous-pass") {
+					t.Fatal("unsupported workspace recorded a pass")
+				}
+				if len(c.load().Frontends) != 0 {
+					t.Fatal("a stale pass survived unsupported workspace syntax")
+				}
+			}
+			c.record(dir, "previous-pass", 1)
+			assertUncached()
+			for _, rel := range []string{"packages/nested/member", "apps/admin/web/nested/member"} {
+				member := filepath.Join(root, filepath.FromSlash(rel))
+				writeCacheFile(t, filepath.Join(member, "package.json"), `{"name":"nested"}`)
+				assertUncached()
+				if err := os.RemoveAll(member); err != nil {
+					t.Fatal(err)
+				}
+				assertUncached()
+			}
+		})
+	}
 }
 
 func TestResolveWorkspaceNormalizesDeclarations(t *testing.T) {

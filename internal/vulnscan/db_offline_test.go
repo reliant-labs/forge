@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"testing"
 	"time"
@@ -155,6 +156,9 @@ func equalStrings(a, b []string) bool {
 // half-replaced database must be "not scanned", never clean.
 func TestReadOnlyDatabaseRefusesAnUncheckableLock(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows chmod does not remove directory search permission")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root reads through directory permissions")
 	}

@@ -93,7 +93,7 @@ func localWorkloadChildEnv(ctx context.Context, projectDir, env, workload string
 	values := report.Workloads[0].Env
 	var childEnv []string
 	if w.Runtime.Type == RuntimeHost {
-		childEnv = hostlaunch.LayerHostEnv(base, nil, nil, values)
+		childEnv = withHostStorageLane(hostlaunch.LayerHostEnv(base, nil, nil, values))
 		// Bind ports cannot be overridden (same contract as env up), but do
 		// not log their old or new values: arbitrary port-like keys can be secrets.
 		for key, value := range values {

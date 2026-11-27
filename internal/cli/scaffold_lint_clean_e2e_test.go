@@ -486,6 +486,12 @@ enum ProductStatus {
 	//    eslint never did, which is precisely why these piled up. ──
 	assertScaffoldIsEslintCleanAsEmitted(t, feDir)
 
+	// ── Defect F: import-x/no-cycle actually reports a cycle. A config that
+	//    renames the rules to import-x without giving it the TypeScript
+	//    resolver and the .ts/.tsx extensions lints green here and above
+	//    while the rule checks nothing. ──
+	assertImportCycleIsReported(t, feDir)
+
 	// ── Defect B (root cause): snapshot EVERY Tier-1 generated TS/TSX file
 	//    BEFORE lint. `forge lint` (default) runs eslint --fix; a canonical
 	//    emission makes that a no-op, leaving the bytes untouched.

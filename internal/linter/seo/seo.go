@@ -25,6 +25,7 @@
 package seo
 
 import (
+	"errors"
 	"fmt"
 	"html"
 	"io/fs"
@@ -152,39 +153,108 @@ var verificationFile = regexp.MustCompile(`^google[0-9a-f]+\.html$`)
 // BuiltPages reads every page of a build directory, served under site (the
 // site's base URL, ending in "/"). relDir is publicDir relative to the
 // project, for the findings' files. truncated reports that MaxPages cut it.
-func BuiltPages(publicDir, relDir, site string) (pages []Page, truncated bool, err error) {
-	err = filepath.WalkDir(publicDir, func(p string, d fs.DirEntry, werr error) error {
-		if werr != nil {
-			return werr
-		}
-		if d.IsDir() {
-			if p != publicDir && strings.HasPrefix(d.Name(), ".") {
-				return filepath.SkipDir
+//
+// The build is read through an [os.Root] at publicDir: a symlink that stays
+// inside it is followed (a file, or a directory: a loop is walked once), and one that
+// resolves outside it is skipped with a warning, never read.
+func BuiltPages(publicDir, relDir, site string) (pages []Page, warnings []string, truncated bool, err error) {
+	root, err := os.OpenRoot(publicDir)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	defer func() { _ = root.Close() }()
+	fsys := root.FS()
+	// ancestors are the directories on the walk's current path, as the root
+	// stats them: a symlink back to one of them is a loop, walked no further.
+	var ancestors []os.FileInfo
+	var walk func(dir string) error
+	walk = func(dir string) error {
+		if fi, err := root.Stat(filepath.FromSlash(dir)); err == nil {
+			for _, a := range ancestors {
+				if os.SameFile(a, fi) {
+					return nil
+				}
 			}
-			return nil
+			ancestors = append(ancestors, fi)
+			defer func() { ancestors = ancestors[:len(ancestors)-1] }()
 		}
-		name := d.Name()
-		if !strings.HasSuffix(name, ".html") || errorPages[name] || verificationFile.MatchString(name) {
-			return nil
-		}
-		if len(pages) == MaxPages {
-			truncated = true
-			return filepath.SkipAll
-		}
-		rel, err := filepath.Rel(publicDir, p)
+		entries, err := fs.ReadDir(fsys, dir)
 		if err != nil {
 			return err
 		}
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return err
+		for _, e := range entries {
+			name := e.Name()
+			rel := path.Join(dir, name)
+			isDir := e.IsDir()
+			if e.Type()&fs.ModeSymlink != 0 {
+				fi, err := root.Stat(filepath.FromSlash(rel))
+				if err != nil {
+					warnings = append(warnings, fmt.Sprintf("skipped %s: a symlink that does not resolve inside %s (%v)", path.Join(relDir, rel), relDir, err))
+					continue
+				}
+				isDir = fi.IsDir()
+			}
+			if isDir {
+				if strings.HasPrefix(name, ".") {
+					continue
+				}
+				if err := walk(rel); err != nil {
+					return err
+				}
+				if truncated {
+					return nil
+				}
+				continue
+			}
+			if !strings.HasSuffix(name, ".html") || errorPages[name] || verificationFile.MatchString(name) {
+				continue
+			}
+			if len(pages) == MaxPages {
+				truncated = true
+				return nil
+			}
+			b, err := root.ReadFile(filepath.FromSlash(rel))
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("skipped %s: %v", path.Join(relDir, rel), err))
+				continue
+			}
+			route := routeOfFile(rel)
+			pages = append(pages, Page{File: path.Join(relDir, rel), URL: site + route, Rel: route, HTML: string(b)})
 		}
-		rel = filepath.ToSlash(rel)
-		route := routeOfFile(rel)
-		pages = append(pages, Page{File: path.Join(relDir, rel), URL: site + route, Rel: route, HTML: string(b)})
 		return nil
-	})
-	return pages, truncated, err
+	}
+	err = walk(".")
+	return pages, warnings, truncated, err
+}
+
+// IsBuilt reports whether publicDir holds an index.html inside it (a
+// symlink out of it does not count).
+func IsBuilt(publicDir string) bool {
+	root, err := os.OpenRoot(publicDir)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = root.Close() }()
+	fi, err := root.Stat("index.html")
+	return err == nil && fi.Mode().IsRegular()
+}
+
+// readInRoot reads rel (slash-separated) from root. A missing file is
+// (nil, false) with no warning; one that cannot be read — a symlink that
+// resolves outside the root among them — is skipped with a warning naming
+// it as display.
+func readInRoot(root *os.Root, rel, display string, warnings *[]string) ([]byte, bool) {
+	b, err := root.ReadFile(filepath.FromSlash(rel))
+	switch {
+	case err == nil:
+		return b, true
+	case errors.Is(err, fs.ErrNotExist):
+		if _, lerr := root.Lstat(filepath.FromSlash(rel)); lerr != nil {
+			return nil, false // truly absent
+		}
+	}
+	*warnings = append(*warnings, fmt.Sprintf("skipped %s: it does not resolve to a file inside the frontend (%v)", display, err))
+	return nil, false
 }
 
 // routeOfFile is the path (relative to the site's base) hosted static
@@ -327,11 +397,19 @@ func SiteOrigin(pages []Page) string {
 	return ""
 }
 
-// ViteIndex is a Vite app's index.html, served at site.
+// ViteIndex is a Vite app's index.html, served at site, read through an
+// [os.Root] at feDir. When it is not found ok is false; Page.Warnings then
+// says why when it was there but escaped the frontend.
 func ViteIndex(feDir, relDir, site string) (Page, bool) {
-	b, err := os.ReadFile(filepath.Join(feDir, "index.html"))
+	root, err := os.OpenRoot(feDir)
 	if err != nil {
 		return Page{}, false
+	}
+	defer func() { _ = root.Close() }()
+	var warnings []string
+	b, ok := readInRoot(root, "index.html", path.Join(relDir, "index.html"), &warnings)
+	if !ok {
+		return Page{Warnings: warnings}, false
 	}
 	return Page{File: path.Join(relDir, "index.html"), URL: site, HTML: string(b)}, true
 }
@@ -354,23 +432,38 @@ var nextAppDirs = []string{"app", "src/app"}
 // could touch is dynamic unless a later segment sets it literally: the lane
 // never reports a tag missing that a segment might write. An ambiguous
 // segment is named in Page.Warnings.
+//
+// The source is read through an [os.Root] at feDir: a segment file that is a
+// symlink out of the frontend is skipped with a warning, never read.
 func NextLayout(feDir, relDir, site string) (Page, bool) {
+	fsRoot, err := os.OpenRoot(feDir)
+	if err != nil {
+		return Page{}, false
+	}
+	defer func() { _ = fsRoot.Close() }()
 	for _, appRel := range nextAppDirs {
-		appDir := filepath.Join(feDir, filepath.FromSlash(appRel))
-		if fi, err := os.Stat(appDir); err != nil || !fi.IsDir() {
+		if fi, err := fsRoot.Stat(filepath.FromSlash(appRel)); err != nil || !fi.IsDir() {
 			continue
 		}
 		var warnings []string
-		relApp := path.Join(relDir, appRel)
-		root, rootFile, ok := readSegmentFile(appDir, "layout", relApp, &warnings)
+		sr := segmentReader{root: fsRoot, relDir: relDir}
+		root, rootFile, ok := sr.read(appRel, "layout", &warnings)
 		if !ok {
-			return Page{}, false
+			return Page{Warnings: warnings}, false
 		}
-		srcs := append([]string{root}, rootRouteSegments(appDir, relApp, &warnings)...)
+		srcs := append([]string{root}, sr.rootRouteSegments(appRel, &warnings)...)
 		doc, dynamic := nextHead(srcs, site)
 		return Page{File: rootFile, URL: site, HTML: doc, Dynamic: dynamic, Warnings: warnings}, true
 	}
 	return Page{}, false
+}
+
+// segmentReader reads a Next.js app's segment files through an [os.Root]
+// at the frontend; relDir is the frontend relative to the project, for
+// display.
+type segmentReader struct {
+	root   *os.Root
+	relDir string
 }
 
 // nextSourceExts are the extensions a Next.js segment file may have.
@@ -380,21 +473,22 @@ var nextSourceExts = []string{".tsx", ".jsx", ".ts", ".js"}
 // its metadata is unknown (segmentMetadata).
 const ambiguousSegment = "\x00ambiguous segment"
 
-// readSegmentFile returns dir/<name>.<ext>'s source and its path
-// (relDir/<name>.<ext>, relDir being dir as the caller names it). More than one candidate extension
-// is ambiguous: the source is ambiguousSegment, the path names the first,
-// and a warning names them all.
-func readSegmentFile(dir, name, relDir string, warnings *[]string) (src, file string, ok bool) {
+// read returns dir/<name>.<ext>'s source (dir relative to the frontend)
+// and its project-relative path. More than one candidate extension is
+// ambiguous: the source is ambiguousSegment, the path names the first, and a
+// warning names them all.
+func (sr segmentReader) read(dir, name string, warnings *[]string) (src, file string, ok bool) {
 	var found []string
 	for _, ext := range nextSourceExts {
-		b, err := os.ReadFile(filepath.Join(dir, name+ext))
-		if err != nil {
+		rel := path.Join(dir, name+ext)
+		b, ok := readInRoot(sr.root, rel, path.Join(sr.relDir, rel), warnings)
+		if !ok {
 			continue
 		}
 		if len(found) == 0 {
 			src = string(b)
 		}
-		found = append(found, path.Join(relDir, name+ext))
+		found = append(found, path.Join(sr.relDir, rel))
 	}
 	switch len(found) {
 	case 0:
@@ -410,30 +504,30 @@ func readSegmentFile(dir, name, relDir string, warnings *[]string) (src, file st
 // root route's head: the layouts of the route groups ("(marketing)") the
 // root page sits in, outermost first, then the page. Empty when the root
 // page is not found.
-func rootRouteSegments(appDir, appRel string, warnings *[]string) []string {
-	var walk func(dir, rel string, depth int) ([]string, bool)
-	walk = func(dir, rel string, depth int) ([]string, bool) {
+func (sr segmentReader) rootRouteSegments(appRel string, warnings *[]string) []string {
+	var walk func(dir string, depth int) ([]string, bool)
+	walk = func(dir string, depth int) ([]string, bool) {
 		var chain []string
 		var ws []string
 		if depth > 0 {
-			if l, _, ok := readSegmentFile(dir, "layout", rel, &ws); ok {
+			if l, _, ok := sr.read(dir, "layout", &ws); ok {
 				chain = append(chain, l)
 			}
 		}
-		if pg, _, ok := readSegmentFile(dir, "page", rel, &ws); ok {
+		if pg, _, ok := sr.read(dir, "page", &ws); ok {
 			*warnings = append(*warnings, ws...)
 			return append(chain, pg), true
 		}
 		if depth == 8 {
 			return nil, false
 		}
-		entries, err := os.ReadDir(dir)
+		entries, err := fs.ReadDir(sr.root.FS(), dir)
 		if err != nil {
 			return nil, false
 		}
 		for _, e := range entries {
 			if n := e.Name(); e.IsDir() && strings.HasPrefix(n, "(") && strings.HasSuffix(n, ")") {
-				if rest, ok := walk(filepath.Join(dir, n), path.Join(rel, n), depth+1); ok {
+				if rest, ok := walk(path.Join(dir, n), depth+1); ok {
 					*warnings = append(*warnings, ws...)
 					return append(chain, rest...), true
 				}
@@ -441,7 +535,7 @@ func rootRouteSegments(appDir, appRel string, warnings *[]string) []string {
 		}
 		return nil, false
 	}
-	chain, _ := walk(appDir, appRel, 0)
+	chain, _ := walk(appRel, 0)
 	return chain
 }
 

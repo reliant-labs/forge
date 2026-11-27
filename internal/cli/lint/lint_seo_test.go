@@ -2,6 +2,8 @@ package lint
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -284,5 +286,59 @@ func TestSEOLaneWarnsOnAnAmbiguousLayout(t *testing.T) {
 	}
 	if !warned {
 		t.Errorf("no warning names both layout files: %+v", fs)
+	}
+}
+
+// The lane judges what the build holds, never a file a symlink reaches
+// outside it: an escaping file or directory is a warning, an in-build
+// symlink is judged.
+func TestSEOLaneIgnoresSymlinksOutOfTheBuild(t *testing.T) {
+	t.Parallel()
+	outside := t.TempDir()
+	writeTree(t, outside, map[string]string{
+		"bad.html":     `<html><head><meta name="robots" content="noindex"></head></html>`,
+		"dir/bad.html": `<html><head><meta name="robots" content="noindex"></head></html>`,
+	})
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"frontends/web/dist/index.html":       seoPage("Acme Rockets — rockets for everyone", "/"),
+		"frontends/web/dist/guide/index.html": seoPage("The Acme rocket guide", "/guide/"),
+	})
+	dist := filepath.Join(root, "frontends", "web", "dist")
+	for link, target := range map[string]string{
+		"leak.html": filepath.Join(outside, "bad.html"),
+		"escape":    filepath.Join(outside, "dir"),
+		"manual":    "guide",
+	} {
+		if err := os.Symlink(target, filepath.Join(dist, link)); err != nil {
+			t.Skipf("symlinks unavailable here: %v", err)
+		}
+	}
+	cfg := loadTestConfig(t, staticExportForgeYAML)
+	cfg.Frontends = []config.FrontendConfig{config.FrontendConfig{Name: "web", Type: "vite-spa"}.WithDir("frontends/web")}
+	bindings := func(context.Context, string, *config.ProjectConfig) map[string][]seoBinding {
+		return map[string][]seoBinding{"web": {{Env: "prod", PublicDir: "dist", SiteURL: "https://acme.example"}}}
+	}
+	fs, err := seoFindings(context.Background(), root, cfg, bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if anyErrorFinding(fs) {
+		t.Errorf("a file outside the build was judged: %v", seoRules(fs, lintSevError))
+	}
+	var skipped []string
+	for _, f := range fs {
+		if f.Rule == "skipped" {
+			skipped = append(skipped, f.Message)
+		}
+	}
+	joined := strings.Join(skipped, "\n")
+	for _, want := range []string{"frontends/web/dist/leak.html", "frontends/web/dist/escape"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("no warning names %s: %q", want, skipped)
+		}
+	}
+	if notes := seoNotes(fs); !strings.Contains(notes, "judged 3 built page(s)") {
+		t.Errorf("want index, guide and the in-build manual/ symlink judged:\n%s", notes)
 	}
 }

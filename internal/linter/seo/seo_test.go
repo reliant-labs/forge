@@ -89,7 +89,7 @@ func TestBuiltPagesServeEachFileAtItsURL(t *testing.T) {
 		"assets/app.js":           "",
 		".well-known/x/page.html": "<html></html>",
 	})
-	pages, truncated, err := BuiltPages(dir, "web/dist", "https://acme.example/")
+	pages, _, truncated, err := BuiltPages(dir, "web/dist", "https://acme.example/")
 	if err != nil || truncated {
 		t.Fatalf("err %v truncated %v", err, truncated)
 	}
@@ -226,7 +226,7 @@ func TestPageAtPlacesTheBaseRelativePathOnce(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	write(t, dir, map[string]string{"index.html": "<html></html>", "guide/index.html": "<html></html>", "guide/install.html": "<html></html>"})
-	pages, _, err := BuiltPages(dir, "dist", PlaceholderOrigin+"/docs/")
+	pages, _, _, err := BuiltPages(dir, "dist", PlaceholderOrigin+"/docs/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,5 +465,89 @@ export default function L({children}) { return <html lang="en">{children}</html>
 	}
 	if fs := Judge("https://acme.example/", []Page{p}); len(fs) != 0 {
 		t.Errorf("an ambiguous root layout produced findings: %v", codes(fs))
+	}
+}
+
+// symlinkOrSkip makes link point at target, or skips where symlinks are not
+// available.
+func symlinkOrSkip(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable here: %v", err)
+	}
+}
+
+// The build is read through an os.Root: a symlinked file or directory that
+// escapes it is skipped with a warning, an in-build symlink is followed.
+func TestBuiltPagesNeverReadOutsideTheBuild(t *testing.T) {
+	t.Parallel()
+	outside := t.TempDir()
+	write(t, outside, map[string]string{"leak.html": "<title>OUTSIDE</title>", "dir/page.html": "<title>OUTSIDE</title>"})
+	dir := t.TempDir()
+	write(t, dir, map[string]string{"index.html": "<title>home</title>", "docs/guide.html": "<title>guide</title>"})
+	symlinkOrSkip(t, filepath.Join(outside, "leak.html"), filepath.Join(dir, "leak.html"))
+	symlinkOrSkip(t, filepath.Join(outside, "dir"), filepath.Join(dir, "escape"))
+	symlinkOrSkip(t, filepath.Join("docs", "guide.html"), filepath.Join(dir, "alias.html"))
+	symlinkOrSkip(t, "docs", filepath.Join(dir, "manual"))
+	symlinkOrSkip(t, ".", filepath.Join(dir, "docs", "loop"))
+	pages, warnings, _, err := BuiltPages(dir, "dist", "https://acme.example/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files []string
+	for _, p := range pages {
+		files = append(files, p.File)
+		if strings.Contains(p.HTML, "OUTSIDE") {
+			t.Errorf("%s: read a file outside the build", p.File)
+		}
+	}
+	slices.Sort(files)
+	for _, want := range []string{"dist/alias.html", "dist/manual/guide.html", "dist/index.html", "dist/docs/guide.html"} {
+		if !slices.Contains(files, want) {
+			t.Errorf("pages %v lack %s (an in-build symlink is followed)", files, want)
+		}
+	}
+	joined := strings.Join(warnings, "\n")
+	for _, want := range []string{"skipped dist/leak.html", "skipped dist/escape"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings %q lack %q", warnings, want)
+		}
+	}
+}
+
+// The source fallback reads index.html and the Next.js segments through an
+// os.Root too.
+func TestSourceFallbackNeverReadsOutsideTheFrontend(t *testing.T) {
+	t.Parallel()
+	outside := t.TempDir()
+	write(t, outside, map[string]string{
+		"index.html":   `<html><head><title>OUTSIDE</title></head></html>`,
+		"layout.tsx":   `export const metadata = { title: "OUTSIDE title here" };`,
+		"app/page.tsx": `export const metadata = { title: "OUTSIDE page" };`,
+	})
+
+	vite := t.TempDir()
+	symlinkOrSkip(t, filepath.Join(outside, "index.html"), filepath.Join(vite, "index.html"))
+	if p, ok := ViteIndex(vite, "web", "https://acme.example/"); ok || len(p.Warnings) != 1 {
+		t.Errorf("an escaping index.html: ok %v, warnings %q; want skipped with a warning", ok, p.Warnings)
+	}
+
+	next := t.TempDir()
+	write(t, next, map[string]string{"app/real.tsx": bareRootLayout})
+	symlinkOrSkip(t, filepath.Join(outside, "layout.tsx"), filepath.Join(next, "app", "layout.js"))
+	symlinkOrSkip(t, "real.tsx", filepath.Join(next, "app", "layout.tsx"))
+	symlinkOrSkip(t, filepath.Join(outside, "app"), filepath.Join(next, "app", "(escape)"))
+	p, ok := NextLayout(next, "web", "https://acme.example/")
+	if !ok {
+		t.Fatalf("the in-root symlinked layout.tsx was not read (warnings %q)", p.Warnings)
+	}
+	if strings.Contains(p.HTML, "OUTSIDE") || p.File != "web/app/layout.tsx" {
+		t.Errorf("file %q head %s", p.File, p.HTML)
+	}
+	if !strings.Contains(strings.Join(p.Warnings, "\n"), "skipped web/app/layout.js") {
+		t.Errorf("warnings %q lack the escaping layout.js", p.Warnings)
 	}
 }

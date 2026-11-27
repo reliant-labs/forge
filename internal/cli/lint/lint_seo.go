@@ -218,15 +218,16 @@ func seoJudgeFrontend(projectDir, rel string, fe config.FrontendConfig, b seoBin
 
 	var pages []seo.Page
 	var note string
+	var skipped []string // files the reader would not follow out of their root
 	nextSource := false
 	builtDir := filepath.Join(feDir, filepath.FromSlash(publicDir))
 	relBuilt := path.Join(rel, filepath.ToSlash(publicDir))
-	if _, err := os.Stat(filepath.Join(builtDir, "index.html")); err == nil {
-		ps, truncated, err := seo.BuiltPages(builtDir, relBuilt, tmpSite)
+	if seo.IsBuilt(builtDir) {
+		ps, ws, truncated, err := seo.BuiltPages(builtDir, relBuilt, tmpSite)
 		if err != nil {
 			return nil, "", err
 		}
-		pages = ps
+		pages, skipped = ps, ws
 		note = fmt.Sprintf("judged %d built page(s) in %s (env %s)", len(ps), relBuilt, b.Env)
 		if truncated {
 			note += fmt.Sprintf("; stopped at %d pages", seo.MaxPages)
@@ -241,7 +242,7 @@ func seoJudgeFrontend(projectDir, rel string, fe config.FrontendConfig, b seoBin
 			p, found = seo.ViteIndex(feDir, rel, tmpSite)
 		}
 		if !found {
-			return nil, fmt.Sprintf("nothing to judge: %s is not built and has no index.html or root layout", relBuilt), nil
+			return seoSkippedFindings(p.File, p.Warnings), fmt.Sprintf("nothing to judge: %s is not built and has no index.html or root layout", relBuilt), nil
 		}
 		pages = []seo.Page{p}
 		note = fmt.Sprintf("%s is not built, so only the head %s declares was judged; build it (npm run build) to judge every page, or run `forge site audit` for the full audit", relBuilt, p.File)
@@ -269,10 +270,9 @@ func seoJudgeFrontend(projectDir, rel string, fe config.FrontendConfig, b seoBin
 	var out []lintJSONFinding
 	// What the source reader could not settle is a warning (never a gate)
 	// on the file, so a run shows which segment it did not judge.
+	out = append(out, seoSkippedFindings(relBuilt, skipped)...)
 	for _, p := range pages {
-		for _, w := range p.Warnings {
-			out = append(out, lintJSONFinding{File: p.File, Severity: lintSevWarning, Rule: "skipped", Message: w})
-		}
+		out = append(out, seoSkippedFindings(p.File, p.Warnings)...)
 	}
 	for _, f := range seo.Judge(site, pages) {
 		out = append(out, seoLintFinding(f))
@@ -315,4 +315,14 @@ func seoLintFinding(f seo.Finding) lintJSONFinding {
 		b.WriteString(" — " + strings.Join(parts, " "))
 	}
 	return lintJSONFinding{File: f.File, Severity: sev, Rule: seo.RuleID(f.Code), Message: b.String(), FixHint: f.Fix}
+}
+
+// seoSkippedFindings are the reader's warnings (a file it did not judge) as
+// warning findings on file: shown, never gating.
+func seoSkippedFindings(file string, warnings []string) []lintJSONFinding {
+	out := make([]lintJSONFinding, 0, len(warnings))
+	for _, w := range warnings {
+		out = append(out, lintJSONFinding{File: file, Severity: lintSevWarning, Rule: "skipped", Message: w})
+	}
+	return out
 }

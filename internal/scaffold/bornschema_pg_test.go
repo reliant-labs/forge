@@ -66,7 +66,7 @@ type bornEntity struct {
 	spec   EntityFromProtoSpec
 	// authored is SQL appended to the birth migration by the migration's
 	// OWNER — the constraints forge itself has no vocabulary to declare
-	// (UNIQUE, a two-column CHECK, a DATE column). It is part of the
+	// (a two-column CHECK, a DATE column). It is part of the
 	// applied schema, so the seeder must satisfy it.
 	authored string
 }
@@ -78,7 +78,7 @@ func bornCorpus() []bornEntity {
 	u := func(n uint64) *uint64 { return &n }
 	return []bornEntity{
 		{
-			shapes: "UNIQUE data column, date-only column, bool, length CHECK, email CHECK, soft delete",
+			shapes: "UNIQUE data column (declared, partial under soft delete), date-only column, bool, length CHECK, email CHECK, soft delete",
 			spec: EntityFromProtoSpec{
 				Table:     "patients",
 				MessageFQ: bornPkg + ".Patient",
@@ -89,15 +89,18 @@ func bornCorpus() []bornEntity {
 					{Name: "email", Kind: "string", Validate: &codegen.FieldConstraints{Email: true}},
 					// A calendar date. forge has no way to declare one, so it
 					// is born TIMESTAMPTZ — see
-					// TestRenderEntityMigrationFromProto_UniqueAndDateAreNotDeclarable.
+					// TestRenderEntityMigrationFromProto_UniqueIsDeclaredAndDateIsNot.
 					{Name: "date_of_birth", Kind: "message", TypeName: "google.protobuf.Timestamp"},
 					{Name: "consent_on_file", Kind: "bool"},
 				},
 				Timestamps: true,
 				SoftDelete: true,
+				// `// forge:unique email`: born as a partial unique index
+				// (live rows only), the shape the seeder must read as a
+				// key over live rows rather than over the whole table.
+				Unique: []UniqueKey{{Columns: []string{"email"}}},
 			},
-			authored: "ALTER TABLE patients ADD CONSTRAINT patients_email_key UNIQUE (email);\n" +
-				"ALTER TABLE patients ADD COLUMN enrolled_on DATE NOT NULL;\n",
+			authored: "ALTER TABLE patients ADD COLUMN enrolled_on DATE NOT NULL;\n",
 		},
 		{
 			shapes: "NOT NULL foreign key, enum with a proto zero sentinel, numeric range CHECK, two-column ordering CHECK",

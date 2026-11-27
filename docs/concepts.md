@@ -162,6 +162,7 @@ set):
 | `forge:entity`      | Births the migration and the CRUD quintet             |
 | `forge:soft-delete` | Born with `deleted_at`; `Delete` becomes an update    |
 | `forge:append-only` | No Update/Delete, plus a trigger rejecting both       |
+| `forge:unique a,b`  | Born with a `UNIQUE` index over those columns         |
 | `forge:read-only`   | On the entity; a client Create/Update never writes it |
 | `forge:secret`      | Writable, but never packed into read responses        |
 | `forge:mutation`    | Forces the generated React hook to be a `useMutation` |

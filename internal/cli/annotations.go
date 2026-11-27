@@ -283,6 +283,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "// forge:append-only\nmessage AuditEvent { ... }",
 		},
 		{
+			Name:      codegen.ProtoMarkerUnique,
+			AppliesTo: "entity",
+			Effect:    "Declares a UNIQUE key over the named columns: the born create-table migration carries `CREATE UNIQUE INDEX <table>_<col>_<col>_key ON <table> (<col>, <col>)`, columns in the order written. One line per key (repeat it for several); one column is a one-column key. On a soft-delete table the index is partial, `WHERE deleted_at IS NULL`, so a deleted row's key can be taken again — drop the clause in your migration if it must stay unique forever. Every column must be one the table is born with (a mapped field or created_at/updated_at/deleted_at; not id, already the primary key), named once; a key naming anything else, a marker placed where birth does not read one, and a near-miss spelling each REFUSE the birth, naming file and line. Also tablizes the message (implies forge:entity). Birth-only: a key added after the table exists is reported by `forge scaffold` with the CREATE UNIQUE INDEX to put in a new migration.",
+			Placement: "full-line leading comment among the ones directly above `message X {`, alone or after the entity marker (`// forge:entity forge:unique a,b`). Columns are comma-separated; prose may follow after a punctuation mark (`— why`), never a bare word.",
+			Example:   "// forge:entity\n// forge:unique namespace,name — one job name per namespace\nmessage Job { ... }",
+		},
+		{
 			Name:      codegen.ProtoMarkerReadOnly,
 			AppliesTo: "field",
 			Effect:    "Field is kept on the entity message and Get/List responses but is never CLIENT-writable — the write-side mirror of forge:secret. At birth it is OMITTED from the Create request. On every `forge generate` it also shapes the CRUD Update, whose AIP-134 request carries the whole entity: an update_mask naming the column is InvalidArgument (reason unknown_field), and a full replace leaves it as stored whatever the request carried (crud.Preserve), so a client can neither set it nor reset it to the column default by leaving it out. Your own code still writes it — Create, or db.Update<Entity>Masked naming it, which is what a custom RPC owning a state machine calls; a plain db.Update<Entity> from app code writes it too. Nothing assigns the value for you: give the column a DB DEFAULT (or set it in your handler), or an insert lands the zero value. If the value is DERIVED rather than defaulted, use forge:computed instead — it does the same thing and lint holds you to the derivation.",

@@ -232,6 +232,10 @@ func birthListedEntityFromProto(bc birthContext, msgName, name string, opts enti
 		return cliutil.WrapUserErr(ctxLabel, "forge:generated marker", "",
 			"fix the marker at the line named above and re-run", err)
 	}
+	if err := uniqueMarkerRefusal(emit.spec(), scanMessageOrEmpty(scan, msgName)); err != nil {
+		return cliutil.WrapUserErr(ctxLabel, "forge:unique marker", "",
+			"fix the marker at the line named above and re-run", err)
+	}
 	softDelete := opts.SoftDelete || markers.SoftDelete || messageHasField(fields, "deleted_at")
 	added, merr := birthManagedFields(scan, msgName, !opts.NoTimestamps, softDelete)
 	reportManagedFields(msgName, added, merr)
@@ -386,9 +390,17 @@ func runEntityFromProtoBatch(ctxLabel, root, migDir string, sd codegen.ServiceDe
 			return cliutil.WrapUserErr(ctxLabel, "retired marker", "",
 				"rewrite the retired marker as its replacement", err)
 		}
-		emit := entityMigrationEmit{migDir, table, sd, msgName, fields, known, opts, entityBirthMarkers{}, fkReg}
+		// Only the unique keys are read off the scan here: the lifecycle
+		// markers (append-only, soft-delete) shape the quintet this path
+		// found already written, so they stay the author's call.
+		emit := entityMigrationEmit{migDir, table, sd, msgName, fields, known, opts,
+			entityBirthMarkers{Unique: markersFromScan(scan, msgName).Unique}, fkReg}
 		if err := generatedPreflight(migDir, emit.spec(), scanMessageOrEmpty(scan, msgName)); err != nil {
 			return cliutil.WrapUserErr(ctxLabel, "forge:generated marker", "",
+				"fix the marker at the line named above and re-run", err)
+		}
+		if err := uniqueMarkerRefusal(emit.spec(), scanMessageOrEmpty(scan, msgName)); err != nil {
+			return cliutil.WrapUserErr(ctxLabel, "forge:unique marker", "",
 				"fix the marker at the line named above and re-run", err)
 		}
 		added, merr := birthManagedFields(scan, msgName,
@@ -654,10 +666,14 @@ func birthMarkedEntity(migDir, root string, scan *codegen.RawProtoScan, m codege
 		AppendOnly:     m.AppendOnly,
 		KnownTables:    known,
 		ExistingTables: fkReg.snapshot(),
+		Unique:         uniqueKeysOf(m.Unique),
 	}
 	// Refused before the managed-field injection below, so a bad expression
-	// leaves the author's proto exactly as they wrote it.
+	// or key leaves the author's proto exactly as they wrote it.
 	if err := generatedPreflight(migDir, spec, m); err != nil {
+		return nil, err
+	}
+	if err := uniqueMarkerRefusal(spec, m); err != nil {
 		return nil, err
 	}
 
@@ -734,6 +750,7 @@ func (e entityMigrationEmit) spec() entityscaffold.EntityFromProtoSpec {
 		AppendOnly:     e.markers.AppendOnly,
 		KnownTables:    e.known,
 		ExistingTables: e.fkReg.snapshot(),
+		Unique:         uniqueKeysOf(e.markers.Unique),
 	}
 }
 
@@ -856,17 +873,19 @@ func messageHasField(fields []codegen.SchemaFieldDef, name string) bool {
 type entityBirthMarkers struct {
 	AppendOnly bool
 	SoftDelete bool
+	// Unique are the message's `// forge:unique` keys, with their sites.
+	Unique []codegen.UniqueKeyMarker
 }
 
 // markersFromScan resolves the `// forge:append-only` / `// forge:soft-delete`
-// markers for one message off the raw scan. Zero value when the scan is nil
+// / `// forge:unique` markers for one message off the raw scan. Zero value when the scan is nil
 // or the message isn't found (the markers are inert then).
 func markersFromScan(scan *codegen.RawProtoScan, msgName string) entityBirthMarkers {
 	if scan == nil {
 		return entityBirthMarkers{}
 	}
 	if m, ok := scan.MessageByName(msgName); ok {
-		return entityBirthMarkers{AppendOnly: m.AppendOnly, SoftDelete: m.SoftDeleteMarked}
+		return entityBirthMarkers{AppendOnly: m.AppendOnly, SoftDelete: m.SoftDeleteMarked, Unique: m.Unique}
 	}
 	return entityBirthMarkers{}
 }

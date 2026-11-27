@@ -74,6 +74,12 @@
 // updated_at / deleted_at fields on the message are SKIPPED — the table
 // gets the canonical PK + timestamp columns instead, and a deleted_at
 // field flips soft-delete on.
+//
+// Table-level keys come from the message, not a field: each
+// `// forge:unique a,b` line above it births
+// `CREATE UNIQUE INDEX <table>_a_b_key ON <table> (a, b)` after the
+// CREATE TABLE (partial, `WHERE deleted_at IS NULL`, on a soft-delete
+// table — see writeUniqueKeys).
 
 package scaffold
 
@@ -140,6 +146,76 @@ type EntityFromProtoSpec struct {
 	// Empty/nil means "nothing exists yet", which suppresses forward
 	// constraints — the drift renderer runs this way.
 	ExistingTables []ExistingTable
+	// Unique are the table's UNIQUE keys, one per `// forge:unique` marker
+	// line on the message, in source order. Each births one
+	// `CREATE UNIQUE INDEX` (partial — live rows only — on a soft-delete
+	// table). A key UniqueKeyRefusal refuses is carried as a TODO comment,
+	// never emitted broken; the CLI refuses it before rendering, by line.
+	Unique []UniqueKey
+}
+
+// UniqueKey is one UNIQUE key over a born table's columns, in the order the
+// marker named them (the index's column order).
+type UniqueKey struct {
+	Columns []string
+}
+
+// UniqueKeyIndexName is the name birth gives a key's index:
+// `<table>_<col>[_<col>...]_key`, postgres's own spelling for a UNIQUE
+// constraint, so the index reads like one in `\d` and in error messages.
+func UniqueKeyIndexName(table string, key UniqueKey) string {
+	return table + "_" + strings.Join(key.Columns, "_") + "_key"
+}
+
+// UniqueKeyRefusal returns why key cannot be born on the table spec renders,
+// or "" when it can. Every column must be one the birth gives the table — a
+// mapped field or a managed column — named once; `id` is refused because the
+// primary key is already unique, so a key containing it constrains nothing.
+//
+// Exported so the CLI refuses the birth BEFORE writing anything, naming the
+// marker's file and line; the renderer applies the same rule as a TODO. The
+// reasons name no marker spelling, because the renderer copies them into a
+// SQL comment and migration-text lint lanes read every `forge:*` token.
+func UniqueKeyRefusal(key UniqueKey, spec EntityFromProtoSpec) string {
+	if len(key.Columns) == 0 {
+		return "names no columns — write them comma-separated after the marker, and put any prose after a punctuation mark (`— why`), never a bare word"
+	}
+	plain := spec
+	plain.Unique = nil
+	born := RenderEntityMigrationFromProto(plain).Columns
+	bornSet := make(map[string]bool, len(born))
+	for _, c := range born {
+		bornSet[c] = true
+	}
+	seen := map[string]bool{}
+	for _, c := range key.Columns {
+		switch {
+		case seen[c]:
+			return fmt.Sprintf("names column %s twice", c)
+		case c == "id":
+			return "includes id, the primary key — it is unique already, so a key containing it constrains nothing"
+		case !bornSet[c]:
+			if messageDeclares(spec.Fields, c) {
+				return fmt.Sprintf("names %s, a field birth gives no column (it is carried as a TODO in the migration)", c)
+			}
+			if near := codegen.ClosestFrom(c, born); near != "" {
+				return fmt.Sprintf("names %s, which is not a column of %s — did you mean %s?", c, spec.Table, near)
+			}
+			return fmt.Sprintf("names %s, which is not a column of %s (columns: %s)", c, spec.Table, strings.Join(born, ", "))
+		}
+		seen[c] = true
+	}
+	return ""
+}
+
+// messageDeclares reports whether fields carries a field called name.
+func messageDeclares(fields []codegen.SchemaFieldDef, name string) bool {
+	for _, f := range fields {
+		if f.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ExistingTable is one already-created table, as seen by a migration being
@@ -185,6 +261,9 @@ func resolveFKTable(column string, known map[string]bool) (string, bool) {
 type EntityFromProtoMigration struct {
 	UpSQL string
 	Notes []string
+	// Columns are the columns the CREATE TABLE gives the table, in order —
+	// the set a unique key may name.
+	Columns []string
 	// PendingRefColumns are this table's `<x>_id` columns that resolve to a
 	// known entity whose table does not exist YET, so no constraint could be
 	// emitted here. The caller carries them forward as this table's
@@ -819,10 +898,12 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 	// born with the owner-scoping wrapper. A marker on a field birth gave
 	// no column (a TODO) has nothing to declare; the note says so.
 	bornCols := map[string]bool{}
+	var bornOrder []string
 	for _, it := range items {
 		if !it.comment {
 			name, _, _ := strings.Cut(it.text, " ")
 			bornCols[name] = true
+			bornOrder = append(bornOrder, name)
 		}
 	}
 	var owners []string
@@ -895,6 +976,8 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 		fmt.Fprintf(&b, "    FOR EACH ROW EXECUTE FUNCTION %s_forbid_mutation();\n", spec.Table)
 	}
 
+	notes = writeUniqueKeys(&b, spec, notes)
+
 	// Foreign keys + indexes for the `*_id` columns — but only for columns
 	// whose stem resolves to a table the birth knows is real (an entity
 	// being born or an applied table). A REFERENCES to a naively-pluralized
@@ -940,9 +1023,48 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 	return EntityFromProtoMigration{
 		UpSQL:                b.String(),
 		Notes:                notes,
+		Columns:              bornOrder,
 		PendingRefColumns:    fkPlan.pendingColumns(),
 		BackfilledRefColumns: fkPlan.backfilledColumns(),
 	}
+}
+
+// writeUniqueKeys emits one CREATE UNIQUE INDEX per declared key, in
+// declaration order, and returns notes extended with any key it refused.
+//
+// On a soft-delete table the index is PARTIAL, over live rows only
+// (`WHERE deleted_at IS NULL`). A full index would keep every deleted row's
+// key forever, so deleting the job `payments` and creating it again would
+// fail with a duplicate key on a row no read can see — a defect that
+// surfaces only after the first delete in production. The comment above the
+// statement says so, and dropping the predicate is a one-line edit in a
+// migration the author owns.
+//
+// A key the CLI should have refused (UniqueKeyRefusal) becomes a TODO comment
+// rather than an index postgres would reject, the renderer's own guard
+// should a caller skip the pre-flight.
+func writeUniqueKeys(b *strings.Builder, spec EntityFromProtoSpec, notes []string) []string {
+	if len(spec.Unique) == 0 {
+		return notes
+	}
+	b.WriteString("\n-- Unique keys, declared on the proto message.\n")
+	predicate := ""
+	if spec.SoftDelete {
+		predicate = " WHERE deleted_at IS NULL"
+		b.WriteString("-- Partial: soft-deleted rows are left out, so a deleted row's key can be\n")
+		b.WriteString("-- taken again. Drop the WHERE clause if a key must stay unique forever.\n")
+	}
+	for _, key := range spec.Unique {
+		if reason := UniqueKeyRefusal(key, spec); reason != "" {
+			fmt.Fprintf(b, "-- TODO: unique key (%s) skipped — it %s.\n", strings.Join(key.Columns, ", "), reason)
+			notes = append(notes, fmt.Sprintf("unique key (%s): %s — carried as a TODO comment in the migration",
+				strings.Join(key.Columns, ", "), reason))
+			continue
+		}
+		fmt.Fprintf(b, "CREATE UNIQUE INDEX %s ON %s (%s)%s;\n",
+			UniqueKeyIndexName(spec.Table, key), spec.Table, strings.Join(key.Columns, ", "), predicate)
+	}
+	return notes
 }
 
 // fkRef is one reference this table makes: its own `<x>_id` column and the

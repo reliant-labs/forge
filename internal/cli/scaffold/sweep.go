@@ -290,6 +290,16 @@ func runSweep(f *factory.Factory, svcFilter string, dryRun bool) error { //nolin
 			}
 			summary.Refused = append(summary.Refused, s.Note)
 		}
+		// A forge:unique key added to a message after its birth: the marker
+		// is inert like every birth marker, so name the migration to write.
+		// Only against an introspected schema — the regex fallback (nil
+		// existing) carries no indexes, and every key would read as missing.
+		if existing != nil {
+			for _, n := range uniqueDriftNotes(scan, appliedTables) {
+				fmt.Printf("  ⚠️  %s\n", n)
+				summary.Refused = append(summary.Refused, n)
+			}
+		}
 		for _, m := range marked {
 			table := naming.Pluralize(naming.ToSnakeCase(m.Name))
 			if dryRun {

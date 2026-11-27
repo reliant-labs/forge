@@ -864,18 +864,18 @@ func lineFor(sqlText, column string) string {
 	return "<column not found>"
 }
 
-// TestRenderEntityMigrationFromProto_UniqueAndDateAreNotDeclarable records
-// two schema facts forge has NO WAY to express at birth. Both cost a
-// measured real-workflow run hand-edits immediately after scaffolding.
+// TestRenderEntityMigrationFromProto_UniqueIsDeclaredAndDateIsNot records
+// two schema facts a real-workflow run hand-edited immediately after
+// scaffolding, and where each stands.
 //
-// UNIQUE. Nothing in the birth vocabulary declares it: not the `field:type`
-// tokens (entityTypeVocab), not a `// forge:` marker, and not protovalidate
-// — buf.validate is a per-MESSAGE rule engine and uniqueness is a statement
-// about a whole table, so it could not live there even in principle. The
-// author's only route is a hand-written follow-up migration, which forge's
-// own generated code already anticipates (crud_gen's second lifecycle-test
-// row exists because "the first UNIQUE index the author adds" would
-// otherwise break a scaffold-once file).
+// UNIQUE is declared, never inferred. A key is a statement about a whole
+// table, so nothing per-field carries it — not the `field:type` mapping and
+// not protovalidate, a per-MESSAGE rule engine — and the message-level
+// `// forge:unique a,b` marker (codegen.ProtoMarkerUnique, rendered by
+// writeUniqueKeys and pinned by TestRenderEntityMigrationFromProto_UniqueKeys)
+// is its one spelling. Without that marker no UNIQUE appears, however
+// unique-looking a field is: an `email` with an email rule stays a plain
+// column.
 //
 // DATE. A `google.protobuf.Timestamp` field is born TIMESTAMPTZ, which is
 // correct for an instant and wrong for a calendar date: a date of birth
@@ -884,15 +884,14 @@ func lineFor(sqlText, column string) string {
 // (google.type.Date exists but is not a well-known type forge maps), so the
 // declaration has nowhere to live today.
 //
-// This test pins TODAY'S behavior, deliberately. It is the record that the
-// gap is known and unclosed — not an endorsement. Closing it means adding a
-// DECLARATION (a `// forge:unique` marker on the field, a `date` token in
-// the field-list vocabulary and a google.type.Date mapping in the
-// descriptor path), never a name heuristic: a column called `date_of_birth`
-// silently becoming DATE while `dob` stays TIMESTAMPTZ is exactly the magic
-// forge exists to not have. When the declaration lands, replace this test
-// with one that asserts it is honored.
-func TestRenderEntityMigrationFromProto_UniqueAndDateAreNotDeclarable(t *testing.T) {
+// The DATE half pins TODAY'S behavior, deliberately. It is the record that
+// the gap is known and unclosed — not an endorsement. Closing it means
+// adding a DECLARATION (a `date` token in the field-list vocabulary and a
+// google.type.Date mapping in the descriptor path), never a name heuristic:
+// a column called `date_of_birth` silently becoming DATE while `dob` stays
+// TIMESTAMPTZ is exactly the magic forge exists to not have. When the
+// declaration lands, replace that half with one asserting it is honored.
+func TestRenderEntityMigrationFromProto_UniqueIsDeclaredAndDateIsNot(t *testing.T) {
 	mig := RenderEntityMigrationFromProto(EntityFromProtoSpec{
 		Table:     "members",
 		MessageFQ: entityProtoPkg + ".Member",
@@ -908,8 +907,8 @@ func TestRenderEntityMigrationFromProto_UniqueAndDateAreNotDeclarable(t *testing
 	})
 
 	if strings.Contains(strings.ToUpper(mig.UpSQL), "UNIQUE") {
-		t.Errorf("a UNIQUE constraint appeared without any way to declare one — if a declaration was added, "+
-			"replace this test with one asserting it is honored:\n%s", mig.UpSQL)
+		t.Errorf("a UNIQUE constraint appeared with no unique key declared on the message — "+
+			"uniqueness is declared, never inferred from a field:\n%s", mig.UpSQL)
 	}
 	// `\bDATE\b` so a column NAMED date_of_birth does not read as a DATE
 	// column type.

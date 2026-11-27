@@ -28,8 +28,9 @@ message Customer {
 
 There is no CLI field grammar — enums, `optional` (nullable), `buf.validate`
 rules, `forge:read-only` / `forge:secret` / `forge:append-only`, a same-row
-derived column (`forge:generated <sql expr>`) and foreign-key references are
-all spelled in the message. Full vocabulary: `forge project annotations`.
+derived column (`forge:generated <sql expr>`), a table key
+(`// forge:unique namespace,name` above the message) and foreign-key
+references are all spelled in the message. Full vocabulary: `forge project annotations`.
 Which marker keeps clients off a column your code owns (`forge:read-only`,
 `forge:computed`, `forge:generated`, `forge:guards`, `forge:immutable`): the
 decision table in `db/write-policy`.

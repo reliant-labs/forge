@@ -1123,6 +1123,15 @@ func generatableSecretNames(e *KCLEntities) []string {
 			seen[r.EnvName] = struct{}{}
 		}
 	}
+	// A host-infra instance's own credentials (a host MinIO's root user and
+	// password) are minted whether or not any workload references them: the
+	// server reads them itself. declaredSecretNames carries them too; they
+	// are named here as well so `generate` never depends on that routing.
+	if e != nil {
+		for _, n := range hostInfraSecretNames(e) {
+			seen[n] = struct{}{}
+		}
+	}
 	out := make([]string, 0, len(seen))
 	for k := range seen {
 		out = append(out, k)

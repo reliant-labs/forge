@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/hostinfra"
+	"github.com/reliant-labs/forge/internal/secrets"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -64,6 +67,52 @@ func TestHostInfraSecretNamesAreDeclaredWithoutAReferrer(t *testing.T) {
 	got := declaredSecretNames(e)
 	if !slices.Equal(got, []string{"BLOBS_ROOT_PASSWORD", "BLOBS_ROOT_USER"}) {
 		t.Errorf("declared = %v", got)
+	}
+}
+
+// B1 regression: a host MinIO whose buckets NO workload references still has
+// its root credentials minted by `forge env up` (generateMissingSecrets, the
+// FileSecrets generate step), because the server itself reads them.
+func TestHostMinIOCredentialsAreGeneratedWithNoReferrer(t *testing.T) {
+	e := &KCLEntities{
+		Infra: []HostInfraEntity{{
+			Name: "blobs", Engine: hostinfra.EngineMinIO, Port: 9200,
+			MinIOBuckets:        []HostInfraMinIOBucket{{Name: "gtm-assets"}},
+			MinIORootUserSecret: "BLOBS_ROOT_USER", MinIORootPasswordSecret: "BLOBS_ROOT_PASSWORD",
+		}},
+		SecretProvider: &SecretProviderEntity{Type: "file", Path: "secrets/dev.yaml", Generate: map[string]secrets.GenerateSpec{
+			"BLOBS_ROOT_USER":     {Bytes: 16, Encoding: "hex"},
+			"BLOBS_ROOT_PASSWORD": {Bytes: 32, Encoding: "hex"},
+		}},
+	}
+	for _, k := range []string{"BLOBS_ROOT_USER", "BLOBS_ROOT_PASSWORD"} {
+		if !slices.Contains(generatableSecretNames(e), k) {
+			t.Errorf("%s is not generatable with no workload referencing the bucket: %v", k, generatableSecretNames(e))
+		}
+	}
+	store := filepath.Join(t.TempDir(), "dev.yaml")
+	var out bytes.Buffer
+	generated, err := generateMissingSecrets(e, store, map[string]string{}, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(generated)
+	if !slices.Equal(generated, []string{"BLOBS_ROOT_PASSWORD", "BLOBS_ROOT_USER"}) {
+		t.Fatalf("generated %v, want both MinIO root credentials", generated)
+	}
+	b, err := os.ReadFile(store) // #nosec G304 -- the test's own temp file
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, n := range map[string]int{"BLOBS_ROOT_USER": 32, "BLOBS_ROOT_PASSWORD": 64} {
+		m := regexp.MustCompile(`(?m)^` + k + `: ([0-9a-f]+)$`).FindSubmatch(b)
+		if m == nil || len(m[1]) != n {
+			t.Errorf("%s is not a %d-hex value in the store", k, n)
+			continue
+		}
+		if bytes.Contains(out.Bytes(), m[1]) {
+			t.Errorf("generateMissingSecrets printed %s's value; it must print key names only", k)
+		}
 	}
 }
 

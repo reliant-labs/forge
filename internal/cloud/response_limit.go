@@ -3,6 +3,7 @@ package cloud
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 )
@@ -47,6 +48,7 @@ func byteSize(n int64) string {
 // attributes, which is well over 8 MiB for a long request. Those callers know
 // their procedure's bound, so they say so where they name it, and every other
 // procedure keeps the tight default. A limit <= 0 restores the default.
+// Limits above math.MaxInt64-1 are capped so the read can probe one extra byte.
 func (c *Client) DeclareResponseLimit(limit int64, procedures ...string) {
 	for _, procedure := range procedures {
 		c.responseLimits.set(procedure, limit)
@@ -66,6 +68,9 @@ func (t *responseLimitTable) set(procedure string, limit int64) {
 	if limit <= 0 {
 		delete(t.byProc, procedure)
 		return
+	}
+	if limit > math.MaxInt64-1 {
+		limit = math.MaxInt64 - 1
 	}
 	if t.byProc == nil {
 		t.byProc = map[string]int64{}

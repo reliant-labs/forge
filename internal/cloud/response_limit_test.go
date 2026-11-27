@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -85,6 +86,28 @@ func TestDeclareResponseLimit(t *testing.T) {
 	c.DeclareResponseLimit(0, procBig)
 	if err := c.Call(context.Background(), procBig, map[string]any{}, &out); !errors.Is(err, ErrResponseTooLarge) {
 		t.Fatalf("after reset: err = %v, want ErrResponseTooLarge", err)
+	}
+}
+
+func TestDeclareResponseLimit_NormalizesBounds(t *testing.T) {
+	c := replyServer(t, http.StatusOK, jsonOfLen(64))
+	for _, limit := range []int64{math.MaxInt64, math.MaxInt64 - 1, 0, -1, math.MinInt64} {
+		c.DeclareResponseLimit(1, procBig)
+		c.DeclareResponseLimit(limit, procBig)
+		want := int64(DefaultMaxResponseBytes)
+		if limit > 0 {
+			want = math.MaxInt64 - 1
+		}
+		if got := c.responseLimits.limit(procBig); got != want {
+			t.Fatalf("declared %d: limit = %d, want %d", limit, got, want)
+		}
+		var out struct{ Pad string }
+		if err := c.Call(context.Background(), procBig, map[string]any{}, &out); err != nil {
+			t.Fatalf("declared %d: Call: %v", limit, err)
+		}
+		if out.Pad != strings.Repeat("x", 54) {
+			t.Fatalf("declared %d: answer not decoded: %#v", limit, out)
+		}
 	}
 }
 

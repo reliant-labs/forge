@@ -25,7 +25,7 @@ const DevLinkFlag = "-ldflags=-w"
 // DevDWARF reports whether env asks for DWARF in dev builds (DevDWARFEnv=1;
 // the last assignment wins, as it does for exec).
 func DevDWARF(env []string) bool {
-	v, _ := lookupEnv(env, DevDWARFEnv)
+	v, _ := LookupEnv(env, DevDWARFEnv)
 	return v == "1"
 }
 
@@ -66,7 +66,7 @@ func WithDevLinkFlags(spec RunnerSpec, env []string, goflags string) RunnerSpec 
 	}
 	air := strings.TrimSpace(spec.Runner) == "air"
 	if air {
-		if _, set := lookupEnv(env, GoBuildFlagsEnv); set {
+		if _, set := LookupEnv(env, GoBuildFlagsEnv); set {
 			return spec
 		}
 		if cmd := spec.AirBuildCmd(); !goBuildCmd.MatchString(cmd) || strings.Contains(cmd, "-ldflags") || debugGcflags(cmd) {
@@ -152,9 +152,9 @@ func debugGcflags(cmd string) bool {
 	return ok && strings.Contains(after, "-N")
 }
 
-// lookupEnv is os.LookupEnv over an exec-style env: the last assignment of
+// LookupEnv is os.LookupEnv over an exec-style env: the last assignment of
 // key wins, as it does for the process it starts.
-func lookupEnv(env []string, key string) (string, bool) {
+func LookupEnv(env []string, key string) (string, bool) {
 	for i := len(env) - 1; i >= 0; i-- {
 		if v, ok := strings.CutPrefix(env[i], key+"="); ok {
 			return v, true

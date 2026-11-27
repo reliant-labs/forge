@@ -3446,12 +3446,7 @@ func withDevLinkFlags(spec hostlaunch.RunnerSpec, env []string) hostlaunch.Runne
 	if !spec.CompilesOnLaunch() || hostlaunch.DevDWARF(env) {
 		return spec
 	}
-	goflags, set := "", false
-	for _, kv := range env {
-		if v, ok := strings.CutPrefix(kv, "GOFLAGS="); ok {
-			goflags, set = v, true // the last one is what the go tool reads
-		}
-	}
+	goflags, set := hostlaunch.LookupEnv(env, "GOFLAGS") // the last one is what the go tool reads
 	if !set {
 		goflags = goEnvGOFLAGS(env)
 	}

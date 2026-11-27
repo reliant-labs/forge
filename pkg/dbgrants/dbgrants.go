@@ -67,7 +67,9 @@
 // pg_depend rows) and grants SELECT on the view only when the role holds SELECT
 // on every one of them, and the view reads no relation under row-level
 // security. Every run re-derives these grants after revoking them, so a view
-// redefined over a secret column loses its grant on the next run.
+// redefined over a secret column loses its grant on the next run. Materialized
+// views remain ungranted: stored function or expression results can reflect the
+// creator's privileges without recording the underlying column dependencies.
 //
 // The dashboard role, [DashboardRoleName], is a different contract: forge
 // renders no grants for it. The project grants it with ordinary migrations,
@@ -439,7 +441,10 @@ func RenderFilesFor(role string, tables []Table) (Files, error) {
 	fmt.Fprintf(&b, "      EXECUTE format('GRANT SELECT (%%s) ON TABLE %%I.%%I TO %%I', readable, r.schema, r.tbl, %s);\n", quoteLiteral(role))
 	b.WriteString("    END IF;\n  END LOOP;\n")
 
-	// A view (or materialized view) reads its relations with its OWNER's
+	// Materialized views stay ungranted: their stored results can come from
+	// functions whose underlying column reads are absent from pg_depend, and
+	// reading the result does not recheck function or column privileges.
+	// An ordinary view reads its relations with its OWNER's
 	// privileges, so SELECT on it is SELECT on every column its query reads,
 	// whatever the role's column grants say. It is granted only when the role
 	// could already read every one of those columns itself: then the view
@@ -462,7 +467,7 @@ func RenderFilesFor(role string, tables []Table) (Files, error) {
 	b.WriteString("  LOOP\n    granted := 0;\n")
 	b.WriteString("    FOR r IN SELECT n.nspname AS schema, v.relname AS tbl, v.oid AS rel\n")
 	b.WriteString("               FROM pg_class v JOIN pg_namespace n ON n.oid = v.relnamespace\n")
-	b.WriteString("              WHERE n.nspname = ANY (declared) AND v.relkind IN ('v','m')\n")
+	b.WriteString("              WHERE n.nspname = ANY (declared) AND v.relkind = 'v'\n")
 	b.WriteString("                AND NOT has_table_privilege(role_oid, v.oid, 'SELECT')\n")
 	b.WriteString("                AND pg_has_role(v.relowner, 'USAGE')\n")
 	b.WriteString("                AND EXISTS (SELECT 1 FROM pg_rewrite w WHERE w.ev_class = v.oid)\n")

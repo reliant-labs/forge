@@ -261,7 +261,7 @@ func TestConvergeGrantsAViewOnlyOverColumnsTheRoleMayRead(t *testing.T) {
 	f.converge(viewsTables(Column{Name: "id"}, Column{Name: "model"}, Column{Name: "user_email", Secret: true}, Column{Name: "note"}))
 
 	f.allowed(`SELECT id, model FROM events_open`, "a view over readable columns")
-	f.allowed(`SELECT id, model FROM events_open_m`, "a materialized view over readable columns")
+	f.denied(`SELECT id, model FROM events_open_m`, "materialized views remain ungranted even over readable columns")
 	f.allowed(`SELECT id, model FROM events_open_outer`, "a view over a granted view")
 	f.denied(`SELECT n FROM other_count`, "a view over a table none of whose columns the role may read")
 	f.denied(`SELECT id FROM events_email`, "a view that selects a secret column")
@@ -276,6 +276,44 @@ func TestConvergeGrantsAViewOnlyOverColumnsTheRoleMayRead(t *testing.T) {
 	f.allowed(`SELECT j FROM events_rows`, "a whole-row view once every column is readable")
 	f.allowed(`SELECT n FROM events_count`, "a view that references a table but none of its columns")
 	f.allowed(`SELECT id FROM events_email_outer`, "a view over a view, both readable")
+}
+
+// A materialized result does not recheck the privileges used to populate it.
+// An invoker function's string body leaves no column dependency on the view's
+// rule, so checking only relation dependencies would expose the stored secret.
+func TestConvergeDeniesMaterializedPrivilegedFunctionResults(t *testing.T) {
+	f := newPGFixture(t, convergeSchemaSQL+`
+CREATE FUNCTION secret_email() RETURNS text LANGUAGE sql SECURITY INVOKER
+    AS $$ SELECT user_email FROM public.events LIMIT 1 $$;
+REVOKE EXECUTE ON FUNCTION secret_email() FROM PUBLIC;
+CREATE MATERIALIZED VIEW secret_cache AS SELECT secret_email() AS email;
+CREATE VIEW secret_cache_outer AS SELECT email FROM secret_cache;
+`)
+	f.exec(`REVOKE EXECUTE ON FUNCTION secret_email() FROM ` + f.role)
+	var email string
+	if err := f.db.QueryRowContext(context.Background(), `SELECT email FROM secret_cache`).Scan(&email); err != nil {
+		t.Fatal(err)
+	}
+	if email != "a@example.test" {
+		t.Fatalf("owner-populated materialized result = %q, want the withheld email", email)
+	}
+
+	// Show that reading the stored secret needs neither function EXECUTE nor
+	// access to its underlying column, then converge away that stale grant.
+	f.exec(`GRANT USAGE ON SCHEMA public TO ` + f.role)
+	f.exec(`GRANT SELECT ON secret_cache TO ` + f.role)
+	f.denied(`SELECT secret_email()`, "restricted invoker function")
+	f.denied(`SELECT user_email FROM events`, "underlying column")
+	f.allowed(`SELECT email FROM secret_cache`, "stored result before convergence")
+
+	for i := 0; i < 2; i++ {
+		f.converge(eventsTable(Column{Name: "id"}, Column{Name: "user_email", Secret: true}))
+		f.denied(`SELECT secret_email()`, "restricted invoker function after convergence")
+		f.denied(`SELECT user_email FROM events`, "withheld column after convergence")
+		f.denied(`SELECT email FROM secret_cache`, "owner-populated secret cache")
+		f.denied(`SELECT email FROM secret_cache_outer`, "view over the secret cache")
+		f.allowed(`SELECT id FROM events`, "declared column remains readable")
+	}
 }
 
 // A view grant is re-derived on every run: when a column it reads becomes
@@ -300,7 +338,7 @@ SELECT string_agg(c.relname || ':' || x.privilege_type, ',' ORDER BY c.relname)
  WHERE x.grantee = (SELECT oid FROM pg_roles WHERE rolname = $1)`, f.role).Scan(&views); err != nil {
 		t.Fatal(err)
 	}
-	if want := "events_open:SELECT,events_open_m:SELECT,events_open_outer:SELECT"; views != want {
+	if want := "events_open:SELECT,events_open_outer:SELECT"; views != want {
 		t.Errorf("relations the role may SELECT whole = %q, want %q", views, want)
 	}
 }

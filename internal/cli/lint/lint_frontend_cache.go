@@ -34,8 +34,10 @@
 //     member's files. Directories are keyed as well as files throughout.
 //     Recursive globs, negations and other unsupported workspace syntax
 //     disable caching rather than approximate package-manager membership.
-//   - the scripts the lane runs (and whether css_health adds lint:styles),
-//     the forge binary (version, path, size, mtime), node and npm (path,
+//   - the scripts the lane runs (and whether css_health adds lint:styles).
+//     Only the exact `eslint .` invocation without npm pre/post hooks is
+//     cacheable; arbitrary scripts may read files outside the keyed roots.
+//     The forge binary (version, path, size, mtime), node and npm (path,
 //     size, mtime, content) and the complete inherited environment: arbitrary
 //     project scripts and their child tools may read any variable. Environment
 //     values are hashed into the key, never stored in the cache record.
@@ -87,7 +89,7 @@ const (
 	// frontendLintCacheVersion is part of every key. Bump it whenever the
 	// fingerprint's meaning changes, so a record written under the old rules
 	// never answers under the new ones.
-	frontendLintCacheVersion = 5
+	frontendLintCacheVersion = 6
 
 	// lintNoCacheEnv is --no-cache for runs nobody types (a gate script).
 	lintNoCacheEnv = "FORGE_LINT_NO_CACHE"
@@ -294,6 +296,9 @@ type frontendLintRun struct {
 // files it read. An error means the inputs could not be read in full: the
 // lane runs and records nothing.
 func (c *frontendLintCache) fingerprint(dir string, run frontendLintRun) (string, int, error) {
+	if err := cacheableLintScripts(dir, run.scripts); err != nil {
+		return "", 0, err
+	}
 	h := sha256.New()
 	fmt.Fprintf(h, "forge-lint-frontend-cache v%d\n", frontendLintCacheVersion)
 	fmt.Fprintf(h, "scripts=%s\n", strings.Join(run.scripts, ","))
@@ -344,6 +349,30 @@ func (c *frontendLintCache) fingerprint(dir string, run frontendLintRun) (string
 		}
 	}
 	return hex.EncodeToString(h.Sum(nil)), files, nil
+}
+
+// cacheableLintScripts accepts only the fixed ESLint invocation whose inputs
+// this cache covers. Arbitrary commands, flags and npm lifecycle hooks can read
+// files anywhere (including outside the project), so hashing their command text
+// is not enough to establish their inputs. Leave those runs uncached.
+func cacheableLintScripts(dir string, scripts []string) error {
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return err
+	}
+	var manifest struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return err
+	}
+	for _, script := range scripts {
+		if manifest.Scripts[script] != "eslint ." ||
+			manifest.Scripts["pre"+script] != "" || manifest.Scripts["post"+script] != "" {
+			return fmt.Errorf("lint cache: %s has script inputs that cannot be proven complete", script)
+		}
+	}
+	return nil
 }
 
 // Seams for tests: the forge executable, PATH lookups and the environment.

@@ -19,7 +19,7 @@ func cacheFrontend(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	for rel, body := range map[string]string{
-		"package.json":                    `{"scripts":{"lint":"eslint ."}}`,
+		"package.json":                    `{"scripts":{"lint":"eslint .","lint:styles":"eslint ."}}`,
 		"eslint.config.mjs":               "export default [];\n",
 		"tsconfig.json":                   "{}\n",
 		"src/app.ts":                      "export const a = 1;\n",
@@ -111,6 +111,9 @@ func TestFrontendLintFingerprintCoversInputsOnly(t *testing.T) {
 		body := "changed " + rel + "\n"
 		if rel == "eslint.config.mjs" {
 			body = "export default [{}];\n"
+		}
+		if rel == "package.json" {
+			body = `{"private":true,"scripts":{"lint":"eslint .","lint:styles":"eslint ."}}`
 		}
 		writeCacheFile(t, filepath.Join(dir, rel), body)
 		got := mustKey(t, c, dir, run)
@@ -321,6 +324,53 @@ func TestFrontendLintCacheLocalConfigImportsRunAfterExternalEdit(t *testing.T) {
 			}
 			writeCacheFile(t, external, "export default [{ rules: { semi: 'error' } }];\n")
 			r.err = errors.New("external config now rejects the source")
+			fs, gated := lintDir(c, dir, false)
+			if !gated || r.calls != 3 || cachedNote(fs) != nil {
+				t.Fatalf("external edit: want fresh failure, calls=%d gated=%v findings=%+v", r.calls, gated, fs)
+			}
+		})
+	}
+}
+
+// Project scripts and npm's implicit lifecycle hooks can read inputs outside
+// the frontend without importing them through an ESLint config.
+func TestFrontendLintCacheExternalScriptInputsAlwaysRun(t *testing.T) {
+	for _, script := range []string{"lint", "prelint", "postlint"} {
+		t.Run(script, func(t *testing.T) {
+			stubCacheSys(t)
+			r := stubLintRunner(t)
+			root := t.TempDir()
+			dir := filepath.Join(root, "frontends", "web")
+			scripts := map[string]string{"lint": "eslint ."}
+			scripts[script] = "node check.mjs"
+			manifest, err := json.Marshal(map[string]any{"scripts": scripts})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeCacheFile(t, filepath.Join(dir, "package.json"), string(manifest))
+			writeCacheFile(t, filepath.Join(dir, "eslint.config.mjs"), "export default [];\n")
+			writeCacheFile(t, filepath.Join(dir, "node_modules", ".package-lock.json"), "{}")
+			writeCacheFile(t, filepath.Join(dir, "check.mjs"), "import { readFileSync } from 'node:fs';\nif (readFileSync('../../shared/lint-policy', 'utf8') !== 'pass') process.exit(1);\n")
+			external := filepath.Join(root, "shared", "lint-policy")
+			writeCacheFile(t, external, "pass")
+			// Model the script's file read without requiring node/npm in this test.
+			r.during = func() {
+				body, err := os.ReadFile(external)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(body) != "pass" {
+					r.err = errors.New("external lint policy rejected the source")
+				}
+			}
+			c := newFrontendLintCache(root, false, func(string) string { return "" })
+			for i := 1; i <= 2; i++ {
+				fs, gated := lintDir(c, dir, false)
+				if gated || r.calls != i || cachedNote(fs) != nil {
+					t.Fatalf("run %d: want uncached pass, calls=%d gated=%v findings=%+v", i, r.calls, gated, fs)
+				}
+			}
+			writeCacheFile(t, external, "fail")
 			fs, gated := lintDir(c, dir, false)
 			if !gated || r.calls != 3 || cachedNote(fs) != nil {
 				t.Fatalf("external edit: want fresh failure, calls=%d gated=%v findings=%+v", r.calls, gated, fs)

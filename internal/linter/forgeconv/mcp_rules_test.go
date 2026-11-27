@@ -153,7 +153,7 @@ func TestMCPMutating(t *testing.T) {
 
 func TestMCPShape_StreamingAndCollision(t *testing.T) {
 	read := &codegen.MethodMCP{OptIn: true}
-	stream := orderMethod("WatchOrders", read, goodDesc)
+	stream := orderMethod("WatchOrders", &codegen.MethodMCP{OptIn: true, Explicit: true}, goodDesc)
 	stream.ServerStreaming = true
 	// "Order" + "Service" and "OrderService" both project to order_*.
 	other := codegen.ServiceDef{Name: "Order", Package: "orders.v1", ProtoFile: ordersFile,
@@ -230,5 +230,15 @@ func TestRestatesName(t *testing.T) {
 		if got := restatesName(name, strings.Fields(desc)); got != want {
 			t.Errorf("restatesName(%s, %q) = %v, want %v", name, desc, got, want)
 		}
+	}
+}
+
+// A streaming rpc that only inherits the service's mcp is skipped by
+// generate, so no MCP rule judges it (not even its missing comment).
+func TestMCPShape_InheritedStreamingSkipped(t *testing.T) {
+	stream := orderMethod("WatchOrders", &codegen.MethodMCP{OptIn: true, Mutating: true}, "")
+	stream.ServerStreaming = true
+	if got := lintMCP(t, []codegen.ServiceDef{ordersService(stream)}); len(got) != 0 {
+		t.Fatalf("findings = %+v, want none", got)
 	}
 }

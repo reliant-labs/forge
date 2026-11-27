@@ -127,6 +127,12 @@ func checkMCP(rootDir string, protoFiles []string) map[string][]Finding {
 				continue
 			}
 			recorded = true
+			// codegen.MCPTools' rule: the service default covers unary rpcs
+			// only, so a streaming rpc that merely inherits it is neither
+			// served nor refused, and no rule judges it.
+			if (m.ClientStreaming || m.ServerStreaming) && !m.MCP.Explicit {
+				continue
+			}
 			line := lines[file+"|"+svc.Name+"|"+m.Name]
 			at := func(rule string, sev Severity, msg, fix string) {
 				add(file, Finding{Rule: rule, Severity: sev, Line: line, Message: msg, Remediation: fix + mcpSkill})
@@ -151,7 +157,7 @@ func checkMCP(rootDir string, protoFiles []string) map[string][]Finding {
 			// forgeconv-mcp-shape: streaming.
 			if m.ClientStreaming || m.ServerStreaming {
 				at(ruleMCPShape, SeverityError,
-					fmt.Sprintf("rpc %s is streaming and opts in to MCP; MCP tools are request/response, so `forge generate` refuses it", rpc),
+					fmt.Sprintf("rpc %s is streaming and sets (forge.v1.method).mcp: true; MCP tools are request/response, so `forge generate` refuses it", rpc),
 					"set (forge.v1.method).mcp = false on it")
 				continue
 			}

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // serveEnv makes this test binary act as the helper: cmd/go runs it as
@@ -61,7 +63,7 @@ func TestRealGoBuildReadsTrustedTier(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command(gobin, "list", "-e", "-export", "-deps", "-test", "./...")
 		cmd.Dir = dir
-		cmd.Env = env
+		cmd.Env = goexec.WithTrimpath(env) // GOFLAGS is -trimpath already: unchanged
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("go list in %s: %v\n%s", dir, err, out)
 		}

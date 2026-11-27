@@ -29,7 +29,11 @@ var goflagsExempt = map[string]string{
 	"internal/kclprojects/kclprojects_test.go:TestDownloadEnvLeavesTheModuleOut":              "inputs to downloadEnv, asserting it drops -mod; never handed to go",
 	"internal/cli/build_variant_env_test.go:TestVariantBuildEnv_DeclaredEnvWinsInStableOrder": "inputs to variantBuildEnv, asserting where a declared GOFLAGS lands; never handed to go",
 	"internal/vulnpatch/gostdlib_test.go:TestRealToolchainEdit":                               "the env of `go mod edit -toolchain`, which rewrites go.mod and builds nothing",
+	"internal/cli/cache_test.go:TestCacheSeedChildEnv":                                        "inputs to cacheSeedChildEnv, asserting it replaces GOFLAGS with exactly -trimpath; never handed to go",
 	"internal/ciguard/gate_test.go:runGateFixture":                                            "scripts/gate.sh under a stub go on a private PATH: no go toolchain runs under it",
+	// Printed for a person's shell, never handed to go: the line is -trimpath itself.
+	"internal/cli/cache.go:cacheEnvLines":          "prints `forge cache env`'s KEY=value lines (GOFLAGS=-trimpath) for a shell; never handed to go",
+	"internal/cli/cache_test.go:TestCacheEnvLines": "asserts the text cacheEnvLines prints; never handed to go",
 	// Pins, not overrides: the value is what `go env GOFLAGS` reported for this
 	// same environment, so a -trimpath the file layer sets is carried over, and
 	// adding one would change the user's own test run that a retry must repeat.

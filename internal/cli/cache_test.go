@@ -28,10 +28,16 @@ func TestCacheSeedChildEnv(t *testing.T) {
 		asked = keys
 		return map[string]string{"GOMODCACHE": "/var/cache/workspace/go-mod", "GOPROXY": "https://from-file"}, nil
 	}
-	env, err := cacheSeedChildEnv(environ, "/trusted", fromFile)
+	fileVals, err := cacheSeedFileSettings(environ, fromFile)
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, k := range asked {
+		if k == "GOPROXY" {
+			t.Error("asked go's env file for GOPROXY, which the environment sets")
+		}
+	}
+	env := cacheSeedChildEnv(environ, "/trusted", fileVals)
 	got := map[string][]string{}
 	for _, kv := range env {
 		k, v, _ := strings.Cut(kv, "=")
@@ -53,11 +59,6 @@ func TestCacheSeedChildEnv(t *testing.T) {
 	for _, k := range []string{"GOCACHEPROG", "FORGE_GO_TRUSTED_CACHE", "FORGE_CACHE_PROG_STATS"} {
 		if _, ok := got[k]; ok {
 			t.Errorf("%s is in the seed's environment", k)
-		}
-	}
-	for _, k := range asked {
-		if k == "GOPROXY" {
-			t.Error("asked go's env file for GOPROXY, which the environment sets")
 		}
 	}
 }

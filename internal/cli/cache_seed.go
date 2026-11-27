@@ -18,6 +18,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/gocacheprog"
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // cacheSeedLockWait is how long `cache seed` waits for another seed of the same
@@ -149,7 +150,7 @@ func runCacheSeed(o cacheSeedOptions, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	env, err := cacheSeedChildEnv(os.Environ(), trusted, goEnvSettings)
+	fileVals, err := cacheSeedFileSettings(goexec.Env(), goEnvSettings)
 	if err != nil {
 		return err
 	}
@@ -157,7 +158,7 @@ func runCacheSeed(o cacheSeedOptions, out io.Writer) error {
 		rec.Modules = append(rec.Modules, mod)
 		dir := filepath.Join(export, filepath.FromSlash(mod))
 		for _, step := range cacheSeedSteps(o) {
-			broken, err := runCacheSeedStep(dir, env, step)
+			broken, err := runCacheSeedStep(dir, trusted, fileVals, step)
 			for _, b := range broken {
 				rec.Broken = append(rec.Broken, mod+": "+b)
 			}
@@ -209,11 +210,13 @@ func cacheSeedSteps(o cacheSeedOptions) [][]string {
 }
 
 // runCacheSeedStep runs one go command in dir and returns the broken packages it
-// named (go list's -f output) and its failure, if any.
-func runCacheSeedStep(dir string, env, args []string) ([]string, error) {
+// named (go list's -f output) and its failure, if any. Its environment is
+// goexec.Env (the caller's, with -mod=mod scrubbed) made trusted by
+// cacheSeedChildEnv; fileVals are cacheSeedFileSettings'.
+func runCacheSeedStep(dir, trusted string, fileVals map[string]string, args []string) ([]string, error) {
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
-	cmd.Env = env
+	cmd.Env = cacheSeedChildEnv(goexec.Env(), trusted, fileVals)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -235,28 +238,26 @@ func runCacheSeedStep(dir string, env, args []string) ([]string, error) {
 // with it any GOCACHEPROG, but module downloads must still go where they
 // always do.
 var cacheSeedEnvPassThrough = []string{
-	"GOMODCACHE", "GOPROXY", "GOPRIVATE", "GONOPROXY", "GONOSUMDB", "GONOSUMCHECK",
+	"GOMODCACHE", "GOPROXY", "GOPRIVATE", "GONOPROXY", "GONOSUMDB",
 	"GOSUMDB", "GOINSECURE", "GOTOOLCHAIN", "GOAUTH", "GOVCS",
 }
 
-// cacheSeedChildEnv is the environment of a seed's go commands: environ without
-// anything that would route the build through the helper or change its cache
-// keys, plus GOCACHE=<trusted>, GOFLAGS=-trimpath and GOENV=off. fromFile
-// reads the pass-through settings from go's env file (goEnvSettings).
-func cacheSeedChildEnv(environ []string, trusted string, fromFile func([]string) (map[string]string, error)) ([]string, error) {
-	drop := map[string]bool{
-		"GOCACHE": true, "GOCACHEPROG": true, "GOFLAGS": true, "GOENV": true,
-		gocacheprog.TrustedEnv: true, gocacheprog.StatsEnv: true,
-	}
+// cacheSeedDropped are the variables a seed's go commands never inherit: each
+// would route the build through the helper (GOCACHEPROG, and the go env file
+// GOENV names) or change where it writes and how its keys are computed.
+var cacheSeedDropped = map[string]bool{
+	"GOCACHE": true, "GOCACHEPROG": true, "GOFLAGS": true, "GOENV": true,
+	gocacheprog.TrustedEnv: true, gocacheprog.StatsEnv: true,
+}
+
+// cacheSeedFileSettings reads, once per seed, the pass-through settings base
+// does not set, as go resolves them from its env file (fromFile:
+// goEnvSettings).
+func cacheSeedFileSettings(base []string, fromFile func([]string) (map[string]string, error)) (map[string]string, error) {
 	set := map[string]bool{}
-	var env []string
-	for _, kv := range environ {
+	for _, kv := range base {
 		k, _, _ := strings.Cut(kv, "=")
-		if drop[k] {
-			continue
-		}
 		set[k] = true
-		env = append(env, kv)
 	}
 	var missing []string
 	for _, k := range cacheSeedEnvPassThrough {
@@ -264,24 +265,50 @@ func cacheSeedChildEnv(environ []string, trusted string, fromFile func([]string)
 			missing = append(missing, k)
 		}
 	}
-	if len(missing) > 0 && fromFile != nil {
-		vals, err := fromFile(missing)
-		if err != nil {
-			return nil, fmt.Errorf("read go env: %w", err)
-		}
-		for _, k := range missing {
-			if v := vals[k]; v != "" {
-				env = append(env, k+"="+v)
-			}
+	if len(missing) == 0 {
+		return nil, nil
+	}
+	vals, err := fromFile(missing)
+	if err != nil {
+		return nil, fmt.Errorf("read go env: %w", err)
+	}
+	out := map[string]string{}
+	for _, k := range missing {
+		if v := vals[k]; v != "" {
+			out[k] = v
 		}
 	}
-	return append(env, "GOCACHE="+trusted, "GOFLAGS=-trimpath", "GOENV=off"), nil
+	return out, nil
+}
+
+// cacheSeedChildEnv is the environment of a seed's go commands: base (the
+// caller's, through goexec.Env) without cacheSeedDropped, plus fileVals,
+// GOCACHE=<trusted>, GOENV=off and GOFLAGS=-trimpath. WithTrimpath finds the
+// -trimpath already there, so GOFLAGS stays exactly that: the flags every
+// untrusted build uses, so their keys match.
+func cacheSeedChildEnv(base []string, trusted string, fileVals map[string]string) []string {
+	var env []string
+	for _, kv := range base {
+		k, _, _ := strings.Cut(kv, "=")
+		if !cacheSeedDropped[k] {
+			env = append(env, kv)
+		}
+	}
+	for _, k := range cacheSeedEnvPassThrough {
+		if v, ok := fileVals[k]; ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	env = append(env, "GOCACHE="+trusted, "GOENV=off", "GOFLAGS=-trimpath")
+	return goexec.WithTrimpath(env)
 }
 
 // goEnvSettings asks go for keys as the user's settings resolve them (the
 // environment, then go's env file, then $GOROOT/go.env).
 func goEnvSettings(keys []string) (map[string]string, error) {
-	out, err := exec.Command("go", append([]string{"env", "-json"}, keys...)...).Output()
+	cmd := exec.Command("go", append([]string{"env", "-json"}, keys...)...)
+	cmd.Env = goexec.Env()
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}

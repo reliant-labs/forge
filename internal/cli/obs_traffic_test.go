@@ -45,7 +45,7 @@ const (
 {"group":{"agent":"GPTBot","operator":"OpenAI","class":"ai_crawler","verified":"no","top_page":"/.env"},"values":[87,0,0]}]}`
 )
 
-func runTrafficCloud(t *testing.T, args ...string) (string, error, *trafficCaller) {
+func runTrafficCloud(t *testing.T, args ...string) (string, *trafficCaller, error) {
 	t.Helper()
 	tc := &trafficCaller{answers: map[string]string{"cache_hit_ratio": cliTotalsReply, "AS humans": cliPagesReply, "AS agent,": cliAgentsReply}}
 	old := obsDepsOverride
@@ -63,11 +63,11 @@ func runTrafficCloud(t *testing.T, args ...string) (string, error, *trafficCalle
 	cmd.SetErr(&errb)
 	cmd.SetArgs(append([]string{"obs"}, args...))
 	err := cmd.ExecuteContext(context.Background())
-	return out.String(), err, tc
+	return out.String(), tc, err
 }
 
 func TestObsTrafficDefaultReadsTotalsAndTopPages(t *testing.T) {
-	out, err, _ := runTrafficCloud(t, "traffic", "prod", "--since", "7d")
+	out, _, err := runTrafficCloud(t, "traffic", "prod", "--since", "7d")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestObsTrafficDefaultReadsTotalsAndTopPages(t *testing.T) {
 }
 
 func TestObsTrafficJSONDocument(t *testing.T) {
-	out, err, tc := runTrafficCloud(t, "traffic", "prod", "--json", "--site", "web")
+	out, tc, err := runTrafficCloud(t, "traffic", "prod", "--json", "--site", "web")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestObsTrafficJSONDocument(t *testing.T) {
 }
 
 func TestObsTrafficByAgent(t *testing.T) {
-	out, err, tc := runTrafficCloud(t, "traffic", "prod", "--by", "agent", "--class", "ai")
+	out, tc, err := runTrafficCloud(t, "traffic", "prod", "--by", "agent", "--class", "ai")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestObsTrafficByAgent(t *testing.T) {
 	if len(tc.sqls) != 1 || !strings.Contains(tc.sqls[0], "UaClass IN ('ai_crawler', 'ai_search', 'ai_user')") {
 		t.Errorf("statements = %v", tc.sqls)
 	}
-	jout, err, _ := runTrafficCloud(t, "traffic", "prod", "--by", "agent", "--json")
+	jout, _, err := runTrafficCloud(t, "traffic", "prod", "--by", "agent", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestObsTrafficRefusesBadFlags(t *testing.T) {
 		{"--service", "web"},
 		{"--limit", "0"},
 	} {
-		_, err, _ := runTrafficCloud(t, append([]string{"traffic", "prod"}, args...)...)
+		_, _, err := runTrafficCloud(t, append([]string{"traffic", "prod"}, args...)...)
 		if exitCodeForError(err) != 1 {
 			t.Errorf("%v: exit %d (%v), want 1", args, exitCodeForError(err), err)
 		}

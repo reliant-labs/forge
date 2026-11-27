@@ -9,25 +9,12 @@ import (
 )
 
 // edgeTables creates the control plane's edge request tables in db (tenant
-// migration 0035, the columns the traffic statements read): edge_requests,
+// migration 0035, U4's final DDL verbatim): edge_requests,
 // one row per CDN request, and its daily rollup edge_requests_1d.
 func edgeTables(db string) string {
 	return `
-CREATE TABLE ` + db + `.edge_requests (
-    Timestamp DateTime64(9), InsertId String, EnvId LowCardinality(String), Site LowCardinality(String),
-    ServiceName LowCardinality(String), Host LowCardinality(String), Path String, HasQuery Bool,
-    Method LowCardinality(String), Status UInt16, Protocol LowCardinality(String),
-    CacheStatus LowCardinality(String), CachePop LowCardinality(String), Bytes UInt64, LatencyMs Float64,
-    RefererHost LowCardinality(String), RefererPath String, UserAgent String, UaClass LowCardinality(String),
-    Agent LowCardinality(String), AgentOperator LowCardinality(String), AgentVerified Bool,
-    ClassifierVersion LowCardinality(String), ContentKind LowCardinality(String), ClientNet String,
-    Country LowCardinality(String), SampleWeight UInt32
-) ENGINE = MergeTree ORDER BY (EnvId, Site, Timestamp);
-CREATE TABLE ` + db + `.edge_requests_1d (
-    EnvId LowCardinality(String), Site LowCardinality(String), Day Date, Path String, Status UInt16,
-    UaClass LowCardinality(String), Agent LowCardinality(String), AgentVerified Bool, CacheStatus LowCardinality(String),
-    Requests UInt64, Bytes UInt64
-) ENGINE = SummingMergeTree ORDER BY (EnvId, Site, Day, Path, Status, UaClass, Agent, AgentVerified, CacheStatus);
+CREATE TABLE ` + db + `.edge_requests (Timestamp DateTime64(9), InsertId String, EnvId LowCardinality(String), Site LowCardinality(String), ServiceName LowCardinality(String), Host LowCardinality(String), Path String, HasQuery Bool, Method LowCardinality(String), Status UInt16, Protocol LowCardinality(String), CacheStatus LowCardinality(String), CachePop LowCardinality(String), Bytes UInt64, LatencyMs Float64, RefererHost LowCardinality(String), RefererPath String, UserAgent String, UaClass LowCardinality(String), Agent LowCardinality(String), AgentOperator LowCardinality(String), AgentVerified Bool, ClassifierVersion LowCardinality(String), ContentKind LowCardinality(String), ClientNet String, Country LowCardinality(String), SampleWeight UInt32 DEFAULT 1, RetentionDays UInt16, InsertedAt DateTime64(3,'UTC')) ENGINE = MergeTree PARTITION BY toDate(Timestamp) ORDER BY (EnvId, Site, toStartOfHour(Timestamp), Timestamp);
+CREATE TABLE ` + db + `.edge_requests_1d (EnvId LowCardinality(String), Site LowCardinality(String), Day Date, Path String, Status UInt16, UaClass LowCardinality(String), Agent LowCardinality(String), AgentVerified Bool, CacheStatus LowCardinality(String), Requests SimpleAggregateFunction(sum, UInt64), Bytes SimpleAggregateFunction(sum, UInt64), RetentionDays SimpleAggregateFunction(max, UInt16)) ENGINE = AggregatingMergeTree PARTITION BY Day ORDER BY (EnvId, Site, Day, Path, Status, UaClass, Agent, AgentVerified, CacheStatus);
 `
 }
 

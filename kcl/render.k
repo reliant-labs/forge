@@ -392,11 +392,13 @@ _env_var = lambda name: str, v0: any, where: str, rt: any, bundle: Bundle -> any
 }
 
 # A BucketRef as the value its referrer reads: a literal, or (a BucketOnS3
-# credential) the SecretRef / ManagedSecret it declares, which then lowers
-# through its own channel above. A dev MinIO is reached through the
-# cluster's host gateway from a pod, on localhost from a host process and
-# by its compose service from a compose container (_bucket_minio_endpoint);
-# a hosted workload cannot reach it at all. A bucket on forge.OnHosted is the
+# credential, a host MinIO's generated root credential) the SecretRef /
+# ManagedSecret it declares, which then lowers through its own channel
+# above. A compose MinIO is reached through the cluster's host gateway from
+# a pod, on localhost from a host process and by its compose service from a
+# compose container (_bucket_minio_endpoint); a host MinIO (`infra` set)
+# binds 127.0.0.1, so only a host process reaches it; a hosted workload
+# reaches neither. A bucket on forge.OnHosted is the
 # reverse: only the control plane knows its real name and key, so a hosted
 # referrer KEEPS the BucketRef (the wire's bucketRef, read from the Secret
 # the platform writes) and any other referrer is refused.
@@ -408,7 +410,10 @@ _bucket_resolve = lambda v: any, where: str, rt: any, bundle: Bundle -> any {
         "${where}: forge.BucketRef '${v.name}' is on forge.BucketOnMinIO, the env's local MinIO, which a hosted workload cannot reach. Bind the bucket to forge.BucketOnS3 in this env"
     assert not (_b.runtime.type == "hosted" and rt.type != "hosted"), \
         "${where}: forge.BucketRef '${v.name}' is on forge.OnHosted, whose credential only exists in the control plane's namespace, so a workload on the ${rt.type} runtime cannot read it. Run the referrer on forge.OnHosted {}, or bind the bucket to forge.BucketOnS3 in this env"
-    _val = v if _b.runtime.type == "hosted" else (_bucket_minio_values(_b, _bucket_minio_endpoint(_b, v.name, where, rt, bundle)) if _b.runtime.type == "minio" else _bucket_s3_values(_b))[v.key]
+    _host_minio = _b.runtime.infra if _b.runtime.type == "minio" else ""
+    assert not _host_minio or rt.type == "host", \
+        "${where}: forge.BucketRef '${v.name}' is on the host MinIO '${_host_minio}' (forge.HostInfra), which listens on 127.0.0.1 of this machine, so a workload on the ${rt.type} runtime cannot reach it. Run the referrer on forge.OnHost {}, or bind the bucket to the compose MinIO (forge.BucketOnMinIO {port = ...} + forge.minio_workload) in this env"
+    _val = v if _b.runtime.type == "hosted" else (_bucket_host_minio_values(_b, _bucket_host_minios(_b, bundle.infra)[0]) if _host_minio else (_bucket_minio_values(_b, _bucket_minio_endpoint(_b, v.name, where, rt, bundle)) if _b.runtime.type == "minio" else _bucket_s3_values(_b)))[v.key]
     assert not (rt.type == "hosted" and typeof(_val) == "SecretRef"), \
         "${where}: forge.BucketRef '${v.name}' ${v.key} is a forge.SecretRef, a Kubernetes Secret a hosted workload cannot read. Use forge.ManagedSecret {name = ...} on the bucket's forge.BucketOnS3 (the env's secret store: `forge secret set --env <env> <NAME>`)"
     _val
@@ -3464,7 +3469,7 @@ render = lambda bundle: Bundle -> any {
             "identity": _render_identity(bundle, _idns(bundle)[0])
         if len(_idns(bundle)) > 1:
             "identities": [_render_identity(bundle, id) for id in _idns(bundle)]
-        "infra": [_render_host_infra(i) for i in bundle.infra]
+        "infra": [_render_host_infra(i, bundle) for i in bundle.infra]
         "frontends": [_render_frontend(f, bundle) for f in bundle.frontends]
         "databases": [_render_database(db, bundle) for db in bundle.databases]
         # The env's buckets forge manages, as the ManagedBucket the hosted
@@ -3537,7 +3542,7 @@ render = lambda bundle: Bundle -> any {
         # WHERE secret values come from. A declaration only: no secret VALUE
         # ever enters this output.
         if bundle.secret_provider:
-            "secret_provider": bundle.secret_provider
+            "secret_provider": _render_secret_provider(bundle)
         # Explicitly-placed Secrets, placement RESOLVED here (own
         # cluster/namespace, else the primary target's) so the CLI applies
         # each exactly where it says. A `from = "file"` key carries only the
@@ -3581,7 +3586,36 @@ render = lambda bundle: Bundle -> any {
 # returns a fully-populated dict so the Go consumer sees stable keys.
 # ---------------------------------------------------------------------------
 
-_render_host_infra = lambda d: HostInfra -> any {
+# A host MinIO's buckets: those the env declares on it (BucketOnMinIO
+# {infra = <its name>}).
+_host_minio_buckets = lambda d: HostInfra, bundle: Bundle -> [Bucket] {
+    [b for b in bundle.buckets if b.runtime.type == "minio" and b.runtime.infra == d.name]
+}
+
+# The browser origins a host MinIO allows: the union of its buckets'
+# cors_origins, any origin when none declares one — forge.minio_workload's
+# rule, so a bucket behaves the same on either MinIO.
+_host_minio_cors = lambda d: HostInfra, bundle: Bundle -> str {
+    _origins = sorted({o: 0 for b in _host_minio_buckets(d, bundle) for o in b.cors_origins})
+    "*" if not _origins or "*" in _origins else ",".join(_origins)
+}
+
+# The env's secret provider as rendered. A forge.FileSecrets beside a host
+# MinIO also `generate`s that MinIO's root credentials, under the keys
+# _minio_root_secrets names: hex, because an access key travels inside the
+# SigV4 Credential header, where a base64 '/' would split it. A spec the
+# author declared for the same key wins. Each added spec is the env
+# document's GenerateSpec shape (bytes, encoding) and nothing more. The
+# declared provider is merged into, not rebuilt: every field it carries
+# renders as declared, and only `generate` gains entries.
+_render_secret_provider = lambda bundle: Bundle -> any {
+    _sp = bundle.secret_provider
+    _keys = [k for i in bundle.infra if i.engine == "minio" for k in [_minio_root_secrets(i.name).user, _minio_root_secrets(i.name).password]] if _sp.type == "file" else []
+    _minio_gen = {k: {"bytes": 16 if k.endswith("_ROOT_USER") else 32, "encoding": "hex"} for k in _keys if k not in (_sp.generate or {})}
+    _sp if not _minio_gen else {k: v for k, v in _sp if k != "generate"} | {"generate": _minio_gen | (_sp.generate or {})}
+}
+
+_render_host_infra = lambda d: HostInfra, bundle: Bundle -> any {
     {
         "name": d.name
         "engine": d.engine
@@ -3607,6 +3641,16 @@ _render_host_infra = lambda d: HostInfra -> any {
         # Only when declared, so an env without it renders as before.
         if d.temporal_metrics_port:
             "temporal_metrics_port": d.temporal_metrics_port
+        # engine = "minio" only, and only then, so every other engine renders
+        # as before. The buckets come from Bundle.buckets; the credentials are
+        # the secret-store KEYS forge generates them under, never values.
+        if d.engine == "minio":
+            "minio_console_port": d.minio_console_port if d.minio_console_port else None
+            "minio_region": _host_minio_region(d)
+            "minio_buckets": [{"name": b.name, "public_read": b.public_read} for b in _host_minio_buckets(d, bundle)]
+            "minio_cors_allow_origin": _host_minio_cors(d, bundle)
+            "minio_root_user_secret": _minio_root_secrets(d.name).user
+            "minio_root_password_secret": _minio_root_secrets(d.name).password
     }
 }
 

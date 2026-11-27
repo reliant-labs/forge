@@ -66,8 +66,9 @@ func validateTelemetryDashboard(name string, raw []byte) error {
 
 // envKubeContexts is every kubectl context the env's declaration names: its
 // clusters, its primary target, its cluster-bound workloads, its manifest
-// groups, its HelmCharts' clusters and the clusters it connects to. Never nil, so an env that declares
-// no cluster refuses a target that names one.
+// groups, its HelmCharts' and NodeAgents' clusters and the clusters it
+// connects to. Never nil, so an env that declares no cluster refuses a target
+// that names one.
 func envKubeContexts(e *KCLEntities) []string {
 	set := map[string]bool{}
 	add := func(c string) {
@@ -97,6 +98,11 @@ func envKubeContexts(e *KCLEntities) []string {
 	}
 	for _, m := range e.ManifestClusters {
 		add(m.Cluster)
+	}
+	// A forge.NodeAgent's cluster is one the env declares, agent rendered or
+	// not (an env with no destination renders none).
+	for _, n := range e.NodeAgents {
+		add(n.Cluster)
 	}
 	for name, ctx := range e.ConnectedClusters {
 		add(name)

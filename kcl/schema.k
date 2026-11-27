@@ -8054,17 +8054,42 @@ schema ObservabilityRetention:
 
 schema ObservabilityAgent:
     """The per-node collector forge renders on cluster runtimes (a
-    DaemonSet plus a node-local Service). Not rendered for forge.OnHosted:
-    the platform runs its own.
+    DaemonSet plus a node-local Service), env-wide. Not rendered for
+    forge.OnHosted: the platform runs its own.
 
     It runs on every cluster a forge workload runs on, and on each cluster
-    `clusters` names, which may run no forge workload at all: one that
-    runs only a HelmChart, an operator or an ML stack whose
-    `Observability.telemetry` scrapes the agent should collect.
+    a forge.NodeAgent in `Observability.node_agents` targets. These fields
+    are the defaults every one of those agents takes; a NodeAgent overrides
+    `image`, `memory_limit_mib` and `kubernetes_inventory` on its own
+    cluster. `namespace` is env-wide only: every cluster workload dials the
+    agent's Service in it.
+    """
+    namespace: str = "forge-observability"
+    image: str = OTEL_COLLECTOR_IMAGE
+    memory_limit_mib: int = 256
+    # Opt-in: each agent cluster's Kubernetes inventory and events (see
+    # KubernetesInventory). Unset, the default, renders none. A NodeAgent's
+    # own kubernetes_inventory replaces it on that cluster.
+    kubernetes_inventory?: KubernetesInventory
+
+    check:
+        regex.match(namespace, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "ObservabilityAgent.namespace must be an RFC-1123 label"
+        memory_limit_mib >= 64, "ObservabilityAgent.memory_limit_mib must be >= 64"
+
+schema NodeAgent:
+    """forge's node agent on one cluster, as a building block: the agent
+    every cluster a forge workload runs on already gets (a DaemonSet plus a
+    node-local Service, `ObservabilityAgent`), declared for a cluster you
+    name, and tuned there. Listed in `Observability.node_agents`.
+
+        _gpu = forge.ClusterTarget {cluster = "gke_acme_us-central1_gpu", namespace = "forge-ml", connected_cluster = "gpu"}
 
         observability = forge.Observability {
             destination = forge.ObservabilityDestination {endpoint = "https://otlp.example.com"}
-            agent = forge.ObservabilityAgent {clusters = ["gke_acme_us-central1_gpu"]}
+            node_agents = [forge.NodeAgent {
+                target = _gpu
+                kubernetes_inventory = forge.KubernetesInventory {}
+            }]
             telemetry = [forge.Telemetry {
                 service_name = "dcgm-exporter", scope = "platform", cluster = "gke_acme_us-central1_gpu"
                 namespaces = ["gpu-operator"], selector = {"app": "nvidia-dcgm-exporter"}
@@ -8072,35 +8097,55 @@ schema ObservabilityAgent:
             }]
         }
 
-    `forge env render` warns for a cluster telemetry target on a cluster
-    no agent runs on (output.uncollected_telemetry): it is not collected.
+    ONE AGENT PER CLUSTER. A cluster a forge workload runs on has its agent
+    already, implicitly; a NodeAgent targeting that cluster configures that
+    agent, never a second one. A NodeAgent targeting a cluster that runs no
+    forge workload (one running only a HelmChart, an operator or an ML
+    stack) places the agent there. Two NodeAgents on one cluster are
+    refused.
+
+    PLACEMENT is `target`, an ordinary forge.ClusterTarget, so the target
+    you already declared for the cluster is reused: `target.cluster` is the
+    kube context, and `target.connected_cluster` is how a control-plane env
+    reaches the cluster (it delivers the agent's token_from_control_plane
+    credential and binds the cluster for the deploy). The agent runs in
+    `Observability.agent.namespace` on every cluster, not in
+    `target.namespace`: every cluster workload dials it there.
+
+    OVERRIDES. Each optional field overrides the ObservabilityAgent field
+    of the same name on this cluster alone; unset takes the env-wide value.
+    `kubernetes_inventory` replaces the env-wide one whole, and
+    `forge.KubernetesInventory {enabled = False}` turns it off here.
+
+    SCRAPES ARE NOT DECLARED HERE. A scrape is a forge.Telemetry whose
+    `cluster` names the cluster, and the agent on that cluster collects it,
+    whichever way the agent got there: one declaration per scrape.
+
+    It renders when observability is on with a destination (with none, no
+    cluster runs an agent: a cluster cannot reach the local ClickStack).
+    With `telemetry_collector` it still renders, as the implicit agent
+    does, collecting node logs and metrics while that collector takes the
+    scrapes. The cluster becomes one the env deploys to, so a local or
+    ephemeral lifecycle needs it to be a cluster forge creates, applier =
+    "flux" needs it to be the env's one cluster, and token_from_control_plane
+    needs a connected cluster for it. `forge env render` warns for a
+    cluster telemetry target on a cluster no agent runs on
+    (output.uncollected_telemetry): it is not collected.
     """
-    namespace: str = "forge-observability"
-    image: str = OTEL_COLLECTOR_IMAGE
-    memory_limit_mib: int = 256
-    # Opt-in: each agent cluster's Kubernetes inventory and events (see
-    # KubernetesInventory). Unset, the default, renders none.
+    target: ClusterTarget
+    # The collector image on this cluster (a mirror an air-gapped cluster
+    # can pull). Unset: Observability.agent.image.
+    image?: str
+    # The agent's memory limit on this cluster. Unset:
+    # Observability.agent.memory_limit_mib.
+    memory_limit_mib?: int
+    # This cluster's Kubernetes inventory, replacing
+    # Observability.agent.kubernetes_inventory here. Unset: the env-wide one.
     kubernetes_inventory?: KubernetesInventory
-    # Kube contexts (forge.ClusterTarget.cluster) the agent also runs on,
-    # beside every cluster a forge workload runs on, with its destination
-    # credential, so the telemetry that scrapes them is collected (and
-    # kubernetes_inventory ships them). It takes effect when observability
-    # is on with a destination and forge owns collection (no
-    # telemetry_collector). Each one becomes a cluster the env deploys to,
-    # so a local or ephemeral lifecycle needs it to be a cluster forge
-    # creates, applier = "flux" needs it to be the env's one cluster, and
-    # token_from_control_plane needs a connected cluster for it (the
-    # ClusterTarget.connected_cluster of an MLStack on it, or
-    # Bundle.connected_clusters). Empty, the default, adds none.
-    clusters: [str] = []
 
     check:
-        regex.match(namespace, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "ObservabilityAgent.namespace must be an RFC-1123 label"
-        memory_limit_mib >= 64, "ObservabilityAgent.memory_limit_mib must be >= 64"
-        all c in clusters { c }, \
-            "ObservabilityAgent.clusters has an empty entry: each is a kube context (forge.ClusterTarget.cluster)"
-        len({c: 0 for c in clusters}) == len(clusters), \
-            "ObservabilityAgent.clusters names ${sorted([c for i, c in clusters if c in clusters[:i]])} twice: list each cluster once"
+        image == Undefined or image, "NodeAgent.image is empty: unset it to use Observability.agent.image"
+        memory_limit_mib == Undefined or memory_limit_mib >= 64, "NodeAgent.memory_limit_mib must be >= 64"
 
 schema KubernetesInventory:
     """Opt-in: a cluster's own Kubernetes objects, shipped beside the node
@@ -8113,10 +8158,20 @@ schema KubernetesInventory:
             }
         }
 
-    On every cluster forge's node agent runs on (a cluster a forge
-    workload runs on, one ObservabilityAgent.clusters names, or an ML
-    stack's cluster scraped through the deprecated Adopt/Install fields,
-    with an observability destination), it renders:
+    Declared on `Observability.agent`, it applies on every cluster forge's
+    node agent runs on (a cluster a forge workload runs on, one a
+    forge.NodeAgent targets, or an ML stack's cluster scraped through the
+    deprecated Adopt/Install fields, with an observability destination).
+    Declared on a forge.NodeAgent, it applies on that agent's cluster
+    instead, replacing the env-wide one there; `enabled = False` turns it
+    off on that cluster:
+
+        node_agents = [forge.NodeAgent {
+            target = _edge
+            kubernetes_inventory = forge.KubernetesInventory {enabled = False}
+        }]
+
+    Where it applies, it renders:
 
       * the cluster collector: one single-replica Deployment
         `cluster-collector` (with its ConfigMap and ServiceAccount) in the
@@ -8150,6 +8205,9 @@ schema KubernetesInventory:
     # Watch events.k8s.io Events (node conditions and the like surfaced as
     # Events).
     events: bool = True
+    # False renders no inventory where this declaration applies: how a
+    # NodeAgent turns the env-wide one off on its cluster.
+    enabled: bool = True
 
     check:
         regex.match(node_interval, r"^[0-9]+(ms|s|m|h)$"), "KubernetesInventory.node_interval '${node_interval}' must be a duration like 60s"
@@ -8494,10 +8552,20 @@ schema Observability:
     # The collector that scrapes this env's Telemetry when it is not forge's
     # node agent (a project that runs its own). Unset: forge's agent.
     telemetry_collector?: TelemetryCollector
+    # forge's node agent on the clusters you name, one forge.NodeAgent per
+    # cluster: it places the agent on a cluster no forge workload runs on,
+    # and configures the agent of one that does. Empty, the default: the
+    # agent runs on the clusters forge workloads run on, configured by
+    # `agent` alone.
+    node_agents: [NodeAgent] = []
 
     check:
-        not agent.kubernetes_inventory or signals.logs, \
+        not agent.kubernetes_inventory or not agent.kubernetes_inventory.enabled or signals.logs, \
             "Observability.agent.kubernetes_inventory ships the cluster's objects as logs, and signals.logs = False drops every log. Turn logs on or drop kubernetes_inventory"
+        signals.logs or not any a in node_agents { a.kubernetes_inventory and a.kubernetes_inventory.enabled }, \
+            "Observability.node_agents on cluster ${', '.join([a.target.cluster for a in node_agents if a.kubernetes_inventory and a.kubernetes_inventory.enabled])} declare kubernetes_inventory, which ships the cluster's objects as logs, and signals.logs = False drops every log. Turn logs on or drop kubernetes_inventory"
+        len(_duplicates([a.target.cluster for a in node_agents])) == 0, \
+            "Observability.node_agents declares two forge.NodeAgents on cluster ${', '.join(_duplicates([a.target.cluster for a in node_agents]))}: a cluster runs one node agent, configured by one NodeAgent. Merge them"
         enabled or len(telemetry) == 0, \
             "Observability.telemetry is declared with enabled = False: there is no pipeline to collect it into. Drop it or set enabled = True"
         all t in telemetry { t.service_name }, \

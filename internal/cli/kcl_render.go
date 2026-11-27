@@ -247,6 +247,11 @@ type KCLEntities struct {
 	// telemetry target no node agent collects, read for the render's
 	// warning (uncollectedTelemetryWarnings). Nil when there is none.
 	UncollectedTelemetry []UncollectedTelemetryOutput `json:"-"`
+	// NodeAgents is output.node_agents: the placement of each declared
+	// forge.NodeAgent, read for the cluster bindings (declaredBindings) and
+	// the contexts the env names (envKubeContexts). Nil when none is
+	// declared.
+	NodeAgents []NodeAgentOutput `json:"-"`
 	// Identity is Bundle.identity, resolved by the render: the applications
 	// and consumers derived, the deliveries and reserved managed-secret names
 	// listed. Nil when the env declares none. See release.ShapeIdentity: the
@@ -1891,6 +1896,10 @@ type kclRenderRaw struct {
 	// forge env render's warning (uncollectedTelemetryWarnings). Absent when
 	// there is none.
 	UncollectedTelemetry []UncollectedTelemetryOutput `json:"uncollected_telemetry,omitempty"`
+	// NodeAgents is each declared forge.NodeAgent's placement
+	// (Observability.node_agents), so a NodeAgent's connected cluster binds
+	// its cluster as a workload target's does. Absent when none is declared.
+	NodeAgents []NodeAgentOutput `json:"node_agents,omitempty"`
 	// Manifests is the applyable stream. Parsed loosely: only kind, name
 	// and namespace are read here (see rawManifest).
 	Manifests []rawManifest `json:"manifests,omitempty"`
@@ -2348,6 +2357,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 	}
 	out.MLStacks = ml.MLStacks
 	out.UncollectedTelemetry = raw.UncollectedTelemetry
+	out.NodeAgents = raw.NodeAgents
 	for _, c := range raw.BundledCharts {
 		out.ClusterWork = append(out.ClusterWork, "HelmChart/"+c.Name)
 	}

@@ -148,7 +148,7 @@ func mlScrapeDeprecations(entities *KCLEntities) []string {
 				msg += fmt.Sprintf(". Until then it scrapes as service %q, and a forge.Telemetry of that service_name replaces it", c.ServiceName)
 				// The derived scrape is what places the agent on an otherwise
 				// agentless stack cluster; its replacement does not.
-				msg += fmt.Sprintf(". The fields also run forge's node agent on %q, which a forge.Telemetry alone does not: if no forge workload runs there, add %q to Observability.agent.clusters too", s.Cluster, s.Cluster)
+				msg += fmt.Sprintf(". The fields also run forge's node agent on %q, which a forge.Telemetry alone does not: if no forge workload runs there, declare forge.NodeAgent {target = <the stack's cluster target>} in Observability.node_agents too", s.Cluster)
 			}
 			out = append(out, msg)
 		}

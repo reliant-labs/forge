@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,8 +52,8 @@ output = forge.render(forge.Bundle {
 // An input that rendered on v1.13.0 still renders: a scrape of an ML stack's
 // cluster with no forge workload places no node agent there (so no lifecycle,
 // Flux or credential check sees a new target), and forge env render warns
-// that the scrape is not collected, naming the opt-in
-// (Observability.agent.clusters). kcl/tests
+// that the scrape is not collected, naming the declaration that collects it
+// (forge.NodeAgent in Observability.node_agents). kcl/tests
 // positive_ml_telemetry_v1130_compat.k pins the KCL half.
 func TestMLScrapeOnAgentlessStackClusterRendersAndWarns(t *testing.T) {
 	if testing.Short() {
@@ -103,7 +104,7 @@ func TestMLScrapeOnAgentlessStackClusterRendersAndWarns(t *testing.T) {
 			for _, want := range []string{
 				`warning: forge.Telemetry "prometheus" scrapes cluster "gke_acme_us-central1_gpu", where forge runs no node agent`,
 				"so it is not collected",
-				`Add "gke_acme_us-central1_gpu" to Observability.agent.clusters to run forge's node agent there`,
+				`Declare forge.NodeAgent {target = <the forge.ClusterTarget of "gke_acme_us-central1_gpu">} in Observability.node_agents to run forge's node agent there`,
 				`that makes "gke_acme_us-central1_gpu" a cluster the env deploys to`,
 			} {
 				if !strings.Contains(got, want) {
@@ -126,7 +127,7 @@ func TestUncollectedTelemetryWarnsPerCluster(t *testing.T) {
 	if len(w) != 2 ||
 		!strings.Contains(w[0], `forge.Telemetry "dcgm", "prometheus" scrape cluster "gpu"`) ||
 		!strings.Contains(w[1], `forge.Telemetry "kube-prometheus" scrapes cluster "helm-only"`) ||
-		!strings.Contains(w[1], `Add "helm-only" to Observability.agent.clusters`) {
+		!strings.Contains(w[1], `forge.NodeAgent {target = <the forge.ClusterTarget of "helm-only">} in Observability.node_agents`) {
 		t.Fatalf("warnings = %q", w)
 	}
 	if w := uncollectedTelemetryWarnings(nil); w != nil {
@@ -142,11 +143,12 @@ func TestUncollectedTelemetryWarnsPerCluster(t *testing.T) {
 }
 
 // helmOnlyEnv is a cluster that runs only a HelmChart: no forge workload and
-// no forge.MLStack. AGENTS is Observability.agent.clusters.
+// no forge.MLStack. NODE_AGENTS is Observability.node_agents.
 const helmOnlyEnv = `import forge
 import forge.workloads as fw
 
 _hub = forge.ClusterTarget {cluster = "hub", namespace = "acme"}
+_helm = forge.ClusterTarget {cluster = "helm-only", namespace = "monitoring"}
 output = forge.render(forge.Bundle {
     project = "acme"
     env = "prod"
@@ -155,11 +157,11 @@ output = forge.render(forge.Bundle {
     helm_charts = [forge.HelmChart {
         name = "kube-prometheus-stack", chart = "kube-prometheus-stack"
         repo = "https://prometheus-community.github.io/helm-charts", version = "75.0.0"
-        namespace = "monitoring", cluster = forge.ClusterTarget {cluster = "helm-only", namespace = "monitoring"}
+        namespace = "monitoring", cluster = _helm
     }]
     observability = forge.Observability {
         destination = forge.ObservabilityDestination {endpoint = "https://otlp.example.com"}
-        agent = forge.ObservabilityAgent {clusters = AGENTS}
+        node_agents = NODE_AGENTS
         telemetry = [forge.Telemetry {
             service_name = "prometheus", scope = "platform", cluster = "helm-only"
             namespaces = ["monitoring"], selector = {app = "prometheus"}
@@ -169,12 +171,11 @@ output = forge.render(forge.Bundle {
 })
 `
 
-// Observability.agent.clusters is not ML-specific: naming a Helm-only
-// cluster puts forge's node agent there and the scrape is collected, with no
-// warning; without it the render warns that the scrape is not collected,
-// naming the setting. kcl/tests positive_agent_clusters_helm_only.k pins the
-// KCL half.
-func TestAgentClustersHelmOnlyCluster(t *testing.T) {
+// forge.NodeAgent is not ML-specific: one targeting a Helm-only cluster puts
+// forge's node agent there and the scrape is collected, with no warning;
+// without it the render warns that the scrape is not collected, naming the
+// declaration. kcl/tests positive_node_agent_helm_only.k pins the KCL half.
+func TestNodeAgentHelmOnlyCluster(t *testing.T) {
 	if testing.Short() {
 		t.Skip("-short: renders KCL twice; runs in task test")
 	}
@@ -182,12 +183,12 @@ func TestAgentClustersHelmOnlyCluster(t *testing.T) {
 	for _, tc := range []struct {
 		agents    string
 		wantAgent bool
-	}{{`["helm-only"]`, true}, {`[]`, false}} {
-		t.Run(tc.agents, func(t *testing.T) {
+	}{{`[forge.NodeAgent {target = _helm}]`, true}, {`[]`, false}} {
+		t.Run(fmt.Sprintf("agent=%v", tc.wantAgent), func(t *testing.T) {
 			dir := t.TempDir()
 			files := map[string]string{
 				"kcl.mod": "[package]\nname = \"helmonly\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n",
-				"main.k":  strings.Replace(helmOnlyEnv, "AGENTS", tc.agents, 1),
+				"main.k":  strings.Replace(helmOnlyEnv, "NODE_AGENTS", tc.agents, 1),
 			}
 			for f, c := range files {
 				if err := os.WriteFile(filepath.Join(dir, f), []byte(c), 0o644); err != nil {
@@ -216,10 +217,36 @@ func TestAgentClustersHelmOnlyCluster(t *testing.T) {
 				t.Fatalf("telemetry check refused the env: %v", err)
 			}
 			warned := strings.Contains(errOut.String(), `forge.Telemetry "prometheus" scrapes cluster "helm-only"`) &&
-				strings.Contains(errOut.String(), `Add "helm-only" to Observability.agent.clusters`)
+				strings.Contains(errOut.String(), `forge.NodeAgent {target = <the forge.ClusterTarget of "helm-only">} in Observability.node_agents`)
 			if warned == tc.wantAgent {
 				t.Errorf("warned = %v with agent = %v:\n%s", warned, tc.wantAgent, errOut.String())
 			}
 		})
+	}
+}
+
+// A forge.NodeAgent's target binds its cluster to its connected cluster, as a
+// workload target does, and names a context the env declares, so a
+// control-plane env whose only object on a cluster is the node agent is not
+// refused as unbound, and a second name for the context is a conflict.
+func TestNodeAgentBindsItsCluster(t *testing.T) {
+	e, err := parseKCLEntities([]byte(`{"project":"acme","env":"prod","node_agents":[{"cluster":"gke_acme_gpu","connected_cluster":"gpu"},{"cluster":"k3d-edge","connected_cluster":null}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(e.NodeAgents) != 2 || e.NodeAgents[0] != (NodeAgentOutput{Cluster: "gke_acme_gpu", ConnectedCluster: "gpu"}) || e.NodeAgents[1] != (NodeAgentOutput{Cluster: "k3d-edge"}) {
+		t.Fatalf("node_agents not decoded: %+v", e.NodeAgents)
+	}
+	bound, conflicts := declaredBindings(e)
+	if len(conflicts) != 0 || len(bound["gke_acme_gpu"]) != 1 || bound["gke_acme_gpu"][0] != "gpu" || len(bound["k3d-edge"]) != 0 {
+		t.Errorf("bindings = %v, conflicts = %v", bound, conflicts)
+	}
+	ctxs := envKubeContexts(e)
+	if strings.Join(ctxs, ",") != "gke_acme_gpu,k3d-edge" {
+		t.Errorf("contexts = %v", ctxs)
+	}
+	e.ConnectedClusters = map[string]string{"gke_acme_gpu": "other"}
+	if _, conflicts := declaredBindings(e); len(conflicts) != 1 {
+		t.Errorf("a second connected cluster for the NodeAgent's context was not a conflict: %v", conflicts)
 	}
 }

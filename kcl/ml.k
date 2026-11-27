@@ -31,11 +31,12 @@ adopted or installed, is a plain `Observability.telemetry` entry
     }]}
 
 forge's node agent collects such an entry. A cluster gets the agent when a
-forge workload runs there; a stack's cluster with none gets it only when the
-env names it in `Observability.agent.clusters` (kcl/schema.k
-ObservabilityAgent), because the agent makes the cluster one the env deploys
-to. `forge env render` warns for an entry that scrapes a cluster no agent
-runs on (output.uncollected_telemetry): it is not collected.
+forge workload runs there; a stack's cluster with none gets it only when a
+forge.NodeAgent in `Observability.node_agents` targets it (kcl/schema.k
+NodeAgent; the stack's own ClusterTarget will do), because the agent makes
+the cluster one the env deploys to. `forge env render` warns for an entry
+that scrapes a cluster no agent runs on (output.uncollected_telemetry): it
+is not collected.
 
 The scrape fields of forge.Adopt and forge.Install (`selector`, `port`,
 `allow`, `service_name`) are deprecated in v1.14.0 and still work exactly
@@ -367,8 +368,8 @@ schema MLStack:
     Scraping a component is not a field of the stack: the DCGM exporter
     above is scraped by an `Observability.telemetry` entry beside it (the
     module header shows one). forge's node agent collects it on a cluster
-    a forge workload runs on, or on this stack's cluster when
-    `Observability.agent.clusters` names it.
+    a forge workload runs on, or on this stack's cluster when a
+    forge.NodeAgent targets it (`Observability.node_agents`).
 
     The refusals, each naming the kind and the fix: a kind both adopted and
     installed; a kind installed twice; an Install of a kind in `observed`
@@ -384,10 +385,11 @@ schema MLStack:
         the env already renders or declares it;
       * the stack's cluster: forge's node agent (and its destination
         credential, delivered through this stack's ClusterTarget, so its
-        connected_cluster), when observability is on with a destination
-        and forge owns collection (no telemetry_collector), and either
-        `Observability.agent.clusters` names the cluster or a component is
-        scraped through the deprecated fields below;
+        connected_cluster), when observability is on with a destination,
+        forge owns collection (no telemetry_collector) and a component is
+        scraped through the deprecated fields below. A forge.NodeAgent
+        (`Observability.node_agents`) is the declared way to run the agent
+        on the stack's cluster; it is not a field of the stack;
       * deprecated (v1.14.0), still rendered: each component scraped through
         its own fields (an Adopt or an Install with selector and port): a
         `telemetry` target (attachment "observability", source

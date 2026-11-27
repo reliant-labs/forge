@@ -81,13 +81,14 @@ and a bad metric name. An Adopt with no port scrapes nothing.
 these fields, keeping them working with a warning, in favour of
 `Observability.telemetry`. Once it lands, write scrapes as `forge.Telemetry` in
 the env's `observability` and treat Adopt as an inventory statement. On a stack
-cluster no forge workload runs on, such a scrape is collected only when the
-env names the cluster in `Observability.agent.clusters` (a generic list of kube
-contexts forge's node agent also runs on; the deprecated fields placed the agent
-there by themselves); otherwise `forge env render` warns that it is not
-collected. Naming a cluster makes it one the env deploys to, so a local or
-ephemeral lifecycle, a single-cluster Flux applier and control-plane credential
-delivery all apply to it. Until then
+cluster no forge workload runs on, such a scrape is collected only when a
+`forge.NodeAgent {target = <the stack's ClusterTarget>}` in
+`Observability.node_agents` runs forge's node agent there (a generic building
+block for any cluster; the deprecated fields placed the agent there by
+themselves); otherwise `forge env render` warns that it is not collected. The
+agent makes the cluster one the env deploys to, so a local or ephemeral
+lifecycle, a single-cluster Flux applier and control-plane credential delivery
+all apply to it. Until then
 the fields above are the released behaviour; do not tell a user they do not exist.
 
 ## Not built — do not promise

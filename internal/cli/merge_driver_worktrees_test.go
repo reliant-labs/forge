@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,45 @@ func TestStaleWorktreeDriverEntry(t *testing.T) {
 		if got := staleWorktreeDriverEntry(tc.key, tc.value); got != tc.want {
 			t.Errorf("%s: staleWorktreeDriverEntry(%q, %q) = %v, want %v", tc.name, tc.key, tc.value, got, tc.want)
 		}
+	}
+}
+
+func TestRemoveStaleDriverEntries_PreservesMultilineValue(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns git to read and write config; runs in task test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows filenames cannot contain newlines")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	live := filepath.Join(dir, "custom\nforge")
+	writeTreeFileT(t, live, "#!/bin/sh\n")
+	if err := os.Chmod(live, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "config.worktree")
+	const key = "forge-merge-driver.multiline.command"
+	const stale = "'/gone/forge' merge-generated %O %A %B %L %P"
+	usable := shellQuote(live) + " merge-generated %O %A %B %L %P"
+	gitT(t, dir, "config", "--file", file, "--add", key, stale)
+	gitT(t, dir, "config", "--file", file, "--add", key, usable)
+	gitT(t, dir, "config", "--file", file, "merge.forge-generated.driver", stale)
+
+	if !removeStaleDriverEntries(file) {
+		t.Fatal("did not remove the entirely stale driver key")
+	}
+	out, err := exec.Command("git", "config", "--file", file, "--null", "--get-all", key).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := stale + "\x00" + usable + "\x00"; string(out) != want {
+		t.Errorf("repeated key values = %q, want %q", out, want)
+	}
+	if err := exec.Command("git", "config", "--file", file, "--get", "merge.forge-generated.driver").Run(); err == nil {
+		t.Error("entirely stale driver key was preserved")
 	}
 }
 

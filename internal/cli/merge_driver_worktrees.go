@@ -97,15 +97,17 @@ func removeStaleWorktreeDrivers(commonDir string) []string {
 // config.worktree file, and reports whether it removed any. A key is removed
 // only when every value it holds is stale.
 func removeStaleDriverEntries(file string) bool {
-	out, err := exec.CommandContext(context.Background(), "git", "config", "--file", file, "--get-regexp",
+	out, err := exec.CommandContext(context.Background(), "git", "config", "--file", file, "--null", "--get-regexp",
 		`^(merge\.`+regexp.QuoteMeta(generatedMergeDriver)+`\.driver|`+regexp.QuoteMeta(pinnedDriverSection)+`\..*\.command)$`).Output()
 	if err != nil {
 		return false
 	}
 	stale := map[string]bool{}
 	var order []string
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		key, value, _ := strings.Cut(line, " ")
+	// --null separates records with NUL and each key from its value with
+	// the first newline, leaving any newlines in the value intact.
+	for _, record := range strings.Split(string(out), "\x00") {
+		key, value, _ := strings.Cut(record, "\n")
 		if key == "" {
 			continue
 		}

@@ -82,7 +82,7 @@ func TestCovDPreviewCreateCmd_TextAndJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"Created preview preview-pr-5 (from preview, pr-5), expires 2026-11-13T12:00:00Z",
+		"Created preview preview-pr-5 (from preview, pr-5), expires " + now.Add(48*time.Hour).Format(time.RFC3339),
 		"namespace k3d-demo/demo-preview-pr-5",
 		"Next: ", "env deploy preview-pr-5 --yes",
 	} {
@@ -99,7 +99,7 @@ func TestCovDPreviewCreateCmd_TextAndJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		t.Fatalf("--json must print one document: %v\n%s", err, out)
 	}
-	if !doc.Refreshed || doc.Name != "preview-pr-5" || doc.Of != "preview" || doc.ExpiresAt != "2026-11-14T12:00:00Z" {
+	if !doc.Refreshed || doc.Name != "preview-pr-5" || doc.Of != "preview" || doc.ExpiresAt != now.Add(72*time.Hour).Format(time.RFC3339) {
 		t.Errorf("doc = %+v (a re-run refreshes and defaults to a 72h ttl)", doc)
 	}
 

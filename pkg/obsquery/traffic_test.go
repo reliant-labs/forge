@@ -88,7 +88,8 @@ func TestTrafficRollupPreservesPartialBoundaryDays(t *testing.T) {
 			trafficRaw.when,
 			"{from:DateTime64(9)} > toStartOfDay({from:DateTime64(9)}, 'UTC')",
 			"Timestamp < toStartOfDay({from:DateTime64(9)}, 'UTC') + INTERVAL 1 DAY",
-			"OR Timestamp >= toStartOfDay({to:DateTime64(9)}, 'UTC')",
+			"OR ({to:DateTime64(9)} > toStartOfDay({to:DateTime64(9)}, 'UTC')",
+			"AND Timestamp >= toStartOfDay({to:DateTime64(9)}, 'UTC')",
 		} {
 			if !strings.Contains(st.SQL, want) {
 				t.Errorf("%s missing boundary constraint %q:\n%s", st.Purpose, want, st.SQL)

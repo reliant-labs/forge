@@ -168,7 +168,8 @@ FROM ` + TrafficTable + ` AS raw
 WHERE ` + trafficRaw.when + `
   AND (({from:DateTime64(9)} > toStartOfDay({from:DateTime64(9)}, 'UTC')
         AND Timestamp < toStartOfDay({from:DateTime64(9)}, 'UTC') + INTERVAL 1 DAY)
-       OR Timestamp >= toStartOfDay({to:DateTime64(9)}, 'UTC')))`
+       OR ({to:DateTime64(9)} > toStartOfDay({to:DateTime64(9)}, 'UTC')
+           AND Timestamp >= toStartOfDay({to:DateTime64(9)}, 'UTC'))))`
 }
 
 func (s trafficSource) count(classes []string) string {

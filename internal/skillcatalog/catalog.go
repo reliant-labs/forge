@@ -571,24 +571,30 @@ func List(projectRoot string) ([]SkillMeta, error) {
 // overrides the directory-derived default; this is how `debug` (under
 // skills/forge/) declares emit:both to surface in non-forge projects too.
 func ListShipped() ([]SkillMeta, error) {
-	shippedSkillsOnce.Do(func() { shippedSkills, shippedSkillsErr = readForgeShippedSkills() })
-	if shippedSkillsErr != nil {
-		return nil, shippedSkillsErr
+	shippedSkillsMu.Lock()
+	defer shippedSkillsMu.Unlock()
+	if !shippedSkillsReady {
+		skills, err := readForgeShippedSkills()
+		if err != nil {
+			return nil, err
+		}
+		shippedSkills = skills
+		shippedSkillsReady = true
 	}
 	// A copy: callers filter and append, and must never reach the shared one.
 	return append([]SkillMeta(nil), shippedSkills...), nil
 }
 
 // The shipped skills are the binary's embedded templates, so the listing
-// cannot change during a process: it is read once. Each read parses every
+// cannot change during a process: only a successful read is cached. Each read parses every
 // SKILL.md's YAML frontmatter, about a second and a half of CPU, and a
 // process that lists skills then renders one (RenderSkillContentAt resolves
 // through the listing too) paid it twice. reliant's skill catalog does that
 // for every forge skill it surfaces.
 var (
-	shippedSkillsOnce sync.Once
-	shippedSkills     []SkillMeta
-	shippedSkillsErr  error
+	shippedSkillsMu    sync.Mutex
+	shippedSkills      []SkillMeta
+	shippedSkillsReady bool
 )
 
 func readForgeShippedSkills() ([]SkillMeta, error) {

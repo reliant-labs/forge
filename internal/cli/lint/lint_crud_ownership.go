@@ -27,7 +27,11 @@
 //     rows every caller may read, or rows scoped some other way (an admin
 //     service, an op override, a row-level-security policy). They change no
 //     codegen; the reason is the point, so a declaration without one is a
-//     finding of its own, on any table.
+//     finding of its own, on any table. They are the per-table opt-out: a
+//     table served by generated CRUD that carries one is reported as a note
+//     (rule "ran", never graded or gated) naming the marker and its reason,
+//     so every opt-out stays visible in `forge lint` and its --json. The
+//     whole rule is dialled project-wide in lint.rules (warn, off).
 //
 // A `forge:owner=` that does not parse or resolve still answers the rule:
 // `forge generate` refuses it with the precise error, and a second finding
@@ -122,6 +126,11 @@ type crudOwnershipFinding struct {
 	Comment string   // the table's current comment, so the fix can keep it
 	RPCs    []string // "Service.Method", sorted
 	Marker  string   // schemadef.TableMarkerPublic / TableMarkerUnscoped
+	// Reason is the reason a table served by generated CRUD gave for opting
+	// out (Marker names the marker). Such an entry is no finding: it is
+	// reported as a note, so the opt-out and its reason show in every lint
+	// run that reads it.
+	Reason string
 	// Entity names the table's entity ("Task") in a pending finding.
 	Entity string
 	// Pending is set when the table is still exactly as forge scaffolded
@@ -138,7 +147,14 @@ func (f crudOwnershipFinding) severity() string {
 	return lintSevError
 }
 
+// optOut reports an entry that records a reasoned opt-out, not a finding.
+func (f crudOwnershipFinding) optOut() bool { return f.Reason != "" }
+
 func (f crudOwnershipFinding) message() string {
+	if f.optOut() {
+		return fmt.Sprintf("%s: table %s opts out with %s: %s (served by generated CRUD on %s)",
+			ruleCRUDTableUnowned, f.Table, f.Marker, f.Reason, strings.Join(f.RPCs, ", "))
+	}
 	if f.Marker != "" {
 		return fmt.Sprintf("table %s declares %s with no reason: the marker exists to record why the table needs no owner, and an empty one records nothing", f.Table, f.Marker)
 	}
@@ -163,10 +179,12 @@ func (f crudOwnershipFinding) fixHint() string {
 	}
 	return fmt.Sprintf("in a new migration, declare whose rows these are: COMMENT ON TABLE %[1]s IS '%[2]s=user_id'; "+
 		"(the generated ops then scope every read and write to the caller; through a join: '%[2]s=<fk>><column>', "+
-		"by user or org: '%[2]s=user:user_id,org:org_id'). If no caller owns them, say why: "+
-		"COMMENT ON TABLE %[1]s IS '%[3]s: <why>'; (scoped some other way) or '%[4]s: <why>'; (every caller may read them).%[5]s "+
+		"by user or org: '%[2]s=user:user_id,org:org_id'). Or opt this table out, if it is intentionally shared, with the reason: "+
+		"COMMENT ON TABLE %[1]s IS '%[3]s: <why>'; (scoped some other way) or '%[4]s: <why>'; (every caller may read them); "+
+		"the reason is required, and lint prints it.%[5]s "+
+		"To lower the rule for the whole project instead: lint: {rules: {%[6]s: warn}} (or off) in forge.yaml. "+
 		"See `forge project annotations --kind table`.",
-		f.Table, schemadef.TableMarkerOwner, schemadef.TableMarkerUnscoped, schemadef.TableMarkerPublic, keep)
+		f.Table, schemadef.TableMarkerOwner, schemadef.TableMarkerUnscoped, schemadef.TableMarkerPublic, keep, ruleCRUDTableUnowned)
 }
 
 // crudOwnershipShouldRun runs the lane in a forge project with migrations:
@@ -186,6 +204,14 @@ func collectCRUDOwnershipJSON(cwd string, cfg *config.ProjectConfig) ([]lintJSON
 	}
 	out := make([]lintJSONFinding, 0, len(fs))
 	for _, f := range fs {
+		if f.optOut() {
+			// A note, not a finding: lint.rules does not grade it, and the
+			// report prints it under the lane's ✓ line.
+			note := ranNote(f.message())
+			note.File, note.Line = f.File, f.Line
+			out = append(out, note)
+			continue
+		}
 		out = append(out, lintJSONFinding{
 			File: f.File, Line: f.Line, Severity: f.severity(),
 			Rule: ruleCRUDTableUnowned, Message: f.message(), FixHint: f.fixHint(),
@@ -269,17 +295,21 @@ func crudOwnershipFindingsFor(schema ownershipSchema, services []codegen.Service
 	var out []crudOwnershipFinding
 	for _, t := range schema.Tables {
 		site := schema.Sites[t.Name]
+		served := rpcs[t.Name]
+		sort.Strings(served)
 		if marker, reason, ok := t.ScopeExemption(); ok {
 			if reason == "" {
 				out = append(out, crudOwnershipFinding{File: site.commentFile, Line: site.commentLine, Table: t.Name, Comment: t.Comment, Marker: marker})
+			} else if len(served) > 0 {
+				out = append(out, crudOwnershipFinding{File: site.commentFile, Line: site.commentLine, Table: t.Name, Comment: t.Comment, RPCs: served,
+					Marker: marker, Reason: reason})
 			}
 			continue
 		}
-		served := rpcs[t.Name]
 		if len(served) == 0 || declaresOwnership(t) {
 			continue
 		}
-		sort.Strings(served)
+
 		out = append(out, crudOwnershipFinding{File: site.createFile, Line: site.createLine, Table: t.Name, Comment: t.Comment, RPCs: served,
 			Entity: codegen.TableEntityName(t), Pending: site.scaffolded()})
 	}
@@ -420,7 +450,9 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 		}
 		if raw, err := os.ReadFile(path); err == nil {
 			_, pristineBirth = checksums.SQLBirthIsPristine(raw)
+			text = string(raw)
 		}
+		statements := ownershipStatementText(text)
 		// edited records a statement in this file that changes table name:
 		// a person's edit unless this file is the table's own CREATE or a
 		// pristine birth (forge back-filling a foreign key).
@@ -431,7 +463,7 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 		}
 		var evs []event
 		add := func(kind string, re *regexp.Regexp) {
-			for _, loc := range re.FindAllStringSubmatchIndex(text, -1) {
+			for _, loc := range re.FindAllStringSubmatchIndex(statements, -1) {
 				m := make([]string, len(loc)/2)
 				for i := range m {
 					if loc[2*i] >= 0 {
@@ -531,6 +563,91 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 	return out, nil
 }
 
+// ownershipStatementText hides comments and literal bodies from statement
+// matching, preserving offsets for COMMENT value parsing against the original.
+// Scan the raw SQL: comment delimiters inside dollar/E strings are not comments.
+func ownershipStatementText(s string) string {
+	out := []byte(s)
+	blank := func(start, end int) {
+		for i := start; i < end; i++ {
+			if out[i] != '\n' && out[i] != '\r' {
+				out[i] = ' '
+			}
+		}
+	}
+	for i := 0; i < len(s); {
+		start := i
+		switch {
+		case strings.HasPrefix(s[i:], "--"):
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+		case strings.HasPrefix(s[i:], "/*"):
+			i += 2
+			for depth := 1; i < len(s) && depth > 0; {
+				switch {
+				case strings.HasPrefix(s[i:], "/*"):
+					depth++
+					i += 2
+				case strings.HasPrefix(s[i:], "*/"):
+					depth--
+					i += 2
+				default:
+					i++
+				}
+			}
+		case s[i] == '\'':
+			backslash := i > 0 && (s[i-1] == 'E' || s[i-1] == 'e') && (i < 2 || !isIdentByte(s[i-2]))
+			i++
+			for i < len(s) {
+				c := s[i]
+				i++
+				if c == '\\' && backslash && i < len(s) {
+					i++
+				} else if c == '\'' {
+					if i < len(s) && s[i] == '\'' {
+						i++
+					} else {
+						break
+					}
+				}
+			}
+		case s[i] == '$' && (i == 0 || !isIdentByte(s[i-1])):
+			tag := dollarTagRe.FindString(s[i:])
+			if tag == "" {
+				i++
+				continue
+			}
+			i += len(tag)
+			if end := strings.Index(s[i:], tag); end >= 0 {
+				i += end + len(tag)
+			} else {
+				i = len(s)
+			}
+		case s[i] == '"':
+			// Quoted identifiers remain available to sqlident's patterns.
+			i++
+			for i < len(s) {
+				c := s[i]
+				i++
+				if c == '"' {
+					if i < len(s) && s[i] == '"' {
+						i++
+					} else {
+						break
+					}
+				}
+			}
+			continue
+		default:
+			i++
+			continue
+		}
+		blank(start, i)
+	}
+	return string(out)
+}
+
 // dollarTagRe matches a dollar quote's opening tag: `$$` or `$tag$`.
 var dollarTagRe = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$`)
 
@@ -540,7 +657,43 @@ var dollarTagRe = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$`)
 // too) or a dollar quote. known is false for anything else — a U&'…'
 // string, or text that is not a literal at all.
 func sqlCommentValue(s string) (value string, known bool) {
-	s = strings.TrimLeft(s, " \t\r\n")
+	// Skip only leading SQL trivia: comment delimiters inside the value
+	// belong to the literal and must remain untouched.
+	for {
+		s = strings.TrimLeft(s, " \t\r\n\f\v")
+		switch {
+		case strings.HasPrefix(s, "--"):
+			end := strings.IndexByte(s, '\n')
+			if end < 0 {
+				return "", false
+			}
+			s = s[end+1:]
+		case strings.HasPrefix(s, "/*"):
+			i, depth := 2, 1
+			for i < len(s) && depth > 0 {
+				switch {
+				case strings.HasPrefix(s[i:], "/*"):
+					depth++
+					i += 2
+				case strings.HasPrefix(s[i:], "*/"):
+					depth--
+					i += 2
+				default:
+					i++
+				}
+			}
+			if depth != 0 {
+				return "", false
+			}
+			s = s[i:]
+		default:
+			return sqlCommentLiteralValue(s)
+		}
+	}
+}
+
+func sqlCommentLiteralValue(s string) (value string, known bool) {
+
 	switch {
 	case len(s) >= 4 && strings.EqualFold(s[:4], "null") && (len(s) == 4 || !isIdentByte(s[4])):
 		return "", true

@@ -31,8 +31,31 @@ func taskService(auth bool) codegen.ServiceDef {
 func allGenerated(codegen.ServiceDef, codegen.Method) bool { return true }
 
 // ownershipFindings replays migrations (file name → SQL) and judges them
-// against services, every op generated unless generated says otherwise.
+// against services, every op generated unless generated says otherwise. It
+// returns the rule's findings; ownershipOptOuts returns the opt-out notes.
 func ownershipFindings(t *testing.T, migrations map[string]string, generated func(codegen.ServiceDef, codegen.Method) bool, services ...codegen.ServiceDef) []crudOwnershipFinding {
+	t.Helper()
+	var out []crudOwnershipFinding
+	for _, f := range ownershipJudged(t, migrations, generated, services...) {
+		if !f.optOut() {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func ownershipOptOuts(t *testing.T, migrations map[string]string, generated func(codegen.ServiceDef, codegen.Method) bool, services ...codegen.ServiceDef) []crudOwnershipFinding {
+	t.Helper()
+	var out []crudOwnershipFinding
+	for _, f := range ownershipJudged(t, migrations, generated, services...) {
+		if f.optOut() {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func ownershipJudged(t *testing.T, migrations map[string]string, generated func(codegen.ServiceDef, codegen.Method) bool, services ...codegen.ServiceDef) []crudOwnershipFinding {
 	t.Helper()
 	root := writeGrantsProject(t, migrations)
 	schema, err := ownershipSchemaFromMigrations(root, filepath.Join(root, "db", "migrations"))
@@ -59,6 +82,43 @@ func TestCRUDOwnership_Answers(t *testing.T) {
 			}, allGenerated, taskService(true))
 			if len(fs) != 0 {
 				t.Fatalf("findings = %+v, want none", fs)
+			}
+		})
+	}
+}
+
+func TestCRUDOwnership_CommentsBeforeValues(t *testing.T) {
+	for name, trivia := range map[string]string{
+		"block":  " /* explanation */ ",
+		"line":   " -- explanation\n ",
+		"nested": " /* outer /* inner */ outer */ -- explanation\n /* more */ ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, literal := range []string{"'forge:owner=user_id'", "E'forge:owner=user_id'", "$owner$forge:owner=user_id$owner$"} {
+				fs := ownershipJudged(t, map[string]string{
+					"0001_birth.up.sql": ownershipBirthSQL,
+					"0002_owner.up.sql": "COMMENT ON TABLE tasks IS" + trivia + literal + ";\n",
+				}, allGenerated, taskService(true))
+				if len(fs) != 0 {
+					t.Fatalf("owner %s: findings = %+v, want none", literal, fs)
+				}
+			}
+
+			// Delimiters inside a reason are literal text, not SQL trivia.
+			const reason = "admin only /* literal */ -- literal"
+			migrations := map[string]string{
+				"0001_birth.up.sql": ownershipBirthSQL,
+				"0002_scope.up.sql": "COMMENT ON TABLE tasks IS" + trivia + "'forge:unscoped: " + reason + "';\n",
+			}
+			fs := ownershipJudged(t, migrations, allGenerated, taskService(true))
+			if len(fs) != 1 || fs[0].Reason != reason || fs[0].Marker != "forge:unscoped" {
+				t.Fatalf("findings = %+v, want the reasoned exemption unchanged", fs)
+			}
+
+			migrations["0003_remove.up.sql"] = "COMMENT ON TABLE tasks IS" + trivia + "NULL;\n"
+			fs = ownershipJudged(t, migrations, allGenerated, taskService(true))
+			if len(fs) != 1 || fs[0].Table != "tasks" || fs[0].Comment != "" || fs[0].Marker != "" || fs[0].optOut() {
+				t.Fatalf("findings = %+v, want an unowned table after removing the exemption", fs)
 			}
 		})
 	}

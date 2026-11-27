@@ -478,14 +478,14 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      schemadef.TableMarkerPublic,
 			AppliesTo: "table",
-			Effect:    "Declares the TABLE's rows deliberately readable by every caller (a catalog, a price list). It changes no codegen: it answers the `crud-table-unowned` lint, which asks every table served by generated CRUD on an authenticated rpc to say whose rows it holds. The text after the marker is the reason, and the lint asks for one.",
+			Effect:    "Declares the TABLE's rows deliberately readable by every caller (a catalog, a price list). It changes no codegen: it answers the `crud-table-unowned` lint, which asks every table served by generated CRUD on an authenticated rpc to say whose rows it holds. The text after the marker is the reason: a marker without one is a lint error, and `forge lint` prints the reason of every table that opts out this way.",
 			Placement: "COMMENT ON TABLE <table> IS 'forge:public: <reason>'; in a migration — on the TABLE.",
 			Example:   "COMMENT ON TABLE plan_catalog IS 'forge:public: the pricing page lists every plan';",
 		},
 		{
 			Name:      schemadef.TableMarkerUnscoped,
 			AppliesTo: "table",
-			Effect:    "Declares that the TABLE's rows belong to no principal the generated CRUD could scope by, or that the scoping is written by hand (an admin-only service, an op override, a row-level-security policy). It changes no codegen: it answers the `crud-table-unowned` lint. The text after the marker is the reason, and the lint asks for one.",
+			Effect:    "Declares that the TABLE's rows belong to no principal the generated CRUD could scope by, or that the scoping is written by hand (an admin-only service, an op override, a row-level-security policy). It changes no codegen: it answers the `crud-table-unowned` lint. The text after the marker is the reason: a marker without one is a lint error, and `forge lint` prints the reason of every table that opts out this way.",
 			Placement: "COMMENT ON TABLE <table> IS 'forge:unscoped: <reason>'; in a migration — on the TABLE.",
 			Example:   "COMMENT ON TABLE feature_flags IS 'forge:unscoped: admin service only';",
 		},

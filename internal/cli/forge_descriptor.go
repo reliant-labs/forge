@@ -261,6 +261,57 @@ func methodHasNoSideEffects(md protoreflect.MethodDescriptor) bool {
 	return ok && opts.GetIdempotencyLevel() == descriptorpb.MethodOptions_NO_SIDE_EFFECTS
 }
 
+// serviceMCP reads `(forge.v1.service).mcp`: nil when unset.
+func serviceMCP(svc *protogen.Service) *bool {
+	if opts := svc.Desc.Options(); opts != nil {
+		if so, ok := proto.GetExtension(opts, forgev1.E_Service).(*forgev1.ServiceOptions); ok && so != nil && so.Mcp != nil {
+			v := so.GetMcp()
+			return &v
+		}
+	}
+	return nil
+}
+
+// methodMCP folds md's `(forge.v1.method).mcp` / `mcp_mutating` with the
+// service default svcMCP. It returns nil when nothing is declared, so a
+// project that serves no MCP tools records nothing new in its descriptor.
+func methodMCP(md protoreflect.MethodDescriptor, mutating bool, svcMCP *bool) *codegen.MethodMCP {
+	var mo *forgev1.MethodOptions
+	if opts := md.Options(); opts != nil {
+		mo, _ = proto.GetExtension(opts, forgev1.E_Method).(*forgev1.MethodOptions)
+	}
+	if svcMCP == nil && (mo == nil || (mo.Mcp == nil && !mo.GetMcpMutating())) {
+		return nil
+	}
+	m := &codegen.MethodMCP{
+		MutatingAck: mo.GetMcpMutating(),
+		Mutating:    mutating,
+		Idempotent: mo.GetIdempotent() ||
+			md.Options().(*descriptorpb.MethodOptions).GetIdempotencyLevel() == descriptorpb.MethodOptions_IDEMPOTENT,
+	}
+	switch {
+	case mo != nil && mo.Mcp != nil:
+		m.OptIn = mo.GetMcp()
+	case svcMCP != nil:
+		m.OptIn = *svcMCP
+	}
+	return m
+}
+
+// rpcDescription is m's leading comment with each line's leading space and
+// any `forge:` marker line removed.
+func rpcDescription(m *protogen.Method) string {
+	var lines []string
+	for _, l := range strings.Split(string(m.Comments.Leading), "\n") {
+		l = strings.TrimRight(strings.TrimPrefix(l, " "), " \t")
+		if strings.HasPrefix(strings.TrimSpace(l), "forge:") {
+			continue
+		}
+		lines = append(lines, l)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 // serviceAudience reads `(forge.v1.service).audience`, defaulting to "user"
 // — the same default serverkit.ServiceAudience applies at boot.
 func serviceAudience(svc *protogen.Service) string {
@@ -303,6 +354,7 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 		Audience:  serviceAudience(svc),
 	}
 
+	svcMCP := serviceMCP(svc)
 	for _, m := range svc.Methods {
 		// Default to fail-closed: an unannotated method requires auth.
 		// Methods that explicitly set `auth_required = false` in their
@@ -342,6 +394,8 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 		}
 
 		method.Activity = methodActivity(m.Desc)
+		method.Description = rpcDescription(m)
+		method.MCP = methodMCP(m.Desc, method.Activity.Mutating, svcMCP)
 
 		sd.Methods = append(sd.Methods, method)
 

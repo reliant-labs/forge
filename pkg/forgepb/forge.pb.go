@@ -835,7 +835,11 @@ type ServiceOptions struct {
 	// audience differs from its chain's Authenticator.Audience(), so a
 	// listener authenticating one kind of caller can never serve another
 	// kind's RPCs.
-	Audience      string `protobuf:"bytes,7,opt,name=audience,proto3" json:"audience,omitempty"`
+	Audience string `protobuf:"bytes,7,opt,name=audience,proto3" json:"audience,omitempty"`
+	// Serve every unary rpc of this service as an MCP tool on the app's /mcp
+	// endpoint: the default for (forge.v1.method).mcp. Each mutating rpc still
+	// needs (forge.v1.method).mcp_mutating to be served.
+	Mcp           *bool `protobuf:"varint,8,opt,name=mcp,proto3,oneof" json:"mcp,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -917,6 +921,13 @@ func (x *ServiceOptions) GetAudience() string {
 		return x.Audience
 	}
 	return ""
+}
+
+func (x *ServiceOptions) GetMcp() bool {
+	if x != nil && x.Mcp != nil {
+		return *x.Mcp
+	}
+	return false
 }
 
 // AuthConfig defines service-wide authentication defaults.
@@ -1015,7 +1026,17 @@ type MethodOptions struct {
 	// option from the method descriptor and writes the event, so no handler
 	// writes one by hand; `forge lint` fails a mutating rpc that declares
 	// nothing (forgeconv-activity-declared). See ActivityOptions.
-	Activity      *ActivityOptions `protobuf:"bytes,7,opt,name=activity,proto3" json:"activity,omitempty"`
+	Activity *ActivityOptions `protobuf:"bytes,7,opt,name=activity,proto3" json:"activity,omitempty"`
+	// Serve this rpc as an MCP tool on the app's /mcp endpoint. Unset inherits
+	// (forge.v1.service).mcp; false opts one rpc out of a service that opts in.
+	// `forge generate` refuses it on a streaming rpc. See
+	// docs/proposals/mcp-from-rpcs.md.
+	Mcp *bool `protobuf:"varint,8,opt,name=mcp,proto3,oneof" json:"mcp,omitempty"`
+	// Required, beside mcp, for an rpc that changes state (activity.IsMutating:
+	// anything not declaring idempotency_level = NO_SIDE_EFFECTS and not
+	// read-named). Without it a mutating rpc is never served, whatever mcp
+	// says; with it the tool is announced with destructiveHint.
+	McpMutating   bool `protobuf:"varint,9,opt,name=mcp_mutating,json=mcpMutating,proto3" json:"mcp_mutating,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1090,6 +1111,20 @@ func (x *MethodOptions) GetActivity() *ActivityOptions {
 		return x.Activity
 	}
 	return nil
+}
+
+func (x *MethodOptions) GetMcp() bool {
+	if x != nil && x.Mcp != nil {
+		return *x.Mcp
+	}
+	return false
+}
+
+func (x *MethodOptions) GetMcpMutating() bool {
+	if x != nil {
+		return x.McpMutating
+	}
+	return false
 }
 
 // ActivityOptions declares the activity event an rpc records, or that it
@@ -2218,7 +2253,7 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x03min\x18\x06 \x01(\x01R\x03min\x12\x10\n" +
 	"\x03max\x18\a \x01(\x01R\x03max\x12%\n" +
 	"\x0eallowed_values\x18\b \x03(\tR\rallowedValues\x12\x16\n" +
-	"\x06custom\x18\t \x01(\tR\x06custom\"\x87\x02\n" +
+	"\x06custom\x18\t \x01(\tR\x06custom\"\xa6\x02\n" +
 	"\x0eServiceOptions\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12 \n" +
@@ -2228,11 +2263,13 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"visibility\x12\"\n" +
 	"\fdependencies\x18\x05 \x03(\tR\fdependencies\x12(\n" +
 	"\x04auth\x18\x06 \x01(\v2\x14.forge.v1.AuthConfigR\x04auth\x12\x1a\n" +
-	"\baudience\x18\a \x01(\tR\baudience\"V\n" +
+	"\baudience\x18\a \x01(\tR\baudience\x12\x15\n" +
+	"\x03mcp\x18\b \x01(\bH\x00R\x03mcp\x88\x01\x01B\x06\n" +
+	"\x04_mcp\"V\n" +
 	"\n" +
 	"AuthConfig\x12#\n" +
 	"\rauth_required\x18\x01 \x01(\bR\fauthRequired\x12#\n" +
-	"\rauth_provider\x18\x02 \x01(\tR\fauthProvider\"\x98\x02\n" +
+	"\rauth_provider\x18\x02 \x01(\tR\fauthProvider\"\xda\x02\n" +
 	"\rMethodOptions\x12(\n" +
 	"\rauth_required\x18\x01 \x01(\bH\x00R\fauthRequired\x88\x01\x01\x12\x1e\n" +
 	"\n" +
@@ -2241,8 +2278,11 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\atimeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\atimeout\x12'\n" +
 	"\x0fidempotency_key\x18\x05 \x01(\bR\x0eidempotencyKey\x12\x16\n" +
 	"\x06errors\x18\x06 \x03(\tR\x06errors\x125\n" +
-	"\bactivity\x18\a \x01(\v2\x19.forge.v1.ActivityOptionsR\bactivityB\x10\n" +
-	"\x0e_auth_required\"\xdd\x01\n" +
+	"\bactivity\x18\a \x01(\v2\x19.forge.v1.ActivityOptionsR\bactivity\x12\x15\n" +
+	"\x03mcp\x18\b \x01(\bH\x01R\x03mcp\x88\x01\x01\x12!\n" +
+	"\fmcp_mutating\x18\t \x01(\bR\vmcpMutatingB\x10\n" +
+	"\x0e_auth_requiredB\x06\n" +
+	"\x04_mcp\"\xdd\x01\n" +
 	"\x0fActivityOptions\x12\x12\n" +
 	"\x04verb\x18\x01 \x01(\tR\x04verb\x120\n" +
 	"\x06target\x18\x02 \x01(\v2\x18.forge.v1.ActivityTargetR\x06target\x12\x10\n" +
@@ -2417,6 +2457,7 @@ func file_forge_v1_forge_proto_init() {
 	if File_forge_v1_forge_proto != nil {
 		return
 	}
+	file_forge_v1_forge_proto_msgTypes[5].OneofWrappers = []any{}
 	file_forge_v1_forge_proto_msgTypes[7].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

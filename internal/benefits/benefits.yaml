@@ -2220,6 +2220,22 @@ benefits:
           { none: "<why>" }`) leaves a hole in a user's history; judged from the
           compiled descriptors, so it cannot disagree with the runtime
           interceptor
+      - id: forgeconv-mcp-described
+        lane: --conventions
+        bug_class: >-
+          An MCP tool rpc with no comment, a terse one or one that restates its
+          name, or uncommented request fields, leaves a model choosing and
+          filling the tool from names alone
+      - id: forgeconv-mcp-mutating
+        lane: --conventions
+        bug_class: >-
+          An rpc opted in to MCP that mutates without `mcp_mutating: true` is
+          silently not served; `mcp_mutating` on a read declares nothing
+      - id: forgeconv-mcp-shape
+        lane: --conventions
+        bug_class: >-
+          `mcp` on a streaming rpc, two rpcs projecting to one tool name, or
+          more than 40 tools on one listener
       - id: forge-proto-markers
         lane: --proto-markers
         bug_class: >-

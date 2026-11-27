@@ -15,6 +15,15 @@
 //	forgeconv-activity-declared         every mutating rpc declares its
 //	                                    activity event, or `none`
 //	                                    (see activity_declared.go)
+//	forgeconv-mcp-described             an MCP tool rpc without a useful
+//	                                    comment, or with uncommented
+//	                                    request fields
+//	forgeconv-mcp-mutating              mcp on a mutating rpc without
+//	                                    mcp_mutating, or mcp_mutating on a
+//	                                    read
+//	forgeconv-mcp-shape                 mcp on a streaming rpc, a tool name
+//	                                    collision, too many tools on one
+//	                                    listener (see mcp_rules.go)
 //	forgeconv-allocate-port-spacing     two allocate_port() base literals
 //	                                    congruent mod BlockSize collide at
 //	                                    a block reachable within MaxStacks
@@ -205,6 +214,9 @@ func LintProtoTreeOpts(rootDir string, opts LintOptions) (Result, error) {
 		treeFindings = map[string][]Finding{}
 	}
 	for rel, fs := range checkActivityDeclared(rootDir, protoFiles) {
+		treeFindings[rel] = append(treeFindings[rel], fs...)
+	}
+	for rel, fs := range checkMCP(rootDir, protoFiles) {
 		treeFindings[rel] = append(treeFindings[rel], fs...)
 	}
 

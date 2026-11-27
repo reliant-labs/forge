@@ -30,6 +30,9 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 	allowedGenFiles := map[string]struct{}{
 		// Per-package mock generation off contract.go.
 		"mock_gen.go": {},
+		// The MCP tool table (docs/proposals/mcp-from-rpcs.md), emitted into
+		// pkg/middleware by `forge generate`.
+		"mcp_tools_gen.go": {},
 		// Per-package Service interface derived from a `//forge:contract`
 		// struct (generator/contract/derive.go).
 		"contract_gen.go": {},

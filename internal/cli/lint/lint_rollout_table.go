@@ -285,6 +285,14 @@ var shippedRules = []rolloutGroup{
 // newRules holds the rules introduced with explicit grace, each row keyed to
 // the release that really ships it.
 var newRules = []rolloutGroup{
+	// The MCP lane (docs/proposals/mcp-from-rpcs.md §6): the rpcs a project
+	// opts in to serving as MCP tools, judged for description, the
+	// mutating acknowledgement and shape. Tool count stays a warning.
+	{
+		IntroducedIn: "v1.13.0",
+		Grace:        &rolloutGrace{Until: "v1.14.0", Reason: "MCP declarations are new; a project that opts rpcs in needs a release to write tool descriptions and field comments before the MCP rules gate"},
+		Rules:        []string{"forgeconv-mcp-described", "forgeconv-mcp-mutating", "forgeconv-mcp-shape"},
+	},
 	// forge lint --telemetry: declared telemetry (forge.Telemetry) judged for
 	// what it collects. Only the uncollected dashboard series is an error;
 	// the other three are advisory at any pin, and the row is what lets

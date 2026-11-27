@@ -216,6 +216,25 @@ func TestEnsureWebRuntimeDependency_EmptyDependenciesObject(t *testing.T) {
 	}
 }
 
+func TestInsertDependency_WhitespaceBeforeValue(t *testing.T) {
+	for _, whitespace := range []string{"", "   ", "\n\t  \r\n"} {
+		t.Run(jsonString(whitespace), func(t *testing.T) {
+			text := "{\n  \"metadata\": {\"dependencies\": {\"nested\": true}},\n  \"dependencies\" \t:" + whitespace + "{\n    \"react\": \"^19.1.0\"\n  },\n  \"private\": true\n}\n"
+			got, err := insertDependency(text, WebRuntimePackage, webRuntimePublishedRange)
+			if err != nil {
+				t.Fatalf("insert dependency: %v", err)
+			}
+			want := strings.Replace(text, `"react"`, jsonString(WebRuntimePackage)+": "+jsonString(webRuntimePublishedRange)+",\n    \"react\"", 1)
+			if got != want {
+				t.Errorf("manifest =\n%s\nwant:\n%s", got, want)
+			}
+			if !json.Valid([]byte(got)) {
+				t.Fatalf("insertion produced invalid JSON: %s", got)
+			}
+		})
+	}
+}
+
 // TestWebRuntimePublishedRangeTracksPackage keeps the release specifier from
 // silently drifting away from the version web-runtime actually declares.
 //

@@ -397,12 +397,17 @@ func jsonObjectMembers(text string) ([]jsonObjectMember, error) {
 		if !ok {
 			return nil, fmt.Errorf("expected object member name")
 		}
+		valueStart := int(dec.InputOffset())
 		var value json.RawMessage
 		if err := dec.Decode(&value); err != nil {
 			return nil, err
 		}
 		end := int(dec.InputOffset())
-		members = append(members, jsonObjectMember{name: name, start: start, end: end, valueStart: end - len(value)})
+		// The key token ends before the colon. Decode validated the separator;
+		// skip it and JSON whitespace in the original text to locate the value.
+		prefix := text[valueStart:end]
+		valueStart += len(prefix) - len(strings.TrimLeft(prefix, " \t\r\n:"))
+		members = append(members, jsonObjectMember{name: name, start: start, end: end, valueStart: valueStart})
 	}
 	_, err = dec.Token()
 	return members, err

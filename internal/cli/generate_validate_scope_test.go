@@ -334,6 +334,20 @@ func TestValidateScope_RequiresMappedHandwrittenErrors(t *testing.T) {
 	}
 }
 
+func TestValidateScope_UnmatchedDependencyErrorFailsClosed(t *testing.T) {
+	dir := writeValidateFixture(t, map[string]string{"b/b.go": "package b\n"})
+	p := &listedPackage{
+		ImportPath: "example.com/b",
+		Dir:        filepath.Join(dir, "b"),
+		GoFiles:    []string{"b.go"},
+		Error:      &listedPackageError{Err: "b/b.go:2:1: undefined: x"},
+		DepsErrors: []*listedPackageError{{Err: "dependency failed to compile"}},
+	}
+	if _, ok := (&generateWriteScope{}).attribute(dir, []*listedPackage{p}); ok {
+		t.Fatal("waived a dependency failure that no candidate accounts for")
+	}
+}
+
 func TestErrorsReproduce(t *testing.T) {
 	before := "# example.com/b\nb/b.go:3:13: cannot use x\nb/b.go:4:1: undefined: y\n"
 	for _, tc := range []struct {
@@ -344,6 +358,9 @@ func TestErrorsReproduce(t *testing.T) {
 		{before, true},
 		{"# example.com/b\nb/b.go:3:13: cannot use x\nb/b.go:9:1: too many errors\n", true},
 		{"# example.com/b\nb/b.go:5:2: undefined: z\n", false},
+		{"", false},
+		{"# example.com/b\n", false},
+		{"b/b.go:9:1: too many errors\n", false},
 	} {
 		if got := errorsReproduce(tc.after, before); got != tc.want {
 			t.Errorf("errorsReproduce(%q) = %v, want %v", tc.after, got, tc.want)

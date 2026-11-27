@@ -188,6 +188,16 @@ func (s *generateWriteScope) attribute(projectDir string, pkgs []*listedPackage)
 	if len(candidates) == 0 {
 		return nil, false
 	}
+	// Dependency errors need not have a corresponding package Error in
+	// go list's output. Do not waive any part of the build verdict that
+	// was not included in the candidates we are about to prove.
+	var candidateErrors []string
+	for _, p := range candidates {
+		candidateErrors = append(candidateErrors, own[p.ImportPath])
+	}
+	if !errorsReproduce(classifyCompile(projectDir, pkgs).Build, strings.Join(candidateErrors, "\n")) {
+		return nil, false
+	}
 	if len(s.written) > 0 {
 		before, err := s.compileBefore(projectDir, root, candidates)
 		if err != nil {
@@ -276,10 +286,10 @@ func (s *generateWriteScope) compileBefore(projectDir, root string, candidates [
 		full := filepath.Join(root, filepath.FromSlash(rel))
 		state, journaled := s.preRun(rel)
 		switch {
-		case !journaled || !state.Existed:
-			replace[full] = "" // created by this run: absent before it
 		case state.Unverifiable:
 			return nil, fmt.Errorf("the pre-run bytes of %s were not captured", rel)
+		case !journaled || !state.Existed:
+			replace[full] = "" // created by this run: absent before it
 		default:
 			saved := filepath.Join(tmp, strconv.Itoa(i))
 			if err := atomicfile.WriteFile(saved, state.Content, 0o600); err != nil {
@@ -306,8 +316,11 @@ func (s *generateWriteScope) compileBefore(projectDir, root string, candidates [
 	}
 	before := map[string]string{}
 	for _, p := range pkgs {
-		if !p.testBuild() {
-			before[p.ImportPath] = ownCompileErrors(projectDir, p)
+		// Only compiler diagnostics prove reproduction against the
+		// overlay. ownCompileErrors can synthesize a missing-main error
+		// by reading the live files, which are not the overlaid inputs.
+		if !p.testBuild() && p.Error != nil {
+			before[p.ImportPath] = p.Error.text()
 		}
 	}
 	return before, nil
@@ -332,7 +345,11 @@ func errorsReproduce(after, before string) bool {
 		return out
 	}
 	was := lines(before)
-	for _, l := range lines(after) {
+	now := lines(after)
+	if len(now) == 0 {
+		return false
+	}
+	for _, l := range now {
 		if !slices.Contains(was, l) {
 			return false
 		}

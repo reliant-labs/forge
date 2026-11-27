@@ -3,6 +3,7 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -63,7 +64,8 @@ func TestValidateRefusesARelativeGoCache(t *testing.T) {
 	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "go_caches") {
 		t.Fatalf("a relative go_caches entry must be refused, got %v", err)
 	}
-	p.GoCaches = []string{"/srv/gha/cache/forge/go-build"}
+	// A temp dir is absolute on every OS; "/srv/..." is not on Windows.
+	p.GoCaches = []string{filepath.Join(t.TempDir(), "go-build")}
 	if err := p.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -74,8 +76,8 @@ func TestValidateRefusesARelativeGoCache(t *testing.T) {
 // whose entries it cannot remove, is a failed layer naming the cache, never a
 // clean pass over nothing.
 func TestAGoCacheThisUserCannotTrimIsAFailure(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores the permission bits this test relies on")
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions enforced for this user (Windows and root ignore the permission bits this test relies on)")
 	}
 	parent := t.TempDir()
 	unreachable := filepath.Join(parent, "locked", "go-build")

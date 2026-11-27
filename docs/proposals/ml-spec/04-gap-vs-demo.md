@@ -218,8 +218,10 @@ Exit: owner review of the demo; iterate.
 1. **Observed runs** (no customer code): runs/phases/attempts from orchestrator CRs +
    Kueue + pods + labels; end reasons; pod-start per attempt; per-device hardware joined
    via pod attribution; logs with highlights; cost and goodput (time-based badput).
-2. **Imported metrics:** MLflow-compatible endpoint and MLflow/W&B readers (00 §10).
-3. **Instrumented runs:** `ml.train.*` OTel conventions (01c) via the `ml/instrument`
+2. **Imported metrics (first, no user code change):** MLflow-compatible endpoint and
+   MLflow/W&B readers (00 §10). Training scalars are user-named step scalars.
+3. **Instrumented runs:** the thin OTel-based SDK, with the run, attempt, step and checkpoint
+   names narrowed in 01 (attribute mapping), via the `ml/instrument`
    skill (HF Trainer/Lightning callbacks, plain-loop snippet); step breakdown, MFU,
    stragglers, checkpoints, sampled step traces; profiling captures as run artifacts
    (decision 19); flight-recorder dumps; eBPF CPU profiles.

@@ -472,6 +472,11 @@ func TestNewApp_ComposeCommandAndMigrationEnvReachHosting(t *testing.T) {
 	if !strings.Contains(wk, "    env = jobs.env\n") {
 		t.Errorf("the migrate job must carry its owner's literal env:\n%s", wk)
 	}
+	// The health-endpoint hint names the liveness path too: an adopted app
+	// serves no /healthz, and a liveness probe on one restart-loops it.
+	if !strings.Contains(wk, `tiers.Probes {readinessPath = "/health", livenessPath = "/health"}`) {
+		t.Errorf("the web workload's probe hint must name both paths:\n%s", wk)
+	}
 	prod := got["deploy/kcl/prod/main.k"]
 	var migrate string
 	for _, l := range strings.Split(prod, "\n") {

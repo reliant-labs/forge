@@ -200,3 +200,37 @@ Promise.allSettled([fetch(%q, {mode: "no-cors"}), fetch("http://169.254.169.254/
 		t.Errorf("Refused = %d, want both private fetches refused by the proxy", r.Refused())
 	}
 }
+
+// The build server's exception is for plain http:// forwarding only: a
+// CONNECT tunnel to it is refused like any private address.
+func TestProxyRefusesACONNECTToTheAllowedBuildServer(t *testing.T) {
+	t.Parallel()
+	build, hits := countingServer(t, nil)
+	host := strings.TrimPrefix(build.URL, "http://")
+	p := startTestProxy(t, ProxyOptions{AllowAddr: host})
+	conn, err := net.Dial("tcp", strings.TrimPrefix(p.URL(), "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", host, host)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("CONNECT to AllowAddr %s: status %d, want 403", host, resp.StatusCode)
+	}
+	if hits.Load() != 0 || p.Refused() != 1 {
+		t.Errorf("hits %d, refused %d; want 0, 1", hits.Load(), p.Refused())
+	}
+	// Plain http:// to it still works.
+	r2, err := viaProxy(t, p).Get(build.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r2.Body.Close()
+	if r2.StatusCode != http.StatusOK {
+		t.Errorf("plain GET to AllowAddr: status %d, want 200", r2.StatusCode)
+	}
+}

@@ -32,8 +32,8 @@ import (
 // proxy needs no certificate of its own.
 //
 // A directory audit serves the build on loopback for Chrome; AllowAddr
-// admits exactly that address (host:port as Chrome writes it), nothing else
-// private. (control-plane's site auditor, internal/siteauditor/render, is
+// admits exactly that address (host:port as Chrome writes it) for plain
+// http:// forwarding, never as a CONNECT tunnel, and nothing else private. (control-plane's site auditor, internal/siteauditor/render, is
 // the same boundary on the platform, where it also signs and filters
 // requests.)
 
@@ -46,8 +46,9 @@ type ProxyOptions struct {
 	// empty means 80 and 443.
 	Ports []uint16
 	// AllowAddr is the one host:port admitted though it is private (the
-	// loopback server a directory audit serves the build from); "" admits
-	// none.
+	// loopback server a directory audit serves the build from), for plain
+	// http:// requests only: a CONNECT to it is refused like any other
+	// private address. "" admits none.
 	AllowAddr string
 }
 
@@ -83,7 +84,7 @@ func StartProxy(o ProxyOptions) (*Proxy, error) {
 	}
 	p.rt = &http.Transport{
 		Proxy:                 nil,
-		DialContext:           p.dial,
+		DialContext:           p.dialHTTP,
 		DisableCompression:    true, // the browser's Accept-Encoding goes upstream as sent
 		MaxIdleConns:          32,
 		IdleConnTimeout:       90 * time.Second,
@@ -113,12 +114,20 @@ func (p *Proxy) Close() {
 	p.rt.CloseIdleConnections()
 }
 
-// dial connects to addr: the admitted loopback address directly, anything
-// else through the guard.
-func (p *Proxy) dial(ctx context.Context, network, addr string) (net.Conn, error) {
+// dialHTTP is the plain-HTTP forwarder's dialer: the admitted build server
+// directly, anything else through the guard. Only a plain http:// request
+// reaches it, so the exception never opens a tunnel.
+func (p *Proxy) dialHTTP(ctx context.Context, network, addr string) (net.Conn, error) {
 	if p.allow != "" && strings.EqualFold(addr, p.allow) {
 		return (&net.Dialer{Timeout: proxyDialTimeout}).DialContext(ctx, network, addr)
 	}
+	return p.dial(ctx, network, addr)
+}
+
+// dial connects to addr through the guard, with no exception: CONNECT
+// tunnels use it, so the build server is never tunnelled to (a tunnel is
+// raw bytes the proxy cannot see), and nothing private is.
+func (p *Proxy) dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	c, err := p.guarded(ctx, network, addr)
 	if err != nil && errors.Is(err, netguard.ErrRefused) {
 		p.refused.Add(1)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -67,6 +68,10 @@ func vendoredImports() []vendoredImport {
 // module that owns its go_package — forge's own repository, where
 // proto/forge/v1/forge.proto is the source, not a copy.
 func ensureVendoredProtos(projectDir string) error {
+	return ensureVendoredProtosTo(projectDir, os.Stdout)
+}
+
+func ensureVendoredProtosTo(projectDir string, out io.Writer) error {
 	var missing []vendoredImport
 	var cs *checksums.FileChecksums
 	csLoaded := false
@@ -99,7 +104,7 @@ func ensureVendoredProtos(projectDir string) error {
 		if err := v.write(filepath.Dir(path)); err != nil {
 			return fmt.Errorf("refresh %s: %w", v.relPath, err)
 		}
-		fmt.Printf("🔄 Refreshed %s: it differed from the copy in this forge binary "+
+		_, _ = fmt.Fprintf(out, "🔄 Refreshed %s: it differed from the copy in this forge binary "+
 			"(`forge project disown %s` keeps a deliberate customization)\n", v.relPath, v.relPath)
 	}
 	if len(missing) == 0 {

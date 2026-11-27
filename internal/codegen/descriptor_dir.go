@@ -57,13 +57,25 @@ var descriptorBuilder func(projectDir string) error
 
 // DescriptorBuilderRegistered reports whether a CLI host installed the
 // descriptor-only extractor. Library users may deliberately leave it absent.
-func DescriptorBuilderRegistered() bool { return descriptorBuilder != nil }
+func DescriptorBuilderRegistered() bool {
+	return descriptorBuilder != nil || descriptorContextBuilder != nil
+}
 
 // RegisterDescriptorBuilder installs the extractor LoadDescriptor runs when the
 // descriptor is missing or stale. The extractor lives with the protoc plugin
 // (internal/cli), which imports this package, hence the registration.
 func RegisterDescriptorBuilder(build func(projectDir string) error) {
 	descriptorBuilder = build
+	descriptorContextBuilder = nil
+}
+
+var descriptorContextBuilder func(string, bool) error
+
+// RegisterDescriptorPolicyBuilder installs an extractor with invocation-local
+// output policy. RegisterDescriptorBuilder remains available to legacy hosts.
+func RegisterDescriptorPolicyBuilder(build func(string, bool) error) {
+	descriptorContextBuilder = build
+	descriptorBuilder = nil
 }
 
 // WriteGeneratedFrom stamps the protos gen/ was just generated from. Only the

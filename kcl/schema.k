@@ -3702,11 +3702,13 @@ schema GoBuild(Build):
     on launch — go-run's `go run`, and air's `go build` through
     $FORGE_GO_BUILD_FLAGS, which the scaffolded .air.toml expands (a flag
     containing whitespace cannot pass through that variable and is named
-    instead). A scaffolded GoBuild declares `flags = ["-trimpath"]`, so
-    every worktree shares one Go build cache instead of compiling its own
-    path-keyed copy. A debug build (forge build --debug, the delve runner)
-    adds -trimpath=false after them, so source paths stay absolute for the
-    debugger. To opt out, drop -trimpath or add "-trimpath=false" after it."""
+    instead). Those host runners also link without DWARF (-ldflags=-w,
+    unless FORGE_DEV_DWARF=1 or an -ldflags already decides it); `ldflags`
+    reach only `forge build`. A scaffolded GoBuild declares
+    `flags = ["-trimpath"]`, so every worktree shares one Go build cache
+    instead of compiling its own path-keyed copy. A debug build (forge
+    build --debug, the delve runner) adds -trimpath=false after them, so
+    source paths stay absolute for the debugger. To opt out, drop -trimpath or add "-trimpath=false" after it."""
     type: str = "go"
     cmd: str
     goos: str = ""

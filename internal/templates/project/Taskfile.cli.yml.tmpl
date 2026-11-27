@@ -74,11 +74,19 @@ tasks:
 
   build:
     desc: Build the CLI binary into ./bin/{{.Name}}
+    vars:
+      # A dev build: -ldflags=-w links without DWARF debug info, about half
+      # the link time and memory of a large binary; panics and stack traces
+      # still work. FORGE_DEV_DWARF=1 keeps DWARF (to attach a debugger), and
+      # an -ldflags in GOFLAGS is left to decide. `task install` and release
+      # builds (`forge build`) keep their own flags.
+      DEV_LDFLAGS:
+        sh: {{taskfileDevLdflags}}
     cmds:
       # -trimpath strips local filesystem paths so builds are reproducible
       # across machines; -buildvcs=true embeds the commit/dirty flag for
       # runtime correlation.
-      - go build -trimpath -buildvcs=true -o bin/{{.Name}}{{`{{exeExt}}`}} ./cmd/{{.Name}}
+      - go build -trimpath -buildvcs=true {{`{{.DEV_LDFLAGS}}`}} -o bin/{{.Name}}{{`{{exeExt}}`}} ./cmd/{{.Name}}
 
   install:
     desc: Install the CLI binary to $GOBIN (or $GOPATH/bin)

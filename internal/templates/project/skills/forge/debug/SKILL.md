@@ -232,7 +232,7 @@ check `--help` before registering.
   `.forge/logs/<env>/debug_<svc>.log`. When `forge env up` already serves the
   workload's PORT, either pass `--app-port <free>` or attach to the running
   process: `start --attach <pid>` (`forge env status <env> --json` reports each
-  host service's `pid`). The loop that never blocks an agent:
+  host service's `pid`; DWARF needs `FORGE_DEV_DWARF=1 forge env up`). The loop that never blocks an agent:
   `forge debug break <Rpc>` (a short handler method name, `file.go:42`, or a full
   Delve function name), trigger the request in the background, then
   `forge debug continue --timeout 60s` — it returns the hit (or exits non-zero

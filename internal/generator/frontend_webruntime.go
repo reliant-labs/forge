@@ -369,12 +369,56 @@ func insertDependency(text, name, spec string) (string, error) {
 	return insertIntoObject(text, dependenciesOpenRe, "dependencies", name, spec)
 }
 
+// objectEntryRe matches one `"name": "value"` entry of a flat string map.
+// Group 1 is the name.
+var objectEntryRe = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"\s*:\s*"(?:[^"\\]|\\.)*"`)
+
 // insertIntoObject adds name@spec to the object whose opening brace openRe
 // matches (key names it in the error), matching the surrounding indentation.
+//
+// The entry goes where npm and pnpm would put it: before the first entry
+// whose name sorts after it, else after the last entry. It used to go first
+// whatever its name, so `forge generate` added rrweb above @bufbuild/protobuf
+// (obs 016c599b), and the next `npm install` re-sorted the file into a diff
+// nobody asked for. Nothing else in the object moves.
 func insertIntoObject(text string, openRe *regexp.Regexp, key, name, spec string) (string, error) {
 	loc := openRe.FindStringIndex(text)
 	if loc == nil {
 		return "", fmt.Errorf("no %q object", key)
+	}
+	entry := jsonString(name) + ": " + jsonString(spec)
+	// A manifest's dependency objects are flat string maps, so the object
+	// ends at its first closing brace.
+	if end := strings.IndexByte(text[loc[1]:], '}'); end >= 0 {
+		body := text[loc[1] : loc[1]+end]
+		if entries := objectEntryRe.FindAllStringSubmatchIndex(body, -1); len(entries) > 0 {
+			for _, e := range entries {
+				var existing string
+				if json.Unmarshal([]byte(`"`+body[e[2]:e[3]]+`"`), &existing) != nil {
+					existing = body[e[2]:e[3]]
+				}
+				if existing > name {
+					// Before this entry, on its own line at its indentation.
+					at := loc[1] + e[0]
+					lineStart := strings.LastIndexByte(text[:at], '\n') + 1
+					indent := text[lineStart:at]
+					if strings.TrimSpace(indent) != "" {
+						return text[:at] + entry + ", " + text[at:], nil
+					}
+					return text[:at] + entry + ",\n" + indent + text[at:], nil
+				}
+			}
+			// After the last entry, at its indentation.
+			last := entries[len(entries)-1]
+			at := loc[1] + last[1]
+			lastStart := loc[1] + last[0]
+			lineStart := strings.LastIndexByte(text[:lastStart], '\n') + 1
+			indent := text[lineStart:lastStart]
+			if strings.TrimSpace(indent) != "" {
+				return text[:at] + ", " + entry + text[at:], nil
+			}
+			return text[:at] + ",\n" + indent + entry + text[at:], nil
+		}
 	}
 	lineStart := strings.LastIndexByte(text[:loc[0]], '\n') + 1
 	keyIndent := text[lineStart:loc[0]]
@@ -382,7 +426,6 @@ func insertIntoObject(text string, openRe *regexp.Regexp, key, name, spec string
 		keyIndent = "  " // "dependencies" did not start its own line
 	}
 	entryIndent := keyIndent + "  "
-	entry := jsonString(name) + ": " + jsonString(spec)
 
 	after := loc[1]
 	rest := text[after:]

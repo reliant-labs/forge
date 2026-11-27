@@ -101,6 +101,9 @@ import (
 //   - env ps, env devstack: they list, and allocate ports for, the stacks on
 //     this machine across projects, from ownership markers and the block
 //     registry, never from one project's KCL.
+//   - dev air-build: the build step of every air rebuild
+//     (pinIndependentCommands says why). Handed to an older pinned forge,
+//     which has no such command, every build would fail.
 //
 // `env down` is NOT here. It used to be, beside `env ps`, and so it ran a
 // stale PATH forge against the project `env up` had handed to its pin: that
@@ -112,7 +115,7 @@ import (
 var handOffExempt = []string{
 	"", "version", "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd,
 	"project upgrade", "project new", "report-bug", "telemetry", "storage", "slot", "mcp",
-	"env ps", "env devstack", "test begin", "test capture",
+	"env ps", "env devstack", "test begin", "test capture", "dev air-build",
 }
 
 // handOffMode is how a command meets the forge its project pins.

@@ -6,7 +6,7 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-// forgeAtLeast reports whether pinned — a project's forge_version — is a
+// ForgeAtLeast reports whether pinned — a project's forge_version — is a
 // forge that has everything release has.
 //
 // A template that RUNS a forge command newer than the release a checkout
@@ -22,7 +22,7 @@ import (
 // what that release has. A pin that is no version at all ("", a development
 // build) has nothing past it: the guarded form is not rendered, which is the
 // safe direction.
-func forgeAtLeast(pinned, release string) bool {
+func ForgeAtLeast(pinned, release string) bool {
 	v := strings.TrimSpace(pinned)
 	if !semver.IsValid(v) || !semver.IsValid(release) {
 		return false

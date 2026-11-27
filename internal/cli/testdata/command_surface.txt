@@ -124,6 +124,7 @@ forge debug step-in	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge debug step-out	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge debug stop	cmd	allow-version-skew:bool project-dir/C:string
 forge dev	group	project-dir/C:string
+forge dev air-build	cmd	out:string precheck-status:int project-dir/C:string
 forge dev cluster	group	project-dir/C:string
 forge dev cluster down	cmd	allow-version-skew:bool config:string project-dir/C:string
 forge dev cluster info	cmd	allow-version-skew:bool config:string project-dir/C:string

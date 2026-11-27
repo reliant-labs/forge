@@ -47,6 +47,11 @@ func migrationDetector(name string) (func(projectRoot string) bool, bool) {
 		// A job that runs `forge test report` and lacks id-token: write:
 		// what `forge fix ci-oidc-permissions` edits.
 		return projectNeedsCIOIDCPermissions, true
+	case "air-keep-running":
+		// An air config whose [build] cmd still restarts the old binary
+		// after a failed build: what `forge fix air-keep-running` rewrites
+		// or names as a hand edit.
+		return projectNeedsAirKeepRunning, true
 	case "entity-type-alias":
 		// The codemod's own decision: a page whose entity type import
 		// collides with another import of the file.

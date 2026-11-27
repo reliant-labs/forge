@@ -3,16 +3,35 @@ testdata_dir = "testdata"
 tmp_dir = "tmp"
 
 [build]
+{{- if .ForgeAtLeast "v1.12.0"}}
+  # The build writes ./tmp/{{.Name}}.tmp and `forge dev air-build` moves it
+  # onto ./tmp/{{.Name}} only when it succeeds (an atomic replace, unix).
+  # Windows is overridden in [build.windows] below: air stops the running .exe
+  # before building there (a running .exe cannot be replaced), so it builds in
+  # place.
+  #
+  # A failed build leaves the running server alone. air restarts its binary
+  # when a build command returns, a failed one included (stop_on_error = false
+  # would restart the old binary; true would stop it and leave the API down),
+  # so `forge dev air-build` never returns from a failed build while air runs:
+  # it prints one line and waits as a small shell until air exits. The server
+  # keeps serving the last good build; the next good build restarts it once.
+{{- else}}
   # Atomic binary replacement: build to .tmp then mv (unix). Windows is
   # overridden in [build.windows] below: air stops the running .exe before
   # building there (a running .exe cannot be replaced), so it builds in place.
+{{- end}}
   #
   # $FORGE_GO_BUILD_FLAGS is how `forge env up` hands this build the
   # workload's declared GoBuild.flags (deploy/kcl: the scaffolded -trimpath,
   # so every worktree shares one Go build cache) and, for test coverage in a
   # local or preview env, -cover -covermode=atomic -coverpkg=… (kcl/schema.k
   # Tests). Unset, it expands to nothing, so bare `air` builds as before.
+{{- if .ForgeAtLeast "v1.12.0"}}
+  cmd = "forge storage check ./tmp; CGO_ENABLED=0 forge dev air-build --precheck-status $? --out ./tmp/{{.Name}} -- go build $FORGE_GO_BUILD_FLAGS -buildvcs=false -o ./tmp/{{.Name}}.tmp ./cmd/{{.Name}}"
+{{- else}}
   cmd = "forge storage check ./tmp && CGO_ENABLED=0 go build $FORGE_GO_BUILD_FLAGS -buildvcs=false -o ./tmp/{{.Name}}.tmp ./cmd/{{.Name}} && mv ./tmp/{{.Name}}.tmp ./tmp/{{.Name}}"
+{{- end}}
   delay = 1000
   # exclude_dir entries are root-relative: the bare "node_modules" only
   # covers a top-level node_modules. "frontends" excludes the whole
@@ -52,6 +71,12 @@ tmp_dir = "tmp"
   rerun = false
   rerun_delay = 500
   send_interrupt = true
+{{- if .ForgeAtLeast "v1.12.0"}}
+  # false, deliberately. A held build never returns, so air reads this only
+  # when `forge dev air-build` could not hold (Windows, the first build under
+  # this air): true would then stop the server and leave it down until the
+  # fix compiles.
+{{- end}}
   stop_on_error = false
 
 [build.windows]

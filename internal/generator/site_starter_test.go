@@ -23,7 +23,7 @@ func TestWriteSiteStarter(t *testing.T) {
 		// The Vite dev-log receiver comes from the runtime at the current floor;
 		// TestViteSiteStarterFollowsTheRuntimeFloor checks both receiver paths.
 		{"vite-spa", []string{"package.json", "vite.config.ts", "index.html", "tsconfig.json", ".gitignore",
-			"src/main.tsx", "src/App.tsx", "src/index.css", "src/vite-env.d.ts", "public/robots.txt",
+			"src/main.tsx", "src/App.tsx", "src/index.css", "src/vite-env.d.ts",
 			"eslint.config.mjs", "eslint.a11y.mjs"}},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {

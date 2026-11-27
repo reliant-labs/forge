@@ -61,14 +61,26 @@ func TestSiteStarterPlaceholderImages(t *testing.T) {
 	}
 }
 
-// A Next.js export generates robots.txt from src/app/robots.ts (its Sitemap:
-// line needs the absolute SITE_URL); a public/robots.txt beside the route is
-// a "conflicting public file and page file" build failure.
-func TestNextSiteStarterHasNoPublicRobots(t *testing.T) {
-	dir := writeStarterSite(t, "nextjs")
-	if _, err := os.Stat(filepath.Join(dir, "public", "robots.txt")); err == nil {
-		t.Error("the Next.js site starter ships public/robots.txt beside src/app/robots.ts")
+// Both starters generate robots.txt at build time (its Sitemap: line needs
+// the absolute SITE_URL), so neither ships a static one: beside Next.js's
+// src/app/robots.ts it is a "conflicting public file and page file" build
+// failure, and Vite's forgeSiteFiles() never overwrites it, so it would
+// silently replace the generated one.
+func TestSiteStartersHaveNoPublicRobots(t *testing.T) {
+	for _, kind := range SiteStarterKindNames() {
+		dir := writeStarterSite(t, kind)
+		if _, err := os.Stat(filepath.Join(dir, "public", "robots.txt")); err == nil {
+			t.Errorf("the %s site starter ships public/robots.txt, which the build generates", kind)
+		}
 	}
+	vite, err := os.ReadFile(filepath.Join(writeStarterSite(t, "vite-spa"), "vite.config.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(vite), "forgeSiteFiles({ siteUrl: process.env.SITE_URL }),") {
+		t.Errorf("the Vite site starter does not write robots.txt and sitemap.xml:\n%s", vite)
+	}
+	dir := writeStarterSite(t, "nextjs")
 	for _, rel := range []string{"src/app/robots.ts", "src/app/sitemap.ts"} {
 		b, err := os.ReadFile(filepath.Join(dir, rel))
 		if err != nil {

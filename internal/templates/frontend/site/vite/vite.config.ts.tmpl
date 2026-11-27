@@ -1,6 +1,7 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
+import { forgeSiteFiles } from "@reliantlabs/forge-web-runtime/vite";
 {{- if .DevLogFromRuntime}}
 import {
   forgeDevLog,
@@ -82,6 +83,12 @@ export default defineConfig({
     forgeRuntimeConfig(),
     forgeOtelProxy(),
     siteHead(),
+    // robots.txt and sitemap.xml, written into dist/ at build time: both
+    // need the absolute SITE_URL. The sitemap lists every .html file of the
+    // build; list client-side routes with `routes: ["/pricing"]`. A file you
+    // put in public/ is never overwritten. With SITE_URL empty it writes
+    // robots.txt without a Sitemap: line, and no sitemap.
+    forgeSiteFiles({ siteUrl: process.env.SITE_URL }),
   ],
   build: {
     // The static export hosted static hosting serves. deploy/kcl/<env>/main.k

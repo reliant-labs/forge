@@ -68,12 +68,15 @@ func trProject(t *testing.T, results string, laneExit int) string {
 // plane to resolve when an upload is asked for.
 func trNoControlPlane(t *testing.T) {
 	t.Helper()
-	prevCI, prevCP := testUploadInCI, testUploadControlPlane
+	prevCI, prevGHA, prevCP := testUploadInCI, testUploadInGitHubActions, testUploadControlPlane
 	testUploadInCI = func() bool { return false }
+	testUploadInGitHubActions = func() bool { return false }
 	testUploadControlPlane = func(context.Context) (*cloud.Declaration, error) {
 		return nil, fmt.Errorf("this test declares no control plane")
 	}
-	t.Cleanup(func() { testUploadInCI, testUploadControlPlane = prevCI, prevCP })
+	t.Cleanup(func() {
+		testUploadInCI, testUploadInGitHubActions, testUploadControlPlane = prevCI, prevGHA, prevCP
+	})
 }
 
 func trWrite(t *testing.T, path, body string) {

@@ -463,6 +463,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Buckets:             shapeBucketsOf(entities),
 		Preview:             entities.Preview,
 		Changes:             changes,
+		HostedFrontends:     shapeHostedFrontendsOf(entities),
 		Store:               store,
 	})
 	if err != nil {
@@ -755,6 +756,26 @@ func shapeFrontendTelemetryOf(e *KCLEntities) []release.ShapeFrontendTelemetry {
 		if !item.IsDefault() {
 			out = append(out, item)
 		}
+	}
+	return out
+}
+
+// shapeHostedFrontendsOf projects what the env declares about its hosted
+// static frontends beyond their StaticSites: each OnHosted frontend that turns
+// per-release URLs off (release_urls = False). A frontend on any other runtime
+// has no release URLs to turn off, so its False is not recorded. Nil when no
+// hosted frontend opts out, so the shape encodes as it did before the field.
+func shapeHostedFrontendsOf(e *KCLEntities) []release.ShapeHostedFrontend {
+	if e == nil {
+		return nil
+	}
+	var out []release.ShapeHostedFrontend
+	for _, f := range e.Frontends {
+		if f.Runtime.Type != FrontendRuntimeHosted || f.ReleaseURLs == nil || *f.ReleaseURLs {
+			continue
+		}
+		off := false
+		out = append(out, release.ShapeHostedFrontend{Frontend: f.Name, ReleaseURLs: &off})
 	}
 	return out
 }

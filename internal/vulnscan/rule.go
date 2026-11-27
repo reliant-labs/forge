@@ -54,6 +54,13 @@ type Exemption struct {
 	Locations []string `json:"locations,omitempty"`
 }
 
+// identity is the declaration the exemption is, as
+// release.ShapeVulnScopedExempt.Identity: two exemptions of one advisory with
+// different scopes are two.
+func (e Exemption) identity() string {
+	return release.ShapeVulnScopedExempt{ID: e.ID, Packages: e.Packages, Artifacts: e.Artifacts, Locations: e.Locations}.Identity()
+}
+
 // exemptionDateLayout is how an exemption's expiry is written.
 const exemptionDateLayout = "2006-01-02"
 
@@ -137,6 +144,20 @@ func exemptionOf(x release.ShapeVulnScopedExempt) Exemption {
 	}
 }
 
+// Rule names the part of the vuln_gate rule that decided a finding's action:
+// the policy field that fired, or the exemption that took it out of the gate.
+type Rule string
+
+// The rules. RuleNone is a finding nothing fired on (and a finding an
+// authoritative ledger blocked without saying why).
+const (
+	RuleNone          Rule = ""
+	RuleBlockKEV      Rule = "block_kev"
+	RuleBlockSeverity Rule = "block_severity"
+	RuleWarnSeverity  Rule = "warn_severity"
+	RuleExemption     Rule = "exemption"
+)
+
 // Judge applies the rule to one finding. A finding an exemption covers is
 // ActionNone, and the exemption is returned beside it. The gate's mode is not
 // consulted: Judge says what the rule makes of the finding, which is the same
@@ -145,25 +166,32 @@ func exemptionOf(x release.ShapeVulnScopedExempt) Exemption {
 // It knows no artifact of f, so an exemption scoped to an artifact does not
 // cover it; [Evaluate] judges with each finding's occurrences.
 func Judge(gate release.ShapeVulnGate, f Finding, now time.Time) (Action, *Exemption) {
+	a, _, e := JudgeRule(gate, f, now)
+	return a, e
+}
+
+// JudgeRule is Judge, also naming the rule that decided. Like Judge, it knows
+// no artifact of f.
+func JudgeRule(gate release.ShapeVulnGate, f Finding, now time.Time) (Action, Rule, *Exemption) {
 	return judge(gate, f, nil, now)
 }
 
-func judge(gate release.ShapeVulnGate, f Finding, occ []release.VulnOccurrence, now time.Time) (Action, *Exemption) {
+func judge(gate release.ShapeVulnGate, f Finding, occ []release.VulnOccurrence, now time.Time) (Action, Rule, *Exemption) {
 	if e := exemptionFor(gate, f, occ, now); e != nil {
-		return ActionNone, e
+		return ActionNone, RuleExemption, e
 	}
 	if gate.BlockKEV && f.KEV {
-		return ActionBlock, nil
+		return ActionBlock, RuleBlockKEV, nil
 	}
 	if gate.BlockSeverity != "" && gate.BlockSeverity != "none" && f.Severity.AtLeast(gate.BlockSeverity) {
 		if !gate.FixableOnly || f.Fixable() {
-			return ActionBlock, nil
+			return ActionBlock, RuleBlockSeverity, nil
 		}
 	}
 	if gate.WarnSeverity != "" && gate.WarnSeverity != "none" && f.Severity.AtLeast(gate.WarnSeverity) {
-		return ActionWarn, nil
+		return ActionWarn, RuleWarnSeverity, nil
 	}
-	return ActionNone, nil
+	return ActionNone, RuleNone, nil
 }
 
 // Verdict is the gate's answer for a release.
@@ -199,6 +227,8 @@ func (v Verdict) Determined() bool { return v != VerdictStale && v != VerdictUns
 type Judged struct {
 	Finding
 	Action Action
+	// Rule is what decided Action.
+	Rule Rule
 	// Exemption is the exemption that took the finding out of the gate.
 	Exemption *Exemption
 }
@@ -275,6 +305,17 @@ type GateResult struct {
 	// stead; this forge never gives one (a control plane that cannot judge
 	// the env is "could not determine").
 	JudgedBy string `json:"judged_by,omitempty"`
+	// Reason is the verdict's code in the promotion vocabulary:
+	// vuln_gate_blocked for block, vuln_gate_unscanned for stale and
+	// unscanned (could not determine is never a pass), absent otherwise.
+	// It names the rule, not a refusal: whether a promotion is refused is
+	// GradedAs's to decide.
+	Reason string `json:"reason,omitempty"`
+	// ExemptionsApplied are the unexpired exemptions that took at least one
+	// finding out of the gate, sorted by id, each declaration (an id and its
+	// scope: release.ShapeVulnScopedExempt.Identity) once. Absent when none
+	// did, and when the gate is off (nothing is judged).
+	ExemptionsApplied []Exemption `json:"exemptions_applied,omitempty"`
 }
 
 // The JudgedBy values.
@@ -328,18 +369,19 @@ type EvaluateInput struct {
 }
 
 // judgeAuthoritative is a finding's action under in.Judged.
-func judgeAuthoritative(in EvaluateInput, f Finding) (Action, *Exemption) {
+func judgeAuthoritative(in EvaluateInput, f Finding) (Action, Rule, *Exemption) {
 	a := in.Judged[f.Key()]
 	switch {
 	case a.Exemption != nil:
-		return ActionNone, a.Exemption
+		return ActionNone, RuleExemption, a.Exemption
 	case a.Blocking:
-		return ActionBlock, nil
+		// The ledger says it blocks, not which field fired.
+		return ActionBlock, RuleNone, nil
 	}
-	if local, _ := judge(in.Gate, f, in.Occurrences[f.Key()], in.Now); local == ActionWarn {
-		return ActionWarn, nil
+	if local, rule, _ := judge(in.Gate, f, in.Occurrences[f.Key()], in.Now); local == ActionWarn {
+		return ActionWarn, rule, nil
 	}
-	return ActionNone, nil
+	return ActionNone, RuleNone, nil
 }
 
 // Evaluate applies the rule to a release. Precedence: off, then stale, then
@@ -367,17 +409,21 @@ func Evaluate(in EvaluateInput) Evaluation {
 	off := in.Gate.Mode == release.DeliveryOff
 	warned := false
 	seen := map[string]bool{}
+	applied := map[string]Exemption{}
 	for _, f := range in.Findings {
 		j := Judged{Finding: f, Action: ActionNone}
 		switch {
 		case !off && in.Judged != nil:
-			j.Action, j.Exemption = judgeAuthoritative(in, f)
+			j.Action, j.Rule, j.Exemption = judgeAuthoritative(in, f)
 		case !off:
-			j.Action, j.Exemption = judge(in.Gate, f, in.Occurrences[f.Key()], in.Now)
+			j.Action, j.Rule, j.Exemption = judge(in.Gate, f, in.Occurrences[f.Key()], in.Now)
 		case in.Judged != nil:
 			j.Exemption = in.Judged[f.Key()].Exemption
 		default:
 			j.Exemption = exemptionFor(in.Gate, f, in.Occurrences[f.Key()], in.Now)
+		}
+		if !off && j.Exemption != nil {
+			applied[j.Exemption.identity()] = *j.Exemption
 		}
 		switch j.Action {
 		case ActionBlock:
@@ -406,5 +452,23 @@ func Evaluate(in EvaluateInput) Evaluation {
 		ev.Gate.Verdict = VerdictPass
 	}
 	ev.Gate.Determined = ev.Gate.Verdict.Determined()
+	switch {
+	case ev.Gate.Verdict == VerdictBlock:
+		ev.Gate.Reason = release.RefusalVulnGateBlocked
+	case !ev.Gate.Determined:
+		ev.Gate.Reason = release.RefusalVulnGateUnscanned
+	}
+	for _, id := range sortedKeys(applied) {
+		ev.Gate.ExemptionsApplied = append(ev.Gate.ExemptionsApplied, applied[id])
+	}
 	return ev
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

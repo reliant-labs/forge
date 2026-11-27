@@ -72,9 +72,12 @@ func TestScopedExemptions(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			action, e := judge(tc.gate, tc.f, tc.occ, now)
+			action, rule, e := judge(tc.gate, tc.f, tc.occ, now)
 			if got := e != nil; got != tc.wantExempt {
 				t.Fatalf("exempt = %v, want %v (action %s)", got, tc.wantExempt, action)
+			}
+			if tc.wantExempt && rule != RuleExemption {
+				t.Fatalf("an exempted finding's rule = %q, want %q", rule, RuleExemption)
 			}
 			if !tc.wantExempt && action != ActionBlock {
 				t.Fatalf("an unexempted fixable critical judged %s, want block", action)

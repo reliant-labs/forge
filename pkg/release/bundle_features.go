@@ -264,7 +264,27 @@ const (
 	// out for a reader that does not decode those. A project that declares
 	// none carries no key, so it needs nothing of the reader.
 	BundleFeatureStatusPage = "shape-status-page"
+
+	// BundleFeatureReleaseURLs is Shape.HostedFrontends: what an env declares
+	// about each hosted static frontend beyond its StaticSite, today
+	// forge.Frontend.release_urls (the opt-out from per-release URLs). A
+	// control plane that predates it is sent the shape without the key; one
+	// that serves release URLs without decoding it is refused the opt-out
+	// instead ([BundleReader.CheckReleaseURLs]), so the opt-out is never
+	// dropped where it would matter. A shape whose frontends all keep the
+	// default carries no key, so it needs nothing of the reader.
+	BundleFeatureReleaseURLs = "shape-release-urls"
 )
+
+// CapabilityServesReleaseURLs is advertised beside the bundle features by a
+// control plane that SERVES per-release URLs for hosted static frontends: each
+// release it still retains at a URL of its own on the preview domain. Like
+// [CapabilityEnforcesPromotionChecks] it is deliberately not in
+// [BundleDocFeatures]: decoding Shape.HostedFrontends is a matter of the forge
+// a control plane pins, serving the URLs is not. A control plane adds it by
+// hand, in the change that serves them. Forge reads it only to refuse an
+// opt-out such a control plane could not read ([BundleReader.CheckReleaseURLs]).
+const CapabilityServesReleaseURLs = "serves-release-urls"
 
 // CapabilityConvergesSeveralIdentities is advertised beside the bundle
 // features by a control plane that converges EVERY entry of
@@ -357,7 +377,7 @@ const CapabilityAutoscalesWorkloads = "autoscales-workloads"
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities, BundleFeatureStatusPage, BundleFeatureVulnScopedExemptions, BundleFeatureReleaseHealthSiteAudit}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities, BundleFeatureStatusPage, BundleFeatureVulnScopedExemptions, BundleFeatureReleaseURLs, BundleFeatureReleaseHealthSiteAudit}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -568,6 +588,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeatureStatusPage) || !r.Supports(BundleFeatureUptimeChecks) {
 		s.StatusPage = nil
+	}
+	if !r.Supports(BundleFeatureReleaseURLs) {
+		s.HostedFrontends = nil
 	}
 	if !r.Supports(BundleFeaturePromotionChecks) && s.DeliveryPolicy != nil &&
 		(s.DeliveryPolicy.RequiredGates != nil || s.DeliveryPolicy.ApprovalHook != nil) {

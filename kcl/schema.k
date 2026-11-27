@@ -5287,6 +5287,22 @@ schema Frontend:
     # runtime_config, which the browser calls cross-origin.
     apis: {str:str | WorkloadURL} = {}
 
+    # Per-release URLs, on forge.OnHosted: the platform serves every release
+    # this env still retains at a URL of its own, on the preview domain
+    # (https://<unguessable>--<site>.<preview domain>), so a past release can
+    # be opened and compared without promoting it. Each URL sends noindex,
+    # serves this env's CURRENT config.js with the release's own files,
+    # _headers and _redirects, and stops answering once the release is
+    # collected. The platform's console links them from each deploy.
+    #
+    # Unset means on. False turns them off for this frontend in this env:
+    # an old release may still hold what a newer one removed, and this is how
+    # an env says none of its releases may be reachable but the live one.
+    # On every other runtime nothing serves release URLs, so False holds
+    # there by construction and is accepted; declare it once on a frontend
+    # bound per env.
+    release_urls?: bool
+
     check:
         name, "Frontend.name is required"
         all k, _v in apis { regex.match(k, "^[a-z][a-z0-9-]{0,30}$") }, \
@@ -9517,10 +9533,11 @@ schema Bundle:
     # `source` needs one on the cluster it lands on; it may be declared by
     # another env's bundle, in which case the deploy preflight checks it.
     external_secrets_operators: [ExternalSecretsOperator] = []
-    # What each cluster runs for ML (forge.MLStack, kcl/ml.k): every
-    # component adopted (read where it runs) or installed (a pinned chart
-    # forge labels as its own), one stack per cluster. `forge ml discover`
-    # proposes it. Empty renders nothing.
+    # The ML components each cluster declares (forge.MLStack, kcl/ml.k),
+    # any subset of them, one stack per cluster: each declared component is
+    # adopted (read where it runs) or installed (a pinned chart forge labels
+    # as its own), and only what a stack declares renders. `forge ml
+    # discover` proposes it. Empty renders nothing.
     ml_stacks: [MLStack] = []
     _agent_workloads = _obs_workloads(workloads, ml_stacks, observability)
     # Where the values the secret store needs BEFORE it can serve a read live

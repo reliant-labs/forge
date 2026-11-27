@@ -273,19 +273,21 @@ func TestDeveloper_HoldsNoSecret(t *testing.T) {
 // reviewed diff of this list.
 func TestBundleContents(t *testing.T) {
 	want := map[Bundle][]Scope{
-		BundleCI: {ScopeDeployRead, ScopeDeployWrite, ScopeVulnRead, ScopeTestsWrite},
+		BundleCI: {ScopeDeployRead, ScopeDeployWrite, ScopeVulnRead, ScopeTestsWrite, ScopeSBOMWrite},
 		BundleDeveloper: {
 			ScopeDeployRead, ScopeDeployWrite, ScopeReliantAPI, ScopeLLMInvoke,
 			ScopeDomainRead, ScopeObsRead, ScopeObsTriage, ScopeObsWrite,
 			ScopeRunsStart, ScopeRunsRead, ScopeRunsControl, ScopeTriggersFire, ScopeTriggersManage,
 			ScopeInboxRead, ScopeInboxManage, ScopeQuestionsAnswer,
 			ScopeChangesWrite, ScopeVulnRead, ScopeTestsRead, ScopeTestsWrite, ScopeChangesRead,
+			ScopeSBOMWrite,
 		},
 		BundleAdmin: {
 			ScopeDeployRead, ScopeDeployWrite, ScopeBillingRead, ScopeClusterManage,
 			ScopeSecretRead, ScopeDomainRead, ScopeDomainWrite, ScopeIdentityRead,
 			ScopeObsRead, ScopeObsTriage, ScopeObsWrite,
 			ScopeChangesWrite, ScopeVulnRead, ScopeTestsRead, ScopeTestsWrite, ScopeChangesRead,
+			ScopeSBOMWrite,
 		},
 	}
 	for b, scopes := range want {

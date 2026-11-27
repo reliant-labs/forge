@@ -24,6 +24,7 @@ type Break struct {
 	Message string
 }
 
+// String renders the break as "<package>: <message>", the line the API gate prints.
 func (b Break) String() string { return b.Pkg + ": " + b.Message }
 
 // loadAPI type-checks every package under root/pkg and returns them keyed by

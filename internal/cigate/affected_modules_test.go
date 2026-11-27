@@ -10,12 +10,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // modulesFixture is a root module ex.com/m replacing ex.com/sdk => ./sdk/go:
 // root package app imports ex.com/sdk/client; in the nested module,
 // client has tests and util (imported by client) too.
 func modulesFixture(t *testing.T) (string, func(context.Context, string, []string) (io.Reader, error)) {
+	t.Helper()
+	return modulesFixtureWithRootTests(t, false)
+}
+
+func modulesFixtureWithRootTests(t *testing.T, rootTests bool) (string, func(context.Context, string, []string) (io.Reader, error)) {
 	t.Helper()
 	root := t.TempDir()
 	for f, body := range map[string]string{
@@ -41,13 +48,20 @@ func modulesFixture(t *testing.T) (string, func(context.Context, string, []strin
 	}
 	list := func(_ context.Context, dir string, _ []string) (io.Reader, error) {
 		if dir == sdk {
-			return render([]listedPackage{
+			pkgs := []listedPackage{
 				{ImportPath: "ex.com/sdk/client", Name: "client", Dir: filepath.Join(sdk, "client"), Deps: []string{"ex.com/sdk/util"}},
 				{ImportPath: "ex.com/sdk/util", Name: "util", Dir: filepath.Join(sdk, "util"), EmbedFiles: []string{"tmpl/x.txt"}},
 				{ImportPath: "ex.com/sdk/client.test", Name: "main", Dir: filepath.Join(sdk, "client"), Deps: []string{"ex.com/sdk/client [ex.com/sdk/client.test]", "ex.com/sdk/util"}},
 				{ImportPath: "ex.com/sdk/util [ex.com/sdk/util.test]", Name: "util", Dir: filepath.Join(sdk, "util"), ForTest: "ex.com/sdk/util", EmbedFiles: []string{"tmpl/x.txt"}, TestEmbedFiles: []string{"golden.txt"}},
 				{ImportPath: "ex.com/sdk/util.test", Name: "main", Dir: filepath.Join(sdk, "util"), Deps: []string{"ex.com/sdk/util [ex.com/sdk/util.test]"}},
-			}), nil
+			}
+			if rootTests {
+				pkgs = append(pkgs,
+					listedPackage{ImportPath: "ex.com/sdk", Name: "sdk", Dir: sdk},
+					listedPackage{ImportPath: "ex.com/sdk.test", Name: "main", Dir: sdk, Deps: []string{"ex.com/sdk [ex.com/sdk.test]"}},
+				)
+			}
+			return render(pkgs), nil
 		}
 		return render([]listedPackage{
 			{ImportPath: "ex.com/sdk/client", Name: "client", Dir: filepath.Join(sdk, "client")},
@@ -114,6 +128,37 @@ func TestComputeAffected_ReplacedModules(t *testing.T) {
 			case tc.mod != nil && (len(a.Modules) != 1 || a.Modules[0].Dir != tc.mod.Dir || a.Modules[0].Path != tc.mod.Path ||
 				a.Modules[0].Full != tc.mod.Full || a.Modules[0].Reason != tc.mod.Reason || !equal(a.Modules[0].Packages, tc.mod.Packages)):
 				t.Errorf("Modules = %+v, want [%+v]", a.Modules, *tc.mod)
+			}
+		})
+	}
+}
+
+func TestComputeAffected_ReplacedModulePathRule(t *testing.T) {
+	root, list := modulesFixtureWithRootTests(t, true)
+	for _, tc := range []struct {
+		name, changed string
+		except        []string
+		rootTests     []string
+		moduleTests   []string
+	}{
+		{"source", "sdk/go/util/u.go", nil, []string{"ex.com/m/app"}, []string{"ex.com/sdk", "ex.com/sdk/client", "ex.com/sdk/util"}},
+		{"test only", "sdk/go/client/c_test.go", nil, nil, []string{"ex.com/sdk", "ex.com/sdk/client", "ex.com/sdk/util"}},
+		{"embedded asset", "sdk/go/util/tmpl/x.txt", nil, []string{"ex.com/m/app"}, []string{"ex.com/sdk", "ex.com/sdk/client", "ex.com/sdk/util"}},
+		{"excluded", "sdk/go/util/u.go", []string{"sdk/go/util/**"}, []string{"ex.com/m/app"}, []string{"ex.com/sdk/client", "ex.com/sdk/util"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := ComputeAffected(context.Background(), AffectedInput{Root: root, Modules: AffectedModulesAuto,
+				Git: fakeGit{branch: "f", changed: []string{tc.changed}}.run, GoList: list,
+				Rules: []config.CIGateAffectedRule{{Paths: []string{"sdk/go/**"}, Except: tc.except, Packages: []string{"./sdk/go/..."}}}})
+			if a.Full || !equal(a.Packages, tc.rootTests) {
+				t.Fatalf("root: full=%v (%s), packages=%v, want scoped %v", a.Full, a.Reason, a.Packages, tc.rootTests)
+			}
+			if len(a.Modules) != 1 || a.Modules[0].Full || !equal(a.Modules[0].Packages, tc.moduleTests) {
+				t.Fatalf("nested modules = %+v, want scoped %v", a.Modules, tc.moduleTests)
+			}
+			rows := WithModuleTests([]Check{{Name: UnitTests}}, a)
+			if len(rows) != 2 || rows[1].Dir != "sdk/go" || !equal(rows[1].Argv, append([]string{"go", "test"}, tc.moduleTests...)) {
+				t.Fatalf("checks = %+v, want the selected tests run from sdk/go", rows)
 			}
 		})
 	}

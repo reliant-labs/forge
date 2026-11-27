@@ -420,7 +420,8 @@ func (s *S3) Open(ctx context.Context, key string, opts OpenOptions) (io.ReadClo
 			return opened{}, err
 		}
 		var get minio.GetObjectOptions
-		if opts.Offset > 0 || opts.Length > 0 {
+		ranged := opts.Offset > 0 || opts.Length > 0
+		if ranged {
 			end := int64(0) // to the end
 			if opts.Length > 0 && opts.Length <= math.MaxInt64-opts.Offset {
 				end = opts.Offset + opts.Length - 1
@@ -437,8 +438,21 @@ func (s *S3) Open(ctx context.Context, key string, opts OpenOptions) (io.ReadClo
 			return opened{}, s.mapErr("open", key, err)
 		}
 		obj := object(info)
-		if size, ok := contentRangeSize(header.Get("Content-Range")); ok {
+		if ranged {
+			// A service that ignores Range answers 200 with the whole
+			// object: its bytes start at 0, not at the offset, and its
+			// Content-Length is no range's. Refuse it rather than serve
+			// the wrong bytes.
+			size, ok := contentRangeSize(header.Get("Content-Range"))
+			if !ok {
+				_ = body.Close()
+				return opened{}, fmt.Errorf("blobstore: open %q in bucket %q: the service answered a ranged GET without a Content-Range", key, s.bucket)
+			}
 			obj.Size = size
+			if opts.Length > 0 {
+				// Never more than asked, whatever the service sends.
+				body = limitedBody{Reader: io.LimitReader(body, opts.Length), Closer: body}
+			}
 		}
 		return opened{body: body, obj: obj}, nil
 	})
@@ -463,6 +477,12 @@ func (s *S3) openPastEnd(ctx context.Context, key string, opts OpenOptions) (ope
 	return opened{body: emptyBody(), obj: object(info)}, nil
 }
 
+// limitedBody caps a response body's Reader and closes the body itself.
+type limitedBody struct {
+	io.Reader
+	io.Closer
+}
+
 // contentRangeSize is the complete length a Content-Range header
 // ("bytes 0-511/1234") states.
 func contentRangeSize(v string) (int64, bool) {
@@ -479,11 +499,71 @@ func contentRangeSize(v string) (int64, bool) {
 // PUT: minio-go's own minimum part size.
 const s3PartSize = 16 << 20
 
+// s3FirstChunk is the first buffer bufferPart allocates. Each next one is
+// twice the last, so a small body costs little and nothing is ever copied.
+const s3FirstChunk = 64 << 10
+
+// bufferPart reads r into chunks holding at most limit bytes in all, and
+// reports how many it read and whether r ended within them. The chunks are
+// never grown or copied, so buffering holds limit bytes at most, never the
+// doubling a growing buffer reaches.
+func bufferPart(r io.Reader, limit int64) (chunks [][]byte, n int64, ended bool, err error) {
+	size := int64(s3FirstChunk)
+	for n < limit {
+		c := make([]byte, min(size, limit-n))
+		m, rerr := io.ReadFull(r, c)
+		n += int64(m)
+		if m > 0 {
+			chunks = append(chunks, c[:m])
+		}
+		switch {
+		case errors.Is(rerr, io.EOF) || errors.Is(rerr, io.ErrUnexpectedEOF):
+			return chunks, n, true, nil
+		case rerr != nil:
+			return nil, n, false, rerr
+		}
+		size *= 2
+	}
+	return chunks, n, false, nil
+}
+
+// s3BufferLimit is how much of a body of unknown size PutObject buffers:
+// one part, or MaxBytes+1 when that is less. The body ends by MaxBytes or
+// fails, and one byte more always sees which.
+func s3BufferLimit(maxBytes int64) int64 {
+	if maxBytes > 0 && maxBytes < s3PartSize {
+		return maxBytes + 1
+	}
+	return s3PartSize
+}
+
+// chunksReader reads chunks in order. One chunk (or none) is a
+// bytes.Reader, which is seekable, so minio-go may retry its PUT.
+func chunksReader(chunks [][]byte) io.Reader {
+	switch len(chunks) {
+	case 0:
+		return bytes.NewReader(nil)
+	case 1:
+		return bytes.NewReader(chunks[0])
+	}
+	rs := make([]io.Reader, len(chunks))
+	for i, c := range chunks {
+		rs[i] = bytes.NewReader(c)
+	}
+	return io.MultiReader(rs...)
+}
+
 // PutObject implements ObjectWriter. A body of known size is one PUT (a
-// multipart upload past s3PartSize). A body of unknown size is buffered up
-// to s3PartSize first: one that ends within it is a single PUT of known
-// size, and a longer one streams as a multipart upload, which minio-go
-// aborts when the body or a part fails.
+// multipart upload past s3PartSize). A body of unknown size is buffered
+// first, up to s3PartSize (or MaxBytes+1 when that is less): one that ends
+// within it is a single PUT of known size, and a longer one streams as a
+// multipart upload. So PutObject itself holds at most s3PartSize of a body,
+// beside minio-go's own part buffer.
+//
+// When the body or a part fails, minio-go aborts the multipart upload, on
+// ctx: best effort, since a cancelled ctx or a failing service can leave the
+// uploaded parts behind, invisible but billed. Give the bucket a lifecycle
+// rule (AbortIncompleteMultipartUpload) that cleans them up.
 func (s *S3) PutObject(ctx context.Context, key string, body io.Reader, opts PutObjectOptions) (Object, error) {
 	return s.chain.Around(ctx, "blobstore.PutObject", func(ctx context.Context) (Object, error) {
 		if err := ValidateKey(key); err != nil {
@@ -496,15 +576,14 @@ func (s *S3) PutObject(ctx context.Context, key string, body io.Reader, opts Put
 		var r io.Reader = b
 		size := opts.ContentLength
 		if size == 0 {
-			var buf bytes.Buffer
-			n, err := io.CopyN(&buf, b, s3PartSize)
+			chunks, n, ended, err := bufferPart(b, s3BufferLimit(opts.MaxBytes))
 			switch {
-			case errors.Is(err, io.EOF):
-				r, size = bytes.NewReader(buf.Bytes()), n
 			case err != nil:
 				return Object{}, fmt.Errorf("blobstore: put %q in bucket %q: %w", key, s.bucket, b.failed(err))
+			case ended:
+				r, size = chunksReader(chunks), n
 			default:
-				r, size = io.MultiReader(&buf, b), -1
+				r, size = io.MultiReader(chunksReader(chunks), b), -1
 			}
 		}
 		info, err := s.api.PutObject(ctx, s.bucket, key, r, size, minio.PutObjectOptions{

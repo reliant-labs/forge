@@ -5,6 +5,7 @@ package blobstore_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -32,6 +33,16 @@ type fakeGCSObjects struct {
 	objects map[string]fakeGCSObject
 	gen     int64
 	commits int
+	// afterGet, when set, runs (under mu) after each objects.get answer:
+	// a test replaces the object there, between the metadata Open reads
+	// and its media read.
+	afterGet func(f *fakeGCSObjects, key string)
+}
+
+// replace stores a new generation of key. Call it with mu held.
+func (f *fakeGCSObjects) replace(key string, data []byte, contentType string) {
+	f.gen++
+	f.objects[key] = fakeGCSObject{data: data, contentType: contentType, gen: f.gen}
 }
 
 type fakeGCSObject struct {
@@ -66,6 +77,9 @@ func (f *fakeGCSObjects) serve(t *testing.T) *httptest.Server {
 				return
 			}
 			writeJSON(w, f.resource(key, o))
+			if f.afterGet != nil {
+				f.afterGet(f, key)
+			}
 		case strings.HasPrefix(r.URL.Path, meta+"/") && r.Method == http.MethodDelete:
 			delete(f.objects, strings.TrimPrefix(r.URL.Path, meta+"/"))
 			w.WriteHeader(http.StatusNoContent)
@@ -128,11 +142,9 @@ func (f *fakeGCSObjects) upload(w http.ResponseWriter, r *http.Request) {
 		gcsError(w, http.StatusBadRequest, "incomplete upload: "+err.Error())
 		return
 	}
-	f.gen++
 	f.commits++
-	o := fakeGCSObject{data: data, contentType: md.ContentType, gen: f.gen}
-	f.objects[md.Name] = o
-	writeJSON(w, f.resource(md.Name, o))
+	f.replace(md.Name, data, md.ContentType)
+	writeJSON(w, f.resource(md.Name, f.objects[md.Name]))
 }
 
 func newObjectGCS(t *testing.T) (*blobstore.GCS, *fakeGCSObjects) {
@@ -164,7 +176,8 @@ func TestGCSObjectIO(t *testing.T) {
 }
 
 // Open streams the generation whose attributes it reported: an object
-// replaced between the two is not found, never mixed.
+// replaced between the metadata read and the media read is not found,
+// never the new bytes under the old object's size and ETag.
 func TestGCSOpenPinsTheGeneration(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -181,11 +194,20 @@ func TestGCSOpenPinsTheGeneration(t *testing.T) {
 	if string(got) != "fir" || o.Size != 5 || o.ETag != "etag-1" {
 		t.Fatalf("Open = %q %+v", got, o)
 	}
+
 	fake.mu.Lock()
-	commits := fake.commits
+	fake.afterGet = func(f *fakeGCSObjects, key string) {
+		f.replace(key, []byte("second, longer"), "image/png")
+		f.afterGet = nil
+	}
 	fake.mu.Unlock()
-	if commits != 1 {
-		t.Fatalf("%d commits, want 1", commits)
+	if r, o, err := g.Open(ctx, "t/a", blobstore.OpenOptions{}); !errors.Is(err, blobstore.ErrNotFound) {
+		if err == nil {
+			got, _ := io.ReadAll(r)
+			r.Close()
+			t.Fatalf("Open across a replacement = %q %+v: the new generation's bytes under the old one's attributes", got, o)
+		}
+		t.Fatalf("Open across a replacement = %v, want ErrNotFound", err)
 	}
 }
 

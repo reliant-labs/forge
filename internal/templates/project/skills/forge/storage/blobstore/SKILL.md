@@ -324,7 +324,10 @@ if _, err := io.Copy(h, r); err != nil {
 ```
 
 `OpenOptions{Offset, Length}`: zero values read everything; a range past the
-end stops there, and an offset past the end is `ErrInvalidOptions`. Stat,
+end stops there, and an offset past the end is `ErrInvalidOptions`. The
+stream outlives the `Open` call (its trace span covers only opening it), so
+keep `ctx` live until you have read it, and don't give a custom `Chain` a
+timeout middleware: it would cancel the stream once `Open` returns. Stat,
 List and Open report no `Object.SHA256`: the services do not all keep one, so
 hash it yourself as above.
 
@@ -372,7 +375,11 @@ obj, err := blobstore.PutObject(ctx, store, "generated/"+uuid.NewString(), body,
 The body is held to `ContentLength` and `MaxBytes` while it streams. One that
 breaks either fails the call before the service commits anything, so no
 partial object is ever stored and an object already at that key is left as it
-was.
+was. A body past 16 MiB goes up as an S3 multipart upload; when it fails, the
+upload is aborted on a best-effort basis, so its parts can be left behind
+(invisible, but billed). On a `forge.BucketOnS3` bucket, add a lifecycle rule
+that aborts incomplete multipart uploads after a day
+(`AbortIncompleteMultipartUpload`).
 
 ## 7. Test without a bucket
 

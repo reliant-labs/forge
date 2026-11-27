@@ -22,7 +22,11 @@ package releasehealth
 // site-wide finding, or one on a route the previous audit did not crawl (a
 // page the release added, whose error is the release's doing), needs the
 // previous audit to have judged the category somewhere: its site-level score
-// for it. An audit that ran no axe at all is no a11y baseline.
+// for it. An audit that ran no axe at all is no a11y baseline. Each new error
+// carries the scope and score it was judged against (BaselineScope,
+// BaselineScore), and Evaluate holds it to that. A score drop is compared
+// only where the previous audit has a score for that category: site-wide, or
+// on that route.
 //
 // Each frontend yields at most two findings per code: one for the score drop
 // (Ref SiteAuditRefScore; Value the largest drop in points, Threshold the
@@ -138,7 +142,22 @@ type SiteAuditFinding struct {
 	// Route is "" for a site-wide finding.
 	Route string `json:"route,omitempty"`
 	Ref   string `json:"ref,omitempty"`
+	// BaselineScope is where the previous audit judged the finding's
+	// category, which is what makes its absence there mean something:
+	// SiteAuditScopeRoute (its route's score) or SiteAuditScopeSite (the
+	// site-level score: a site-wide finding, or a route the previous audit
+	// did not crawl). BaselineScore is the previous score for the category
+	// at that scope. A new error with no BaselineScore has no baseline and
+	// is never a finding.
+	BaselineScope string `json:"baseline_scope,omitempty"`
+	BaselineScore *int   `json:"baseline_score,omitempty"`
 }
+
+// Where a new error's baseline was judged ([SiteAuditFinding.BaselineScope]).
+const (
+	SiteAuditScopeRoute = "route"
+	SiteAuditScopeSite  = "site"
+)
 
 // CompareSiteAudits builds the facts of frontend's audit of release
 // (current) against the same env's audit of previousRelease (previous). A
@@ -181,16 +200,21 @@ func CompareSiteAudits(frontend, release string, current *siteaudit.Report, prev
 		had[key{pf.Code, pf.Route, pf.Ref}] = true
 	}
 	for _, cf := range current.Findings {
-		if cf.Severity != siteaudit.SeverityError || had[key{cf.Code, cf.Route, cf.Ref}] || !judgedBefore(cf, previous, prevRoutes) {
+		if cf.Severity != siteaudit.SeverityError || had[key{cf.Code, cf.Route, cf.Ref}] {
 			continue
 		}
-		f.NewErrors = append(f.NewErrors, SiteAuditFinding{Code: cf.Code, Category: cf.Category, Route: cf.Route, Ref: cf.Ref})
+		scope, base := baselineOf(cf, previous, prevRoutes)
+		if base == nil {
+			continue
+		}
+		f.NewErrors = append(f.NewErrors, SiteAuditFinding{Code: cf.Code, Category: cf.Category, Route: cf.Route, Ref: cf.Ref,
+			BaselineScope: scope, BaselineScore: cloneInt(base)})
 	}
 	return f
 }
 
-// judgedBefore reports whether the previous audit judged f's category at
-// f's scope, so that the finding's absence from it means something:
+// baselineOf is the scope and the score at which the previous audit judged
+// f's category, so that the finding's absence from it means something:
 //
 //   - a finding on a route the previous audit crawled: that route's score
 //     for the category (axe may not have run on it);
@@ -198,17 +222,16 @@ func CompareSiteAudits(frontend, release string, current *siteaudit.Report, prev
 //     previous audit's site-level score for the category, which is nil when
 //     it judged the category on no page at all.
 //
-// With no score at that scope there is no baseline, and the finding is not
-// new: an audit that never ran axe cannot say a violation was absent. A
-// category this package does not know has no baseline either.
-func judgedBefore(f siteaudit.Finding, previous *siteaudit.Report, prevRoutes map[string]siteaudit.RouteScore) bool {
-	scope := previous.Site.Score
+// A nil score at that scope is no baseline, and the finding is not new: an
+// audit that never ran axe cannot say a violation was absent. A category
+// this package does not know has no baseline either.
+func baselineOf(f siteaudit.Finding, previous *siteaudit.Report, prevRoutes map[string]siteaudit.RouteScore) (string, *int) {
 	if f.Route != "" {
 		if s, ok := prevRoutes[f.Route]; ok {
-			scope = s
+			return SiteAuditScopeRoute, categoryScore(s.SEO, s.A11y, f.Category)
 		}
 	}
-	return categoryScore(scope.SEO, scope.A11y, f.Category) != nil
+	return SiteAuditScopeSite, categoryScore(previous.Site.Score.SEO, previous.Site.Score.A11y, f.Category)
 }
 
 // categoryScore is the score of category among seo and a11y; nil for a
@@ -330,14 +353,12 @@ func (c siteAuditCategory) scoreFinding(a SiteAuditFacts, since string) (Finding
 }
 
 func (c siteAuditCategory) newErrorsFinding(a SiteAuditFacts, since string) (Finding, bool) {
-	// A category the previous audit judged nowhere has no baseline: none of
-	// its errors is new, even in facts a caller built by hand.
-	if prev := categoryScore(a.Previous.SEO, a.Previous.A11y, c.category); prev == nil {
-		return Finding{}, false
-	}
+	// Each error is held to its own baseline (its category at its scope,
+	// recorded by CompareSiteAudits): one without is not new, even in facts
+	// a caller built by hand.
 	var errs []SiteAuditFinding
 	for _, e := range a.NewErrors {
-		if e.Category == c.category {
+		if e.Category == c.category && e.BaselineScore != nil {
 			errs = append(errs, e)
 		}
 	}

@@ -20,8 +20,15 @@ func audit(seo, prevSEO, a11y, prevA11y int, routes ...SiteAuditRoute) SiteAudit
 		Previous: &SiteAuditBaseline{Release: "v1", RulesVersion: siteaudit.RulesVersion, SEO: ip(prevSEO), A11y: ip(prevA11y)}}
 }
 
+// withNewErrors adds new errors; one that names no baseline is given a
+// route baseline of 90, as CompareSiteAudits records for a judged route.
 func withNewErrors(a SiteAuditFacts, errs ...SiteAuditFinding) SiteAuditFacts {
-	a.NewErrors = errs
+	for _, e := range errs {
+		if e.BaselineScope == "" {
+			e.BaselineScope, e.BaselineScore = SiteAuditScopeRoute, ip(90)
+		}
+		a.NewErrors = append(a.NewErrors, e)
+	}
 	return a
 }
 
@@ -140,7 +147,7 @@ func TestSiteAuditFindingFigures(t *testing.T) {
 func TestSiteAuditFindingMessageIsBounded(t *testing.T) {
 	a := audit(90, 90, 95, 95)
 	for _, route := range []string{"/a", "/b", "/c", "/d", "/e", "/f", "/g"} {
-		a.NewErrors = append(a.NewErrors, SiteAuditFinding{Code: "a11y_violation", Category: siteaudit.CategoryAccessibility, Route: route, Ref: "image-alt"})
+		a = withNewErrors(a, SiteAuditFinding{Code: "a11y_violation", Category: siteaudit.CategoryAccessibility, Route: route, Ref: "image-alt"})
 	}
 	r := Evaluate(siteInput(t, a))
 	if len(r.Findings) != 1 || r.Findings[0].Value != 7 || !strings.HasSuffix(r.Findings[0].Message, "image-alt on /e; and 2 more") ||
@@ -271,10 +278,10 @@ func TestCompareSiteAudits(t *testing.T) {
 		t.Errorf("routes = %s", mustJSON(t, f.Routes))
 	}
 	wantNew := []SiteAuditFinding{
-		{Code: "indexing_mismatch", Category: siteaudit.CategorySEO, Route: "/"},
-		{Code: "robots_unreachable", Category: siteaudit.CategorySEO},
-		{Code: "a11y_violation", Category: siteaudit.CategoryAccessibility, Route: "/new", Ref: "button-name"},
-		{Code: "a11y_violation", Category: siteaudit.CategoryAccessibility, Route: "/", Ref: "image-alt"},
+		{Code: "indexing_mismatch", Category: siteaudit.CategorySEO, Route: "/", BaselineScope: SiteAuditScopeRoute, BaselineScore: ip(95)},
+		{Code: "robots_unreachable", Category: siteaudit.CategorySEO, BaselineScope: SiteAuditScopeSite, BaselineScore: ip(95)},
+		{Code: "a11y_violation", Category: siteaudit.CategoryAccessibility, Route: "/new", Ref: "button-name", BaselineScope: SiteAuditScopeSite, BaselineScore: ip(98)},
+		{Code: "a11y_violation", Category: siteaudit.CategoryAccessibility, Route: "/", Ref: "image-alt", BaselineScope: SiteAuditScopeRoute, BaselineScore: ip(98)},
 	}
 	if !reflect.DeepEqual(f.NewErrors, wantNew) {
 		t.Errorf("new errors = %s", mustJSON(t, f.NewErrors))
@@ -316,7 +323,7 @@ func TestSiteAuditFactsJSON(t *testing.T) {
 	want := `{"frontend":"web","release":"v2","state":"done","rules_version":"1","seo":80,"a11y":95,` +
 		`"routes":[{"route":"/","seo":80,"previous_seo":92}],` +
 		`"previous":{"release":"v1","rules_version":"1","seo":92,"a11y":95},` +
-		`"new_errors":[{"code":"indexing_mismatch","category":"seo","route":"/"}]}`
+		`"new_errors":[{"code":"indexing_mismatch","category":"seo","route":"/","baseline_scope":"route","baseline_score":90}]}`
 	if got := mustJSON(t, a); got != want {
 		t.Errorf("json = %s\nwant   %s", got, want)
 	}
@@ -372,27 +379,60 @@ func TestCompareSiteAuditsNeedsABaselineForTheCategory(t *testing.T) {
 	}
 }
 
-// Evaluate holds facts built by hand to the same rule: a new error of a
-// category with no previous site-level score is no finding.
-func TestSiteAuditNewErrorsNeedAPreviousScore(t *testing.T) {
-	seoErr := SiteAuditFinding{Code: "robots_unreachable", Category: siteaudit.CategorySEO}
-	a11yErr := SiteAuditFinding{Code: "a11y_violation", Category: siteaudit.CategoryAccessibility, Ref: "region"}
-	for _, tc := range []struct {
-		name            string
-		prevSEO, prA11y *int
-		want            []string
-	}{
-		{"no previous a11y score", ip(90), nil, []string{"seo_regressed/new_errors"}},
-		{"no previous SEO score", nil, ip(90), []string{"a11y_regressed/new_errors"}},
-		{"no previous score at all", nil, nil, nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			a := withNewErrors(audit(90, 90, 95, 95), seoErr, a11yErr)
-			a.Previous.SEO, a.Previous.A11y = tc.prevSEO, tc.prA11y
-			r := Evaluate(siteInput(t, a))
-			if got := codesRefs(r.Findings); !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("findings = %v, want %v", got, tc.want)
-			}
-		})
+// Evaluate holds each new error to its own baseline (its category at its
+// scope), not to the previous site-level score: one with none is dropped,
+// even in facts built by hand, and one with a route baseline counts though
+// the previous audit has no site-level score for its category (review B1).
+func TestSiteAuditNewErrorsNeedTheirOwnBaseline(t *testing.T) {
+	routeBased := SiteAuditFinding{Code: "a11y_violation", Category: siteaudit.CategoryAccessibility, Route: "/", Ref: "region",
+		BaselineScope: SiteAuditScopeRoute, BaselineScore: ip(95)}
+	unbased := SiteAuditFinding{Code: "robots_unreachable", Category: siteaudit.CategorySEO, BaselineScope: SiteAuditScopeSite}
+	a := audit(90, 90, 95, 95)
+	a.Previous.SEO, a.Previous.A11y = nil, nil
+	a.NewErrors = []SiteAuditFinding{routeBased, unbased}
+	r := Evaluate(siteInput(t, a))
+	if got := codesRefs(r.Findings); !reflect.DeepEqual(got, []string{"a11y_regressed/new_errors"}) {
+		t.Errorf("findings = %v, want only the route-based a11y error", got)
+	}
+}
+
+// Route-only previous coverage: a previous audit with no site-level score
+// for a category but a score for it on a route is a baseline on that route,
+// for new errors and score drops alike; a route with a previous score for
+// the other category only is none (review B1 and its risk).
+func TestCompareSiteAuditsRouteOnlyCoverage(t *testing.T) {
+	prev := report(score(ip(95), nil), []siteaudit.RouteReport{
+		{Route: "/", Status: 200, Score: score(ip(95), ip(95))},  // axe ran here only
+		{Route: "/docs", Status: 200, Score: score(ip(95), nil)}, // SEO only
+	})
+	cur := report(score(ip(95), ip(60)), []siteaudit.RouteReport{
+		{Route: "/", Status: 200, Score: score(ip(95), ip(60))},
+		{Route: "/docs", Status: 200, Score: score(ip(95), ip(10))},
+	},
+		siteaudit.Finding{Code: "a11y_violation", Severity: siteaudit.SeverityError, Category: siteaudit.CategoryAccessibility, Route: "/", Ref: "button-name"},
+		siteaudit.Finding{Code: "a11y_violation", Severity: siteaudit.SeverityError, Category: siteaudit.CategoryAccessibility, Route: "/docs", Ref: "image-alt"},
+		siteaudit.Finding{Code: "a11y_violation", Severity: siteaudit.SeverityError, Category: siteaudit.CategoryAccessibility, Ref: "region"})
+	f := CompareSiteAudits("web", "v2", cur, "v1", prev)
+	want := []SiteAuditFinding{{Code: "a11y_violation", Category: siteaudit.CategoryAccessibility, Route: "/", Ref: "button-name",
+		BaselineScope: SiteAuditScopeRoute, BaselineScore: ip(95)}}
+	if !reflect.DeepEqual(f.NewErrors, want) {
+		t.Errorf("new errors = %s: only the error on the route axe judged before is new", mustJSON(t, f.NewErrors))
+	}
+	r := Evaluate(siteInput(t, f))
+	if got := codesRefs(r.Findings); !reflect.DeepEqual(got, []string{"a11y_regressed/new_errors", "a11y_regressed/score"}) {
+		t.Errorf("findings = %v", got)
+	}
+	for _, x := range r.Findings {
+		if x.Ref == SiteAuditRefScore && (x.Value != 35 || strings.Contains(x.Message, "/docs") || strings.Contains(x.Message, "site ")) {
+			t.Errorf("score finding = %+v: only / has a previous a11y score (95 -> 60); /docs has none, nor has the site", x)
+		}
+	}
+
+	// Hand-built facts: a route with a previous score for the other
+	// category only is not compared for this one.
+	a := audit(90, 90, 95, 95, SiteAuditRoute{Route: "/x", SEO: ip(90), A11y: ip(10), PreviousSEO: ip(90)})
+	a.Previous.A11y = nil
+	if got := codesRefs(Evaluate(siteInput(t, a)).Findings); len(got) != 0 {
+		t.Errorf("findings = %v: /x has no previous a11y score", got)
 	}
 }

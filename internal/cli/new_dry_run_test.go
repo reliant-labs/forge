@@ -137,6 +137,9 @@ func TestProjectNewDryRunFreshKinds(t *testing.T) {
 			if entries, _ := os.ReadDir(parent); len(entries) != 0 {
 				t.Fatalf("--dry-run wrote %d entries into %s", len(entries), parent)
 			}
+			if got, want := strings.Contains(out, "run go mod tidy"), tc.kind == "service"; got != want {
+				t.Errorf("go mod tidy step present = %t, want %t:\n%s", got, want, out)
+			}
 			for _, want := range []string{
 				"Nothing was written",
 				tc.kind + ` project "tool" into a new directory`,

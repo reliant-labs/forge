@@ -107,5 +107,8 @@ func newProjectRunSteps(ctx context.Context, in scaffoldFilesInput, steps newPro
 	} else {
 		out = append(out, "git init and attempt an initial commit")
 	}
-	return append(out, "run go mod tidy", "keep the step log at "+newProjectLog)
+	if service {
+		out = append(out, "run go mod tidy")
+	}
+	return append(out, "keep the step log at "+newProjectLog)
 }

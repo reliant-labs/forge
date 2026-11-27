@@ -14,6 +14,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/reliant-labs/forge/pkg/mcpkit"
 	fmw "github.com/reliant-labs/forge/pkg/middleware"
 	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/orm"
@@ -272,6 +273,14 @@ func NewAPIListener(d APIListenerDeps) (*APIListener, error) {
 		Edge:   edge,
 		Front:  d.Probes.Front(),
 		REST:   true,
+		// The rpcs that opt in with (forge.v1.method).mcp, as MCP tools on
+		// /mcp (pkg/middleware/mcp_tools_gen.go, which forge generate keeps
+		// current). An empty table serves no /mcp; MCP_ENABLED=false turns it
+		// off in an env (d.ServerCfg.MCPDisabled, through Listener()).
+		MCP: &mcpkit.Config{
+			Tools:          middleware.MCPTools,
+			AllowedOrigins: d.ServerCfg.CORSOrigins,
+		},
 	})
 	if err != nil {
 		return nil, err

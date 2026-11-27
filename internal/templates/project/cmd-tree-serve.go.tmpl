@@ -499,6 +499,9 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 {{- if index .ConfigFields "SecurityHeadersEnabled"}}
 		SecurityHeaders: cfg.SecurityHeadersEnabled,
 {{- end}}
+{{- if index .ConfigFields "McpEnabled"}}
+		MCPDisabled: !cfg.McpEnabled,
+{{- end}}
 {{- if index .ConfigFields "CorsAllowCredentials"}}
 		CORSAllowCredentials: cfg.CorsAllowCredentials,
 {{- end}}

@@ -1472,6 +1472,17 @@ func DefaultConfigMessages() []ConfigMessage {
 					Description:  "Set OWASP security response headers (CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, HSTS in production). Disable only if a dedicated edge proxy already sets them.",
 				},
 				{
+					// Keep in step with internal/templates/project/config.proto.tmpl.
+					Name:         "mcp_enabled",
+					GoName:       "McpEnabled",
+					GoType:       "bool",
+					ProtoType:    "bool",
+					EnvVar:       "MCP_ENABLED",
+					Flag:         "mcp-enabled",
+					DefaultValue: "true",
+					Description:  "Serve the rpcs that opt in with (forge.v1.method).mcp as MCP tools on the API listener's /mcp. On by default; an env sets MCP_ENABLED=false to turn /mcp off. A project with no opted-in rpc serves no /mcp either way.",
+				},
+				{
 					// The probe paths: the KCL lowering reads the same env
 					// values for a forge-built workload's default probe. Keep
 					// in step with internal/templates/project/config.proto.tmpl.

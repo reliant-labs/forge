@@ -46,6 +46,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 
 	"github.com/reliant-labs/forge/pkg/forgepb"
+	"github.com/reliant-labs/forge/pkg/mcpkit"
 	"github.com/reliant-labs/forge/pkg/mountkit"
 )
 
@@ -85,6 +86,10 @@ type ListenerConfig struct {
 	// RedialOnDrain names the procedures or services whose drained streams
 	// end Unavailable instead of OK (Streams.RedialOnDrain).
 	RedialOnDrain []string
+
+	// MCPDisabled turns /mcp off on this listener even when
+	// ListenerDeps.MCP is set: the per-env switch (Config.MCPDisabled).
+	MCPDisabled bool
 }
 
 // The listener defaults Config.Normalize and ListenerConfig share.
@@ -130,6 +135,7 @@ func (c Config) Listener() ListenerConfig {
 		WriteStallTimeout:         c.WriteStallTimeout,
 		DrainReserve:              c.DrainReserve,
 		RedialOnDrain:             append([]string(nil), c.RedialOnDrain...),
+		MCPDisabled:               c.MCPDisabled,
 	}
 }
 
@@ -202,6 +208,13 @@ type ListenerDeps struct {
 	// REST serves a vanguard REST transcoder over the mounted services
 	// (forge.yaml api.rest) in place of the bare Connect mux.
 	REST bool
+	// MCP serves the given rpcs as MCP tools on mcpkit.Path (and their
+	// resource metadata on mcpkit.MetadataPath), inside Edge, each tool call
+	// relayed in process through the chain. Only the tools of services this
+	// listener mounts are served. nil is off, and so are a table with none of
+	// this listener's tools and Config.MCPDisabled: then neither path nor the
+	// credential-check rpc is mounted.
+	MCP *mcpkit.Config
 	// Ready is the process's readiness handler, which the health rpc asks
 	// (health.go). nil is the Front route on DefaultReadinessPath, if any.
 	Ready http.Handler
@@ -315,6 +328,31 @@ func newListener(deps ListenerDeps) (*Listener, error) {
 				}
 			}
 		}
+		var mcpTools []mcpkit.Tool
+		if deps.MCP != nil && !cfg.MCPDisabled {
+			mcpTools = toolsOfServices(deps.MCP.Tools, l.services)
+		}
+		if len(mcpTools) > 0 {
+			if deps.Chain == nil && deps.ChainV2 != nil {
+				mountAuthCheckV2(mux, deps.ChainV2.ServerInterceptors(), deps.ChainV2.HTTPOptions()...)
+			} else {
+				mcpkit.MountAuthCheck(mux, opts...)
+			}
+			mcpCfg := *deps.MCP
+			mcpCfg.Tools = mcpTools
+			if mcpCfg.Logger == nil {
+				mcpCfg.Logger = logger
+			}
+			m, err := mcpkit.New(mcpCfg, mux)
+			if err != nil {
+				return nil, fmt.Errorf("serverkit.NewListener: %w", err)
+			}
+			routed := http.NewServeMux()
+			routed.Handle(mcpkit.Path, m)
+			routed.Handle(mcpkit.MetadataPath, m.MetadataHandler())
+			routed.Handle("/", handler)
+			handler = routed
+		}
 	}
 	switch {
 	case deps.Chain != nil:
@@ -344,6 +382,25 @@ func newListener(deps ListenerDeps) (*Listener, error) {
 
 	l.srv = newHTTPServer(cfg, top, l.streams)
 	return l, nil
+}
+
+// toolsOfServices keeps the tools whose procedure belongs to a service this
+// listener mounted: /mcp on a listener lists only that listener's services
+// (one audience), never an unmanaged or other-audience service the generated
+// table also names.
+func toolsOfServices(tools []mcpkit.Tool, services []string) []mcpkit.Tool {
+	mounted := make(map[string]bool, len(services))
+	for _, s := range services {
+		mounted[strings.Trim(s, "/")] = true
+	}
+	var out []mcpkit.Tool
+	for _, t := range tools {
+		svc, _, ok := strings.Cut(strings.TrimPrefix(t.Procedure, "/"), "/")
+		if ok && mounted[svc] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // handlerRoutes is a handler already mounted, with the proto services it

@@ -56,7 +56,7 @@ import (
 // to the template.
 var processConfigFields = []string{
 	"Port", "OtlpEndpoint", "PprofAddr", "TlsCertPath", "TlsKeyPath", "LogFormat", "LogLevel",
-	"Environment", "ReadMaxBytes", "SendMaxBytes", "SecurityHeadersEnabled", "CorsAllowCredentials",
+	"Environment", "ReadMaxBytes", "SendMaxBytes", "SecurityHeadersEnabled", "McpEnabled", "CorsAllowCredentials",
 	"CorsOrigins", "PreStopDelay", "ShutdownTimeout", "LivenessPaths", "ReadinessPaths",
 }
 

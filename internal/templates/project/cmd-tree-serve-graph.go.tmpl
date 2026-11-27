@@ -241,6 +241,9 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 {{- if index .ConfigFields "SecurityHeadersEnabled"}}
 		SecurityHeaders: cfg.SecurityHeadersEnabled,
 {{- end}}
+{{- if index .ConfigFields "McpEnabled"}}
+		MCPDisabled: !cfg.McpEnabled,
+{{- end}}
 {{- if index .ConfigFields "CorsAllowCredentials"}}
 		CORSAllowCredentials: cfg.CorsAllowCredentials,
 {{- end}}
@@ -348,6 +351,9 @@ func serverkitConfig(cfg *config.Config) (serverkit.Config, error) {
 {{- end}}
 {{- if index .Fields "SecurityHeadersEnabled"}}
 		skCfg.SecurityHeaders = c.SecurityHeadersEnabled
+{{- end}}
+{{- if index .Fields "McpEnabled"}}
+		skCfg.MCPDisabled = !c.McpEnabled
 {{- end}}
 {{- if index .Fields "CorsAllowCredentials"}}
 		skCfg.CORSAllowCredentials = c.CorsAllowCredentials

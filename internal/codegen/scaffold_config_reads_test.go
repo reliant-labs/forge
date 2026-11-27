@@ -174,3 +174,15 @@ func TestProvidersGraph_DevSessionCookieReadsTheAuthConfigsEnvironment(t *testin
 		t.Errorf("UserAuth sets DevSessionCookie from the command config SetupAuth reads:\n%s", providers)
 	}
 }
+
+// Every graph providers.go hands the API listener the generated MCP table:
+// providers.go is scaffold-once, and an rpc opted in after birth must be
+// served without editing it. An empty table serves nothing (serverkit).
+func TestProvidersGraph_MCPTableAlwaysWired(t *testing.T) {
+	out := renderFormatted(t, "providers-graph.go.tmpl", providersGraphData{Module: "example.com/rbc", HasDatabase: true, ConfigFields: map[string]bool{}})
+	for _, want := range []string{`"github.com/reliant-labs/forge/pkg/mcpkit"`, "MCP: &mcpkit.Config{", "Tools:          middleware.MCPTools,", "AllowedOrigins: d.ServerCfg.CORSOrigins,"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("providers.go lacks %q", want)
+		}
+	}
+}

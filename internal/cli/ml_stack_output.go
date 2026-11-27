@@ -2,14 +2,14 @@ package cli
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 )
 
 // MLStackOutput is one `output.ml_stacks` entry: a declared forge.MLStack
 // (kcl/ml.k), projected so tools read the stack and its decisions from
 // `forge env render <env> --json` without parsing KCL. Every key is always
-// present (empty when unset); keys are only ever added.
+// present (empty when unset), but for MLComponentOutput.ServiceNameDeclared;
+// keys are only ever added.
 type MLStackOutput struct {
 	// Cluster is the stack's kube context (ClusterTarget.cluster).
 	Cluster string `json:"cluster"`
@@ -78,6 +78,11 @@ type MLComponentOutput struct {
 	Chart string `json:"chart"`
 	// Reason is why forge installs it (required for an adopt-only kind).
 	Reason string `json:"reason"`
+	// ServiceNameDeclared is true when the component declares service_name
+	// itself, which ServiceName cannot tell (it carries the derived default
+	// too). The key is present only then, so a project that declares none
+	// renders the v1.13.0 document. Deprecated (v1.14.0), as Selector.
+	ServiceNameDeclared bool `json:"service_name_declared,omitempty"`
 }
 
 // MLDecisionOutput is one forge.RecommendationDecision.
@@ -96,32 +101,11 @@ type MLDecisionOutput struct {
 // fields of forge.Adopt and forge.Install.
 const mlScrapeDeprecationVersion = "v1.14.0"
 
-// mlServicePrefix is kcl/ml.k's ML_SERVICE_PREFIX: a derived scrape's
-// default service.name is mlServicePrefix + kind.
-const mlServicePrefix = "ml-"
-
-// mlCtxSuffixRE is the character class kcl/ml.k's _ml_ctx_suffix replaces.
-var mlCtxSuffixRE = regexp.MustCompile(`[^-a-z0-9_.]`)
-
-// mlDefaultScrapeService is the service.name kcl/ml.k's _ml_scrape_svc
-// derives for a scraped component that sets no service_name: ml-<kind>,
-// suffixed with the cluster when the env has several stacks.
-func mlDefaultScrapeService(kind, cluster string, nstacks int) string {
-	if nstacks > 1 {
-		return mlServicePrefix + kind + "-" + strings.Trim(mlCtxSuffixRE.ReplaceAllString(strings.ToLower(cluster), "-"), "-_.")
-	}
-	return mlServicePrefix + kind
-}
-
 // scrapeFields are the deprecated scrape fields of forge.Adopt /
-// forge.Install the component sets, in declaration order (empty: none).
-// selector, port and allow are the declared values. The output's
-// service_name is the scrape's derived service.name, so service_name counts
-// as set when it differs from the default kcl/ml.k would derive (cluster and
-// nstacks are the stack's kube context and the env's stack count). KCL
-// refuses allow or service_name without a port, so a render never shows
+// forge.Install the component declares, in declaration order (empty: none).
+// KCL refuses allow or service_name without a port, so a render never shows
 // them alone, but any one of the four marks the component.
-func (c MLComponentOutput) scrapeFields(cluster string, nstacks int) []string {
+func (c MLComponentOutput) scrapeFields() []string {
 	var fields []string
 	if len(c.Selector) > 0 {
 		fields = append(fields, "selector")
@@ -132,7 +116,7 @@ func (c MLComponentOutput) scrapeFields(cluster string, nstacks int) []string {
 	if len(c.Allow) > 0 {
 		fields = append(fields, "allow")
 	}
-	if c.ServiceName != "" && c.ServiceName != mlDefaultScrapeService(c.Kind, cluster, nstacks) {
+	if c.ServiceNameDeclared {
 		fields = append(fields, "service_name")
 	}
 	return fields
@@ -149,7 +133,7 @@ func mlScrapeDeprecations(entities *KCLEntities) []string {
 	var out []string
 	for _, s := range entities.MLStacks {
 		for _, c := range s.Components {
-			fields := c.scrapeFields(s.Cluster, len(entities.MLStacks))
+			fields := c.scrapeFields()
 			if len(fields) == 0 {
 				continue
 			}

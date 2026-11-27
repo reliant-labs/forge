@@ -404,13 +404,15 @@ schema MLStack:
                   scrape fields, either mode),
                 "note",
                 "service_name": "<the deprecated derived scrape's service.name when it renders, else empty>",
-                "chart": "<the Install chart's name, else empty>", "reason"
+                "chart": "<the Install chart's name, else empty>", "reason",
+                "service_name_declared": true (only when the component
+                  declares the deprecated service_name; absent otherwise)
               }],
               "decisions": [{"id", "decision", "reason", "expires"}]
             }
 
-        Every key is always present (empty when unset); keys are only ever
-        added.
+        Every key is always present (empty when unset), but for
+        service_name_declared; keys are only ever added.
     """
     # Where the stack lives. `cluster` is the kube context.
     cluster: ClusterTarget
@@ -585,6 +587,10 @@ _ml_render_component = lambda e: any, svc: str -> any {
         "service_name": svc
         "chart": "" if _adopt else _c.chart.name
         "reason": "" if _adopt else (_c.reason or "")
+        # Only when the component declares the deprecated service_name, so a
+        # project that does not renders exactly the v1.13.0 document.
+        if _c.service_name:
+            "service_name_declared": True
     }
 }
 

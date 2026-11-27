@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,46 +83,34 @@ func TestMLScrapeFieldsWarnDeprecated(t *testing.T) {
 }
 
 // Any deprecated scrape field marks a component, alone or not, and the
-// warning lists exactly the fields it sets. service_name counts as set only
-// when it is not the ml-<kind>[-<cluster>] default kcl/ml.k derives.
+// warning lists exactly the fields it declares. service_name counts as
+// declared from service_name_declared alone: the rendered service_name is
+// the derived default too, and a declared one may equal it.
 func TestMLScrapeDeprecationsListExactlyTheFieldsSet(t *testing.T) {
 	sel := map[string]string{"app": "prom"}
 	for _, tc := range []struct {
 		name    string
-		stacks  int
 		c       MLComponentOutput
 		want    string // "" = no warning
 		service string // a "scrapes as service" clause the warning must carry
 	}{
-		{name: "service_name only", stacks: 1, c: MLComponentOutput{ServiceName: "prom-a"},
-			want: `sets service_name, deprecated`, service: `scrapes as service "prom-a"`},
-		{name: "allow only", stacks: 1, c: MLComponentOutput{Allow: []string{"up"}},
+		{name: "service_name only", c: MLComponentOutput{ServiceNameDeclared: true},
+			want: `sets service_name, deprecated`},
+		{name: "allow only", c: MLComponentOutput{Allow: []string{"up"}},
 			want: `sets allow, deprecated`},
-		{name: "selector only", stacks: 1, c: MLComponentOutput{Selector: sel},
+		{name: "selector only", c: MLComponentOutput{Selector: sel},
 			want: `sets selector, deprecated`},
-		{name: "every field", stacks: 1, c: MLComponentOutput{Selector: sel, Port: 9090, Allow: []string{"up"}, ServiceName: "prom-a"},
+		{name: "every field", c: MLComponentOutput{Selector: sel, Port: 9090, Allow: []string{"up"}, ServiceName: "prom-a", ServiceNameDeclared: true},
 			want: `sets selector, port, allow, service_name, deprecated`, service: `scrapes as service "prom-a"`},
-		{name: "derived default name", stacks: 1, c: MLComponentOutput{Selector: sel, Port: 9090, ServiceName: "ml-prometheus"},
+		{name: "declared service_name equal to the default", c: MLComponentOutput{Selector: sel, Port: 9090, ServiceName: "ml-prometheus", ServiceNameDeclared: true},
+			want: `sets selector, port, service_name, deprecated`, service: `scrapes as service "ml-prometheus"`},
+		{name: "derived default, not declared", c: MLComponentOutput{Selector: sel, Port: 9090, ServiceName: "ml-prometheus"},
 			want: `sets selector, port, deprecated`, service: `scrapes as service "ml-prometheus"`},
-		{name: "derived default name, several stacks", stacks: 2, c: MLComponentOutput{Selector: sel, Port: 9090, ServiceName: "ml-prometheus-gke_acme_us-central1_gpu"},
-			want: `sets selector, port, deprecated`, service: `scrapes as service "ml-prometheus-gke_acme_us-central1_gpu"`},
-		{name: "one stack's default under several stacks is set", stacks: 2, c: MLComponentOutput{Selector: sel, Port: 9090, ServiceName: "ml-prometheus"},
-			want: `sets selector, port, service_name, deprecated`},
-		{name: "no scrape fields", stacks: 1, c: MLComponentOutput{}},
+		{name: "no scrape fields", c: MLComponentOutput{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.c.Slot, tc.c.Mode, tc.c.Kind = "monitoring", "adopt", "prometheus"
-			e := &KCLEntities{}
-			for i := 0; i < tc.stacks; i++ {
-				s := MLStackOutput{Cluster: "GKE_acme_us-central1_gpu"}
-				if i == 0 {
-					s.Components = []MLComponentOutput{tc.c}
-				} else {
-					s.Cluster = "other"
-				}
-				e.MLStacks = append(e.MLStacks, s)
-			}
-			w := mlScrapeDeprecations(e)
+			w := mlScrapeDeprecations(&KCLEntities{MLStacks: []MLStackOutput{{Cluster: "gpu", Components: []MLComponentOutput{tc.c}}}})
 			if tc.want == "" {
 				if len(w) != 0 {
 					t.Fatalf("warnings = %q, want none", w)
@@ -135,5 +124,32 @@ func TestMLScrapeDeprecationsListExactlyTheFieldsSet(t *testing.T) {
 				t.Errorf("warning %q lacks %q", w[0], tc.service)
 			}
 		})
+	}
+}
+
+// service_name_declared is decoded from the render, and a component that
+// does not declare service_name carries no such key: the v1.13.0 golden,
+// whose components declare none, has none.
+func TestMLServiceNameDeclaredDecodes(t *testing.T) {
+	var c MLComponentOutput
+	if err := json.Unmarshal([]byte(`{"kind":"prometheus","port":9090,"service_name":"ml-prometheus","service_name_declared":true}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if !c.ServiceNameDeclared {
+		t.Errorf("service_name_declared not decoded: %+v", c)
+	}
+	raw, err := os.ReadFile(filepath.Join("testdata", "render_contract", "ml-stack-v1.13.0.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("service_name_declared")) {
+		t.Errorf("the v1.13.0 golden carries service_name_declared")
+	}
+	b, err := json.Marshal(MLComponentOutput{Kind: "kueue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b, []byte("service_name_declared")) {
+		t.Errorf("an undeclared component encodes service_name_declared: %s", b)
 	}
 }

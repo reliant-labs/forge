@@ -170,10 +170,11 @@ func envSchemaOptions(describe func(reflect.Type, string) string) schemagen.Opti
 		// The scrape fields of an ML component (forge.Adopt / forge.Install),
 		// deprecated in v1.14.0: kept in the document until a future major.
 		Deprecated: map[schemagen.FieldKey]bool{
-			{Type: reflect.TypeOf(MLComponentOutput{}), Name: "selector"}:     true,
-			{Type: reflect.TypeOf(MLComponentOutput{}), Name: "port"}:         true,
-			{Type: reflect.TypeOf(MLComponentOutput{}), Name: "allow"}:        true,
-			{Type: reflect.TypeOf(MLComponentOutput{}), Name: "service_name"}: true,
+			{Type: reflect.TypeOf(MLComponentOutput{}), Name: "selector"}:              true,
+			{Type: reflect.TypeOf(MLComponentOutput{}), Name: "port"}:                  true,
+			{Type: reflect.TypeOf(MLComponentOutput{}), Name: "allow"}:                 true,
+			{Type: reflect.TypeOf(MLComponentOutput{}), Name: "service_name"}:          true,
+			{Type: reflect.TypeOf(MLComponentOutput{}), Name: "service_name_declared"}: true,
 		},
 	}
 }

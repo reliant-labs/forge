@@ -24,8 +24,8 @@ package cli
 //   - Every other failing package — the candidates, the packages this run
 //     did not write — is compiled once more with each file the run changed
 //     overlaid by its pre-run bytes (or removed, when the run created it).
-//     A candidate whose errors all reproduce there failed before the run
-//     and fails the same way after it: not caused by generate. Anything
+//     A candidate whose diagnostic multiset matches there failed before the
+//     run and fails the same way after it: not caused by generate. Anything
 //     else — a new error, or one that appears only against the new bytes,
 //     the case of a hand-written consumer that no longer matches a
 //     regenerated interface — is the run's.
@@ -326,9 +326,9 @@ func (s *generateWriteScope) compileBefore(projectDir, root string, candidates [
 	return before, nil
 }
 
-// errorsReproduce reports whether every error line in after also appears in
-// before: the package failed the same way before the run. The `# package`
-// headers and the compiler's truncation notice are not errors.
+// errorsReproduce reports whether the normalized diagnostic multisets match:
+// the package failed the same way before the run. The `# package` headers
+// and the compiler's truncation notice are not errors.
 func errorsReproduce(after, before string) bool {
 	if strings.TrimSpace(before) == "" {
 		return false
@@ -349,12 +349,9 @@ func errorsReproduce(after, before string) bool {
 	if len(now) == 0 {
 		return false
 	}
-	for _, l := range now {
-		if !slices.Contains(was, l) {
-			return false
-		}
-	}
-	return true
+	slices.Sort(was)
+	slices.Sort(now)
+	return slices.Equal(was, now)
 }
 
 // report prints the foreign failure where the compile check prints a

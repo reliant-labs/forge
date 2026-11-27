@@ -123,6 +123,18 @@ func TestValidateScope_NewErrorBesideAnOldOneIsTheRuns(t *testing.T) {
 	}
 }
 
+// The overlay has two errors, but generation removes one while leaving
+// the other unchanged. A matching subset does not prove unchanged failure.
+func TestValidateScope_RemovedErrorBesideAnOldOneIsTheRuns(t *testing.T) {
+	f := newScopeFixture(t, map[string]string{
+		"a/a.go": "package a\n\nfunc F() string { return \"\" }\n",
+		"c/c.go": "package c\n\nimport \"example.com/scope/a\"\n\nvar Y string = a.F()\n\nvar Z int = \"old\"\n",
+	})
+	if _, ok := f.attribute(t); ok {
+		t.Fatal("a changed error set retaining only a matching diagnostic was called pre-existing")
+	}
+}
+
 // An error inside a package the run wrote into is the run's, whatever file
 // it cites.
 func TestValidateScope_ErrorInAPackageTheRunWroteIsTheRuns(t *testing.T) {
@@ -354,9 +366,12 @@ func TestErrorsReproduce(t *testing.T) {
 		after string
 		want  bool
 	}{
-		{"# example.com/b\nb/b.go:3:13: cannot use x\n", true},
+		{"# example.com/b\nb/b.go:3:13: cannot use x\n", false},
 		{before, true},
-		{"# example.com/b\nb/b.go:3:13: cannot use x\nb/b.go:9:1: too many errors\n", true},
+		{"# example.com/b\nb/b.go:3:13: cannot use x\nb/b.go:9:1: too many errors\n", false},
+		{before + "b/b.go:9:1: too many errors\n", true},
+		{"  b/b.go:4:1: undefined: y  \n\nb/b.go:3:13: cannot use x\n", true},
+		{before + "b/b.go:3:13: cannot use x\n", false},
 		{"# example.com/b\nb/b.go:5:2: undefined: z\n", false},
 		{"", false},
 		{"# example.com/b\n", false},

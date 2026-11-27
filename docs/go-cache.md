@@ -7,10 +7,10 @@ machines.
 
 ## The tiers
 
-| tier | path | written by | read by |
-|---|---|---|---|
+| tier    | path                                                                  | written by                                                                                                                       | read by                    |
+| ------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
 | trusted | `/var/cache/workspace/go-build-trusted`, or `$FORGE_GO_TRUSTED_CACHE` | trusted builds only: `forge cache seed` on each merge to main, and the gate on main, running plain `go` with `GOCACHE` set to it | every build on the machine |
-| overlay | the context's own `GOCACHE` | that context, through `forge cache prog` | that context |
+| overlay | the context's own `GOCACHE`                                           | that context, through `forge cache prog`                                                                                         | that context               |
 
 An untrusted build runs `go` with `GOCACHEPROG="forge cache prog"`. For each
 lookup the helper reads the trusted tier first, then the overlay. A trusted hit
@@ -92,7 +92,20 @@ Set `FORGE_CACHE_PROG_STATS=<file>` and each `go` command's helper appends one
 JSON line when it exits:
 
 ```json
-{"pid":4242,"dir":"/home/u/src/forge","trusted":"/var/cache/workspace/go-build-trusted","overlay":"/var/cache/workspace/go-build","gets":3214,"trusted_hits":3190,"overlay_hits":20,"misses":4,"puts":3,"put_bytes":1840,"deduped_puts":0,"seconds":7.4}
+{
+  "pid": 4242,
+  "dir": "/home/u/src/forge",
+  "trusted": "/var/cache/workspace/go-build-trusted",
+  "overlay": "/var/cache/workspace/go-build",
+  "gets": 3214,
+  "trusted_hits": 3190,
+  "overlay_hits": 20,
+  "misses": 4,
+  "puts": 3,
+  "put_bytes": 1840,
+  "deduped_puts": 0,
+  "seconds": 7.4
+}
 ```
 
 `trusted_note` appears when the trusted tier was not used, with the reason.

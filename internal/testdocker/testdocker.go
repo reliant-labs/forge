@@ -37,7 +37,7 @@ import (
 // its name to the stage's skip log (RELIANT_GATE_DOCKER_SKIPS). The gate
 // counts those lines into its verdict (reliant's
 // gaterun.StageResult.SkippedDockerTests), so the skip is reported as a skip,
-// never as a pass.
+// never as a pass. A skip it cannot record (no log, an unwritable one) fails.
 func Unavailable(t testing.TB, format string, args ...any) {
 	t.Helper()
 	msg := fmt.Sprintf(format, args...)
@@ -68,21 +68,35 @@ func InGate() bool {
 }
 
 // gateSkip records t in the stage's skip log and skips it with
-// GateSkipMessage; why is logged on the line before.
+// GateSkipMessage; why is logged on the line before. A skip the gate cannot
+// count is a failure: the gate's stage script sets the log for every stage,
+// so a missing log, or one that cannot be written, would otherwise let a
+// container test go unrun without the verdict saying so.
 func gateSkip(t testing.TB, why string) {
 	t.Helper()
-	if log := os.Getenv(envDockerSkips); log != "" {
-		// One short O_APPEND write per skip: concurrent test processes
-		// cannot interleave inside a line.
-		if f, err := os.OpenFile(log, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644); err == nil {
-			_, _ = fmt.Fprintln(f, t.Name())
-			_ = f.Close()
-		} else {
-			t.Logf("record the skip in %s: %v", log, err)
-		}
+	log := os.Getenv(envDockerSkips)
+	if log == "" {
+		t.Fatalf("%s (RELIANT_GATE=1 but %s is not set, so this skip could not be counted in the gate's verdict: a failure, not a skip)", why, envDockerSkips)
+	}
+	if err := recordSkip(log, t.Name()); err != nil {
+		t.Fatalf("%s (could not record the skip in %s: %v; an uncounted skip in a gate is a failure)", why, log, err)
 	}
 	t.Logf("%s", why)
 	t.Skip(GateSkipMessage)
+}
+
+// recordSkip appends name to the skip log as one line, in one short O_APPEND
+// write, so concurrent test processes cannot interleave inside a line.
+func recordSkip(log, name string) error {
+	f, err := os.OpenFile(log, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	_, werr := fmt.Fprintln(f, name)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	return werr
 }
 
 // Publish is the `docker run` flag pair that publishes containerPort on a

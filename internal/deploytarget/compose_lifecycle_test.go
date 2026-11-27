@@ -199,6 +199,58 @@ func TestComposeDownKeepsNetworksWithoutExclusiveOwnership(t *testing.T) {
 	}
 }
 
+func TestComposeDownRemovesOnlyEmptyExclusiveNetworks(t *testing.T) {
+	const project = "forge-abc-dev"
+	for _, scenario := range []string{"empty", "attached", "stopped", "other checkout", "other env", "reused", "inspect fails", "list fails"} {
+		t.Run(scenario, func(t *testing.T) {
+			dir, r := composeNetworkFixture(t, project)
+			labels := map[string]string{
+				"com.docker.compose.project":         project,
+				"com.docker.compose.network":         "default",
+				"io.reliant.forge.network.exclusive": "true",
+				"io.reliant.forge.network.checkout":  dir,
+				"io.reliant.forge.network.env":       "dev",
+			}
+			containers := map[string]any{}
+			switch scenario {
+			case "attached":
+				containers["foreign"] = map[string]string{"Name": "foreign"}
+			case "stopped":
+				r.outputs["docker container ls --all --quiet --filter network=net-empty"] = "stopped-container\n"
+			case "other checkout":
+				labels["io.reliant.forge.network.checkout"] = filepath.Join(dir, "other")
+			case "other env":
+				labels["io.reliant.forge.network.env"] = "prod"
+			case "reused":
+				delete(labels, "io.reliant.forge.network.exclusive")
+			case "inspect fails":
+				r.runErrs["docker network inspect net-empty"] = errors.New("permission denied")
+			case "list fails":
+				r.runErrs["docker container ls --all --quiet --filter network=net-empty"] = errors.New("permission denied")
+			}
+			data, err := json.Marshal([]map[string]any{{"Labels": labels, "Containers": containers}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.outputs["docker network ls --quiet --filter label=com.docker.compose.project="+project] = "net-empty\nnet-running\n"
+			r.outputs["docker network inspect net-empty"] = string(data)
+			// An empty reused network has matching Compose labels and a recorded
+			// ID, but no declaration that it is exclusive to this checkout/env.
+			r.outputs["docker network inspect net-running"] = networkJSON(project, "reused")
+			if err := (ComposeProvider{ProjectDir: dir, Runner: r}).StopOwned(context.Background(), "dev"); err != nil {
+				t.Fatal(err)
+			}
+			removed := networksRemoved(r)
+			if removed["net-empty"] != (scenario == "empty") || removed["net-running"] {
+				t.Fatalf("unsafe or missing cleanup: %v; calls: %v", removed, r.calls)
+			}
+			if !slices.Contains(r.calls, "docker network inspect net-empty") {
+				t.Fatal("network cleanup was not attempted after settling the project")
+			}
+		})
+	}
+}
+
 // TestComposeDownKeepsNetworksWhileTheProjectIsNotSettled: a container of the
 // project left (unremovable, unverifiable, or not ours to remove) still
 // references the networks, so none of them is even listed.

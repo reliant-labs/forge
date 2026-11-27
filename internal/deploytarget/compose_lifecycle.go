@@ -219,12 +219,91 @@ func (p ComposeProvider) StopOwned(ctx context.Context, env string) error {
 		return err
 	}
 	var errs []error
+	networks := map[string][]string{}
+	unsettled := map[string]bool{}
 	for _, path := range paths {
-		if _, _, err := p.stopRecord(ctx, env, path); err != nil {
+		rec, err := statefile.Read[composeOwned](path, "compose ownership")
+		if err != nil {
 			errs = append(errs, err)
+			continue
+		}
+		project, settled, err := p.stopRecord(ctx, env, path)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		if project == "" {
+			continue
+		}
+		if !settled {
+			unsettled[project] = true
+		}
+		if rec != nil {
+			networks[project] = append(networks[project], rec.Networks...)
+		}
+	}
+	// An unreadable record could belong to any project. Do not clean up
+	// networks until every record's ownership and settlement is known.
+	if len(errs) == 0 {
+		for project, ids := range networks {
+			if !unsettled[project] {
+				p.cleanupOwnedNetworks(ctx, env, project, ids)
+			}
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// cleanupOwnedNetworks is best effort: failure to prove safety retains the
+// network. Compose labels and recorded attachment IDs alone do not prove
+// exclusivity. A Compose network may opt into cleanup by declaring all three
+// io.reliant.forge.network labels below: exclusive=true, checkout=<absolute
+// checkout path>, env=<environment>. This is an explicit declaration that the
+// network is private to that checkout/env, not a borrowed or shared network.
+// Legacy networks without that declaration are deliberately left alone.
+func (p ComposeProvider) cleanupOwnedNetworks(ctx context.Context, env, project string, recorded []string) {
+	if len(recorded) == 0 {
+		return
+	}
+	runner := p.runner()
+	out, err := runner.Output(ctx, "docker", "container", "ls", "--all", "--quiet", "--filter", "label=com.docker.compose.project="+project)
+	if err != nil || strings.TrimSpace(string(out)) != "" {
+		return
+	}
+	out, err = runner.Output(ctx, "docker", "network", "ls", "--quiet", "--filter", "label=com.docker.compose.project="+project)
+	if err != nil {
+		return
+	}
+	for _, id := range composeContainerIDs(out) {
+		if !slices.Contains(recorded, id) {
+			continue
+		}
+		data, err := runner.Output(ctx, "docker", "network", "inspect", id)
+		if err != nil {
+			continue
+		}
+		var rows []struct {
+			Labels     map[string]string
+			Containers map[string]json.RawMessage
+		}
+		if json.Unmarshal(data, &rows) != nil || len(rows) != 1 {
+			continue
+		}
+		labels := rows[0].Labels
+		if labels["com.docker.compose.project"] != project || labels["com.docker.compose.network"] == "" ||
+			labels["io.reliant.forge.network.exclusive"] != "true" ||
+			labels["io.reliant.forge.network.env"] != env ||
+			labels["io.reliant.forge.network.checkout"] == "" ||
+			!sameDirectory(labels["io.reliant.forge.network.checkout"], p.projectDir()) || len(rows[0].Containers) != 0 {
+			continue
+		}
+		// Network inspect omits stopped containers' configured attachments.
+		out, err := runner.Output(ctx, "docker", "container", "ls", "--all", "--quiet", "--filter", "network="+id)
+		if err != nil || strings.TrimSpace(string(out)) != "" {
+			continue
+		}
+		// Docker also refuses removal if an endpoint appeared since inspection.
+		_ = runner.Run(ctx, "docker", "network", "rm", id)
+	}
 }
 
 // stopRecord settles one ownership record: each recorded ID is removed when

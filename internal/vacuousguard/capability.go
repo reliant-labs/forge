@@ -205,8 +205,9 @@ func reports(branch ast.Node) bool {
 }
 
 // reportingHelpers are the package-qualified helpers that always tell someone:
-// testdocker.Unavailable skips on a developer machine and fails under CI, the
-// requireTool shape this rule asks for, spelled for smoke tests.
+// testdocker.Unavailable skips on a developer machine and fails under CI (in a
+// Reliant gate it skips, and the gate counts the skip), the requireTool shape
+// this rule asks for, spelled for smoke tests.
 var reportingHelpers = map[string]bool{
 	"testdocker.Unavailable": true,
 }

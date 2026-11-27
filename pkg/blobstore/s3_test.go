@@ -111,6 +111,21 @@ func TestS3PresignGetDownloadName(t *testing.T) {
 	}
 }
 
+// The forced type and disposition are signed query parameters: a URL
+// edited to name another type no longer verifies.
+func TestS3PresignGetInline(t *testing.T) {
+	t.Parallel()
+	s, err := blobstore.NewS3(s3Config("https://s3.example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range checkInlineGets(t, s) {
+		if q.Get("X-Amz-SignedHeaders") != "host" || q.Get("X-Amz-Signature") == "" {
+			t.Fatalf("query = %v, want a host-signed SigV4 URL", q)
+		}
+	}
+}
+
 // Stat maps the service's 404 to ErrNotFound and keeps every other failure
 // a failure.
 func TestS3StatMapsNotFound(t *testing.T) {

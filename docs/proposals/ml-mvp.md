@@ -24,8 +24,9 @@ document changes one of them, it says so in [section 0](#0-what-this-changes).
 **In flight beside it:** `forge.MLStack` (forge#2887), `forge ml discover`
 (forge#2893), the Phase A console views (reliant#3726, control-plane#3772;
 MlEarlyAccessService drops its telemetry read RPCs in favour of
-ObservabilityService, in progress), the collector's opt-in Kubernetes
-inventory and events capability (forge#2998),
+ObservabilityService, in progress), the opt-in Kubernetes inventory of forge's
+node agent (`ObservabilityAgent.kubernetes_inventory`, forge#2998; generic
+observability, not ML-specific),
 multi-cluster scheduling (forge#2994, held by the owner on 2026-11-26; it also
 records the fencing design this document lands first, inside one cluster), and
 the owner's "take your recommendations on all" record
@@ -82,7 +83,7 @@ can opt into certain features without taking others."
 
 **Every ML capability is independently adoptable.** Managed KServe, managed
 Kueue, managed Kubeflow Trainer, managed KubeRay, add-on telemetry, the
-collector's Kubernetes inventory and events capability (forge#2998),
+Kubernetes inventory (`ObservabilityAgent.kubernetes_inventory`, forge#2998),
 `forge ml discover`, release-stamped InferenceServices, model releases, eval
 gates, training-run records, the Python SDK, and recommendations and
 remediation: none
@@ -94,7 +95,17 @@ read through this rule:
   (never adopted and installed, never installed twice) one place to live. A
   stack holding one component is a valid stack. Nothing outside the stack
   requires one: an InferenceService in `forge.Manifests`, a model release and an
-  eval gate work with no `MLStack`, no collector and no Kueue.
+  eval gate work with no `MLStack`, no Kubernetes inventory and no Kueue.
+- **There is no ML-specific collector.** The owner, 2026-11-26: "Simpler is
+  better, not sure if we need MLcollector when it's really just an Otel
+  collector that can be used without that". Cluster inventory and events are a
+  generic, opt-in capability of forge's existing node agent,
+  `ObservabilityAgent.kubernetes_inventory` (forge#2998), useful to any app on a
+  cluster. GPU metrics are a plain `forge.Telemetry` scrape of the DCGM exporter
+  in the env's `observability.telemetry`, and `forge.Adopt` records that the
+  exporter runs. `Adopt`'s own scrape fields (`selector`, `port`, `allow`,
+  `service_name`) shipped in v1.13.0, so they keep working and are deprecated,
+  not removed (forge#3030).
 - **forge never adds an add-on the file does not name.** "When Kueue is
   installed" ([decision 55](#7-owner-decisions-settled-2026-11-26)) means when
   the stack declares `forge.Install {kind = "kueue"}` (or adopts one), or a
@@ -102,7 +113,7 @@ read through this rule:
   declared or adopted, is a render error that names the fix, never an implicit
   install.
 - **A missing piece narrows what is reported; it is not an error.** Discovery,
-  the collector, the add-on telemetry and the recommendations report on what
+  the Kubernetes inventory, the add-on telemetry and the recommendations report on what
   is there. A cluster with only KServe gets KServe's findings and nothing about
   queues.
 - **Integrations switch on when both sides are present.** Kueue's TrainJob and
@@ -120,21 +131,21 @@ read through this rule:
 any forge project needs (a `forge.yaml`, an env) and, for anything rendered into
 a cluster, a `forge.ClusterTarget`.
 
-| Capability                                                           | Needs                                                                                                                                                                                                                                                                                   | Works without                                                                                                                                                                 |
-| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Managed KServe (`forge.Install {kind = "kserve"}`, or `forge.Adopt`) | cert-manager, adopted or installed (KServe's webhooks need it)                                                                                                                                                                                                                          | Kueue, Trainer, KubeRay, the collector, model releases (customer InferenceServices in `forge.Manifests` keep working either way), the control plane                           |
-| Managed Kueue (`kind = "kueue"`)                                     | Nothing else (cert-manager optional)                                                                                                                                                                                                                                                    | KServe, Trainer, KubeRay (their integrations stay off), the collector, training-run records, the control plane                                                                |
-| Managed Kubeflow Trainer (`kind = "kubeflow-trainer"`)               | Nothing else (it manages its own certificates)                                                                                                                                                                                                                                          | Kueue (a TrainJob runs unqueued, decision 55), KServe, KubeRay, training-run records, the control plane                                                                       |
-| Managed KubeRay (`kind = "kuberay"`)                                 | Nothing else (webhooks off by default). Install needs a `reason`: adopt-only by policy (forge#2887)                                                                                                                                                                                     | Kueue (Ray admission through Kueue is optional), KServe, Trainer, the control plane                                                                                           |
-| Add-on telemetry (a `forge.Telemetry` per add-on)                    | A telemetry pipeline (forge's, or the customer's OTLP endpoint)                                                                                                                                                                                                                         | `forge.MLStack`, the collector, the SDK, model releases, training-run records                                                                                                 |
-| Kubernetes inventory and events (forge#2998)                         | Off until declared. forge's collector on a connected cluster (`forge cluster connect`)                                                                                                                                                                                                  | `forge.MLStack`, every managed add-on (it reports what it finds), the SDK, model releases, training-run records                                                               |
-| `forge ml discover`                                                  | Read access to the cluster                                                                                                                                                                                                                                                              | `forge.MLStack` (it can write the first one), any add-on being present, the collector, the control plane                                                                      |
-| Release-stamped InferenceService (`forge.Manifests`)                 | A KServe install serving the `v1beta1` InferenceService CRD (managed, adopted, or the customer's own, checked by the cluster preflight)                                                                                                                                                 | `forge.MLStack`, managed KServe, Kueue, Trainer, KubeRay, the collector, model releases (a digest pinned in the manifest works), eval gates, training runs, the control plane |
-| Model release                                                        | forge's release ledger (`forge env build --release`) and a `forge.Model`; for OCI loading, the modelcar binding of section 2.2                                                                                                                                                          | `forge.MLStack`, any add-on, eval gates, training runs (`source_run` is optional)                                                                                             |
-| Eval gate (`forge.EvalSuite`)                                        | A candidate and a baseline endpoint, a versioned eval set, a harness workload. As a promotion gate, a `DeliveryPolicy.required_gates` entry; `forge ml eval check --json` alone runs in any CI                                                                                          | KServe (any endpoint is judged), `forge.MLStack`, Kueue, training runs, the collector                                                                                         |
-| Training-run records                                                 | A `forge.Training` template, or an observed orchestrator CR. Observed runs are derived from Kueue, JobSet and TrainJob status; the control plane's run ledger (decision 25 of reliant-for-ml, so a Reliant org with the ML entitlement) holds attempts once fencing needs durable state | Kueue, Trainer (a plain `Job` or JobSet runs too), KServe, the SDK (a forge-rendered sidecar reports checkpoint durability), model releases, the collector                    |
-| Python SDK                                                           | An OTLP endpoint (any collector); the control plane for run records                                                                                                                                                                                                                     | A forge project, `forge.Training`, `forge.MLStack`, every add-on, the collector                                                                                               |
-| Recommendations and remediation                                      | The data each one reads (a recommendation with no source does not fire). Remediation in `act` mode also needs a declared `forge.Resilience` and a run record                                                                                                                            | Every capability it does not read; `recommend` mode needs no executor                                                                                                         |
+| Capability                                                                   | Needs                                                                                                                                                                                                                                                                                   | Works without                                                                                                                                                                            |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Managed KServe (`forge.Install {kind = "kserve"}`, or `forge.Adopt`)         | cert-manager, adopted or installed (KServe's webhooks need it)                                                                                                                                                                                                                          | Kueue, Trainer, KubeRay, the Kubernetes inventory, model releases (customer InferenceServices in `forge.Manifests` keep working either way), the control plane                           |
+| Managed Kueue (`kind = "kueue"`)                                             | Nothing else (cert-manager optional)                                                                                                                                                                                                                                                    | KServe, Trainer, KubeRay (their integrations stay off), the Kubernetes inventory, training-run records, the control plane                                                                |
+| Managed Kubeflow Trainer (`kind = "kubeflow-trainer"`)                       | Nothing else (it manages its own certificates)                                                                                                                                                                                                                                          | Kueue (a TrainJob runs unqueued, decision 55), KServe, KubeRay, training-run records, the control plane                                                                                  |
+| Managed KubeRay (`kind = "kuberay"`)                                         | Nothing else (webhooks off by default). Install needs a `reason`: adopt-only by policy (forge#2887)                                                                                                                                                                                     | Kueue (Ray admission through Kueue is optional), KServe, Trainer, the control plane                                                                                                      |
+| Add-on telemetry (a `forge.Telemetry` per add-on)                            | A telemetry pipeline (forge's, or the customer's OTLP endpoint)                                                                                                                                                                                                                         | `forge.MLStack`, the Kubernetes inventory, the SDK, model releases, training-run records                                                                                                 |
+| Kubernetes inventory (`ObservabilityAgent.kubernetes_inventory`, forge#2998) | Off until declared; a generic observability field, not part of `MLStack`. forge's node agent on the cluster and an observability destination                                                                                                                                            | `forge.MLStack`, every managed add-on (it reports what it finds), the SDK, model releases, training-run records                                                                          |
+| `forge ml discover`                                                          | Read access to the cluster                                                                                                                                                                                                                                                              | `forge.MLStack` (it can write the first one), any add-on being present, the Kubernetes inventory, the control plane                                                                      |
+| Release-stamped InferenceService (`forge.Manifests`)                         | A KServe install serving the `v1beta1` InferenceService CRD (managed, adopted, or the customer's own, checked by the cluster preflight)                                                                                                                                                 | `forge.MLStack`, managed KServe, Kueue, Trainer, KubeRay, the Kubernetes inventory, model releases (a digest pinned in the manifest works), eval gates, training runs, the control plane |
+| Model release                                                                | forge's release ledger (`forge env build --release`) and a `forge.Model`; for OCI loading, the modelcar binding of section 2.2                                                                                                                                                          | `forge.MLStack`, any add-on, eval gates, training runs (`source_run` is optional)                                                                                                        |
+| Eval gate (`forge.EvalSuite`)                                                | A candidate and a baseline endpoint, a versioned eval set, a harness workload. As a promotion gate, a `DeliveryPolicy.required_gates` entry; `forge ml eval check --json` alone runs in any CI                                                                                          | KServe (any endpoint is judged), `forge.MLStack`, Kueue, training runs, the Kubernetes inventory                                                                                         |
+| Training-run records                                                         | A `forge.Training` template, or an observed orchestrator CR. Observed runs are derived from Kueue, JobSet and TrainJob status; the control plane's run ledger (decision 25 of reliant-for-ml, so a Reliant org with the ML entitlement) holds attempts once fencing needs durable state | Kueue, Trainer (a plain `Job` or JobSet runs too), KServe, the SDK (a forge-rendered sidecar reports checkpoint durability), model releases, the Kubernetes inventory                    |
+| Python SDK                                                                   | An OTLP endpoint (any collector); the control plane for run records                                                                                                                                                                                                                     | A forge project, `forge.Training`, `forge.MLStack`, every add-on, the Kubernetes inventory                                                                                               |
+| Recommendations and remediation                                              | The data each one reads (a recommendation with no source does not fire). Remediation in `act` mode also needs a declared `forge.Resilience` and a run record                                                                                                                            | Every capability it does not read; `recommend` mode needs no executor                                                                                                                    |
 
 ## 0. What this changes
 
@@ -200,7 +211,7 @@ two DCGM exporters on one node break each other's profiling counters.
 The umbrella is **only a grouping**. Every slot is optional, and a stack that
 declares one component is complete. A team that wants managed Kueue and nothing
 else writes the following. It gets Kueue, and no KServe, no Trainer, no
-collector and no other add-on is rendered:
+Kubernetes inventory and no other add-on is rendered:
 
 ```python
 ml_stacks = [forge.MLStack {
@@ -323,8 +334,8 @@ not from a live read at render. Render stays a pure function of the repository.
   (`internal/cluster/preflight.go:1653`). An adopted KServe in Serverless mode
   with OCI support off is reported as a finding with the exact setting to
   change. forge never reconfigures an install it did not make.
-- Where the team turns on the collector's opt-in Kubernetes inventory and events
-  capability (forge#2998), that inventory keeps `observed` honest after the first
+- Where the env turns on the opt-in Kubernetes inventory
+  (`ObservabilityAgent.kubernetes_inventory`, forge#2998), that inventory keeps `observed` honest after the first
   look: a kind that appears later raises `ml-addon-installed-twice` before the
   next deploy installs over it. Without it, re-running `forge ml discover` and the
   deploy preflight's served-kinds check do the same job at deploy time.
@@ -379,16 +390,17 @@ gave each typed add-on a default telemetry preset, as `forge.ManagedDatabase`
 carries `managed_database_telemetry`. That draft went with the typed add-ons.
 
 The telemetry is per add-on: managed Kueue alone brings Kueue's scrape and
-alerts, and nothing else. It needs a telemetry pipeline, not the collector's
-Kubernetes inventory and events capability (forge#2998). A team that already
-watches the operator another way deletes the entry. Declaring an add-on never
-switches on the inventory and events capability, which is its own opt-in.
+alerts, and nothing else. It needs a telemetry pipeline, not the Kubernetes
+inventory (`ObservabilityAgent.kubernetes_inventory`, forge#2998). A team that
+already watches the operator another way deletes the entry. Declaring an add-on
+never switches on the inventory, which is a generic observability opt-in of its
+own.
 
 | Add-on      | What discover writes into the scrape (exact names verify against the pinned version)                                                             | Alerts it writes                                                                |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
 | KServe/vLLM | vLLM's `vllm:*` engine metrics (requests running and waiting, TTFT, inter-token latency, KV-cache use), the KServe controller's reconcile errors | InferenceService not ready; KV cache saturated; queue wait above baseline       |
 | Kueue       | Kueue's admission, pending-workload and quota metrics                                                                                            | Workloads pending past a threshold; a ClusterQueue at quota with preemption off |
-| Trainer     | Controller reconcile errors; TrainJob status from the collector's Kubernetes inventory and events capability (forge#2998), where it is on        | TrainJob failed; stuck in `Created`                                             |
+| Trainer     | Controller reconcile errors; TrainJob status from the Kubernetes inventory (forge#2998), where it is on                                          | TrainJob failed; stuck in `Created`                                             |
 | KubeRay     | The operator's metrics and Ray's own                                                                                                             | RayCluster unhealthy                                                            |
 
 Request traces from vLLM, if it exports OTLP spans on the pinned version (verify),
@@ -527,7 +539,7 @@ An InferenceService in `forge.Manifests` needs a KServe that serves the
 InferenceService CRD, and nothing else from this document. That KServe may be
 one forge installs, one an `MLStack` adopts, or one the customer runs that no
 `MLStack` mentions: the cluster preflight's served-kinds check proves it is
-there. No Kueue, no collector and no eval gate is involved, and the training-run
+there. No Kueue, no Kubernetes inventory and no eval gate is involved, and the training-run
 lineage on the model is filled in only when a run produced it.
 
 ### 2.4 Request traces name the release
@@ -802,7 +814,7 @@ unchanged unless named.
 | #   | Step                | What lands                                                                                                                                                                                                                                                    | Its reliant-for-ml phase                   | State                                                                                                                  |
 | --- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
 | 0   | Access and the demo | The entitlement gate, request page and Phase A views on fixtures                                                                                                                                                                                              | 0, A                                       | In flight (control-plane#3747, #3772; reliant#3693, #3726). Keep; telemetry reads move to ObservabilityService (below) |
-| 1   | Fleet and Setup     | `forge.MLStack` and `forge ml discover`; the collector's Kubernetes inventory and events (forge#2998); Fleet and Setup views on real data                                                                                                                     | B                                          | In flight (forge#2887, #2893). Keep                                                                                    |
+| 1   | Fleet and Setup     | `forge.MLStack` and `forge ml discover`; the opt-in Kubernetes inventory (`ObservabilityAgent.kubernetes_inventory`, forge#2998; generic observability); Fleet and Setup views on real data                                                                   | B                                          | In flight (forge#2887, #2893). Keep                                                                                    |
 | 2   | **Serving**         | Managed KServe and cert-manager (`Install`s of pinned charts); `forge.Model`, ModelPack push, the registry's R1–R3; the release-stamp option on `forge.Manifests`; traces tagged with the digest; inference release health; the eval gate and segment verdict | D, and F's eval-and-model half, moved up   | This proposal                                                                                                          |
 | 3   | **Training runs**   | Managed Kueue and Kubeflow Trainer (`Install`s); `forge.Training` → TrainJob; runs observed from orchestrator status, then the run and attempt ledger; checkpoint publish, fencing and resume in one cluster; `forge ml run` and `wait`; the PR fast path     | C, E1, E4, and the full-restart part of E5 | This proposal                                                                                                          |
 | 4   | Multi-cluster       | MultiKueue and the open placement controller                                                                                                                                                                                                                  | new                                        | **On hold** (owner, 2026-11-26; below)                                                                                 |
@@ -905,7 +917,7 @@ visible as the rejected alternative.
     ml-workloads §3.1's "not proposed: typed wrappers". `MLStack` is still only a
     grouping: a stack with one component is a valid stack, and an
     InferenceService in `forge.Manifests`, a model release and an eval gate work
-    without any `MLStack`, collector or Kueue. _Settled earlier the same day and
+    without any `MLStack`, Kubernetes inventory or Kueue. _Settled earlier the same day and
     now rejected:_ typed managed components (`forge.KServe`, `forge.Kueue`,
     `forge.KubeflowTrainer`, `forge.KubeRay`) lowering to `Adopt` and `Install`.
 46. **"Hosted" means forge manages the operator in the customer's cluster**, and

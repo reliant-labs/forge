@@ -1,6 +1,6 @@
 ---
 name: vuln
-description: SBOMs and vulnerabilities in forge — what every release cut records by default (a CycloneDX SBOM per artifact, stored in the release, the machine ledger and beside the image as an OCI referrer, then scanned with grype), every `forge vuln` verb (scan, list, show, sbom, db status|pull|import, exempt, patch) with exit codes and the `forge.dev/vuln-list/v1` JSON, the shared 3.3 GiB grype database (location, CI cache key, mirror, offline import, the 5-day freshness rule), pinned syft/grype installs, mirrors, `pkg/toolpins` and the tool cache's trust check, SBOM sources per artifact kind (static sites are "from lockfile"), `--no-sbom`, `provenance_sbom = off`, `vuln.attach_sbom`, registry referrer support and the GAR cleanup-policy caveat, `vuln_gate` audit/enforce and its warn-first rollout, `forge vuln exempt`, `--override-vuln-gate`, `forge vuln patch` and `vuln.patch.verify`, recording an SBOM for a deploy your own CI did, the `vuln-sbom` gate step, and control-plane envs. Use when a cut says "not scanned", when a finding needs a dependency bump, before turning `vuln_gate` to enforce, or when a promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` or `sbom_missing`.
+description: SBOMs and vulnerabilities in forge — what every release cut records by default (a CycloneDX SBOM per artifact, stored in the release, the machine ledger and beside the image as an OCI referrer, then scanned with grype), every `forge vuln` verb (scan, gate, list, show, sbom, db status|pull|import, exempt, patch) with exit codes and the `forge.dev/vuln-list/v1` JSON, the shared 3.3 GiB grype database (location, CI cache key, mirror, offline import, the 5-day freshness rule), pinned syft/grype installs, mirrors, `pkg/toolpins` and the tool cache's trust check, SBOM sources per artifact kind (static sites are "from lockfile"), `--no-sbom`, `provenance_sbom = off`, `vuln.attach_sbom`, registry referrer support and the GAR cleanup-policy caveat, `vuln_gate` audit/enforce and its warn-first rollout, `forge vuln exempt`, `--override-vuln-gate`, `forge vuln patch` and `vuln.patch.verify`, recording an SBOM for a deploy your own CI did, the `vuln-sbom` gate step, judging local build output offline with `forge vuln gate --db` (a merge gate's SBOM + scan stage, or a repo forge does not deploy), and control-plane envs. Use when a cut says "not scanned", when a finding needs a dependency bump, before turning `vuln_gate` to enforce, or when a promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` or `sbom_missing`.
 ---
 
 # SBOMs and vulnerabilities
@@ -123,6 +123,7 @@ forge vuln scan --image ghcr.io/acme/api@sha256:…   # an image, by digest only
 forge vuln scan sbom.json                    # an SBOM another tool made (CycloneDX or SPDX JSON)
 forge vuln scan --release v1.7.0             # every SBOM the release recorded; stores each scan
 forge vuln scan --deployed prod --json       # the release prod's ledger says it runs, judged by prod's gate
+forge vuln gate dist/ api.tar --db /mnt/vulndb --out sbom/ --env prod --json   # local build output, offline (below)
 forge vuln patch prod --verify               # bump what prod's findings name to their fix, then run the gate (vuln/patch)
 ```
 
@@ -149,6 +150,14 @@ forge vuln patch prod --verify               # bump what prod's findings name to
   `fix.state == fixed`) toward blocking; `not-fixed` and `wont-fix` are listed,
   never gating. A CPE-based match is lower confidence and says so. A finding with
   no severity counts as critical.
+
+## Local build output, offline: `forge vuln gate`
+
+`forge vuln gate <dir|image.tar|file>... [--sbom <file>] --db <dir> --out <dir> --json`
+SBOMs local build output and judges it by a `vuln_gate` with no release and no
+ledger, read-only and offline against a mounted database: a merge gate's SBOM +
+scan stage, or a repo forge does not deploy. Exit 0 nothing blocks, 1 a blocking
+finding, 2 could not determine. Inputs, policy, output and exits: `vuln/gate`.
 
 ## The vulnerability database, syft and grype
 

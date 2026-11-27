@@ -40,6 +40,16 @@ Two things follow, and both are worth knowing before editing a workflow:
   recorded under `refs/pull/N/merge`. That is accepted (the contributor can
   already read the repository, and the token reaches no protected-ref scope);
   the org can turn the setting off.
+- **SBOMs: protected refs only.** `sbom:write` (record a release's SBOM,
+  nothing else; never promotes) is the one other scope a job's OIDC token can
+  be exchanged for, on a control plane that records SBOMs with it, and only
+  when the job's ref is protected (GitHub's
+  `ref_protected`, which branch rulesets set too). A recorded SBOM is never
+  replaced, so a run on an unprotected branch must not write first. A
+  `workflow_run` job never gets it: its ref is the base branch's, but the
+  artifacts it handles may come from a fork, so the control plane treats it as
+  unprotected. A job that cuts the release still uses its
+  `FORGE_CONTROL_PLANE_TOKEN` (`deploy:write`), which records the SBOMs too.
 
 An env that pushes to the platform registry AND one of your own keeps the login
 step for yours alone; forge does its half in the same run.

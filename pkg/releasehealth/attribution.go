@@ -249,9 +249,11 @@ func (r Report) unattributed(f Finding) (why string, otherVersion bool) {
 			return fmt.Sprintf("first seen in %s, not %s", is.FirstVersion, rel), true
 		}
 		// No version-specific evidence: the issue stays the release's.
-	case release.HealthChangedOpErrors, release.HealthChangedOpLatency:
-		// Judged on the release's own version's calls (changed_ops.go): its
-		// service's share of other versions is not evidence against them.
+	case release.HealthChangedOpErrors, release.HealthChangedOpLatency,
+		release.HealthAIErrorRate, release.HealthAILatency, release.HealthAIToolErrors:
+		// Judged on the release's own version's calls (changed_ops.go,
+		// ai.go): its service's share of other versions is not evidence
+		// against them.
 	case release.HealthAlertFiring, release.HealthWorkloadRestarts:
 		// An alert carries no version, and a restart is not tied to the
 		// version its workload ran, so neither is ever taken off the

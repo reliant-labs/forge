@@ -282,7 +282,8 @@ type Options struct {
 // OverrideNames are the thresholds a request may override by name.
 var OverrideNames = []string{ThresholdMaxErrorRateIncrease, ThresholdMaxP95Ratio, ThresholdMinRequests, ThresholdNewIssueMinEvents, ThresholdRegressedIssueMinEvents, ThresholdRequireBaseline,
 	ThresholdErrorRateMinErrors, ThresholdBaselineWindow, ThresholdAlertBaselineMinFirings,
-	ThresholdChangedOpMinCalls, ThresholdChangedOpMaxErrorRateIncrease, ThresholdChangedOpMinErrors, ThresholdChangedOpMaxP95Ratio}
+	ThresholdChangedOpMinCalls, ThresholdChangedOpMaxErrorRateIncrease, ThresholdChangedOpMinErrors, ThresholdChangedOpMaxP95Ratio,
+	ThresholdAIMinCalls, ThresholdAIMaxErrorRateIncrease, ThresholdAIMinErrors, ThresholdAIMaxP95Ratio, ThresholdAIToolMaxErrorRateIncrease}
 
 // ParseOverrides reads --threshold name=value pairs.
 func ParseOverrides(pairs []string) (map[string]string, error) {
@@ -363,6 +364,14 @@ func Resolve(o Options) (Thresholds, error) {
 	}
 	for k, v := range o.Overrides {
 		var err error
+		if slices.Contains(AIThresholds, k) {
+			// Judged by WithAI, which lists them: checked here, so a bad
+			// value is refused before anything is read.
+			if !ValidAIThreshold(k, v) {
+				return Thresholds{}, invalid("threshold %s=%q is out of range (counts at least 1, increases in (0, 1], ratios above 1)", k, v)
+			}
+			continue
+		}
 		switch k {
 		case ThresholdMinRequests:
 			t.MinRequests, err = strconv.Atoi(v)
@@ -822,7 +831,10 @@ type Report struct {
 	// ChangedOps are the figures of the ops the release's commit range
 	// changed, as judged (changed_ops.go): the thin ones too, which are
 	// named in NotEvaluated rather than judged.
-	ChangedOps   []OpHealth  `json:"changed_ops,omitempty"`
+	ChangedOps []OpHealth `json:"changed_ops,omitempty"`
+	// AI are the per-service figures of the GenAI spans, as judged (ai.go):
+	// the thin ones too, which are named in NotEvaluated rather than judged.
+	AI           []AIHealth  `json:"ai,omitempty"`
 	Verdict      Verdict     `json:"verdict"`
 	Findings     []Finding   `json:"findings"`
 	Thresholds   []Threshold `json:"thresholds"`

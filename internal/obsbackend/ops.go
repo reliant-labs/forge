@@ -363,14 +363,19 @@ func rankOps(res *OpsResult, req OpsRequest) {
 
 // Ops implements OpsReader over the local ClickStack.
 func (l Local) Ops(ctx context.Context, req OpsRequest) (OpsResult, error) {
-	return ops(ctx, req, func(ctx context.Context, purpose string, p obsquery.Panel) ([]panelRow, []Statement, error) {
-		q := obsquery.PanelQuery{Scope: l.scope(req.Narrow), Panel: p}
+	return ops(ctx, req, l.panelRunner(req.Narrow))
+}
+
+// panelRunner runs table panels over the local ClickStack, narrowed by n.
+func (l Local) panelRunner(n Narrow) panelRun {
+	return func(ctx context.Context, purpose string, p obsquery.Panel) ([]panelRow, []Statement, error) {
+		q := obsquery.PanelQuery{Scope: l.scope(n), Panel: p}
 		st, shape, err := q.Compile()
 		if err != nil {
 			return nil, nil, compileErr(err)
 		}
 		stmts := []Statement{stmt(purpose, st)}
-		if req.Explain {
+		if n.Explain {
 			return nil, stmts, nil
 		}
 		r, err := l.run(ctx, st, DefaultLimits())
@@ -396,7 +401,7 @@ func (l Local) Ops(ctx context.Context, req OpsRequest) (OpsResult, error) {
 			rows = append(rows, pr)
 		}
 		return rows, stmts, nil
-	})
+	}
 }
 
 // Ops implements OpsReader: the ops panels, run by QueryPanel. The control
@@ -404,13 +409,19 @@ func (l Local) Ops(ctx context.Context, req OpsRequest) (OpsResult, error) {
 // plane that refuses a panel feature answers with its error, never with
 // figures made up here.
 func (c Cloud) Ops(ctx context.Context, req OpsRequest) (OpsResult, error) {
-	return ops(ctx, req, func(ctx context.Context, purpose string, p obsquery.Panel) ([]panelRow, []Statement, error) {
-		r, err := c.queryPanel(ctx, req.Narrow, p, 0)
+	return ops(ctx, req, c.panelRunner(req.Narrow))
+}
+
+// panelRunner runs table panels through the control plane's QueryPanel,
+// narrowed by n.
+func (c Cloud) panelRunner(n Narrow) panelRun {
+	return func(ctx context.Context, purpose string, p obsquery.Panel) ([]panelRow, []Statement, error) {
+		r, err := c.queryPanel(ctx, n, p, 0)
 		if err != nil {
 			return nil, nil, err
 		}
 		stmts := compiledStatements(purpose, r)
-		if req.Explain {
+		if n.Explain {
 			return nil, stmts, nil
 		}
 		var rows []panelRow
@@ -425,5 +436,5 @@ func (c Cloud) Ops(ctx context.Context, req OpsRequest) (OpsResult, error) {
 			rows = append(rows, pr)
 		}
 		return rows, stmts, nil
-	})
+	}
 }

@@ -54,6 +54,10 @@ var obsCheckSchema = obsout.Schema{
 		"changed_ops.before", "changed_ops.before.requests", "changed_ops.before.error_rate", "changed_ops.before.p50_ms", "changed_ops.before.p95_ms", "changed_ops.before.p99_ms",
 		"changed_ops.after", "changed_ops.after.requests", "changed_ops.after.error_rate", "changed_ops.after.p50_ms", "changed_ops.after.p95_ms", "changed_ops.after.p99_ms", "changed_ops.after_version", "changed_ops.before_version",
 		"changed_ops.commits", "changed_ops.commits.sha", "changed_ops.commits.subject", "changed_ops.commits.pr",
+		"ai", "ai.service", "ai.after_version",
+		"ai.before", "ai.before.model", "ai.before.model.calls", "ai.before.model.errors", "ai.before.tool", "ai.before.tool.calls", "ai.before.tool.errors", "ai.before.model_p95_ms",
+		"ai.after", "ai.after.model", "ai.after.model.calls", "ai.after.model.errors", "ai.after.tool", "ai.after.tool.calls", "ai.after.tool.errors", "ai.after.model_p95_ms",
+		"ai.tools", "ai.tools.tool", "ai.tools.before", "ai.tools.before.calls", "ai.tools.before.errors", "ai.tools.after", "ai.tools.after.calls", "ai.tools.after.errors",
 		"version_share", "window_not_live", "rollout_incomplete",
 		"new_issues", "regressed_issues", "firing_alerts", "standing_critical_alerts", "issue_alerts", "baseline_alerts", "pre_existing_alerts", "workload_findings",
 		"thresholds", "thresholds.name", "thresholds.value", "thresholds.source",
@@ -93,7 +97,10 @@ type obsCheckDoc struct {
 	// ChangedOps are the ops the judged release changed, with their before
 	// and after figures: what the changed_op_* findings judged
 	// (obs_check_changed_ops.go).
-	ChangedOps      []releasehealth.OpHealth `json:"changed_ops,omitempty"`
+	ChangedOps []releasehealth.OpHealth `json:"changed_ops,omitempty"`
+	// AI are each service's GenAI model and tool calls before and after:
+	// what the ai_* findings judged (obs_check_ai.go).
+	AI              []releasehealth.AIHealth `json:"ai,omitempty"`
 	NewIssues       []checkIssue             `json:"new_issues,omitempty"`
 	RegressedIssues []checkIssue             `json:"regressed_issues,omitempty"`
 	FiringAlerts    []releasehealth.Alert    `json:"firing_alerts,omitempty"`
@@ -368,6 +375,7 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 
 	deadline := d.Now().Add(o.timeout)
 	changed := &checkChangedOps{d: d, b: b, env: env}
+	ai := &checkAI{b: b}
 	var res obsbackend.HealthResult
 	var liveWin checkLive
 	poll := checkPoll{d: d, reader: reader, info: b.Info(), env: env, o: o, deadline: deadline}
@@ -387,7 +395,7 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 		// the rest would pass: a changed op that regressed keeps the wait
 		// going rather than ending it INCONCLUSIVE.
 		if o.earlyPass > 0 && earlyPassWhy(liveWin.attribute(res.Report), o.earlyPass) != "" &&
-			earlyPassWhy(liveWin.attribute(changed.apply(ctx, res.Report, opts.Overrides)), o.earlyPass) != "" {
+			earlyPassWhy(liveWin.attribute(ai.apply(ctx, changed.apply(ctx, res.Report, opts.Overrides), opts.Overrides)), o.earlyPass) != "" {
 			break
 		}
 		if !d.Now().Add(obsCheckPollEvery).Before(deadline) {
@@ -427,6 +435,8 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	// Rejudge, so their policy follows this call's --fail-on; before
 	// attribution and the alert read, so both see their findings.
 	res.Report = changed.apply(ctx, res.Report, opts.Overrides)
+	// The services' GenAI calls, judged the same way (obs_check_ai.go).
+	res.Report = ai.apply(ctx, res.Report, opts.Overrides)
 	// Attribution: a finding the after window cannot pin on the release (a
 	// window that ended before it went liveWin, a rollout the window barely saw,
 	// an issue whose events are another version's) never fails it. Before the
@@ -806,6 +816,7 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	}
 	doc.Services = r.Services
 	doc.ChangedOps = r.ChangedOps
+	doc.AI = r.AI
 	if r.Findings != nil {
 		doc.Findings = r.Findings
 	}
@@ -994,6 +1005,9 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 	}
 	if len(doc.ChangedOps) > 0 {
 		writeChangedOpsText(w, doc.ChangedOps)
+	}
+	if len(doc.AI) > 0 {
+		writeAIText(w, doc.AI)
 	}
 	if len(doc.Findings) > 0 {
 		fmt.Fprintln(w)

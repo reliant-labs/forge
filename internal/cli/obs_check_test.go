@@ -64,7 +64,13 @@ type seqCaller struct {
 	errs    map[string]error
 	calls   []fakeCloudCall
 	n       map[string]int
+	// aiCalls are the AI panel's reads, apart from calls.
+	aiCalls []fakeCloudCall
 }
+
+// procAIPanel keys seqCaller.replies for the AI panel's reads: QueryPanel
+// calls whose panel is obsbackend.AIPanelID.
+const procAIPanel = procPanel + "#" + obsbackend.AIPanelID
 
 func (s *seqCaller) Call(ctx context.Context, procedure string, req, out any) error {
 	s.mu.Lock()
@@ -76,6 +82,20 @@ func (s *seqCaller) Call(ctx context.Context, procedure string, req, out any) er
 	// otherwise: obs check reads the alert state on every cloud check, and
 	// the history when an alert_firing finding could fail.
 	fc := &fakeCloudCaller{replies: map[string]string{procListAlertsCheck: `{"alerts":[]}`, procListAlertHistoryCheck: `{"events":[]}`}, errs: s.errs}
+	// No GenAI calls, unless the test says otherwise: obs check reads the
+	// AI panel (obsbackend.AIPanelID) on every check, and its calls are kept
+	// apart so a test counting another panel's reads is not moved by it
+	// (obs_check_ai_test.go tests them).
+	if b, _ := json.Marshal(req); procedure == procPanel && strings.Contains(string(b), `"id":"`+obsbackend.AIPanelID+`"`) {
+		fc.replies[procedure] = `{"rows":[]}`
+		if rs := s.replies[procAIPanel]; len(rs) > 0 {
+			fc.replies[procedure] = rs[min(s.n[procAIPanel], len(rs)-1)]
+			s.n[procAIPanel]++
+		}
+		err := fc.Call(ctx, procedure, req, out)
+		s.aiCalls = append(s.aiCalls, fc.calls...)
+		return err
+	}
 	if rs := s.replies[procedure]; len(rs) > 0 {
 		i := s.n[procedure]
 		if i >= len(rs) {

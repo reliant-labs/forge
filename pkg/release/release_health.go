@@ -67,16 +67,30 @@ const (
 	// score dropped by more than a11y_max_score_drop, or a new critical axe
 	// violation appeared. It warns by default.
 	HealthA11yRegressed = "a11y_regressed"
+	// HealthAIErrorRate: the share of a service's model and tool calls
+	// (GenAI spans, pkg/observe/genai) that failed rose by more than
+	// ai_max_error_rate_increase, with at least ai_min_errors failed calls
+	// after the promotion. A cancelled call (error.type canceled) is not a
+	// failure. It warns by default.
+	HealthAIErrorRate = "ai_error_rate"
+	// HealthAILatency: a service's model calls' p95 grew by more than
+	// ai_max_p95_ratio. It warns by default.
+	HealthAILatency = "ai_latency"
+	// HealthAIToolErrors: one tool's error rate rose by more than
+	// ai_tool_max_error_rate_increase; the finding names the tool. It warns
+	// by default.
+	HealthAIToolErrors = "ai_tool_errors"
 )
 
 // HealthFindings is every finding code, in a stable order. A code added here
 // is a value a control plane that predates it refuses in a recorded fail_on,
 // so it needs a bundle feature that withholds it (bundle_features.go:
 // BundleFeatureReleaseProbes, BundleFeatureReleaseHealthChangedOps,
-// BundleFeatureReleaseHealthSiteAudit).
+// BundleFeatureReleaseHealthSiteAudit, BundleFeatureReleaseHealthAI).
 var HealthFindings = []string{HealthErrorRate, HealthLatency, HealthNewIssue, HealthRegressedIssue, HealthAlertFiring, HealthWorkloadRestarts,
 	HealthBrowserErrors, HealthBrowserFailedRequests, HealthBrowserPageLoad, HealthProbeFailed, HealthProbeLatency,
-	HealthChangedOpErrors, HealthChangedOpLatency, HealthSEORegressed, HealthA11yRegressed}
+	HealthChangedOpErrors, HealthChangedOpLatency, HealthSEORegressed, HealthA11yRegressed,
+	HealthAIErrorRate, HealthAILatency, HealthAIToolErrors}
 
 // ChangedOpFindings are the codes judged per op the release changed
 // (HealthChangedOpErrors, HealthChangedOpLatency).
@@ -85,6 +99,10 @@ var ChangedOpFindings = []string{HealthChangedOpErrors, HealthChangedOpLatency}
 // SiteAuditFindings are the codes judged from a static frontend's site audit
 // (HealthSEORegressed, HealthA11yRegressed).
 var SiteAuditFindings = []string{HealthSEORegressed, HealthA11yRegressed}
+
+// AIFindings are the codes judged from a service's GenAI spans
+// (HealthAIErrorRate, HealthAILatency, HealthAIToolErrors).
+var AIFindings = []string{HealthAIErrorRate, HealthAILatency, HealthAIToolErrors}
 
 // How many services a release needs a baseline for
 // (ShapeReleaseHealth.RequireBaseline). A service's baseline is its before

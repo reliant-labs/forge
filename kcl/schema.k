@@ -7517,7 +7517,7 @@ _render_data_access = lambda data_access: DataAccess, lifecycle: str -> {str:str
 }
 
 # The release-health finding codes (pkg/release Health*).
-_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency", "changed_op_errors", "changed_op_latency", "seo_regressed", "a11y_regressed"]
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency", "changed_op_errors", "changed_op_latency", "seo_regressed", "a11y_regressed", "ai_error_rate", "ai_latency", "ai_tool_errors"]
 
 # A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
 _release_health_seconds = lambda w: str -> int {
@@ -7602,7 +7602,16 @@ schema ReleaseHealth:
     by more than `a11y_max_score_drop` points, or a new critical axe
     violation appeared). Both warn unless listed in `fail_on`; a release
     with no previous audit has none, and one whose audit has not finished
-    lists site_audit in `not_evaluated`.
+    lists site_audit in `not_evaluated`. For a service that emits GenAI
+    spans (model and tool calls, any SDK; pkg/observe/genai), each compared
+    only with at least `--threshold ai_min_calls` (50) calls in both
+    windows: ai_error_rate (the share of failed model and tool calls rose by
+    more than ai_max_error_rate_increase, 0.05, with at least ai_min_errors,
+    5, failed after the promotion; a cancelled call is no failure),
+    ai_latency (the model calls' p95 grew by more than ai_max_p95_ratio,
+    1.5) and ai_tool_errors (one tool's error rate rose by more than
+    ai_tool_max_error_rate_increase, 0.1, with as many calls and errors);
+    all three warn unless listed in `fail_on`.
 
     Recorded in the release shape (`release_health`) when any value differs
     from the default, so every reader judges by this one declaration.

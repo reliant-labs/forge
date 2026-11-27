@@ -74,6 +74,31 @@
       "source": "default"
     },
     {
+      "name": "ai_min_calls",
+      "value": "50",
+      "source": "default"
+    },
+    {
+      "name": "ai_max_error_rate_increase",
+      "value": "0.05",
+      "source": "default"
+    },
+    {
+      "name": "ai_min_errors",
+      "value": "5",
+      "source": "default"
+    },
+    {
+      "name": "ai_max_p95_ratio",
+      "value": "1.5",
+      "source": "default"
+    },
+    {
+      "name": "ai_tool_max_error_rate_increase",
+      "value": "0.1",
+      "source": "default"
+    },
+    {
       "name": "fail_on",
       "value": "error_rate,new_issue",
       "source": "release_shape"

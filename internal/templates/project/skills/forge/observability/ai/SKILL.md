@@ -102,6 +102,24 @@ has the exact anthropic-go and openai-go usage mappings (Anthropic's
 `input_tokens` excludes cache reads; add them). `genai.End` records a
 cancellation as `error.type=canceled` with no error status.
 
+## In release health
+
+`reliant forge obs check <env>` judges each service's GenAI spans across a
+promotion, spans only (no content, no scores), with three findings that
+**warn** unless the env's `release_health.fail_on` lists them:
+
+| Finding | Fires when |
+|---|---|
+| `ai_error_rate` | the share of failed model and tool calls rose by more than `ai_max_error_rate_increase` (0.05), with at least `ai_min_errors` (5) failures after; `error.type=canceled` is no failure |
+| `ai_latency` | the model calls' p95 grew by more than `ai_max_p95_ratio` (1.5) |
+| `ai_tool_errors` | one tool's error rate rose by more than `ai_tool_max_error_rate_increase` (0.1); names the tool |
+
+A service or tool needs `ai_min_calls` (50) calls in both windows; a thinner
+one is listed under `not_evaluated` with the `ai:` prefix. On a hosted env the
+after window counts only the judged release's own `service.version`. The
+thresholds are `--threshold` overrides (`--threshold ai_min_calls=20`); the
+JSON's `ai` array holds each service's figures. `ai_cost` comes later.
+
 ## Never sampled
 
 Token totals are sums over spans, so a sampled-away call is a missing cost.

@@ -56,10 +56,11 @@ func SiteStarterKindNames() []string { return []string{"nextjs", "vite-spa"} }
 // audit` names a site that still ships one. favicon.ico answers the browser's
 // /favicon.ico request instead of a 404.
 //
-// robots.txt: the Next.js starter generates it at build time
-// (src/app/robots.ts), because its Sitemap: line needs the absolute SITE_URL;
-// a public/robots.txt beside that route fails the build. The Vite starter
-// still ships the static one.
+// robots.txt: neither starter ships a static one. Its Sitemap: line needs the
+// absolute SITE_URL, so both generate it at build time: Next.js from
+// src/app/robots.ts (a public/robots.txt beside that route fails the build),
+// Vite with forgeSiteFiles() (which never overwrites a public/robots.txt, so
+// a static one would silently win).
 var siteStarterReused = map[string][]struct{ from, to string }{
 	"vite": {
 		{from: "vite-spa/" + inlinedDevLogPlugin, to: inlinedDevLogPlugin},
@@ -67,7 +68,6 @@ var siteStarterReused = map[string][]struct{ from, to string }{
 		{from: "site/shared/public/favicon.svg", to: "public/favicon.svg"},
 		{from: "site/shared/public/og.png", to: "public/og.png"},
 		{from: "shared-web/public/favicon.ico", to: "public/favicon.ico"},
-		{from: "shared-web/public/robots.txt", to: "public/robots.txt"},
 	},
 	"nextjs": {
 		{from: "nextjs/src/app/%5F_forge/log/route.ts", to: "src/app/%5F_forge/log/route.ts"},

@@ -229,8 +229,12 @@ func TestCaptureNoRecordExportsWritableLane(t *testing.T) {
 	for _, source := range []string{"scratch", "option", "environment"} {
 		t.Run(source, func(t *testing.T) {
 			t.Parallel()
-			h := &harness{t: t, root: t.TempDir()}
-			h.run = filepath.Join(h.root, "run")
+			h := newHarness(t)
+			manifestPath := filepath.Join(h.run, testreport.RunManifestFile)
+			before, err := os.ReadFile(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
 			o := h.opts("unit", "coverage-env", nil)
 			o.NoRecord = true
 			switch source {
@@ -265,10 +269,75 @@ func TestCaptureNoRecordExportsWritableLane(t *testing.T) {
 				if _, err := os.Stat(filepath.Join(parts[2], "cover.out")); err != nil {
 					t.Fatal(err)
 				}
-				for _, path := range []string{filepath.Join(h.run, testreport.RunManifestFile), filepath.Join(parts[2], testreport.LaneManifestFile), filepath.Join(parts[2], testreport.LaneResultsFile)} {
+				after, err := os.ReadFile(manifestPath)
+				if err != nil || !bytes.Equal(before, after) {
+					t.Fatalf("run manifest changed: %s, %v", after, err)
+				}
+				for _, path := range []string{filepath.Join(parts[2], testreport.LaneManifestFile), filepath.Join(parts[2], testreport.LaneResultsFile)} {
 					if _, err := os.Stat(path); !os.IsNotExist(err) {
 						t.Fatalf("record written at %s: %v", path, err)
 					}
+				}
+			}
+		})
+	}
+}
+
+func TestCaptureNoRecordIgnoresInvalidInheritedRun(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"missing", "unrelated", "malformed", "wrong-schema"} {
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+			h := &harness{t: t, root: t.TempDir()}
+			h.run = filepath.Join(h.root, "run")
+			if state != "missing" {
+				if err := os.Mkdir(h.run, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var manifest string
+			switch state {
+			case "malformed":
+				manifest = "not JSON"
+			case "wrong-schema":
+				manifest = `{"schema":"unrelated/v1"}`
+			}
+			manifestPath := filepath.Join(h.run, testreport.RunManifestFile)
+			if manifest != "" {
+				if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			o := h.opts("unit", "coverage-env", map[string]string{EnvRun: h.run})
+			o.RunDir, o.NoRecord = "", true
+			o.Environ = append(o.Environ, EnvRun+"="+h.run, EnvLaneDir+"="+filepath.Join(h.run, "unit"))
+			res := Capture(context.Background(), o)
+			if res.ExitCode != 0 || res.StartErr != nil || res.LaneDir != "" {
+				t.Fatalf("Capture = %+v, stderr %s", res, h.stderr.String())
+			}
+			parts := strings.Split(strings.TrimSpace(h.stdout.String()), "|")
+			if len(parts) != 3 || !filepath.IsAbs(parts[0]) || parts[0] == h.run || parts[1] != "unit" || parts[2] != filepath.Join(parts[0], "unit") {
+				t.Fatalf("child environment = %q", h.stdout.String())
+			}
+			if _, err := os.Stat(parts[0]); !os.IsNotExist(err) {
+				t.Fatalf("scratch run not removed: %v", err)
+			}
+			if state == "missing" {
+				if _, err := os.Stat(h.run); !os.IsNotExist(err) {
+					t.Fatalf("stale run path created: %v", err)
+				}
+			} else {
+				entries, err := os.ReadDir(h.run)
+				want := 0
+				if manifest != "" {
+					want = 1
+					data, err := os.ReadFile(manifestPath)
+					if err != nil || string(data) != manifest {
+						t.Fatalf("invalid manifest changed: %q, %v", data, err)
+					}
+				}
+				if err != nil || len(entries) != want {
+					t.Fatalf("artifacts written in unrelated directory: %v, %v", entries, err)
 				}
 			}
 		})

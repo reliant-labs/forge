@@ -56,8 +56,8 @@ type CaptureOptions struct {
 	Render string
 	// NoRecord runs and prints the command as a recorded capture would and
 	// records no report metadata. It still exports the run and writable lane
-	// directory (lane defaults to "short"); without RunDir or EnvRun, these
-	// use temporary space removed after the command exits. It is the inner
+	// directory (lane defaults to "short"); without a valid existing run,
+	// these use temporary space removed after the command exits. It is the inner
 	// loop's (`task test:short`), whose results no report should count.
 	NoRecord bool
 	// Command is run as given, never through a shell.
@@ -253,15 +253,25 @@ func (c *capture) passThrough(ctx context.Context) CaptureResult {
 		if c.opts.Lane == "" {
 			c.opts.Lane = "short"
 		}
+		if run != "" {
+			// An inherited path may be stale or unrelated to test runs. Do
+			// not create artifacts beneath it unless its manifest is valid.
+			abs, err := filepath.Abs(run)
+			if err == nil {
+				_, err = testreport.ReadRunManifest(abs)
+			}
+			if err != nil {
+				run = ""
+			} else {
+				run = abs
+			}
+		}
 		if run == "" {
 			var cleanup func()
 			run, cleanup = c.scratchRun()
 			defer cleanup()
 		}
 		if run != "" && testreport.ValidateLaneName(c.opts.Lane) == nil {
-			if abs, err := filepath.Abs(run); err == nil {
-				run = abs
-			}
 			env = append(slices.Clone(env),
 				EnvRun+"="+run,
 				EnvLane+"="+c.opts.Lane,

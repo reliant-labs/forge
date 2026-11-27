@@ -8,6 +8,7 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/dashspec"
 	"github.com/reliant-labs/forge/pkg/llmprice"
+	"github.com/reliant-labs/forge/pkg/observe/genai"
 	"github.com/reliant-labs/forge/pkg/obsquery"
 )
 
@@ -176,4 +177,42 @@ func TestAICostOnClickHouse(t *testing.T) {
 		"triage\t2\t3\t0.012\t0.006\t0",
 		"digest\t2\t3\t0.0012\t0.0006\t0",
 		"(none)\t0\t1\t0.0001\t\\N\t0"))
+}
+
+func TestAICostUsageAndPrecedenceOnClickHouse(t *testing.T) {
+	cases := []struct {
+		name  string
+		usage map[string]string
+		want  string
+	}{
+		{"absent", nil, "\\N\t\\N\t1"},
+		{"invalid", map[string]string{genai.AttrUsageInputTokens: "unknown", genai.AttrUsageOutputTokens: ""}, "\\N\t\\N\t1"},
+		{"zero", map[string]string{genai.AttrUsageInputTokens: "0", genai.AttrUsageOutputTokens: "0"}, "0\t0\t0"},
+		// (100 - 20 - 10)*1 + 20*0.1 + 10*2 + 5*10 = 142 microdollars.
+		{"cached", map[string]string{genai.AttrUsageInputTokens: "100", genai.AttrUsageOutputTokens: "5", genai.AttrUsageCacheReadInputTokens: "20", genai.AttrUsageCacheCreationInputTokens: "10"}, "0.000142\t0.000142\t0"},
+		// Cache counts exceeding input are excluded from the SDK's input count.
+		{"excluded-cache", map[string]string{genai.AttrUsageInputTokens: "10", genai.AttrUsageCacheReadInputTokensLegacy: "20", genai.AttrUsageCacheCreationInputTokensLegacy: "10"}, "0.000032\t0.000032\t0"},
+		{"reported", map[string]string{genai.AttrUsageInputTokens: "100", genai.AttrCostUSD: "0.25"}, "0.0001\t0.25\t0"},
+		{"reported-zero", map[string]string{genai.AttrUsageInputTokens: "100", genai.AttrCostUSD: "0"}, "0.0001\t0\t0"},
+		{"reported-no-usage", map[string]string{genai.AttrCostUSD: "0.25"}, "\\N\t0.25\t0"},
+	}
+	spans := make([]fixtureSpan, 0, len(cases))
+	for _, tc := range cases {
+		spans = append(spans, fixtureSpan{at: "2026-03-15 10:00:00.000", trace: tc.name,
+			attrs: attrs(map[string]string{genai.AttrOperationName: genai.OpChat, genai.AttrProviderName: "openai", genai.AttrRequestModel: "gpt-5", genai.AttrRunID: tc.name}, tc.usage)})
+	}
+	db := "forge_obsbuiltin_ai_cost_usage"
+	ch := newClickHouse(t, db, aiSeedSQL(db, spans)+pricesSeedSQL(db, []llmprice.Price{{
+		Model: "gpt-5", InputPerToken: 1e-6, OutputPerToken: 1e-5, CacheReadPerToken: 1e-7, CacheWritePerToken: 2e-6, Source: "test",
+	}}))
+	end := time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC)
+	for _, tc := range cases {
+		sql := with(aiPricedCTEs) + " SELECT round(estimated, 6), round(cost, 6), " + aiCostUnpriced + " FROM priced WHERE run_id = " + lit(tc.name) + " GROUP BY estimated, cost"
+		if got := ch.run(sql, end.Add(-24*time.Hour), end, "e1"); got != tc.want {
+			t.Errorf("%s = %s, want %s", tc.name, got, tc.want)
+		}
+	}
+	if got := ch.run(with(aiPricedCTEs)+" SELECT "+aiCostUnpriced+" FROM priced", end.Add(-24*time.Hour), end, "e1"); got != "2" {
+		t.Errorf("unpriced calls = %s, want 2", got)
+	}
 }

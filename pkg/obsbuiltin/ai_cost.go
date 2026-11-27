@@ -19,7 +19,7 @@ const AICostID = "ai-cost"
 
 // The priced model calls in scope, as CTEs: calls carries each call's tokens,
 // its reported cost and the price-table key and rates it is priced under;
-// priced adds the estimate (NULL where the table has no price) and cost, the
+// priced adds the estimate (NULL without a price or usable usage) and cost, the
 // reported cost where there is one, else the estimate.
 //
 // Input tokens include cache reads and writes (the GenAI conventions), so
@@ -36,12 +36,15 @@ var aiPricedCTEs = `calls AS (
   FROM (
     SELECT Timestamp AS ts, ` + aiModel + ` AS model, ` + aiProvider + ` AS provider,
            ` + aiIn + ` AS in_tok, ` + aiOut + ` AS out_tok, ` + aiCacheRead + ` AS cr_tok, ` + aiCacheWrite + ` AS cw_tok,
+           isNotNull(coalesce(toUInt64OrNull(` + attr(genai.AttrUsageInputTokens) + `), toUInt64OrNull(` + attr(genai.AttrUsageOutputTokens) + `),
+                              toUInt64OrNull(` + either(genai.AttrUsageCacheReadInputTokens, genai.AttrUsageCacheReadInputTokensLegacy) + `),
+                              toUInt64OrNull(` + either(genai.AttrUsageCacheCreationInputTokens, genai.AttrUsageCacheCreationInputTokensLegacy) + `))) AS has_usage,
            ` + aiCost + ` AS reported, ` + aiWorkflowName + ` AS workflow, ` + aiRun + ` AS run_id,
            ` + attr(genai.AttrUserID) + ` AS user_id, ` + attr(genai.AttrAgentName) + ` AS agent
     FROM otel_traces WHERE ` + aiScope + ` AND ` + aiCall + `)),
 priced AS (
   SELECT *,
-         if(isNull(p_in), NULL,
+         if(isNull(p_in) OR NOT has_usage, NULL,
             if(in_tok >= cr_tok + cw_tok, in_tok - cr_tok - cw_tok, in_tok) * p_in
             + cr_tok * p_cr + cw_tok * p_cw + out_tok * p_out) AS estimated,
          ifNull(reported, estimated) AS cost
@@ -82,7 +85,7 @@ func AICost(in Input) dashspec.Dashboard {
 			"The part of the cost the provider or gateway reported on the call (forge.ai.cost.usd, or a convention's own cost field normalised onto it at ingest). Never an estimate.",
 			with(aiPricedCTEs)+"\nSELECT "+aiCostReported+` AS "Reported"`+from, "", dashspec.UnitNone, colorCost),
 		exact(figure("glance", "unpriced", "Unpriced calls",
-			"Model calls with no reported cost whose model the price table does not price. They are in no cost figure; the by-model table names them.",
+			"Model calls with no reported cost and no usable token counts or no model price. They are in no cost figure; the by-model table names them.",
 			with(aiPricedCTEs)+"\nSELECT "+aiCostUnpriced+` AS "Unpriced calls"`+from, "", dashspec.UnitCount, colorDanger)),
 		daily(chart("daily", "cost-by-day", "Cost by day",
 			"Each UTC day's reported cost and, for calls with none, the estimate at list price.",

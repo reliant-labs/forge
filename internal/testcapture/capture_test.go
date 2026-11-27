@@ -285,7 +285,7 @@ func TestCaptureNoRecordExportsWritableLane(t *testing.T) {
 
 func TestCaptureNoRecordIgnoresInvalidInheritedRun(t *testing.T) {
 	t.Parallel()
-	for _, state := range []string{"missing", "unrelated", "malformed", "wrong-schema"} {
+	for _, state := range []string{"missing", "unrelated", "malformed", "wrong-schema", "schema-only", "missing-created-at", "invalid-id"} {
 		t.Run(state, func(t *testing.T) {
 			t.Parallel()
 			h := &harness{t: t, root: t.TempDir()}
@@ -301,6 +301,12 @@ func TestCaptureNoRecordIgnoresInvalidInheritedRun(t *testing.T) {
 				manifest = "not JSON"
 			case "wrong-schema":
 				manifest = `{"schema":"unrelated/v1"}`
+			case "schema-only":
+				manifest = `{"schema":"forge.test.run/v1"}`
+			case "missing-created-at":
+				manifest = `{"schema":"forge.test.run/v1","id":"01ARZ3NDEKTSV4RRFFQ69G5FAV"}`
+			case "invalid-id":
+				manifest = `{"schema":"forge.test.run/v1","id":"unrelated","created_at":"2026-01-01T00:00:00Z"}`
 			}
 			manifestPath := filepath.Join(h.run, testreport.RunManifestFile)
 			if manifest != "" {

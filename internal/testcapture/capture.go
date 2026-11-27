@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"github.com/oklog/ulid/v2"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/pkg/testreport"
@@ -254,11 +255,19 @@ func (c *capture) passThrough(ctx context.Context) CaptureResult {
 			c.opts.Lane = "short"
 		}
 		if run != "" {
-			// An inherited path may be stale or unrelated to test runs. Do
-			// not create artifacts beneath it unless its manifest is valid.
+			// An inherited path may be stale or unrelated to test runs. A
+			// schema alone is not enough: require the identity and creation
+			// time begin writes, even when git provenance is unavailable.
 			abs, err := filepath.Abs(run)
 			if err == nil {
-				_, err = testreport.ReadRunManifest(abs)
+				var m testreport.RunManifest
+				m, err = testreport.ReadRunManifest(abs)
+				if err == nil {
+					_, err = ulid.ParseStrict(m.ID)
+					if m.CreatedAt.IsZero() {
+						err = errors.New("run has no creation time")
+					}
+				}
 			}
 			if err != nil {
 				run = ""

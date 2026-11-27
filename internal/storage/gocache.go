@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/pkg/gocache"
 )
 
 // Go-toolchain cache layer: the shared build cache and the golangci-lint cache.
@@ -68,8 +69,9 @@ import (
 // goCacheFloor is the youngest entry the AGE rule ever deletes, and the
 // youngest the size rule deletes while older entries can still bring the
 // cache under its budget: cmd/go's mtimeInterval (1h) plus an hour of margin.
-// It is not a knob.
-const goCacheFloor = 2 * time.Hour
+// It is not a knob: it is gocache.Floor, the one copy the Reliant daemon's
+// floor audit reads too.
+const goCacheFloor = gocache.Floor
 
 // goCacheMinFloor is the youngest entry the trim may ever delete, under any
 // rule and any budget pressure: cmd/go's mtimeInterval (1h) plus the live
@@ -89,7 +91,7 @@ const goCacheFloor = 2 * time.Hour
 // than 5 minutes earlier and looked up an entry between 65m and 2h old: such
 // a build can fail with "could not load export data", and a rerun succeeds.
 // The trim takes that risk only to stop a disk filling, never at rest.
-const goCacheMinFloor = time.Hour + 5*time.Minute
+const goCacheMinFloor = gocache.MinFloor
 
 // goCacheWorkers bounds how many shards are read and trimmed at once. The
 // unlinks themselves are paced by the pass's deletion governor (deletes.go),
@@ -98,10 +100,6 @@ const goCacheMinFloor = time.Hour + 5*time.Minute
 const goCacheWorkers = 4
 
 var goCacheEntryName = regexp.MustCompile(`^[0-9a-f]{64}-[ad]$`)
-
-// goBuildCacheSentinelPrefix is the first line shared by Go's cache README and
-// golangci-lint's fork of it.
-const goBuildCacheSentinelPrefix = "This directory holds cached build artifacts from"
 
 type goCacheEntry struct {
 	sub   string
@@ -138,20 +136,40 @@ func (e goCacheEntry) remove(ctx context.Context, del deleter, root string) erro
 // what the steps before it left (deletes.go), so the shared cache cannot spend
 // the whole pass on itself. A step that reaches its share stops and is
 // reported as cut off; a back-off ends every step after it.
+//
+// Every other Go build cache — the policy's go_caches and the pass's
+// ExtraGoCacheRoots — is a step of its own after the shared one, trimmed by
+// the same rules to its own go_cache_gib budget. Each build cache is weighted
+// alike, so N caches split the build caches' share of the time and the
+// deletes evenly; with none, the shared cache keeps the 60% of the time and
+// 75% of the deletes it always had.
 func (r Runner) GoCaches(apply bool) error {
 	parent := r.hostCtx()
 	budget := r.deletes()
 	var failures []error
-	steps := []struct {
-		name    string
-		frac    float64 // share of the time still left in the slice
-		deletes float64 // share of the delete budget still left
-		run     func(Runner, bool) error
-	}{
-		{"shared build cache", 0.6, 0.75, Runner.SharedGoCache},
-		{"golangci-lint cache", 1, 1, Runner.GolangciLintCache},
+	type step struct {
+		name string
+		// timeWeight and deleteWeight are this step's share of the time and
+		// the delete budget the steps before it left, against the steps
+		// still to run.
+		timeWeight, deleteWeight float64
+		run                      func(Runner, bool) error
 	}
-	for _, step := range steps {
+	const buildTime, buildDeletes, lintTime, lintDeletes = 1.5, 3, 1, 1
+	steps := []step{{"shared build cache", buildTime, buildDeletes, Runner.SharedGoCache}}
+	for _, root := range r.extraGoCacheRoots() {
+		label := "go build cache " + root
+		steps = append(steps, step{label, buildTime, buildDeletes, func(r Runner, apply bool) error {
+			return r.trimGoBuildCache(label, root, r.Policy.GoCacheGiB, apply)
+		}})
+	}
+	steps = append(steps, step{"golangci-lint cache", lintTime, lintDeletes, Runner.GolangciLintCache})
+	for i, step := range steps {
+		var timeLeft, deletesLeft float64
+		for _, s := range steps[i:] {
+			timeLeft += s.timeWeight
+			deletesLeft += s.deleteWeight
+		}
 		// A step the slice left no time for is recorded as cut off, never
 		// dropped: a record that omits it reads as a step that finished.
 		if err := parent.Err(); err != nil {
@@ -162,10 +180,10 @@ func (r Runner) GoCaches(apply bool) error {
 			failures = append(failures, layerErr("go caches: "+step.name, err))
 			continue
 		}
-		ctx, cancel := sliceContext(parent, step.frac)
+		ctx, cancel := sliceContext(parent, step.timeWeight/timeLeft)
 		sub := r
 		sub.Ctx = ctx
-		sub.governor = budget.share(step.deletes)
+		sub.governor = budget.share(step.deleteWeight / deletesLeft)
 		err := step.run(sub, apply)
 		cancel()
 		// A step that ended on its deadline did what it reached and resumes
@@ -180,6 +198,48 @@ func (r Runner) GoCaches(apply bool) error {
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// extraGoCacheRoots is every Go build cache the pass trims beyond the shared
+// one: the policy's go_caches, then the pass's ExtraGoCacheRoots, each once,
+// and never the shared cache or the golangci-lint cache a second time.
+// Relative paths are dropped: a cache named relative to whatever directory
+// the pass runs in is not a machine's cache.
+func (r Runner) extraGoCacheRoots() []string {
+	seen := map[string]bool{}
+	for _, own := range []string{r.GoCacheRoot, r.GolangciCacheRoot} {
+		if own != "" {
+			seen[canonicalCacheRoot(own)] = true
+		}
+	}
+	if r.GoCacheRoot == "" && !testing.Testing() {
+		if shared, err := r.goEnv(r.hostCtx()); err == nil {
+			seen[canonicalCacheRoot(shared)] = true
+		}
+	}
+	var out []string
+	for _, root := range append(append([]string(nil), r.Policy.GoCaches...), r.ExtraGoCacheRoots...) {
+		if root == "" || !filepath.IsAbs(root) {
+			continue
+		}
+		c := canonicalCacheRoot(root)
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, filepath.Clean(root))
+	}
+	return out
+}
+
+// canonicalCacheRoot is root with symlinks resolved, so one cache reached by
+// two names is trimmed once. A root that cannot be resolved is compared as
+// written.
+func canonicalCacheRoot(root string) string {
+	if c, err := filepath.EvalSymlinks(root); err == nil {
+		return c
+	}
+	return filepath.Clean(root)
 }
 
 // sliceContext bounds a step to frac of the time its parent has left. A parent
@@ -258,16 +318,7 @@ func (r Runner) GolangciLintCache(apply bool) error {
 }
 
 // hasCacheSentinel reports whether root's README is a Go-style cache marker.
-func hasCacheSentinel(root string) bool {
-	f, err := os.Open(filepath.Join(root, "README"))
-	if err != nil {
-		return false
-	}
-	defer func() { _ = f.Close() }()
-	buf := make([]byte, len(goBuildCacheSentinelPrefix))
-	n, _ := f.Read(buf)
-	return string(buf[:n]) == goBuildCacheSentinelPrefix
-}
+func hasCacheSentinel(root string) bool { return gocache.IsCache(root) }
 
 const (
 	goCacheShards     = 256
@@ -407,7 +458,7 @@ func sampleGoCache(ctx context.Context, root string, shards []string, offset int
 // goCacheLowWater is the share of the budget an over-budget pass trims to. The
 // slack is what keeps the next pass from trimming a handful of entries every
 // time, and absorbs the sample's error in the size estimate.
-const goCacheLowWater = 0.8
+const goCacheLowWater = gocache.LowWater
 
 // goCacheCutoff picks the mtime below which entries are deleted: the older of
 // "unused longer than the age rule" and "what must go to reach the low-water
@@ -467,7 +518,7 @@ func goCacheNeed(sample goCacheSample, nShards int, cutoff time.Time) int {
 }
 
 // defaultGoCacheVolumePercent is GoCacheVolumePercent's default.
-const defaultGoCacheVolumePercent = 15
+const defaultGoCacheVolumePercent = gocache.DefaultVolumePercent
 
 // goCacheDiskSpace is DiskSpace; tests replace it.
 var goCacheDiskSpace = DiskSpace
@@ -478,21 +529,19 @@ var goCacheDiskSpace = DiskSpace
 func (r Runner) goCacheBudget(root string) uint64 { return r.budgetFor(r.Policy.GoCacheGiB, root) }
 
 // budgetFor is gibs GiB, capped at go_cache_volume_percent of root's volume.
+// The rule is gocache.Policy.Budget's.
 func (r Runner) budgetFor(gibs uint64, root string) uint64 {
-	budget := gibs * GiB
-	pct := r.Policy.GoCacheVolumePercent
-	if pct == 0 {
-		pct = defaultGoCacheVolumePercent
+	if gibs == 0 {
+		return 0
 	}
-	if pct >= 100 {
-		return budget
-	}
-	if disk, err := goCacheDiskSpace(root); err == nil && disk.Capacity > 0 {
-		if v := disk.Capacity / 100 * uint64(pct); v < budget {
-			budget = v
+	p := gocache.Policy{BudgetGiB: gibs, VolumePercent: r.Policy.GoCacheVolumePercent}
+	var capacity uint64
+	if p.VolumePercent < 100 {
+		if disk, err := goCacheDiskSpace(root); err == nil {
+			capacity = disk.Capacity
 		}
 	}
-	return budget
+	return p.Budget(capacity)
 }
 
 // cursorFile persists, per cache, the shard the next pass starts at.

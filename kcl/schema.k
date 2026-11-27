@@ -7898,10 +7898,64 @@ schema ObservabilityAgent:
     namespace: str = "forge-observability"
     image: str = OTEL_COLLECTOR_IMAGE
     memory_limit_mib: int = 256
+    # Opt-in: each agent cluster's Kubernetes inventory and events (see
+    # KubernetesInventory). Unset, the default, renders none.
+    kubernetes_inventory?: KubernetesInventory
 
     check:
         regex.match(namespace, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "ObservabilityAgent.namespace must be an RFC-1123 label"
         memory_limit_mib >= 64, "ObservabilityAgent.memory_limit_mib must be >= 64"
+
+schema KubernetesInventory:
+    """Opt-in: a cluster's own Kubernetes objects, shipped beside the node
+    agent's telemetry. Declare it to deploy it; unset renders nothing.
+
+        observability = forge.Observability {
+            destination = forge.ObservabilityDestination {endpoint = "https://otlp.example.com"}
+            agent = forge.ObservabilityAgent {
+                kubernetes_inventory = forge.KubernetesInventory {}
+            }
+        }
+
+    On every cluster forge's node agent runs on (a cluster the env deploys
+    to or scrapes, with an observability destination), it renders:
+
+      * the cluster collector: one single-replica Deployment
+        `cluster-collector` (with its ConfigMap and ServiceAccount) in the
+        agent's namespace, exporting to the same destination with the same
+        credential. Its OTel `k8sobjects` receiver lists Nodes every
+        `node_interval` and apps DaemonSets and Deployments every
+        `workload_interval`, and watches events.k8s.io Events (unless
+        `events = False`). Each object is one log record whose body is the
+        object projected onto an allowlist of inventory fields (names,
+        uids, labels naming the component, container names and images,
+        replica and node counts, capacity, condition types and reasons,
+        Event reasons; never env values, args, commands, annotations,
+        messages or an Event's note), an Event inside its watch envelope
+        `{type, object}`, with k8sobjects' `k8s.resource.name` attribute
+        ("nodes", "daemonsets", "deployments", "events") and the resource
+        attribute `k8s.cluster.name` (the cluster's kube context). A config
+        change rolls the collector (its pod template carries the config's
+        SHA-256). Its ClusterRole `<namespace>-cluster-collector` is
+        read-only: get/list/watch nodes, apps daemonsets/deployments and,
+        with `events`, events.k8s.io events; never Secrets;
+      * on the node agent's scrapes (each `forge.Telemetry` metrics
+        target it pulls), the resource attributes `k8s.cluster.name` and
+        `k8s.node.name` (the agent's own node: it pulls only its node's
+        pods), so scraped rows join the inventory's Nodes.
+
+    The rows are logs, so the env's `signals.logs` must be on.
+    """
+    # How often Nodes are listed, and DaemonSets and Deployments are.
+    node_interval: str = "60s"
+    workload_interval: str = "300s"
+    # Watch events.k8s.io Events (node conditions and the like surfaced as
+    # Events).
+    events: bool = True
+
+    check:
+        regex.match(node_interval, r"^[0-9]+(ms|s|m|h)$"), "KubernetesInventory.node_interval '${node_interval}' must be a duration like 60s"
+        regex.match(workload_interval, r"^[0-9]+(ms|s|m|h)$"), "KubernetesInventory.workload_interval '${workload_interval}' must be a duration like 300s"
 
 # Alert durations are one or more <int><unit> groups, unit in s m h ("90s", "5m",
 # "1h30m"): exactly what Go's time.ParseDuration reads, so the evaluator and
@@ -8244,6 +8298,8 @@ schema Observability:
     telemetry_collector?: TelemetryCollector
 
     check:
+        not agent.kubernetes_inventory or signals.logs, \
+            "Observability.agent.kubernetes_inventory ships the cluster's objects as logs, and signals.logs = False drops every log. Turn logs on or drop kubernetes_inventory"
         enabled or len(telemetry) == 0, \
             "Observability.telemetry is declared with enabled = False: there is no pipeline to collect it into. Drop it or set enabled = True"
         all t in telemetry { t.service_name }, \

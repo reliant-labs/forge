@@ -16,8 +16,10 @@ func depsFrontend(t *testing.T) string {
 	dir := cacheFrontend(t)
 	writeCacheFile(t, filepath.Join(dir, "package.json"),
 		`{"scripts":{"lint":"eslint ."},"devDependencies":{"eslint-plugin-foo":"1.0.0","left-pad":"1.0.0"}}`)
+	// Keep this fixture cacheable so the dependency-edit assertions exercise
+	// the package closure. Local config imports have separate uncached tests.
 	writeCacheFile(t, filepath.Join(dir, "eslint.config.mjs"),
-		"import next from \"eslint-config-bar/core\";\nimport local from \"./local.mjs\";\nexport default [...next, local];\n")
+		"import next from \"eslint-config-bar/core\";\nexport default [...next];\n")
 	store := filepath.Join(dir, "node_modules", ".pnpm", "eslint-plugin-foo@1.0.0", "node_modules")
 	for rel, body := range map[string]string{
 		"eslint-plugin-foo/package.json":            `{"name":"eslint-plugin-foo","dependencies":{"eslint-plugin-transitive":"1","espree":"1"}}`,

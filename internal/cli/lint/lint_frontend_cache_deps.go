@@ -218,6 +218,23 @@ func lintDependencies(dir string) (deps []lintDep, absent []string) {
 // returns the number of files it read. A name nothing installed is keyed as
 // absent, so installing it is a change.
 func hashLintDeps(h io.Writer, dir string) (int, error) {
+	// A local config import can lead outside the hashed trees, directly or
+	// through further imports. Do not emulate Node's module resolution here:
+	// conservatively leave these configs uncached, even for an in-tree import.
+	for _, f := range eslintConfigFiles {
+		data, err := os.ReadFile(filepath.Join(dir, f))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		for _, m := range configImportRe.FindAllStringSubmatch(string(data), -1) {
+			if strings.HasPrefix(m[1], ".") || strings.HasPrefix(m[1], "/") {
+				return 0, fmt.Errorf("lint cache: %s imports local config %q", f, m[1])
+			}
+		}
+	}
 	deps, absent := lintDependencies(dir)
 	files := 0
 	for _, name := range absent {

@@ -274,6 +274,42 @@ func TestFrontendLintCacheSkipsOnMatchAndRunsOnMiss(t *testing.T) {
 	}
 }
 
+// Local config imports may escape the hashed frontend, including through
+// an in-tree helper. Until their closure can be resolved, always run lint.
+func TestFrontendLintCacheLocalConfigImportsRunAfterExternalEdit(t *testing.T) {
+	for _, indirect := range []bool{false, true} {
+		t.Run(map[bool]string{false: "direct", true: "indirect"}[indirect], func(t *testing.T) {
+			stubCacheSys(t)
+			r := stubLintRunner(t)
+			root := t.TempDir()
+			dir := filepath.Join(root, "frontends", "web")
+			writeCacheFile(t, filepath.Join(dir, "package.json"), `{"scripts":{"lint":"eslint ."}}`)
+			writeCacheFile(t, filepath.Join(dir, "node_modules", ".package-lock.json"), "{}")
+			external := filepath.Join(root, "eslint.shared.mjs")
+			writeCacheFile(t, external, "export default [];\n")
+			config := "export { default } from '../../eslint.shared.mjs';\n"
+			if indirect {
+				writeCacheFile(t, filepath.Join(dir, "helper.mjs"), config)
+				config = "export { default } from './helper.mjs';\n"
+			}
+			writeCacheFile(t, filepath.Join(dir, "eslint.config.mjs"), config)
+			c := newFrontendLintCache(root, false, func(string) string { return "" })
+			for i := 1; i <= 2; i++ {
+				fs, gated := lintDir(c, dir, false)
+				if gated || r.calls != i || cachedNote(fs) != nil {
+					t.Fatalf("run %d: want uncached pass, calls=%d gated=%v findings=%+v", i, r.calls, gated, fs)
+				}
+			}
+			writeCacheFile(t, external, "export default [{ rules: { semi: 'error' } }];\n")
+			r.err = errors.New("external config now rejects the source")
+			fs, gated := lintDir(c, dir, false)
+			if !gated || r.calls != 3 || cachedNote(fs) != nil {
+				t.Fatalf("external edit: want fresh failure, calls=%d gated=%v findings=%+v", r.calls, gated, fs)
+			}
+		})
+	}
+}
+
 // Only passes are cached: a failing run runs again next time, and a failure
 // on inputs a pass was recorded for drops that record.
 func TestFrontendLintCacheNeverCachesFailure(t *testing.T) {

@@ -68,6 +68,7 @@ func publishedSchemas() map[string]struct {
 		"test-runs":          testDocumentSchema("test-runs", schemaTestRuns, reflect.TypeOf(testRunsDoc{}), "the local test runs, newest first, with each lane's exit code; `forge test runs --json`"),
 		"test-collect":       testDocumentSchema("test-collect", testcollect.Schema, reflect.TypeOf(testcollect.Document{}), "the coverage `forge test collect <env> --json` pulled from each workload of an env: where from, its build, the stale builds kept apart"),
 		"test-run-result":    testDocumentSchema("test-run-result", schemaTestRunResult, reflect.TypeOf(testRunResultDoc{}), "the Taskfile lanes `forge test run` ran as one run, each with its own exit code, and the lanes they recorded; `forge test run --json`"),
+		"vuln-sbom-push":     testDocumentSchema("vuln-sbom-push", vulnSBOMPushSchema, reflect.TypeOf(vulnSBOMPushDocument{}), "`forge vuln sbom push --json`: each artifact's SBOM upload to the env's control plane (sent, already recorded, differs, missing, failed, not applicable) and the exit code"),
 		"vuln-patch": {
 			spec: SchemaSpec{
 				Name: "vuln-patch", APIVersion: vulnpatch.DocumentSchema, ID: vulnPatchSchemaID,
@@ -166,6 +167,9 @@ func newProjectSchemaCmd() *cobra.Command {
   vuln-patch  forge.dev/vuln-patch/v1: the document ` + "`forge vuln patch --json`" + ` prints —
         what was bumped per finding, the verification, and the exit code the
         vuln-patch workflow branches on.
+
+  vuln-sbom-push  forge.dev/vuln-sbom-push/v1: what ` + "`forge vuln sbom push --json`" + ` sent
+        to the env's control plane per artifact, and the exit code.
 
 With no name, lists the schemas. The schema printed is the one embedded in
 this binary, so it is exactly what this forge validates against. Point an

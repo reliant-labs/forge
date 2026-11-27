@@ -830,7 +830,7 @@ type hostedStore struct {
 	vulnCaps *hostedVulnFeatures
 	// sboms opens the machine ledger a cut's SBOM bytes are read from to
 	// upload them (hosted_vuln.go). Nil uploads none.
-	sboms func() (sbomBytesReader, error)
+	sboms func() (sbomLedger, error)
 }
 
 // hostedLedger binds both halves of an env's ledger to one client. project

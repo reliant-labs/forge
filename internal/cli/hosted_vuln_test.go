@@ -42,6 +42,7 @@ type fakeVulnService struct {
 	// answers GetCapabilities Unimplemented (a control plane predating it).
 	features       []string
 	noCapabilities bool
+	noIdentity     bool // ResolveHostedProject is unavailable on an older server.
 	// unimplemented answers every VulnerabilityService rpc Unimplemented.
 	unimplemented bool
 	// refuse answers every read PermissionDenied.
@@ -51,6 +52,11 @@ type fakeVulnService struct {
 	digestOverride string
 	// records are the RecordReleaseSBOM bodies, in order.
 	records []map[string]any
+	// idempotent answers RecordReleaseSBOM as the real server does: the
+	// SBOM it already holds for (release, artifact) is created=false, a
+	// different one AlreadyExists. held is what it holds, seeded or sent.
+	idempotent bool
+	held       map[string]string
 	// releaseVulns is GetReleaseVulnerabilities' answer, per version.
 	releaseVulns map[string]map[string]any
 	// summary is GetVulnerabilitySummary's environments.
@@ -67,6 +73,14 @@ type fakeVulnService struct {
 
 func (f *fakeVulnService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	const svc = "/controlplane.v1.VulnerabilityService/"
+	if r.URL.Path == "/controlplane.v1.DeployService/ResolveHostedProject" {
+		if f.noIdentity {
+			connectErr(w, http.StatusNotFound, "unimplemented", "identity lookup unavailable")
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"orgId": "org-acme", "projectId": "project-acme"})
+		return
+	}
 	if r.URL.Path != "/controlplane.v1.DeployService/GetCapabilities" && !strings.HasPrefix(r.URL.Path, svc) {
 		if f.next == nil {
 			connectErr(w, http.StatusNotFound, "unimplemented", "no such procedure "+r.URL.Path)
@@ -121,6 +135,22 @@ func (f *fakeVulnService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		digest := "sha256:" + hex.EncodeToString(sum[:])
 		if f.digestOverride != "" {
 			digest = f.digestOverride
+		}
+		if f.idempotent {
+			key := str("version") + "\x00" + str("artifactName")
+			if f.held == nil {
+				f.held = map[string]string{}
+			}
+			switch had, ok := f.held[key]; {
+			case ok && had != digest:
+				w.Header().Set(cloud.ReasonHeader, "sbom_binding_conflict")
+				connectErr(w, http.StatusPreconditionFailed, "failed_precondition", "binding conflict")
+				return
+			case ok:
+				_ = json.NewEncoder(w).Encode(map[string]any{"digest": digest, "created": false, "scanState": "VULNERABILITY_SCAN_STATE_SCANNED"})
+				return
+			}
+			f.held[key] = digest
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"digest": digest, "created": true, "scanState": "VULNERABILITY_SCAN_STATE_PENDING", "componentCount": 3})
 	case "GetVulnerabilitySummary":
@@ -179,7 +209,7 @@ func hostedSBOMCut(t *testing.T, fake *fakeVulnService, names ...string) (*hoste
 	if err != nil {
 		t.Fatal(err)
 	}
-	hs.sboms = func() (sbomBytesReader, error) { return store, nil }
+	hs.sboms = func() (sbomLedger, error) { return store, nil }
 	var warn bytes.Buffer
 	hs.warn = &warn
 	r := release.Release{Version: "v1.0.0", Artifacts: map[string]release.Artifact{}}
@@ -281,8 +311,20 @@ func TestHostedCutSkipsTheUploadWithoutTheCapability(t *testing.T) {
 		if _, err := hs.Cut(context.Background(), r); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if n := fake.count(procRecordReleaseSBOM); n != 0 || warn.Len() != 0 {
-			t.Errorf("%s: %d uploads, output %q; want none, silently", name, n, warn)
+		if n := fake.count(procRecordReleaseSBOM); n != 0 {
+			t.Errorf("%s: %d uploads; want none", name, n)
+		}
+		// One line that names the release, the control plane, and how the
+		// SBOMs get there later; the release is recorded pending.
+		if lines := strings.Split(strings.TrimSpace(warn.String()), "\n"); len(lines) != 1 ||
+			!strings.Contains(lines[0], "release v1.0.0") || !strings.Contains(lines[0], hs.endpoint) ||
+			!strings.Contains(lines[0], "next cut") || !strings.Contains(lines[0], "forge vuln sbom push --release v1.0.0") {
+			t.Errorf("%s: want one notice naming the release, the endpoint and the re-send, got:\n%s", name, warn)
+		}
+		store, _ := hs.sboms()
+		pending, _, err := store.PendingSBOMUploads(hs.endpoint)
+		if err != nil || len(pending) != 1 || pending[0].Version != "v1.0.0" || pending[0].Artifacts["api"].Digest == "" {
+			t.Errorf("%s: pending = %+v, %v; want v1.0.0 with api's SBOM", name, pending, err)
 		}
 	}
 }

@@ -108,10 +108,9 @@ func pushHostedStaticSite(ctx context.Context, projectDir string, entities *KCLE
 	if err := checkDeployableFrontendMock(f); err != nil {
 		return "", "", err
 	}
-	f.Project = entities.Project
-	// A forge.FrontendURL to a hosted frontend is a fact of the env this
-	// release is built for, read from its live status now.
-	f = resolveBuildFrontendURLs(ctx, os.Stdout, opts.env, entities, f)
+	// The preparation every frontend build shares: its forge.FrontendURL
+	// references are facts of the env this release is built for.
+	f = frontendForBuild(ctx, os.Stdout, opts.env, entities, f)
 	fe := frontendToStaticSite(f)
 	// Environment-agnostic by construction: no document written, and
 	// any travelling in the built bundle removed.

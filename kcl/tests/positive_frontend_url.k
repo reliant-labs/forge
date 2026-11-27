@@ -40,6 +40,26 @@ _hosted = forge.render(forge.Bundle {
     }]
 })
 
+# Your own bucket's build may take its origin from a hosted sibling: the
+# reference is kept, and `forge env deploy` resolves it before the build.
+_bucket = forge.render(forge.Bundle {
+    project = "fixture"
+    env = "prod"
+    control_plane = forge.ControlPlane {endpoint = "https://cp.example"}
+    frontends = [
+        forge.Frontend {name = "site", image = "site", path = "site", type = "vite", runtime = forge.OnHosted {}}
+        forge.Frontend {
+            name = "docs"
+            path = "docs"
+            type = "vite"
+            env_vars = [forge.EnvVar {name = "SITE_URL", frontend_url = forge.FrontendURL {frontend = "site"}}]
+            runtime = forge.OnBucket {bucket = "gs://acme-docs"}
+        }
+    ]
+})
+_bucket_var = [f for f in _bucket.frontends if f.name == "docs"][0].env_vars[0]
+assert_bucket_ref_kept = _bucket_var.frontend_url == {"frontend": "site"} and _bucket_var.value == None
+
 _dev_vars = _dev.frontends[0].env_vars
 assert_dev_resolved = _dev_vars[0].name == "SITE_URL" and _dev_vars[0].value == "http://localhost:5174/docs"
 assert_dev_no_ref = "frontend_url" not in _dev_vars[0]

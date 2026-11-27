@@ -4560,9 +4560,12 @@ schema FrontendURL:
 
     Who resolves it depends on where the TARGET runs:
 
-      * forge.OnHosted: forge, when it builds the release, from the
+      * forge.OnHosted: forge, whenever it builds the REFERRER (a hosted
+        release, or a bucket / Firebase / BuildOnly deploy), from the
         environment's live status: the target's first live custom domain,
-        else its platform hostname. A release is built once and promoted by
+        else its platform hostname. A dev server (forge.OnHost) referrer is
+        refused: forge does not build it, so nothing would resolve it.
+        A release is built once and promoted by
         digest, so every env that serves it carries the origin of the env it
         was BUILT for; build in the env whose URL search engines should
         index (prod). An env that has never been deployed has no hostname

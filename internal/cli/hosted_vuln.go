@@ -29,6 +29,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
@@ -139,6 +140,11 @@ type promotePlanVulns struct {
 	Findings bool `json:"findings"`
 	// EnforcesGate: the control plane judges vuln_gate at promote.
 	EnforcesGate bool `json:"enforces_gate"`
+	// SBOMsKept is what happened when THIS process uploaded the target
+	// release's SBOMs at its cut: true when the control plane kept every
+	// one, false when it refused or could not be sent one (an unclaimed
+	// deploy, a failure). Absent when this process did not upload them.
+	SBOMsKept *bool `json:"sboms_kept,omitempty"`
 	// Upload and Note say what the reader should know about the upload and
 	// about findings and the gate, one sentence each.
 	Upload string `json:"upload"`
@@ -146,9 +152,15 @@ type promotePlanVulns struct {
 }
 
 // hostedVulnPlan is the plan's vulnerability lines for an env whose ledger is
-// a control plane; nil for any other. Never an error: a control plane that
-// could not be asked is a note, and the deploy goes on.
-func hostedVulnPlan(ctx context.Context, ledger envLedger) *promotePlanVulns {
+// a control plane, promoting release version; nil for any other. Never an
+// error: a control plane that could not be asked is a note, and the deploy
+// goes on.
+//
+// The capability says what the control plane takes; it does not say it took
+// THIS release's SBOMs. When this process cut the release, the upload's
+// outcome decides the sentence, so a plan never promises retention and
+// scanning the cut was refused (an unclaimed deploy's, today).
+func hostedVulnPlan(ctx context.Context, ledger envLedger, version string) *promotePlanVulns {
 	hs, ok := ledger.Bindings.(*hostedStore)
 	if !ok {
 		return nil
@@ -161,10 +173,19 @@ func hostedVulnPlan(ctx context.Context, ledger envLedger) *promotePlanVulns {
 	if v.Features == nil {
 		v.Features = []string{}
 	}
-	if v.SBOMUpload {
-		v.Upload = "the control plane keeps and scans this release's SBOMs"
-	} else {
+	kept, known := sbomUploadOutcome(hs.endpoint, hs.project, version)
+	if known {
+		v.SBOMsKept = &kept
+	}
+	switch {
+	case !v.SBOMUpload:
 		v.Upload = "this control plane does not take SBOMs yet: they stay in this machine's ledger"
+	case known && !kept:
+		v.Upload = "the control plane did not keep this release's SBOMs (the cut said why): they stay in this machine's ledger, unscanned"
+	case !known && cloud.ClaimableActive():
+		v.Upload = "an unclaimed deploy's SBOMs are kept and scanned only if the control plane took them at the cut; they stay in this machine's ledger"
+	default:
+		v.Upload = "the control plane keeps and scans this release's SBOMs"
 	}
 	switch {
 	case f.Findings && f.EnforcesGate:
@@ -183,9 +204,11 @@ func renderPlanVulns(out io.Writer, v *promotePlanVulns) {
 	if v == nil {
 		return
 	}
-	if !v.SBOMUpload && !v.Findings && cloud.ClaimableActive() {
-		// What the control plane does not offer is not something an
-		// anonymous deploy can act on (as the floor line).
+	if cloud.ClaimableActive() && (v.SBOMsKept == nil || !*v.SBOMsKept) {
+		// An anonymous deploy is told about SBOMs only when the control
+		// plane kept them. What it does not offer is not something the
+		// deploy can act on (as the floor line), and a refused upload was
+		// already said once, by the cut (recordReleaseSBOMs).
 		return
 	}
 	if v.Upload != "" {
@@ -219,6 +242,12 @@ type sbomBytesReader interface {
 // artifact, and RecordReleaseSBOM files every SBOM under one: it stays in
 // this machine's ledger, and the cut says so when the control plane would
 // otherwise have taken it.
+//
+// An anonymous (--claimable) deploy prints none of the above but one thing:
+// a refused upload, as a single line for the whole cut (claimableSBOMNote).
+// Its SBOMs are evidence the deploy plan and the env's provenance_sbom gate
+// read, so their absence is something its human must know. Whatever the
+// outcome, it is remembered for the plan that follows (sbomUploadOutcome).
 func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release) {
 	var names []string
 	for name, a := range r.Artifacts {
@@ -235,9 +264,11 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 	if warn == nil {
 		warn = os.Stderr
 	}
-	if cloud.ClaimableActive() {
+	claimable, loud := cloud.ClaimableActive(), warn
+	if claimable {
 		// An anonymous deploy prints only what its human must act on
-		// (generateReleaseSBOMs keeps the same silence).
+		// (generateReleaseSBOMs keeps the same silence); a refused
+		// upload is the exception, written to loud.
 		warn = io.Discard
 	}
 	f, err := s.vulnFeatures(ctx)
@@ -254,6 +285,12 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 	if len(names) == 0 {
 		return
 	}
+	project := r.Project
+	if project == "" {
+		project = s.project
+	}
+	kept := false
+	defer func() { noteSBOMUploadOutcome(s.endpoint, project, r.Version, kept) }()
 	if s.sboms == nil {
 		fmt.Fprintf(warn, "[ledger] warning: release %s's SBOMs were not uploaded to %s: this ledger has no machine ledger to read them from\n", r.Version, s.endpoint)
 		return
@@ -263,19 +300,18 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 		fmt.Fprintf(warn, "[ledger] warning: release %s's SBOMs were not uploaded to %s: open this machine's ledger: %v\n", r.Version, s.endpoint, err)
 		return
 	}
-	project := r.Project
-	if project == "" {
-		project = s.project
-	}
+	failed := false
 	for _, name := range names {
 		ref := r.Artifacts[name].SBOM
 		data, err := store.GetSBOM(ref.Digest)
 		if err != nil {
+			failed = true
 			fmt.Fprintf(warn, "[ledger] warning: the SBOM of %s in release %s was not uploaded to %s: %v\n", name, r.Version, s.endpoint, err)
 			continue
 		}
 		gz, err := gzipBytes(data)
 		if err != nil {
+			failed = true
 			fmt.Fprintf(warn, "[ledger] warning: the SBOM of %s in release %s was not uploaded to %s: compress it: %v\n", name, r.Version, s.endpoint, err)
 			continue
 		}
@@ -304,14 +340,23 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 		}
 		if err := s.client.Call(cloud.WithRequestTimeout(ctx, sbomUploadTimeout(len(gz))), procRecordReleaseSBOM, req, &resp); err != nil {
 			switch {
+			case hostedErrorHasCode(err, cloud.CodeAlreadyExists):
+				// The control plane keeps an SBOM for it: kept, if not
+				// this machine's copy.
+				fmt.Fprintf(warn, "[ledger] warning: %s already records a different SBOM for %s in release %s and keeps it; this machine's copy is %s\n", s.endpoint, name, r.Version, ref.Digest)
+				continue
+			case claimable:
+				// One line for the whole cut: every other artifact
+				// would be answered the same way.
+				fmt.Fprintln(loud, claimableSBOMNote(s.endpoint, r.Version, err))
+				return
 			case hostedUnimplemented(err):
 				// One note for the whole cut: every other artifact
 				// would be answered the same way.
 				fmt.Fprintf(warn, "[ledger] note: this control plane does not store SBOMs yet (%s); release %s's SBOMs stay in this machine's ledger\n", s.endpoint, r.Version)
 				return
-			case hostedErrorHasCode(err, cloud.CodeAlreadyExists):
-				fmt.Fprintf(warn, "[ledger] warning: %s already records a different SBOM for %s in release %s and keeps it; this machine's copy is %s\n", s.endpoint, name, r.Version, ref.Digest)
 			default:
+				failed = true
 				fmt.Fprintf(warn, "[ledger] warning: the SBOM of %s in release %s was not uploaded to %s: %v\n", name, r.Version, s.endpoint, err)
 			}
 			continue
@@ -320,6 +365,47 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 			fmt.Fprintf(warn, "[ledger] warning: %s recorded the SBOM of %s in release %s as %s, but the release records %s: the two copies differ\n", s.endpoint, name, r.Version, resp.Digest, ref.Digest)
 		}
 	}
+	kept = !failed
+}
+
+// claimableSBOMNote is the one line an anonymous deploy prints when the
+// control plane refused its SBOMs. Today that is always the unclaimed-org
+// lock (PermissionDenied): an unclaimed org stores no SBOMs, so nothing
+// scans them. A claimed project's next cut uploads its SBOMs as any signed-in
+// cut does.
+func claimableSBOMNote(endpoint, version string, err error) string {
+	why := "an unclaimed deploy cannot store them"
+	if !hostedErrorHasCode(err, cloud.CodePermissionDenied) {
+		why = oneLine(err.Error(), 120)
+	}
+	return fmt.Sprintf("[ledger] note: %s did not keep or scan release %s's SBOMs (%s); they stay in this machine's ledger. "+
+		"Claim the deploy, then cut a new release to have them scanned", endpoint, version, why)
+}
+
+// sbomUploadOutcomes is, per process, whether a control plane kept the SBOMs
+// of a release this process cut there: (endpoint, project, version) → bool.
+// A deploy opens its ledger once for the cut and again for the promotion, so
+// the outcome the plan reads (hostedVulnPlan) cannot live on the store.
+var sbomUploadOutcomes sync.Map
+
+func sbomUploadKey(endpoint, project, version string) string {
+	return endpoint + "\x00" + project + "\x00" + version
+}
+
+// noteSBOMUploadOutcome records whether the control plane kept every SBOM of
+// the release this process just uploaded.
+func noteSBOMUploadOutcome(endpoint, project, version string, kept bool) {
+	sbomUploadOutcomes.Store(sbomUploadKey(endpoint, project, version), kept)
+}
+
+// sbomUploadOutcome is what noteSBOMUploadOutcome recorded; known is false
+// when this process uploaded no SBOM of that release.
+func sbomUploadOutcome(endpoint, project, version string) (kept, known bool) {
+	v, ok := sbomUploadOutcomes.Load(sbomUploadKey(endpoint, project, version))
+	if !ok {
+		return false, false
+	}
+	return v.(bool), true
 }
 
 // The upload's request timeout: the client's default 30s, plus a second per

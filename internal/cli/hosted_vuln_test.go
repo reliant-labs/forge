@@ -46,6 +46,9 @@ type fakeVulnService struct {
 	unimplemented bool
 	// refuse answers every read PermissionDenied.
 	refuse bool
+	// refuseUpload answers RecordReleaseSBOM PermissionDenied, as
+	// control-plane's unclaimed-org lock does for an anonymous deploy.
+	refuseUpload bool
 	// digestOverride is what RecordReleaseSBOM answers as the digest,
 	// instead of the one it derives from the bytes.
 	digestOverride string
@@ -106,6 +109,10 @@ func (f *fakeVulnService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch strings.TrimPrefix(r.URL.Path, svc) {
 	case "RecordReleaseSBOM":
 		f.records = append(f.records, body)
+		if f.refuseUpload {
+			connectErr(w, http.StatusForbidden, "permission_denied", "this organization has not been claimed yet; claim it before changing anything but its deploy")
+			return
+		}
 		gz, err := base64.StdEncoding.DecodeString(str("sbom"))
 		if err != nil || str("encoding") != "SBOM_ENCODING_GZIP" {
 			connectErr(w, http.StatusBadRequest, "invalid_argument", "sbom is not gzip base64")
@@ -384,7 +391,7 @@ func TestHostedVulnPlanLine(t *testing.T) {
 	} {
 		fake := &fakeVulnService{features: tc.features}
 		hs, _, _ := hostedSBOMCut(t, fake)
-		v := hostedVulnPlan(context.Background(), envLedger{Bindings: hs, Releases: hs})
+		v := hostedVulnPlan(context.Background(), envLedger{Bindings: hs, Releases: hs}, "v1.0.0")
 		if v.SBOMUpload != tc.uploads || v.Findings != tc.serves {
 			t.Errorf("features %v: sbom_upload %v findings %v, want %v %v", tc.features, v.SBOMUpload, v.Findings, tc.uploads, tc.serves)
 		}
@@ -396,8 +403,82 @@ func TestHostedVulnPlanLine(t *testing.T) {
 			t.Errorf("features %v: plan lines\n%s\nwant sboms %q, vulns %q", tc.features, out.String(), tc.upload, tc.findings)
 		}
 	}
-	if v := hostedVulnPlan(context.Background(), envLedger{Bindings: memBindingStoreForVulnPlan{}}); v != nil {
+	if v := hostedVulnPlan(context.Background(), envLedger{Bindings: memBindingStoreForVulnPlan{}}, "v1.0.0"); v != nil {
 		t.Errorf("a machine-ledger env got a vulns line: %+v", v)
+	}
+}
+
+// An anonymous deploy whose SBOMs the control plane refuses (its unclaimed-org
+// lock) says so in one line, and its plan does not promise they are kept and
+// scanned. Not parallel: claimable mode is process-wide.
+func TestClaimableCutSurfacesARefusedSBOMUploadOnce(t *testing.T) {
+	useClaimableForOutput(t)
+	fake := &fakeVulnService{features: []string{hostedVulnFeatureSBOMUpload, hostedVulnFeatureFindings}, refuseUpload: true}
+	hs, r, warn := hostedSBOMCut(t, fake, "api", "worker")
+	if _, err := hs.Cut(context.Background(), r); err != nil {
+		t.Fatalf("a refused upload failed the cut: %v", err)
+	}
+	if n := strings.Count(warn.String(), "\n"); n != 1 ||
+		!strings.Contains(warn.String(), "did not keep or scan release v1.0.0's SBOMs (an unclaimed deploy cannot store them)") ||
+		!strings.Contains(warn.String(), "Claim the deploy, then cut a new release") {
+		t.Fatalf("want one line naming the refusal and what to do, got:\n%s", warn)
+	}
+	if n := fake.count(procRecordReleaseSBOM); n != 1 {
+		t.Errorf("RecordReleaseSBOM called %d times after a refusal, want 1", n)
+	}
+
+	v := hostedVulnPlan(context.Background(), envLedger{Bindings: hs, Releases: hs}, r.Version)
+	if v.SBOMsKept == nil || *v.SBOMsKept {
+		t.Errorf("sboms_kept = %v, want false", v.SBOMsKept)
+	}
+	if strings.Contains(v.Upload, "keeps and scans") || !strings.Contains(v.Upload, "did not keep") {
+		t.Errorf("plan upload sentence = %q, want the refusal, not a promise", v.Upload)
+	}
+	var out bytes.Buffer
+	renderPlanVulns(&out, v)
+	if out.Len() != 0 {
+		t.Errorf("an anonymous plan repeats the refusal the cut printed:\n%s", out.String())
+	}
+
+	// Another release this process never uploaded: no promise either.
+	v = hostedVulnPlan(context.Background(), envLedger{Bindings: hs, Releases: hs}, "v0.9.0")
+	if v.SBOMsKept != nil || strings.Contains(v.Upload, "keeps and scans") {
+		t.Errorf("an unclaimed deploy's plan promises SBOM retention: kept %v, %q", v.SBOMsKept, v.Upload)
+	}
+	out.Reset()
+	renderPlanVulns(&out, v)
+	if out.Len() != 0 {
+		t.Errorf("an anonymous plan printed SBOM lines it cannot vouch for:\n%s", out.String())
+	}
+}
+
+// A signed-in cut whose uploads failed warns per artifact, as before, and its
+// plan says the control plane did not keep the SBOMs; a clean one says it did.
+func TestHostedVulnPlanFollowsTheCutsUpload(t *testing.T) {
+	t.Parallel()
+	refused := &fakeVulnService{features: []string{hostedVulnFeatureSBOMUpload}, refuseUpload: true}
+	hs, r, warn := hostedSBOMCut(t, refused, "api", "worker")
+	if _, err := hs.Cut(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(warn.String(), "was not uploaded"); n != 2 {
+		t.Errorf("want a warning per artifact, got:\n%s", warn)
+	}
+	v := hostedVulnPlan(context.Background(), envLedger{Bindings: hs, Releases: hs}, r.Version)
+	var out bytes.Buffer
+	renderPlanVulns(&out, v)
+	if v.SBOMsKept == nil || *v.SBOMsKept || !strings.Contains(out.String(), "  sboms     the control plane did not keep this release's SBOMs") {
+		t.Errorf("kept %v, plan:\n%s", v.SBOMsKept, out.String())
+	}
+
+	clean := &fakeVulnService{features: []string{hostedVulnFeatureSBOMUpload}}
+	hs, r, _ = hostedSBOMCut(t, clean, "api")
+	if _, err := hs.Cut(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	v = hostedVulnPlan(context.Background(), envLedger{Bindings: hs, Releases: hs}, r.Version)
+	if v.SBOMsKept == nil || !*v.SBOMsKept || !strings.Contains(v.Upload, "keeps and scans") {
+		t.Errorf("a clean upload: kept %v, %q", v.SBOMsKept, v.Upload)
 	}
 }
 

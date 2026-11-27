@@ -27,7 +27,15 @@
     "blocking": [
       "CVE-2026-4738"
     ],
-    "determined": true
+    "determined": true,
+    "reason": "vuln_gate_blocked",
+    "exemptions_applied": [
+      {
+        "id": "CVE-2026-48779",
+        "reason": "ws is only used by the dev server",
+        "expires": "2026-12-31"
+      }
+    ]
   },
   "counts": {
     "critical": 1,
@@ -66,6 +74,7 @@
       ],
       "first_seen": "2026-11-18T07:00:11.41065994Z",
       "action": "block",
+      "rule": "block_severity",
       "occurrences": [
         {
           "artifact": "api",
@@ -106,6 +115,7 @@
       ],
       "first_seen": "2026-11-20T07:00:11.41065994Z",
       "action": "warn",
+      "rule": "warn_severity",
       "occurrences": [
         {
           "artifact": "api",
@@ -173,6 +183,7 @@
       ],
       "first_seen": "2026-11-20T07:00:11.41065994Z",
       "action": "warn",
+      "rule": "warn_severity",
       "occurrences": [
         {
           "artifact": "api",

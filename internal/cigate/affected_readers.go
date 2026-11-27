@@ -20,13 +20,14 @@ import (
 // "deploy", "kcl", "main.k"))`) is invisible to it, so any such file sends the
 // unit lane to the full suite. The reader scan reads each test package's Go
 // sources — test and non-test files — for string literals that name a tracked
-// repo path, and a changed file that no rule claims then selects the packages
-// that name it, or name a directory containing it.
+// repo path. The scan adds those packages when an owned file (including Go
+// source) or a non-Go file changes, even when a rule also selects tests.
+// An explicit ignore still skips implicit ownership and reader selection.
 //
-// A file no package names still runs the full suite, exactly as without the
-// scan: the scan only ever turns a full run into a narrower one when it has a
-// package to point at. It over-approximates on purpose — a test run for no
-// reason costs seconds, a test wrongly skipped costs a red default branch.
+// An unplaced, unclaimed non-Go file no package names still runs the full
+// suite; an unplaced Go file does not use reader matches to narrow it. The
+// scan over-approximates on purpose — a test run for no reason costs seconds,
+// a test wrongly skipped costs a red default branch.
 //
 // What counts as naming a path (ported from reliant's
 // tools/test-affected/graph.go scanSources and rootfacts.go):

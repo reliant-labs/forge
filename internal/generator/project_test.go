@@ -167,13 +167,18 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		}
 	}
 
-	// The user-owned cmd/sample-full/cmd/commands.go extension point that
-	// newRootCmd consumes must be scaffolded.
-	commandsContents := readFile(t, filepath.Join(root, "cmd", "sample-full", "cmd", "commands.go"))
-	if !strings.Contains(commandsContents, "func userCommands(deps Deps) []*cobra.Command {") {
-		t.Fatalf("cmd/sample-full/cmd/commands.go should scaffold the userCommands extension point, got:\n%s", commandsContents)
+	// The user-facing command package must not import the assembled tree.
+	// The tree's existing registration hook delegates in the other direction.
+	binDir := filepath.Join(root, "cmd", "sample-full")
+	bridge := readFile(t, filepath.Join(binDir, "cmd", "commands.go"))
+	if !strings.Contains(bridge, "return usercmd.Commands()") {
+		t.Errorf("cmd/commands.go must delegate to the sibling package:\n%s", bridge)
 	}
-	rootContents := readFile(t, filepath.Join(root, "cmd", "sample-full", "cmd", "root.go"))
+	commands := readFile(t, filepath.Join(binDir, "usercmd", "commands.go"))
+	if !strings.Contains(commands, "func Commands() []*cobra.Command") {
+		t.Errorf("usercmd/commands.go must define the graph-independent extension point:\n%s", commands)
+	}
+	rootContents := readFile(t, filepath.Join(binDir, "cmd", "root.go"))
 	if !strings.Contains(rootContents, "userCommands(deps)") {
 		t.Fatalf("cmd/sample-full/cmd/root.go should consume userCommands(deps), got:\n%s", rootContents)
 	}

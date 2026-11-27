@@ -25,9 +25,8 @@ import (
 //     per-service subcommand (design §9.5): `./<bin> server` runs the
 //     generated server root — every service, worker and operator — and the
 //     composition root cmd/<bin>/main.go is a bare cmd.Execute().
-//  2. The user-owned cmd/commands.go extension point: a second binary
-//     registered AS CODE (userCommands()) shows up on the root command,
-//     runs, and SURVIVES regeneration (Tier-2: forge never overwrites).
+//  2. Commands in the owned usercmd package show up on the root command,
+//     survive regeneration, and can compile even while the graph cannot.
 //  3. `forge project audit --json` reports no phantom service.
 func TestE2ECmdAsCodeSubcommands(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
@@ -48,7 +47,9 @@ func TestE2ECmdAsCodeSubcommands(t *testing.T) {
 	// the owned serve pipeline, and the user-owned extension point. There is
 	// no services/ group — a process is a root, not a subcommand per service.
 	cmdDir := filepath.Join(projectDir, "cmd", "cmdcode", "cmd")
-	commandsPath := filepath.Join(cmdDir, "commands.go")
+	bridgePath := filepath.Join(cmdDir, "commands.go")
+	bridge := readFileE2E(t, bridgePath)
+	commandsPath := filepath.Join(projectDir, "cmd", "cmdcode", "usercmd", "commands.go")
 	assertPathExistsE2E(t, commandsPath)
 	if _, err := os.Stat(filepath.Join(cmdDir, "services")); !os.IsNotExist(err) {
 		t.Errorf("a graph-mode project has a cmd/cmdcode/cmd/services group (%v)", err)
@@ -64,12 +65,9 @@ func TestE2ECmdAsCodeSubcommands(t *testing.T) {
 		t.Errorf("`server` must run the graph's server root through runRoot:\n%s", rootsGo)
 	}
 
-	// (2) Register a second binary AS CODE: replace the scaffolded
-	// userCommands with a self-contained subcommand (the workspace-proxy
-	// shape — a process that is not a Connect service and needs no
-	// parallel main()).
+	// (2) Add a custom subcommand in the graph-independent package.
 	customCommands := `// What extra subcommands this binary ships is code, not config.
-package cmd
+package usercmd
 
 import (
 	"fmt"
@@ -88,8 +86,7 @@ func proxyToolCmd() *cobra.Command {
 	}
 }
 
-func userCommands(deps Deps) []*cobra.Command {
-	_ = deps
+func Commands() []*cobra.Command {
 	return []*cobra.Command{proxyToolCmd()}
 }
 `
@@ -100,7 +97,21 @@ func userCommands(deps Deps) []*cobra.Command {
 	// Regenerate: the user-owned extension point must survive verbatim.
 	runCmd(t, projectDir, forgeBin, "generate")
 	if got := readFileE2E(t, commandsPath); got != customCommands {
-		t.Fatalf("forge generate overwrote the user-owned cmd/<bin>/cmd/commands.go:\n%s", got)
+		t.Fatalf("forge generate overwrote the user-owned usercmd/commands.go:\n%s", got)
+	}
+	if got := readFileE2E(t, bridgePath); got != bridge {
+		t.Fatalf("forge generate overwrote the user-owned registration hook:\n%s", got)
+	}
+
+	// Make the graph fail to compile. Testing just the custom commands must
+	// still work, even though linking the assembled binary requires the graph.
+	brokenGraph := filepath.Join(projectDir, "internal", "app", "broken_fixture.go")
+	if err := os.WriteFile(brokenGraph, []byte("package app\nvar _ = graphFixtureDoesNotCompile\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCmd(t, projectDir, "go", "test", "./cmd/cmdcode/usercmd")
+	if err := os.Remove(brokenGraph); err != nil {
+		t.Fatal(err)
 	}
 
 	bin := filepath.Join(projectDir, "cmdcode-bin")
@@ -120,7 +131,22 @@ func userCommands(deps Deps) []*cobra.Command {
 		t.Errorf("root --help still lists a per-service subcommand:\n%s", helpOut)
 	}
 
-	// The second binary runs through the shared root.
+	// Default server flags stay on the serving command. A custom command
+	// that does not opt into typed flags and the built-in migrator do not
+	// inherit them, and Cobra still accepts --port before the command name.
+	for _, args := range [][]string{{"proxy-tool", "--help"}, {"version", "--help"}, {"db", "migrate", "--help"}} {
+		out := runCmdOutput(t, projectDir, bin, args...)
+		for _, flag := range []string{"--port", "--cors-origins", "--config"} {
+			if strings.Contains(out, flag) {
+				t.Errorf("%v lists unrelated server flag %s:\n%s", args, flag, out)
+			}
+		}
+	}
+	if out := runCmdOutput(t, projectDir, bin, "--port", "1", "server", "--help"); !strings.Contains(out, "--port") {
+		t.Errorf("server --help does not list --port:\n%s", out)
+	}
+
+	// The custom command runs through the shared root.
 	toolOut := runCmdOutput(t, projectDir, bin, "proxy-tool")
 	if !strings.Contains(toolOut, "proxy-tool: code-registered second binary ran") {
 		t.Errorf("proxy-tool subcommand did not run its body:\n%s", toolOut)

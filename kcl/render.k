@@ -3975,6 +3975,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
     } | ({"apis": _apis, "api_urls": _api_urls} if f.apis else {}) \
       | ({"routes": f.routes} if f.routes else {}) \
       | ({"changes_from_source": False} if f.changes_from_source == False else {}) \
+      | ({"release_urls": False} if f.release_urls == False else {}) \
       | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {}) \
       | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {})
 }

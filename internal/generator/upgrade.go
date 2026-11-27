@@ -307,7 +307,21 @@ func managedFilesForCfg(cfg *config.ProjectConfig) []managedFile {
 		kind = cfg.EffectiveKind()
 		binName = cfg.Name
 	}
-	return append(managedFilesForKindBinary(kind, binary, binName), frontendManagedFiles(cfg)...)
+	files := managedFilesForKindBinary(kind, binary, binName)
+	// Fresh scaffolds put graph-independent commands in a sibling package.
+	// Keep the original hook for older/adopted projects that do not have it.
+	if cfg != nil {
+		userDir := filepath.Join("cmd", binName, "usercmd")
+		if info, err := os.Stat(filepath.Join(cfg.ProjectDir(), userDir)); err == nil && info.IsDir() {
+			for i := range files {
+				if files[i].templateName == "cmd-tree-commands.go.tmpl" {
+					files[i].templateName = "cmd-tree-commands-bridge.go.tmpl"
+				}
+			}
+			files = append(files, managedFile{templateName: "cmd-tree-user-commands.go.tmpl", destPath: filepath.Join(userDir, "commands.go"), templated: true, tier: Tier2, enabledFor: enabledForService, since: "v0.0.2"})
+		}
+	}
+	return append(files, frontendManagedFiles(cfg)...)
 }
 
 // managedFilesFor returns the file plan for an explicit binary mode at

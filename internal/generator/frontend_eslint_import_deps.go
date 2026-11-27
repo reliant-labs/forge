@@ -23,9 +23,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
+	"sync"
 
+	"github.com/evanw/esbuild/pkg/api"
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -38,10 +39,6 @@ var eslintConfigNames = []string{
 	"eslint.config.ts", "eslint.config.mts", "eslint.config.cts",
 }
 
-// moduleSpecifierRe matches the specifier of an ES import (`from "x"`, a bare
-// `import "x"`, a dynamic `import("x")`) or a CommonJS `require("x")`.
-var moduleSpecifierRe = regexp.MustCompile(`(?:\bfrom|\bimport|\brequire)\s*\(?\s*["']([^"'\s]+)["']`)
-
 // eslintConfigImports returns the set of package names the frontend's eslint
 // config files at feDir import. A subpath import (`pkg/sub`, `@s/pkg/sub`)
 // counts as its package.
@@ -52,8 +49,39 @@ func eslintConfigImports(feDir string) map[string]bool {
 		if err != nil {
 			continue
 		}
-		for _, m := range moduleSpecifierRe.FindAllStringSubmatch(string(b), -1) {
-			out[packageOfSpecifier(m[1])] = true
+		// Let the JavaScript/TypeScript parser distinguish imports from
+		// comments, strings and unrelated syntax. Every import is external:
+		// scanning a config must neither load nor execute its dependencies.
+		imports := map[string]bool{}
+		var mu sync.Mutex
+		result := api.Build(api.BuildOptions{
+			Stdin: &api.StdinOptions{
+				Contents:   string(b),
+				Sourcefile: name,
+				Loader:     api.LoaderTS,
+			},
+			Bundle:      true,
+			Write:       false,
+			LogLevel:    api.LogLevelSilent,
+			TsconfigRaw: `{"compilerOptions":{"verbatimModuleSyntax":true}}`,
+			Plugins: []api.Plugin{{
+				Name: "eslint-config-imports",
+				Setup: func(build api.PluginBuild) {
+					build.OnResolve(api.OnResolveOptions{Filter: ".*"}, func(args api.OnResolveArgs) (api.OnResolveResult, error) {
+						if pkg := packageOfSpecifier(args.Path); pkg != "" {
+							mu.Lock()
+							imports[pkg] = true
+							mu.Unlock()
+						}
+						return api.OnResolveResult{Path: args.Path, External: true}, nil
+					})
+				},
+			}},
+		})
+		if len(result.Errors) == 0 {
+			for pkg := range imports {
+				out[pkg] = true
+			}
 		}
 	}
 	return out
@@ -61,6 +89,10 @@ func eslintConfigImports(feDir string) map[string]bool {
 
 // packageOfSpecifier is the package a bare module specifier names.
 func packageOfSpecifier(spec string) string {
+	if spec == "" || strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") ||
+		strings.HasPrefix(spec, "#") || strings.ContainsAny(spec, ":\\\\") {
+		return ""
+	}
 	parts := strings.SplitN(spec, "/", 3)
 	if strings.HasPrefix(spec, "@") && len(parts) >= 2 {
 		return parts[0] + "/" + parts[1]

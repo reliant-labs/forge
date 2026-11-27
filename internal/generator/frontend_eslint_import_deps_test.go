@@ -153,6 +153,26 @@ export default [{ plugins: { import: importPlugin }, rules: { "import/no-cycle":
 `,
 		"mentions import-x only in rule keys": `export default [{ rules: { "import-x/no-cycle": "off" } }];
 `,
+		"line comments": `// import { importX } from "eslint-plugin-import-x";
+// const resolver = require("eslint-import-resolver-typescript");
+export default [];
+`,
+		"block comments": `/* import "eslint-plugin-import-x";
+import("eslint-import-resolver-typescript"); */
+export default [];
+`,
+		"string literals": `const example = 'import "eslint-plugin-import-x"';
+const other = "require('eslint-import-resolver-typescript')";
+export default [{ settings: { example, other } }];
+`,
+		"template literal": "export default [{ settings: { example: `import \"eslint-plugin-import-x\"` } }];",
+		"relative imports": `import rules from "./eslint-plugin-import-x";
+const config = import("../eslint-import-resolver-typescript");
+export default [rules, config];
+`,
+		"unrelated syntax": `const settings = { from: "eslint-plugin-import-x", import: "eslint-import-resolver-typescript" };
+export default [{ settings }];
+`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			projectDir, feRel, pkgPath := eslintImportFixture(t, preImportXManifest, config)
@@ -161,6 +181,9 @@ export default [{ plugins: { import: importPlugin }, rules: { "import/no-cycle":
 			}
 			if got := readManifestText(t, pkgPath); got != preImportXManifest {
 				t.Errorf("manifest changed:\n%s", got)
+			}
+			if notices := eslintImportDependencyNotices(filepath.Join(projectDir, feRel), preImportXManifest); len(notices) != 0 {
+				t.Errorf("notices for config with no package imports: %v", notices)
 			}
 		})
 	}
@@ -187,6 +210,16 @@ func TestEnsureESLintImportDependencies_OnlyTheImportedOnes(t *testing.T) {
 		"plugin subpath (ts)": {
 			file:   "eslint.config.ts",
 			config: `import importX from "eslint-plugin-import-x/flat";` + "\n",
+			want:   []string{pluginImportX},
+		},
+		"dynamic import": {
+			file:   "eslint.config.mjs",
+			config: `export default import("eslint-plugin-import-x");`,
+			want:   []string{pluginImportX},
+		},
+		"bare import with comment": {
+			file:   "eslint.config.js",
+			config: `import /* plugin */ "eslint-plugin-import-x";`,
 			want:   []string{pluginImportX},
 		},
 	} {

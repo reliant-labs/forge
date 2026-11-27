@@ -665,7 +665,7 @@ type PinnedForge = forgepin.Forge
 func init() {
 	forgepinhook.Resolve = func(ctx context.Context, projectRoot, command string, log io.Writer) (forgepinhook.Result, bool, error) {
 		pf, ok, err := ResolvePinnedForge(ctx, projectRoot, command, log)
-		return forgepinhook.Result{Path: pf.Path, Key: pf.Key, Want: pf.Want, Source: pf.Source}, ok, err
+		return forgepinhook.Result(pf), ok, err
 	}
 }
 
@@ -687,7 +687,10 @@ func ResolvePinnedForge(ctx context.Context, projectRoot, command string, log io
 	if err != nil {
 		return PinnedForge{}, false, handOffFailure(projectRoot, t, command, err)
 	}
-	return PinnedForge{Path: res.Path, Key: t.resultKey(res.Path), Want: t.String(), Source: res.Kind}, true, nil
+	return PinnedForge{
+		Path: res.Path, Key: t.resultKey(res.Path), Want: t.String(),
+		Source: res.Kind, Pin: t.pin, Checkout: t.checkout,
+	}, true, nil
 }
 
 // noteUnpinned says which forge runs when no project pin decides it. Only an

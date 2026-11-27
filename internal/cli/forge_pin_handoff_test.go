@@ -274,6 +274,10 @@ func TestForgepinResolveIsResolvePinnedForge(t *testing.T) {
 	if err != nil || !ok || got.Path == "" || got.Key != "pin:"+skewTestPin || !strings.Contains(got.Want, skewTestPin) {
 		t.Fatalf("forgepin.Resolve: got %+v, ok %v, err %v", got, ok, err)
 	}
+	// The whole answer comes through, not only the first four fields.
+	if got.Pin != skewTestPin || got.Source == "" {
+		t.Errorf("forgepin.Resolve dropped fields: got %+v, want Pin %q and a Source", got, skewTestPin)
+	}
 	if len(*installs) != 1 || h.path != "" {
 		t.Errorf("built %v, exec'd %q: resolve must build, never exec", *installs, h.path)
 	}

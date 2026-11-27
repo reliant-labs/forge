@@ -25,7 +25,9 @@ import (
 // SourceSelf is Forge.Source when this forge is the project's.
 const SourceSelf = "self"
 
-// Forge is the forge a project pins, resolved and ready to run.
+// Forge is the forge a project pins, resolved and ready to run. Its fields
+// match internal/forgepinhook.Result's, in order, so the CLI's answer converts
+// to it whole.
 type Forge struct {
 	// Path is the executable.
 	Path string
@@ -48,7 +50,7 @@ type Forge struct {
 	// Version is the version Path reports. Set by ResolvePinnedForgePath.
 	Version string
 	// Pin is forge.yaml's forge_version, and Checkout the local forge
-	// checkout the project is linked to, when it is. Set by
+	// checkout the project is linked to, when it is. Set by Resolve and
 	// ResolvePinnedForgePath.
 	Pin, Checkout string
 }
@@ -64,7 +66,9 @@ var ErrNotEmbedded = errors.New("forgepin: the forge CLI is not linked into this
 // forge is wanted and cannot be obtained — a host must then not substitute
 // the embedded forge's answer. log receives the one-time build notice.
 //
-// Resolve sets Path, Key, Want and Source.
+// The Forge is the forge CLI's answer passed through whole, every field the
+// CLI set: today Path, Key, Want, Source, Pin and Checkout (Resolve does not
+// run the forge, so Version is not probed).
 func Resolve(ctx context.Context, projectRoot, command string, log io.Writer) (Forge, bool, error) {
 	resolve := forgepinhook.Resolve
 	if resolve == nil {
@@ -74,5 +78,5 @@ func Resolve(ctx context.Context, projectRoot, command string, log io.Writer) (F
 	if err != nil || !ok {
 		return Forge{}, ok, err
 	}
-	return Forge{Path: r.Path, Key: r.Key, Want: r.Want, Source: r.Source}, true, nil
+	return Forge(r), true, nil
 }

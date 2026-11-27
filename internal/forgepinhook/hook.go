@@ -18,10 +18,20 @@ import (
 	"io"
 )
 
-// Result is the part of a pinned forge Resolve answers: the executable, the
-// cache key, the forge the project wants, and where the executable came from.
+// Result is the pinned forge internal/cli resolved, every field of it.
+// pkg/forgepin.Forge has the same fields in the same order, and each side
+// converts the other with a plain conversion (forgepin.Forge(r)), so a field
+// added to one and not the other fails to compile rather than being dropped
+// on the way through. See forgepin.Forge for what each field means.
 type Result struct {
-	Path, Key, Want, Source string
+	Path     string
+	Key      string
+	Want     string
+	Source   string
+	Args     []string
+	Version  string
+	Pin      string
+	Checkout string
 }
 
 // Resolve is internal/cli's ResolvePinnedForge, set by its init. Nil when the

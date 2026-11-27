@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -133,5 +134,39 @@ func TestResolveUsesTheCLIsAnswer(t *testing.T) {
 	})
 	if _, ok, err := Resolve(context.Background(), "/p", "skill load", io.Discard); ok || !errors.Is(err, boom) {
 		t.Errorf("failure: ok %v, err %v", ok, err)
+	}
+}
+
+// Resolve returns the CLI's Forge whole: every field the CLI set, Args,
+// Version, Pin and Checkout included, passed through unchanged. An earlier
+// Resolve copied four fields and silently dropped the rest.
+func TestResolvePassesEveryFieldThrough(t *testing.T) {
+	full := forgepinhook.Result{
+		Path: "/host/reliant", Key: "self:v1.2.3:/host/reliant", Want: "forge_version v1.2.3",
+		Source: SourceSelf, Args: []string{"forge"}, Version: "v1.2.3",
+		Pin: "v1.2.3", Checkout: "/src/forge",
+	}
+	// Every field is set, so a field added to both types but left out of
+	// this fixture fails here instead of passing vacuously.
+	rv := reflect.ValueOf(full)
+	for i := range rv.NumField() {
+		if rv.Field(i).IsZero() {
+			t.Fatalf("fixture leaves %s unset", rv.Type().Field(i).Name)
+		}
+	}
+	swapHook(t, func(context.Context, string, string, io.Writer) (forgepinhook.Result, bool, error) {
+		return full, true, nil
+	})
+	got, ok, err := Resolve(context.Background(), "/p", "skill load", io.Discard)
+	if err != nil || !ok {
+		t.Fatalf("ok %v, err %v", ok, err)
+	}
+	want := Forge{
+		Path: "/host/reliant", Key: "self:v1.2.3:/host/reliant", Want: "forge_version v1.2.3",
+		Source: SourceSelf, Args: []string{"forge"}, Version: "v1.2.3",
+		Pin: "v1.2.3", Checkout: "/src/forge",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Resolve = %+v, want %+v", got, want)
 	}
 }

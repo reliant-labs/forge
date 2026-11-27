@@ -101,6 +101,38 @@ func TestBuilderGCEnforcesTheBudgetBySize(t *testing.T) {
 	}
 }
 
+// TestBuilderGCPressureNeverExceedsTheBudget: pressure halves the budget with a
+// 1 GiB minimum, but the minimum never lifts the target above the configured
+// build_cache_gib. A 1 GiB budget (the smallest Validate accepts, and the only
+// whole-GiB budget below 2 GiB) stays at 1 GiB; a hand-built Policy that skipped
+// Validate with a 0 budget is not raised to 1 GiB.
+func TestBuilderGCPressureNeverExceedsTheBudget(t *testing.T) {
+	t.Setenv(BuildCacheFloorEnv, "")
+	for _, tc := range []struct {
+		budgetGiB uint64
+		want      uint64
+	}{
+		{0, 0},
+		{1, GiB},
+		{2, GiB},
+		{3, 3 * GiB / 2},
+		{20, 10 * GiB},
+	} {
+		for _, floor := range []string{"", "off"} {
+			r := Runner{Policy: DefaultPolicy(), Pressure: true}
+			r.Policy.BuildCacheGiB = tc.budgetGiB
+			r.Policy.BuildCacheFloor = floor
+			got := r.buildCachePrune().MaxUsed
+			if got > tc.budgetGiB*GiB {
+				t.Errorf("budget %d GiB, floor %q: pressure target %d B is above the budget", tc.budgetGiB, floor, got)
+			}
+			if got != tc.want {
+				t.Errorf("budget %d GiB, floor %q: pressure target = %d B, want %d B", tc.budgetGiB, floor, got, tc.want)
+			}
+		}
+	}
+}
+
 // TestBuilderGCPreviewPrunesNothing: without --apply the size rule is only
 // described.
 func TestBuilderGCPreviewPrunesNothing(t *testing.T) {

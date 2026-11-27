@@ -222,7 +222,9 @@ func (r Runner) buildCachePrune() buildCachePrune {
 	}
 	p := buildCachePrune{MaxUsed: r.Policy.BuildCacheGiB * GiB, Until: r.Policy.BuildCacheUnused, SizeRule: sizeRule}
 	if r.Pressure {
-		p.MaxUsed = max(p.MaxUsed/2, GiB)
+		// Half the budget, but not below 1 GiB, and never above the budget
+		// itself: pressure only ever asks for less cache than the policy does.
+		p.MaxUsed = min(max(p.MaxUsed/2, GiB), p.MaxUsed)
 	}
 	if !sizeRule {
 		return p

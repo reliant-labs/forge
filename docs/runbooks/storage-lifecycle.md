@@ -160,7 +160,7 @@ budget is now enforced by size alone, under the floor.
 
 `forge storage auto-gc --pressure` is the same pass for a disk that is short of
 room. The Reliant daemon's disk guard runs it this way. It prunes each builder
-toward half of `build_cache_gib` (at least 1 GiB), under the same floor. Every
+toward half of `build_cache_gib` (at least 1 GiB, and never more than `build_cache_gib` itself), under the same floor. Every
 other layer is unchanged.
 
 To opt out, set `"build_cache_floor": "off"` in the policy, or

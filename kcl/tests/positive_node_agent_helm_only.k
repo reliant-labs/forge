@@ -55,6 +55,8 @@ assert_workload_cluster_keeps_agent = len(_agent_on(_placed, "hub")) == 1
 assert_placed_collected = "uncollected_telemetry" not in _placed
 assert_no_ml_stacks = "ml_stacks" not in _placed
 assert_binding_recorded = _placed.node_agents == [{"cluster": "helm-only", "connected_cluster": "helm-only-connected"}]
+# It places the agent, so it does something with no overrides: no warning.
+assert_placing_not_noop = "noop_node_agents" not in _placed
 
 _none = forge.render(_bundle([]))
 assert_none_no_agent = len(_agent_on(_none, "helm-only")) == 0 and len(_agent_on(_none, "hub")) == 1

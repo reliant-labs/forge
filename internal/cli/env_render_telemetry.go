@@ -18,8 +18,9 @@ import (
 // checkEnvTelemetry validates the env's declared telemetry and, when it is
 // valid, prints its notes (envTelemetryWarnings) and the deprecation
 // warnings of ML components scraped through their own fields
-// (mlScrapeDeprecations) and of cluster telemetry targets no node agent
-// collects (uncollectedTelemetryWarnings) on errOut.
+// (mlScrapeDeprecations), of cluster telemetry targets no node agent
+// collects (uncollectedTelemetryWarnings) and of forge.NodeAgents that do
+// nothing (noopNodeAgentWarnings) on errOut.
 func checkEnvTelemetry(errOut io.Writer, envName string, entities *KCLEntities) error {
 	if err := validateEnvTelemetry(envName, entities); err != nil {
 		return err
@@ -31,6 +32,9 @@ func checkEnvTelemetry(errOut io.Writer, envName string, entities *KCLEntities) 
 		fmt.Fprintln(errOut, w)
 	}
 	for _, w := range uncollectedTelemetryWarnings(entities) {
+		fmt.Fprintln(errOut, w)
+	}
+	for _, w := range noopNodeAgentWarnings(entities) {
 		fmt.Fprintln(errOut, w)
 	}
 	return nil

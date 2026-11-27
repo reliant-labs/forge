@@ -250,3 +250,82 @@ func TestNodeAgentBindsItsCluster(t *testing.T) {
 		t.Errorf("a second connected cluster for the NodeAgent's context was not a conflict: %v", conflicts)
 	}
 }
+
+// noopNodeAgentEnv runs a forge workload on "hub" (so forge runs its agent
+// there) beside a Helm-only cluster. NODE_AGENTS is Observability.node_agents.
+const noopNodeAgentEnv = `import forge
+import forge.workloads as fw
+
+_hub = forge.ClusterTarget {cluster = "hub", namespace = "acme"}
+_helm = forge.ClusterTarget {cluster = "helm-only", namespace = "monitoring"}
+output = forge.render(forge.Bundle {
+    project = "acme"
+    env = "prod"
+    cluster_target = _hub
+    workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api", runtime = forge.OnCluster {target = _hub}}]
+    helm_charts = [forge.HelmChart {
+        name = "kube-prometheus-stack", chart = "kube-prometheus-stack"
+        repo = "https://prometheus-community.github.io/helm-charts", version = "75.0.0"
+        namespace = "monitoring", cluster = _helm
+    }]
+    observability = forge.Observability {
+        destination = forge.ObservabilityDestination {endpoint = "https://otlp.example.com"}
+        node_agents = NODE_AGENTS
+    }
+})
+`
+
+// A forge.NodeAgent that does nothing (on a cluster forge already runs its
+// agent on, overriding nothing) warns; one with an override, or one that
+// places the agent on a cluster with no forge workload, does not. kcl/tests
+// positive_node_agent_configures_implicit.k pins the KCL half.
+func TestNodeAgentNoopWarns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("-short: renders KCL three times; runs in task test")
+	}
+	kclplugin.Register()
+	const warn = `warning: forge.NodeAgent on "hub" has no effect: forge already runs its agent there and the NodeAgent overrides nothing; remove it, or set an override (image, memory_limit_mib, kubernetes_inventory)`
+	for _, tc := range []struct {
+		name, agents string
+		wantWarn     bool
+	}{
+		{"noop", `[forge.NodeAgent {target = _hub}]`, true},
+		{"override", `[forge.NodeAgent {target = _hub, memory_limit_mib = 512}]`, false},
+		{"places", `[forge.NodeAgent {target = _helm}]`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			files := map[string]string{
+				"kcl.mod": "[package]\nname = \"noopagent\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n",
+				"main.k":  strings.Replace(noopNodeAgentEnv, "NODE_AGENTS", tc.agents, 1),
+			}
+			for f, c := range files {
+				if err := os.WriteFile(filepath.Join(dir, f), []byte(c), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out, err := kclrender.Run(dir, dir, nil)
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			entities, err := parseKCLEntities(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var errOut bytes.Buffer
+			if err := checkEnvTelemetry(&errOut, "prod", entities); err != nil {
+				t.Fatalf("a no-op NodeAgent must warn, never fail: %v", err)
+			}
+			got := strings.Contains(errOut.String(), "has no effect")
+			if got != tc.wantWarn {
+				t.Errorf("warned = %v, want %v:\n%s", got, tc.wantWarn, errOut.String())
+			}
+			if tc.wantWarn && !strings.Contains(errOut.String(), warn) {
+				t.Errorf("warning text differs; want %q in:\n%s", warn, errOut.String())
+			}
+		})
+	}
+	if w := noopNodeAgentWarnings(nil); w != nil {
+		t.Errorf("nil entities warned: %q", w)
+	}
+}

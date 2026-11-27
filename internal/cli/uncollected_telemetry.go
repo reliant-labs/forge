@@ -59,3 +59,19 @@ func uncollectedTelemetryWarnings(entities *KCLEntities) []string {
 	}
 	return out
 }
+
+// noopNodeAgentWarnings are the render's warnings for output.noop_node_agents:
+// one per forge.NodeAgent that does nothing, because forge already runs its
+// agent on that cluster and the NodeAgent overrides nothing. A warning only:
+// the declaration is harmless, just inert.
+func noopNodeAgentWarnings(entities *KCLEntities) []string {
+	if entities == nil {
+		return nil
+	}
+	var out []string
+	for _, c := range entities.NoopNodeAgents {
+		out = append(out, fmt.Sprintf("warning: forge.NodeAgent on %q has no effect: forge already runs its agent there and the NodeAgent overrides nothing; "+
+			"remove it, or set an override (image, memory_limit_mib, kubernetes_inventory)", c))
+	}
+	return out
+}

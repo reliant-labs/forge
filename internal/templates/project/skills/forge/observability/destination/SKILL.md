@@ -84,7 +84,7 @@ observability = forge.Observability {
 ```
 
 - **Placement** is a `forge.ClusterTarget`: `cluster` is the kube context; `connected_cluster` delivers the `token_from_control_plane` credential and binds the cluster for a control-plane deploy. The agent runs in `agent.namespace` (every workload dials it there), not the target's namespace.
-- **One agent per cluster.** On a cluster with no forge workload (only a HelmChart, an operator, an ML stack) it places the agent; on one with a workload it configures the implicit agent, never a second. Two NodeAgents on one cluster are refused.
+- **One agent per cluster.** On a cluster with no forge workload (only a HelmChart, an operator, an ML stack) it places the agent; on one with a workload it configures the implicit agent, never a second. Two NodeAgents on one cluster are refused; one there that overrides nothing has no effect, and `forge env render` warns.
 - **Overrides**: `image`, `memory_limit_mib`, `kubernetes_inventory` override `agent`'s on that cluster; `forge.KubernetesInventory {enabled = False}` turns the env-wide inventory off there.
 - **Scrapes are not a NodeAgent field**: a `forge.Telemetry` naming the cluster is collected by whichever agent runs there.
 - It renders with a destination. With `telemetry_collector` it still renders, as the implicit agent does (that collector takes the scrapes).

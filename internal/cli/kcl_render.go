@@ -252,6 +252,10 @@ type KCLEntities struct {
 	// the contexts the env names (envKubeContexts). Nil when none is
 	// declared.
 	NodeAgents []NodeAgentOutput `json:"-"`
+	// NoopNodeAgents is output.noop_node_agents: the clusters of the
+	// forge.NodeAgents that change nothing, read for the render's warning
+	// (noopNodeAgentWarnings). Nil when there is none.
+	NoopNodeAgents []string `json:"-"`
 	// Identity is Bundle.identity, resolved by the render: the applications
 	// and consumers derived, the deliveries and reserved managed-secret names
 	// listed. Nil when the env declares none. See release.ShapeIdentity: the
@@ -1900,6 +1904,11 @@ type kclRenderRaw struct {
 	// (Observability.node_agents), so a NodeAgent's connected cluster binds
 	// its cluster as a workload target's does. Absent when none is declared.
 	NodeAgents []NodeAgentOutput `json:"node_agents,omitempty"`
+	// NoopNodeAgents is the cluster of each forge.NodeAgent that does
+	// nothing: forge already runs its agent there (a forge workload runs
+	// there) and the NodeAgent overrides nothing. forge env render warns for
+	// each. Absent when there is none.
+	NoopNodeAgents []string `json:"noop_node_agents,omitempty"`
 	// Manifests is the applyable stream. Parsed loosely: only kind, name
 	// and namespace are read here (see rawManifest).
 	Manifests []rawManifest `json:"manifests,omitempty"`
@@ -2358,6 +2367,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 	out.MLStacks = ml.MLStacks
 	out.UncollectedTelemetry = raw.UncollectedTelemetry
 	out.NodeAgents = raw.NodeAgents
+	out.NoopNodeAgents = raw.NoopNodeAgents
 	for _, c := range raw.BundledCharts {
 		out.ClusterWork = append(out.ClusterWork, "HelmChart/"+c.Name)
 	}

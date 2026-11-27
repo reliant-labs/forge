@@ -2338,11 +2338,30 @@ _stamp_cluster = lambda manifest: any, context: str -> any {
 # the derived credential) take the NodeAgent's target: one agent per
 # cluster, and the NodeAgent is the declaration about it.
 _obs_workloads = lambda agent_workloads: [any], agent_stacks: [any], agent_obs: any -> [any] {
-    _scraped = [x.cluster for x in _ml_scrapes(agent_stacks)] \
-        if agent_obs and agent_obs.enabled and not agent_obs.telemetry_collector else []
-    _placed = agent_workloads + [{kind = "service", runtime = {type = "cluster", target = s.cluster}} for s in agent_stacks if s.cluster.cluster in _scraped]
+    _placed = _obs_implicit(agent_workloads, agent_stacks, agent_obs)
     _placed + [{kind = "service", runtime = {type = "cluster", target = a.target}} for a in agent_obs.node_agents] \
         if agent_obs and agent_obs.enabled else _placed
+}
+
+# The placements of the implicit agent alone (_obs_workloads without the
+# forge.NodeAgents): the forge workloads and the deprecated ML component
+# scrapes.
+_obs_implicit = lambda agent_workloads: [any], agent_stacks: [any], agent_obs: any -> [any] {
+    _scraped = [x.cluster for x in _ml_scrapes(agent_stacks)] \
+        if agent_obs and agent_obs.enabled and not agent_obs.telemetry_collector else []
+    agent_workloads + [{kind = "service", runtime = {type = "cluster", target = s.cluster}} for s in agent_stacks if s.cluster.cluster in _scraped]
+}
+
+# The clusters of the forge.NodeAgents that do nothing: forge already runs
+# its implicit agent there, and the NodeAgent overrides nothing (image,
+# memory_limit_mib and kubernetes_inventory all unset). Only when an agent
+# renders at all (observability on with a destination); in declaration
+# order. forge env render warns for each (output.noop_node_agents).
+_noop_node_agents = lambda b: Bundle -> [str] {
+    _implicit = [t.cluster for t in _cluster_targets(_obs_implicit(b.workloads, b.ml_stacks, b.observability))] \
+        if _obs_on(b) and b.observability.destination else []
+    [a.target.cluster for a in b.observability.node_agents if a.target.cluster in _implicit \
+        and not a.image and not a.memory_limit_mib and not a.kubernetes_inventory] if _implicit else []
 }
 
 # The forge.NodeAgent that targets a cluster, or None: the per-cluster
@@ -3480,6 +3499,10 @@ render = lambda bundle: Bundle -> any {
                 "cluster": a.target.cluster
                 "connected_cluster": a.target.connected_cluster or None
             } for a in bundle.observability.node_agents]
+        # The NodeAgents that change nothing (_noop_node_agents), which
+        # forge env render warns for. Absent when there is none.
+        if _noop_node_agents(bundle):
+            "noop_node_agents": _noop_node_agents(bundle)
         # The declared ML stacks (kcl/ml.k MLStack documents the shape), for
         # tools that read the stack and its decisions without parsing KCL.
         # Absent when none is declared, so an env without renders as before.

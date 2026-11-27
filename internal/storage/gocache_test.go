@@ -456,12 +456,12 @@ func TestGoCacheTrimHonoursBudgetViaSample(t *testing.T) {
 	var out strings.Builder
 	r := goRunner(t, &out)
 	r.GoCacheRoot = root
-	r.Policy.GoCacheGiB = 1 // budget is huge vs 64KB: only the 48h age rule applies
+	r.Policy.GoCacheGiB = 1 // budget is huge vs 64KB: only the 24h age rule applies
 	if err := r.SharedGoCache(true); err != nil {
 		t.Fatal(err)
 	}
-	if got := countEntries(root); got != 64*3 { // ages 3h, 23h, 43h kept; 63h+ removed
-		t.Fatalf("age rule: %d entries left, want %d\n%s", got, 64*3, out.String())
+	if got := countEntries(root); got != 64*2 { // ages 3h, 23h kept; 43h+ removed
+		t.Fatalf("age rule: %d entries left, want %d\n%s", got, 64*2, out.String())
 	}
 }
 

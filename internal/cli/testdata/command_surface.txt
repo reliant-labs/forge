@@ -273,7 +273,7 @@ forge machine storage check	cmd	lane:string policy:string project-dir/C:string r
 forge machine storage configure-nodes	cmd	apply:bool policy:string project-dir/C:string
 forge machine storage daemon	cmd	interval:duration policy:string project-dir/C:string
 forge machine storage gc	cmd	apply:bool dry-run:bool policy:string project-dir/C:string scheduled:bool
-forge machine storage gocache	cmd	apply:bool budget:duration dry-run:bool policy:string project-dir/C:string
+forge machine storage gocache	cmd	apply:bool budget:duration dry-run:bool go-cache:stringArray policy:string project-dir/C:string
 forge machine storage install	cmd	policy:string project-dir/C:string
 forge machine storage policy	cmd	policy:string project-dir/C:string
 forge machine storage register	cmd	builder:stringSlice context:stringSlice ledger:string pin:stringSlice policy:string project-dir/C:string repository:stringSlice
@@ -430,7 +430,7 @@ forge storage check	cmd	lane:string policy:string project-dir/C:string reserve:u
 forge storage configure-nodes	cmd	apply:bool policy:string project-dir/C:string
 forge storage daemon	cmd	interval:duration policy:string project-dir/C:string
 forge storage gc	cmd	apply:bool dry-run:bool policy:string project-dir/C:string scheduled:bool
-forge storage gocache	cmd	apply:bool budget:duration dry-run:bool policy:string project-dir/C:string
+forge storage gocache	cmd	apply:bool budget:duration dry-run:bool go-cache:stringArray policy:string project-dir/C:string
 forge storage install	cmd	policy:string project-dir/C:string
 forge storage policy	cmd	policy:string project-dir/C:string
 forge storage register	cmd	builder:stringSlice context:stringSlice ledger:string pin:stringSlice policy:string project-dir/C:string repository:stringSlice

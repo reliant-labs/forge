@@ -60,6 +60,27 @@ func TestGoCacheGCRecordsWhatEachTrimDid(t *testing.T) {
 	}
 }
 
+// TestGoCacheFlagReachesThePass: `--go-cache` is how the Reliant daemon hands
+// forge the caches it saw the machine's builds use; each reaches the pass's
+// runner, from the command line, beside the policy's go_caches.
+func TestGoCacheFlagReachesThePass(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "storage.json")
+	var got []string
+	stubGoCacheGC(t, func(_ context.Context, r storage.Runner, _ bool) error {
+		got = r.ExtraGoCacheRoots
+		return nil
+	})
+	cmd := newStorageGoCacheCmd(&path)
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"--go-cache", "/srv/a/go-build", "--go-cache", "/srv/b/go-build"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "/srv/a/go-build,/srv/b/go-build" {
+		t.Fatalf("the pass saw extra caches %q", got)
+	}
+}
+
 // TestGoCacheGCDryRunRecordsNothing: a preview changes nothing, so it is no
 // evidence the cache is being trimmed and must not reset a scheduler's clock.
 func TestGoCacheGCDryRunRecordsNothing(t *testing.T) {

@@ -59,6 +59,32 @@
 // An error, under the warn-first rollout (lint_rollout_table.go): a project
 // pinned below the release after the one that ships it sees a warning
 // carrying the gate date.
+//
+// ── The one exception: a table still as forge scaffolded it (WARNING) ────
+//
+// `forge scaffold` births a `// forge:entity` table with its authenticated
+// CRUD and deliberately declares no owner — only the author knows whose rows
+// they are (see the birth in internal/scaffold/entityproto.go). Failing the
+// gate on that output makes the scaffold phase's expected state illegal: an
+// agent told to gate on lint invents an ownership decision nobody asked it
+// to make. So while the table is still exactly what forge scaffolded, the
+// finding is a warning, "pending: choose an owner for <Entity>", carrying
+// the same fix. Once a person edits the table, it gates again.
+//
+// "Exactly what forge scaffolded" is two facts read from the migrations:
+//
+//   - the file that creates the table is a forge birth whose birth checksum
+//     (checksums.StampSQLBirth) still matches every byte — an in-place edit
+//     to the birth, a column added or a comment reworded, ends it;
+//   - no other migration alters it (ALTER TABLE, COMMENT ON TABLE/COLUMN,
+//     CREATE INDEX/TRIGGER/POLICY … ON it), except another pristine birth:
+//     a later birth back-fills a foreign key onto an earlier table, and that
+//     is forge's write, not a person's.
+//
+// No evidence reads as edited: a table born before births carried the
+// checksum, a hand-written CREATE TABLE, or a squashed baseline gates as it
+// always did. An exemption declared without a reason is never held: it is a
+// declaration, and wrong whatever state the table is in.
 
 package lint
 
@@ -72,6 +98,7 @@ import (
 
 	"github.com/jinzhu/inflection"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -93,14 +120,34 @@ type crudOwnershipFinding struct {
 	Comment string   // the table's current comment, so the fix can keep it
 	RPCs    []string // "Service.Method", sorted
 	Marker  string   // schemadef.TableMarkerPublic / TableMarkerUnscoped
+	// Entity names the table's entity ("Task") in a pending finding.
+	Entity string
+	// Pending is set when the table is still exactly as forge scaffolded
+	// it, which holds the finding at a warning (see the file header).
+	Pending bool
+}
+
+// severity is the finding's JSON severity: an error, unless the table is
+// still forge's fresh scaffold.
+func (f crudOwnershipFinding) severity() string {
+	if f.Pending {
+		return lintSevWarning
+	}
+	return lintSevError
 }
 
 func (f crudOwnershipFinding) message() string {
 	if f.Marker != "" {
 		return fmt.Sprintf("table %s declares %s with no reason: the marker exists to record why the table needs no owner, and an empty one records nothing", f.Table, f.Marker)
 	}
-	return fmt.Sprintf("table %s is read and written by forge-generated CRUD on authenticated rpc(s) %s and declares no owner: every signed-in caller can read, update and delete every row",
+	msg := fmt.Sprintf("table %s is read and written by forge-generated CRUD on authenticated rpc(s) %s and declares no owner: every signed-in caller can read, update and delete every row",
 		f.Table, strings.Join(f.RPCs, ", "))
+	if f.Pending {
+		msg = fmt.Sprintf("pending: choose an owner for %s — %s. The table is still exactly as forge scaffolded it "+
+			"(its birth migration is unedited and no later migration alters it), so this is a warning for now; "+
+			"it fails the build once the table is edited", f.Entity, msg)
+	}
+	return msg
 }
 
 func (f crudOwnershipFinding) fixHint() string {
@@ -138,7 +185,7 @@ func collectCRUDOwnershipJSON(cwd string, cfg *config.ProjectConfig) ([]lintJSON
 	out := make([]lintJSONFinding, 0, len(fs))
 	for _, f := range fs {
 		out = append(out, lintJSONFinding{
-			File: f.File, Line: f.Line, Severity: lintSevError,
+			File: f.File, Line: f.Line, Severity: f.severity(),
 			Rule: ruleCRUDTableUnowned, Message: f.message(), FixHint: f.fixHint(),
 		})
 	}
@@ -231,7 +278,8 @@ func crudOwnershipFindingsFor(schema ownershipSchema, services []codegen.Service
 			continue
 		}
 		sort.Strings(served)
-		out = append(out, crudOwnershipFinding{File: site.createFile, Line: site.createLine, Table: t.Name, Comment: t.Comment, RPCs: served})
+		out = append(out, crudOwnershipFinding{File: site.createFile, Line: site.createLine, Table: t.Name, Comment: t.Comment, RPCs: served,
+			Entity: codegen.TableEntityName(t), Pending: site.scaffolded()})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Table < out[j].Table })
 	return out
@@ -289,15 +337,35 @@ type ownershipSchema struct {
 }
 
 // tableSite locates a table's CREATE TABLE and its latest COMMENT ON TABLE
-// (project-relative file, 1-based line).
+// (project-relative file, 1-based line), and records whether the table is
+// still as forge scaffolded it.
 type tableSite struct {
 	createFile, commentFile string
 	createLine, commentLine int
+	// bornPristine: the CREATE TABLE is in a forge birth migration whose
+	// birth checksum still matches it.
+	bornPristine bool
+	// editedElsewhere: a migration other than the CREATE's, and not itself
+	// a pristine birth, alters the table.
+	editedElsewhere bool
 }
+
+// scaffolded reports whether the table is still exactly as forge
+// scaffolded it: the crud-table-unowned exception (see the file header).
+func (s tableSite) scaffolded() bool { return s.bornPristine && !s.editedElsewhere }
 
 // renameTableRe matches `ALTER TABLE <t> RENAME TO <new>`. CREATE and DROP
 // reuse the fixture lane's createTableRe / dropTableRe.
 var renameTableRe = regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(` + sqlident.Qualified + `)\s+rename\s+to\s+(` + sqlident.Part + `)`)
+
+// alterTableRe matches any `ALTER TABLE <t>`, and createOnTableRe a
+// `CREATE [UNIQUE] INDEX | TRIGGER | POLICY | RULE … ON <t>`: the statements
+// that change an existing table, which end its scaffolded state when a
+// person writes them.
+var (
+	alterTableRe    = regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(` + sqlident.Qualified + `)`)
+	createOnTableRe = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:unique\s+)?(?:index|(?:constraint\s+)?trigger|policy|rule)\b[^;]*?\bon\s+(?:only\s+)?(` + sqlident.Qualified + `)`)
+)
 
 // ownershipSchemaFromMigrations replays the migrations' text in file order.
 // Statements this does not recognise are ignored: the rule can then miss a
@@ -318,6 +386,24 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 	}
 	err := eachMigration(root, migDir, func(rel, text string) {
 		lineAt := func(off int) int { return strings.Count(text[:off], "\n") + 1 }
+		// text has its comments blanked, and the birth checksum is a
+		// comment over the file's own bytes: read those.
+		pristineBirth := false
+		path := filepath.FromSlash(rel)
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(root, path)
+		}
+		if raw, err := os.ReadFile(path); err == nil {
+			_, pristineBirth = checksums.SQLBirthIsPristine(raw)
+		}
+		// edited records a statement in this file that changes table name:
+		// a person's edit unless this file is the table's own CREATE or a
+		// pristine birth (forge back-filling a foreign key).
+		edited := func(name string) {
+			if st, ok := tables[name]; ok && !pristineBirth && st.site.createFile != rel {
+				st.site.editedElsewhere = true
+			}
+		}
 		var evs []event
 		add := func(kind string, re *regexp.Regexp) {
 			for _, loc := range re.FindAllStringSubmatchIndex(text, -1) {
@@ -335,6 +421,8 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 		add("rename", renameTableRe)
 		add("comment-table", commentOnRelationRe)
 		add("comment-column", commentOnColumnRe)
+		add("alter", alterTableRe)
+		add("create-on", createOnTableRe)
 		sort.SliceStable(evs, func(i, j int) bool { return evs[i].at < evs[j].at })
 
 		for _, ev := range evs {
@@ -345,13 +433,14 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 					order = append(order, name)
 				}
 				tables[name] = &tableState{t: schemadef.Table{Name: name}, cols: map[string]string{},
-					site: tableSite{createFile: rel, createLine: lineAt(ev.at)}}
+					site: tableSite{createFile: rel, createLine: lineAt(ev.at), bornPristine: pristineBirth}}
 			case "drop":
 				for _, n := range strings.Split(ev.m[1], ",") {
 					delete(tables, sqlident.Last(n))
 				}
 			case "rename":
 				from, to := sqlident.Last(ev.m[1]), sqlident.Last(ev.m[2])
+				edited(from)
 				if st, ok := tables[from]; ok {
 					delete(tables, from)
 					st.t.Name = to
@@ -362,6 +451,7 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 				if !strings.EqualFold(ev.m[1], "table") {
 					continue // a view's comment
 				}
+				edited(sqlident.Last(ev.m[2]))
 				if st, ok := tables[sqlident.Last(ev.m[2])]; ok {
 					st.t.Comment = unescapeSQLString(ev.m[3])
 					st.site.commentFile, st.site.commentLine = rel, lineAt(ev.at)
@@ -371,9 +461,12 @@ func ownershipSchemaFromMigrations(root, migDir string) (ownershipSchema, error)
 				if len(parts) < 2 {
 					continue
 				}
+				edited(parts[len(parts)-2])
 				if st, ok := tables[parts[len(parts)-2]]; ok {
 					st.cols[parts[len(parts)-1]] = unescapeSQLString(ev.m[2])
 				}
+			case "alter", "create-on":
+				edited(sqlident.Last(ev.m[1]))
 			}
 		}
 	})

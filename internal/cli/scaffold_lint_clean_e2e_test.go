@@ -29,9 +29,7 @@ import (
 // Scenario (mirrors TestE2EPbThroughCrudPlusCustomRpc): a fresh project
 // with a dashboard frontend and, in one service, BOTH a `// forge:entity`
 // CRUD entity (with an enum field and an optional field) AND a genuine
-// custom RPC. new → author proto → `forge scaffold` → build green → the
-// author declares whose rows the born table holds (the one decision the
-// scaffold asks for rather than makes; see the crud-ownership lane) →
+// custom RPC. new → author proto → `forge scaffold` → build green →
 // `forge lint --no-fix` and asserts:
 //
 //   - exit 0 with ZERO error findings (no "❌" anywhere) — covering the
@@ -45,6 +43,10 @@ import (
 //   - the scaffold-not-customized findings are still SURFACED, as
 //     warnings (fresh scaffold always carries FORGE_SCAFFOLD markers —
 //     pending work, not a defect);
+//   - the born orders table, which declares no owner (the one decision
+//     the scaffold asks for rather than makes), is surfaced as a
+//     "pending: choose an owner" warning; once the author edits the
+//     table, crud-table-unowned gates, and declaring the scope clears it;
 //   - the golangci and contractlint lanes actually RAN (a silently
 //     skipped lane would make the exit-0 assertion vacuous). The
 //     contractlint binary is built from THIS tree and prepended to PATH
@@ -124,21 +126,6 @@ message CreateApiKeyResponse {}
 	runCmd(t, projectDir, forgeBin, "scaffold")
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// The one question the scaffold leaves to its author: whose rows the
-	// born orders table holds. Forge declares no owner and no exemption for
-	// them, so the crud-ownership lane names the table (a warning or an
-	// error by the pin's rollout; either way the decision is asked, not
-	// made). The author then answers in a new migration, which is the
-	// fresh project every later assertion judges.
-	ownOut, _ := runCmdAllowFail(t, projectDir, forgeBin, "lint", "--crud-ownership", "--no-fix")
-	if !strings.Contains(ownOut, "[crud-table-unowned]") || !strings.Contains(ownOut, "table orders") {
-		t.Errorf("an ownerless born table must be asked whose rows it holds, not exempted for its author:\n%s", ownOut)
-	}
-	writeFileE2E(t, nextMigrationPathE2E(t, projectDir, "declare_orders_scope"),
-		"-- forge:backward-compatible — a table comment only; no schema change\n"+
-			"COMMENT ON TABLE orders IS 'forge:unscoped: fixture; every caller of the catalog service is an operator';\n")
-	runCmd(t, projectDir, forgeBin, "generate")
-
 	// THE INVARIANT: `forge lint` exits 0 on the fresh scaffold. PATH is
 	// prepended with the tree-built contractlint so the contract lane runs
 	// against THIS tree's analyzers.
@@ -176,6 +163,16 @@ message CreateApiKeyResponse {}
 	if !strings.Contains(out, "static-export clean — 1 Next.js frontend(s)") {
 		t.Errorf("static-export lane did not judge the scaffolded frontend clean:\n%s", out)
 	}
+
+	// The one question the scaffold leaves to its author: whose rows the
+	// born orders table holds. Forge declares no owner and no exemption for
+	// them, so the crud-ownership lane asks — as a pending warning while the
+	// table is exactly as born (the exit-0 and no-❌ assertions above hold
+	// the "not a gate" half).
+	if !strings.Contains(out, "pending: choose an owner for Order") || !strings.Contains(out, "table orders") {
+		t.Errorf("the ownerless born orders table must be asked whose rows it holds, as a pending warning:\n%s", out)
+	}
+	assertEditedTableOwnershipGates(t, projectDir, forgeBin)
 
 	// The scaffold's expected FORGE_SCAFFOLD markers are surfaced as a
 	// WARNING — visible, but not gating.
@@ -810,5 +807,27 @@ func assertScaffoldIsEslintCleanAsEmitted(t *testing.T, feDir string) {
 		t.Errorf("the emitted scaffold is not eslint-clean as written — every new project starts "+
 			"with findings its author did not create, and `forge lint`'s --fix pre-pass hides "+
 			"them by mutating the files:\n%s", out)
+	}
+}
+
+// assertEditedTableOwnershipGates edits the born orders table the way an
+// author evolves an entity (a new migration that alters it), and requires
+// crud-table-unowned to gate from then on; declaring the scope clears it.
+func assertEditedTableOwnershipGates(t *testing.T, projectDir, forgeBin string) {
+	t.Helper()
+	writeFileE2E(t, nextMigrationPathE2E(t, projectDir, "orders_add_carrier"),
+		"-- forge:backward-compatible — adds a nullable column\n"+
+			"ALTER TABLE orders ADD COLUMN carrier TEXT;\n")
+	ownOut, err := runCmdAllowFail(t, projectDir, forgeBin, "lint", "--crud-ownership", "--no-fix")
+	if err == nil || !strings.Contains(ownOut, "[crud-table-unowned]") || !strings.Contains(ownOut, "table orders") ||
+		strings.Contains(ownOut, "pending: choose an owner") {
+		t.Errorf("once the author edits the born table, crud-table-unowned must gate (err=%v):\n%s", err, ownOut)
+	}
+	writeFileE2E(t, nextMigrationPathE2E(t, projectDir, "declare_orders_scope"),
+		"-- forge:backward-compatible — a table comment only; no schema change\n"+
+			"COMMENT ON TABLE orders IS 'forge:unscoped: fixture; every caller of the catalog service is an operator';\n")
+	if ownOut, err := runCmdAllowFail(t, projectDir, forgeBin, "lint", "--crud-ownership", "--no-fix"); err != nil ||
+		strings.Contains(ownOut, "[crud-table-unowned]") {
+		t.Errorf("a declared scope must answer crud-table-unowned (err=%v):\n%s", err, ownOut)
 	}
 }

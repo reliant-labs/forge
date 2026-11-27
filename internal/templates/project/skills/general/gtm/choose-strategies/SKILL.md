@@ -22,7 +22,7 @@ Walk every category before judging anything. Aim for a few ideas per category, i
 | Launches and PR | a launch on a relevant site or newsletter, a story only you can tell, a data post, a release with a real hook |
 | Paid | search on high-intent terms, sponsored newsletters, retargeting, sponsorships |
 | Product-led | a free tier or trial, a shareable output, in-product prompts, a better first-run experience |
-| Pricing and offers | an annual plan, a starter pack, a founder discount for early users, a pricing page rewrite |
+| Pricing and offers | an annual plan, a starter bundle, a founder discount for early users, a pricing page rewrite |
 | Retention and expansion | onboarding emails, usage nudges, win-back notes, a customer review cadence |
 | Referral | an invite loop, a credit for both sides, a partner code |
 | Trust | case studies with permission, security and status pages, public roadmap, reviews, a clear refund policy |

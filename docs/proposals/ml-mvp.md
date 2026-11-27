@@ -489,7 +489,9 @@ small generic addition cover what the release needs:
   sketch) stamps the group's objects with the release labels and annotations
   forge already puts on every workload. It is not ML-specific: any CRD that runs
   pods (an InferenceService, a RayService, a vendor operator's resource) gets
-  the release attribution a Deployment gets.
+  object-level release attribution. Predictor trace attribution additionally
+  requires the explicit container environment configuration below; stamping an
+  arbitrary CRD does not inject an OTel resource into its pods.
 
 ```python
 models = [forge.Model {name = "support-assistant", contract = "openai-chat"}]
@@ -516,12 +518,28 @@ The InferenceService itself is the customer's. It sets:
 - `--served-model-name`, which becomes `gen_ai.request.model` and
   `gen_ai.response.model` on the serving spans.
 
-The release stamp puts `service.version` and the release labels on the object.
-They reach the predictor pods only if KServe propagates the InferenceService's
-labels to them (verify). Where it does not, the container sets
-`OTEL_RESOURCE_ATTRIBUTES` from the same value. `forge ml discover`, or a
-scaffold, can write a starting InferenceService as user-owned YAML, the way it
-writes chart values.
+The release stamp puts `service.version` and the release labels on the object;
+**that alone does not attribute predictor traces**. Release-stamped objects work
+without Kubernetes inventory, but the trace join and release-health attribution
+also require an instrumented predictor, an OTLP destination and an explicit
+`OTEL_RESOURCE_ATTRIBUTES` entry containing `service.version` from the same
+release value. The customer-owned InferenceService must declare that entry in
+its predictor container environment, preserving any other resource attributes.
+This is required even if KServe propagates labels: a pod label alone does not
+configure the predictor's OTel resource. `forge ml discover`, or a scaffold, can
+write a starting InferenceService as user-owned YAML, the way it writes chart
+values. No inventory enrichment is required or assumed.
+
+The serving slice's acceptance test must deploy that manifest against the pinned
+KServe and instrumented runtime with Kubernetes inventory disabled and no
+`MLStack`, send an inference request, and assert that the exported serving span's
+resource has `service.version` equal to the deployed release. Promote a second
+release and repeat, asserting the new version rather than the old one, and prove
+the release/model join resolves the expected digest. Missing or stale version
+attribution must report coverage as unavailable, never a successful release-health
+proof. This test is a prerequisite for claiming trace attribution on an adopted
+runtime; uninstrumented customer predictors still deploy, but do not provide that
+capability.
 
 **Why not a forge shape** (the rejected alternative of
 [decision 48](#7-owner-decisions-settled-2026-11-26)). The first draft proposed
@@ -544,9 +562,13 @@ lineage on the model is filled in only when a run produced it.
 
 ### 2.4 Request traces name the release
 
-Every serving span carries `service.version` (the release, which forge already
-stamps; `kcl/render.k` `_otel_resource_attributes`) and `gen_ai.request.model`.
-OTel has no attribute for a model digest, so forge adds none. The release
+With the predictor instrumentation and explicit environment configuration of
+section 2.3, every serving span carries `service.version` on its resource and
+`gen_ai.request.model` on the span. The version must match the release stamp;
+`kcl/render.k` `_otel_resource_attributes` is the existing workload precedent,
+not automatic injection into arbitrary CRDs. Without that configuration the
+InferenceService still deploys independently, but the trace join and release-health
+attribution are unavailable. OTel has no attribute for a model digest, so forge adds none. The release
 ledger maps the release and the model name to the model's `oci` artifact and its
 digest. The app's call into the model is the parent span through `traceparent`.
 So one request links through to everything behind it:

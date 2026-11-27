@@ -161,6 +161,13 @@ OOM and timeout have no engine counter. OOM shows up as a pod restart (`OOMKille
 The conventions now live in `open-telemetry/semantic-conventions-genai`. Opt-in to the newer attribute names with `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental` (K).
 
 **Metrics**
+
+The `gen_ai.client.inference.*tokens` rows below are candidate mappings, not a
+verified emission/query contract. Until their names, instruments and units are
+checked against a pinned upstream revision, client token totals use the defined
+`ml.client.tokens` contract in [01-metrics-inventory](../01-metrics-inventory.md#attribute-mapping).
+Legacy token histograms remain ingestible as described there.
+
 | Name | Instrument | Unit | Notes |
 |---|---|---|---|
 | `gen_ai.client.operation.duration` | Histogram | s | Generic operation; attributes operation.name, provider.name, request.model, response.model, server.address, error.type |

@@ -86,7 +86,9 @@ adapter data (ml-workloads decision 3). Groups, each mapped per part file:
 ## Attribute mapping
 
 Narrowed (owner direction "simpler is better", 2026-11-26). Only run, attempt, step and
-checkpoint get `ml.*` names, because OTel has none for them. Everything else uses an
+checkpoint get `ml.*` names, because OTel has none for them, with one temporary
+exception: client token totals retain the ML-owned contract below until the
+replacement GenAI metrics are verified. Everything else uses an
 existing OTel name (checked 2026-11-26 against open-telemetry/semantic-conventions main and
 the new open-telemetry/semantic-conventions-genai repository, where the GenAI conventions
 now live; all of them are development stability).
@@ -109,11 +111,21 @@ Everything else, existing names:
 | Model identity (serving)     | `gen_ai.request.model`, `gen_ai.response.model`; the digest is not an attribute: join `service.version` and the model name to the release ledger's `oci` artifact                                                                                                                                                                                                                     | development |
 | Provider                     | `gen_ai.provider.name` (`gen_ai.system` is deprecated)                                                                                                                                                                                                                                                                                                                                | development |
 | Serving latency              | `gen_ai.server.request.duration`, `gen_ai.server.time_to_first_token`, `gen_ai.server.time_per_output_token`; `gen_ai.operation.name`                                                                                                                                                                                                                                                 | development |
-| Client tokens                | `gen_ai.client.token.usage` is deprecated; the genai repository has `gen_ai.client.inference.usage.*` token metrics (verify the exact names)                                                                                                                                                                                                                                          | development |
+| Client tokens                | Mapping deferred: `ml.client.tokens` (Counter, unit `{token}`, attribute `gen_ai.token.type` = input or output); replacement GenAI names and units must be verified before adoption                                                                                                                                                                                                                                          | development |
 | Cluster objects              | `k8s.cluster.name`, `k8s.node.name`, `k8s.namespace.name`, `k8s.pod.name`, `k8s.container.name`, `k8s.job.name`                                                                                                                                                                                                                                                                       | stable      |
 | Host                         | `host.name`, `host.id`                                                                                                                                                                                                                                                                                                                                                                | development |
 | GPU device                   | attributes `hw.id`, `hw.type = gpu`, `hw.vendor`, `hw.model`, `hw.serial_number`, `hw.driver_version`, `hw.firmware_version`, `hw.gpu.task`; metrics `hw.gpu.utilization`, `hw.gpu.memory.usage`, `hw.gpu.memory.limit`, `hw.gpu.memory.utilization`, `hw.gpu.io`, `hw.gpu.errors`, `hw.gpu.status`; power and energy through generic `hw.power` and `hw.energy` with `hw.type = gpu` | development |
 | Not in OTel                  | per-GPU temperature, a k8s device attribute, a `gpu.*` namespace, a model digest or version, anything for training                                                                                                                                                                                                                                                                    | —           |
+
+The client-token row is an ML-owned exception, not an OTel mapping. Count input
+and output once per completed operation, including cached input and reasoning
+output in their respective totals. Queries use `ml.client.tokens`; never add
+legacy and replacement SDK series for the same operation. Legacy
+`gen_ai.client.token.usage` histograms remain ingestible: their sum, split by
+`gen_ai.token.type`, supplies token totals, not their observation count. The
+candidate replacement names in 01d §2 are not an emission or query contract until
+verified against a pinned revision of `semantic-conventions-genai`, including
+instrument types and units; adopting them must retain this ML-owned path.
 
 Vendor series with no OTel equivalent (DCGM profiling fields, temperature, XID) keep the
 vendor's own name through the accelerator adapter (ml-workloads decision 3).

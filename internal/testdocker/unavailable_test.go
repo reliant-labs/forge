@@ -126,3 +126,26 @@ func TestUnavailableGateNeedsExactlyOne(t *testing.T) {
 		t.Fatalf("Unavailable with RELIANT_GATE=true under CI: failed=%t skipped=%t; want a failure", r.failed, r.skipped)
 	}
 }
+
+// TestUnavailableInAGateFailsAnUncountedSkip: a gate counts skips only through
+// its skip log, so in a gate a skip that cannot be recorded (no log set, or a
+// log that cannot be written) fails rather than going unrun uncounted.
+func TestUnavailableInAGateFailsAnUncountedSkip(t *testing.T) {
+	for _, tc := range []struct{ name, log string }{
+		{"no skip log", ""},
+		{"unwritable skip log", filepath.Join(t.TempDir(), "missing-dir", "test.gate-run-1")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CI", "")
+			t.Setenv("RELIANT_GATE", "1")
+			t.Setenv("RELIANT_GATE_DOCKER_SKIPS", tc.log)
+			r := callUnavailable()
+			if !r.failed || r.skipped {
+				t.Fatalf("Unavailable in a gate with %s: failed=%t skipped=%t; want a failure", tc.name, r.failed, r.skipped)
+			}
+			if !strings.Contains(r.msg, "docker is not available: no daemon") {
+				t.Errorf("Unavailable message %q does not carry the caller's reason", r.msg)
+			}
+		})
+	}
+}

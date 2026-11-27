@@ -23,12 +23,11 @@ package cli
 // each would put seconds in front of every writing command — and spawns git
 // only for a file that names forge's keys.
 //
-// Only forge's own stale entries go: a driver command in the shape forge
-// writes (… merge-generated %O %A %B …) that cannot hand a merge to the
-// pinned forge — one from before the hand-off (no `[ -x ]` guard) or one whose
-// binary is gone — and a forge-merge-driver registration whose binary is gone.
-// A command forge never writes, or a usable delegating one someone set on
-// purpose, is left alone, as is every other key in the file.
+// Only forge's own stale entries go: a driver command naming a durable
+// merge-driver/<identity>/forge copy that cannot hand a merge to the pinned
+// forge, and a forge-merge-driver registration whose binary is gone.
+// The subcommand and placeholders alone do not establish ownership: custom
+// commands using the same arguments are left alone, as is every other key.
 
 import (
 	"bytes"
@@ -41,9 +40,18 @@ import (
 	"strings"
 )
 
-// forgeDriverShapeRE matches a driver command forge wrote, in any shape it
-// has written: the merge-generated subcommand with git's placeholders.
+// forgeDriverShapeRE matches the subcommand and placeholders; ownership also
+// requires the durable-copy layout, not merely forge-shaped arguments.
 var forgeDriverShapeRE = regexp.MustCompile(` merge-generated %O %A %B( |$)`)
+var forgeDriverCopyIdentityRE = regexp.MustCompile(`^[0-9a-f]{12}$`)
+
+func worktreeDriverNamesForgeCopy(command string) bool {
+	bin, ok := driverCommandBinary(command)
+	dir := filepath.Dir(bin)
+	return ok && filepath.IsAbs(bin) && filepath.Base(bin) == "forge" &&
+		filepath.Base(filepath.Dir(dir)) == "merge-driver" &&
+		forgeDriverCopyIdentityRE.MatchString(filepath.Base(dir))
+}
 
 // staleWorktreeDriverEntry reports whether key = value, read from a
 // config.worktree, is forge's own entry that shadows the shared driver
@@ -51,7 +59,8 @@ var forgeDriverShapeRE = regexp.MustCompile(` merge-generated %O %A %B( |$)`)
 func staleWorktreeDriverEntry(key, value string) bool {
 	switch {
 	case key == "merge."+generatedMergeDriver+".driver":
-		return forgeDriverShapeRE.MatchString(value) && (!driverCommandDelegates(value) || !driverCommandUsable(value))
+		return forgeDriverShapeRE.MatchString(value) && worktreeDriverNamesForgeCopy(value) &&
+			(!driverCommandDelegates(value) || !driverCommandUsable(value))
 	case strings.HasPrefix(key, pinnedDriverSection+".") && strings.HasSuffix(key, ".command"):
 		return !driverCommandUsable(value)
 	}

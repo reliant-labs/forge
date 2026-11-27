@@ -12,10 +12,13 @@ import (
 // Only forge's own entries that cannot merge through the pinned forge are
 // stale: anything else in a config.worktree is someone's on purpose.
 func TestStaleWorktreeDriverEntry(t *testing.T) {
-	live := filepath.Join(t.TempDir(), "forge")
-	writeTreeFileT(t, live, "#!/bin/sh\n")
-	if err := os.Chmod(live, 0o755); err != nil {
-		t.Fatal(err)
+	live := filepath.Join(t.TempDir(), "merge-driver", "f1e8f2ebdbb6", "forge")
+	custom := filepath.Join(t.TempDir(), "custom-merge-tool")
+	for _, bin := range []string{live, custom} {
+		writeTreeFileT(t, bin, "#!/bin/sh\n")
+		if err := os.Chmod(bin, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	key := "merge.forge-generated.driver"
 	reg := "forge-merge-driver.61efb1e2ce8c.command"
@@ -24,9 +27,12 @@ func TestStaleWorktreeDriverEntry(t *testing.T) {
 		want             bool
 	}{
 		{"bare command naming a gone forge", key, "'/gone/merge-driver/f1e8f2ebdbb6/forge' merge-generated %O %A %B %L %P", true},
-		{"bare command from before %P", key, "'/gone/forge' merge-generated %O %A %B %L", true},
+		{"bare command from before %P", key, "'/gone/merge-driver/f1e8f2ebdbb6/forge' merge-generated %O %A %B %L", true},
+		{"custom live command with forge-shaped argv", key, shellQuote(custom) + " merge-generated %O %A %B %L %P", false},
+		{"custom live command from before %P", key, shellQuote(custom) + " merge-generated %O %A %B %L", false},
+		{"unknown binary outside forge's copy layout", key, "'/gone/forge' merge-generated %O %A %B %L %P", false},
 		{"bare command naming a live forge (predates the hand-off)", key, shellQuote(live) + " merge-generated %O %A %B %L %P", true},
-		{"guarded command naming a gone forge", key, "[ -x '/gone/forge' ] && exec '/gone/forge' merge-generated %O %A %B %L %P", true},
+		{"guarded command naming a gone forge", key, "[ -x '/gone/merge-driver/f1e8f2ebdbb6/forge' ] && exec '/gone/merge-driver/f1e8f2ebdbb6/forge' merge-generated %O %A %B %L %P", true},
 		{"guarded command naming a live forge", key, driverCommandLine(live, "forge"), false},
 		{"a driver forge never writes", key, "my-merge-tool %O %A %B", false},
 		{"registration naming a gone forge", reg, "'/gone/forge' merge-generated %O %A %B %L %P", true},
@@ -57,7 +63,7 @@ func TestRemoveStaleDriverEntries_PreservesMultilineValue(t *testing.T) {
 	}
 	file := filepath.Join(dir, "config.worktree")
 	const key = "forge-merge-driver.multiline.command"
-	const stale = "'/gone/forge' merge-generated %O %A %B %L %P"
+	const stale = "'/gone/merge-driver/f1e8f2ebdbb6/forge' merge-generated %O %A %B %L %P"
 	usable := shellQuote(live) + " merge-generated %O %A %B %L %P"
 	gitT(t, dir, "config", "--file", file, "--add", key, stale)
 	gitT(t, dir, "config", "--file", file, "--add", key, usable)
@@ -75,6 +81,20 @@ func TestRemoveStaleDriverEntries_PreservesMultilineValue(t *testing.T) {
 	}
 	if err := exec.Command("git", "config", "--file", file, "--get", "merge.forge-generated.driver").Run(); err == nil {
 		t.Error("entirely stale driver key was preserved")
+	}
+
+	// A custom live executable may implement forge's argv without being
+	// forge's old driver. Keep both its command and its display name.
+	gitT(t, dir, "config", "--file", file, "merge.forge-generated.driver", usable)
+	gitT(t, dir, "config", "--file", file, "merge.forge-generated.name", "custom merge")
+	if removeStaleDriverEntries(file) {
+		t.Error("custom live driver was treated as stale")
+	}
+	if got := strings.TrimSpace(gitT(t, dir, "config", "--file", file, "--get", "merge.forge-generated.driver")); got != usable {
+		t.Errorf("custom driver = %q, want %q", got, usable)
+	}
+	if got := strings.TrimSpace(gitT(t, dir, "config", "--file", file, "--get", "merge.forge-generated.name")); got != "custom merge" {
+		t.Errorf("custom driver name = %q, want custom merge", got)
 	}
 }
 

@@ -31,8 +31,31 @@ func taskService(auth bool) codegen.ServiceDef {
 func allGenerated(codegen.ServiceDef, codegen.Method) bool { return true }
 
 // ownershipFindings replays migrations (file name → SQL) and judges them
-// against services, every op generated unless generated says otherwise.
+// against services, every op generated unless generated says otherwise. It
+// returns the rule's findings; ownershipOptOuts returns the opt-out notes.
 func ownershipFindings(t *testing.T, migrations map[string]string, generated func(codegen.ServiceDef, codegen.Method) bool, services ...codegen.ServiceDef) []crudOwnershipFinding {
+	t.Helper()
+	var out []crudOwnershipFinding
+	for _, f := range ownershipJudged(t, migrations, generated, services...) {
+		if !f.optOut() {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func ownershipOptOuts(t *testing.T, migrations map[string]string, generated func(codegen.ServiceDef, codegen.Method) bool, services ...codegen.ServiceDef) []crudOwnershipFinding {
+	t.Helper()
+	var out []crudOwnershipFinding
+	for _, f := range ownershipJudged(t, migrations, generated, services...) {
+		if f.optOut() {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func ownershipJudged(t *testing.T, migrations map[string]string, generated func(codegen.ServiceDef, codegen.Method) bool, services ...codegen.ServiceDef) []crudOwnershipFinding {
 	t.Helper()
 	root := writeGrantsProject(t, migrations)
 	schema, err := ownershipSchemaFromMigrations(root, filepath.Join(root, "db", "migrations"))

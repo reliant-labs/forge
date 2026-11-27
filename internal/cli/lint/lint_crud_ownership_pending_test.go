@@ -1,8 +1,6 @@
 package lint
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -254,24 +252,7 @@ func TestCRUDOwnership_MalformedDeclarationOnScaffoldedTableGates(t *testing.T) 
 // finding is a pending one passes, at every pin, and a raised lint.rules
 // entry still makes it gate.
 func TestCRUDOwnership_PendingFindingDoesNotGateTheLane(t *testing.T) {
-	root := writeGrantsProject(t, map[string]string{"0001_create_tasks.up.sql": bornTasksSQL(t)})
-	desc := `{"Services":[{"Name":"TaskService","Package":"services.task.v1","GoPackage":"example.com/app/gen/services/task/v1",` +
-		`"ProtoFile":"proto/services/task/v1/task.proto","Methods":[` +
-		`{"Name":"GetTask","InputType":"GetTaskRequest","OutputType":"GetTaskResponse","AuthRequired":true}]}]}`
-	for path, body := range map[string]string{
-		"gen/forge_descriptor/fixture.json": desc,
-		"go.mod":                            "module example.com/app\n\ngo 1.24\n",
-		"internal/handlers/task/handlers_crud_ops_gen.go": "package task\n\n" +
-			"func (s *Service) crudGetTaskOp() crud.GetOp[pb.GetTaskRequest, pb.GetTaskResponse, *db.Task] {\n\treturn nil\n}\n",
-	} {
-		full := filepath.Join(root, filepath.FromSlash(path))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	root := writeOwnershipLaneProject(t, map[string]string{"0001_create_tasks.up.sql": bornTasksSQL(t)})
 	cfg := &config.ProjectConfig{}
 	fs, gated, err := lintStepNamed(t, "crud-ownership lint").collect(&lintRunCtx{cwd: root, cfg: cfg})
 	if err != nil {

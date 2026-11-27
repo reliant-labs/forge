@@ -79,7 +79,11 @@ COMMENT ON TABLE accounts IS 'forge:owner=user:user_id,org:org_id';  -- the user
 
 The caller's identity and orgs come from the `crud.OwnerResolver` your `internal/app/providers.go` provides.
 A table with authenticated CRUD and no owner declares `forge:public: <why>` or
-`forge:unscoped: <why>`, or the `crud-table-unowned` lint flags it. Forge
+`forge:unscoped: <why>`, or the `crud-table-unowned` lint flags it. That is
+the per-table opt-out for a table that is intentionally shared: the reason is
+required (a bare marker is an error) and `forge lint` prints it on every run.
+To lower the rule for the whole project instead, set
+`lint: {rules: {crud-table-unowned: warn}}` (or `off`) in `forge.yaml`. Forge
 writes neither for you: a table `forge scaffold` births without a
 `// forge:owner` field declares nothing about its owner, and the scaffold says
 so, so the decision is yours to write in a new migration. Until you edit the

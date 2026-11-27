@@ -27,7 +27,11 @@
 //     rows every caller may read, or rows scoped some other way (an admin
 //     service, an op override, a row-level-security policy). They change no
 //     codegen; the reason is the point, so a declaration without one is a
-//     finding of its own, on any table.
+//     finding of its own, on any table. They are the per-table opt-out: a
+//     table served by generated CRUD that carries one is reported as a note
+//     (rule "ran", never graded or gated) naming the marker and its reason,
+//     so every opt-out stays visible in `forge lint` and its --json. The
+//     whole rule is dialled project-wide in lint.rules (warn, off).
 //
 // A `forge:owner=` that does not parse or resolve still answers the rule:
 // `forge generate` refuses it with the precise error, and a second finding
@@ -122,6 +126,11 @@ type crudOwnershipFinding struct {
 	Comment string   // the table's current comment, so the fix can keep it
 	RPCs    []string // "Service.Method", sorted
 	Marker  string   // schemadef.TableMarkerPublic / TableMarkerUnscoped
+	// Reason is the reason a table served by generated CRUD gave for opting
+	// out (Marker names the marker). Such an entry is no finding: it is
+	// reported as a note, so the opt-out and its reason show in every lint
+	// run that reads it.
+	Reason string
 	// Entity names the table's entity ("Task") in a pending finding.
 	Entity string
 	// Pending is set when the table is still exactly as forge scaffolded
@@ -138,7 +147,14 @@ func (f crudOwnershipFinding) severity() string {
 	return lintSevError
 }
 
+// optOut reports an entry that records a reasoned opt-out, not a finding.
+func (f crudOwnershipFinding) optOut() bool { return f.Reason != "" }
+
 func (f crudOwnershipFinding) message() string {
+	if f.optOut() {
+		return fmt.Sprintf("%s: table %s opts out with %s: %s (served by generated CRUD on %s)",
+			ruleCRUDTableUnowned, f.Table, f.Marker, f.Reason, strings.Join(f.RPCs, ", "))
+	}
 	if f.Marker != "" {
 		return fmt.Sprintf("table %s declares %s with no reason: the marker exists to record why the table needs no owner, and an empty one records nothing", f.Table, f.Marker)
 	}
@@ -163,10 +179,12 @@ func (f crudOwnershipFinding) fixHint() string {
 	}
 	return fmt.Sprintf("in a new migration, declare whose rows these are: COMMENT ON TABLE %[1]s IS '%[2]s=user_id'; "+
 		"(the generated ops then scope every read and write to the caller; through a join: '%[2]s=<fk>><column>', "+
-		"by user or org: '%[2]s=user:user_id,org:org_id'). If no caller owns them, say why: "+
-		"COMMENT ON TABLE %[1]s IS '%[3]s: <why>'; (scoped some other way) or '%[4]s: <why>'; (every caller may read them).%[5]s "+
+		"by user or org: '%[2]s=user:user_id,org:org_id'). Or opt this table out, if it is intentionally shared, with the reason: "+
+		"COMMENT ON TABLE %[1]s IS '%[3]s: <why>'; (scoped some other way) or '%[4]s: <why>'; (every caller may read them); "+
+		"the reason is required, and lint prints it.%[5]s "+
+		"To lower the rule for the whole project instead: lint: {rules: {%[6]s: warn}} (or off) in forge.yaml. "+
 		"See `forge project annotations --kind table`.",
-		f.Table, schemadef.TableMarkerOwner, schemadef.TableMarkerUnscoped, schemadef.TableMarkerPublic, keep)
+		f.Table, schemadef.TableMarkerOwner, schemadef.TableMarkerUnscoped, schemadef.TableMarkerPublic, keep, ruleCRUDTableUnowned)
 }
 
 // crudOwnershipShouldRun runs the lane in a forge project with migrations:
@@ -186,6 +204,14 @@ func collectCRUDOwnershipJSON(cwd string, cfg *config.ProjectConfig) ([]lintJSON
 	}
 	out := make([]lintJSONFinding, 0, len(fs))
 	for _, f := range fs {
+		if f.optOut() {
+			// A note, not a finding: lint.rules does not grade it, and the
+			// report prints it under the lane's ✓ line.
+			note := ranNote(f.message())
+			note.File, note.Line = f.File, f.Line
+			out = append(out, note)
+			continue
+		}
 		out = append(out, lintJSONFinding{
 			File: f.File, Line: f.Line, Severity: f.severity(),
 			Rule: ruleCRUDTableUnowned, Message: f.message(), FixHint: f.fixHint(),
@@ -269,17 +295,20 @@ func crudOwnershipFindingsFor(schema ownershipSchema, services []codegen.Service
 	var out []crudOwnershipFinding
 	for _, t := range schema.Tables {
 		site := schema.Sites[t.Name]
+		served := rpcs[t.Name]
+		sort.Strings(served)
 		if marker, reason, ok := t.ScopeExemption(); ok {
 			if reason == "" {
 				out = append(out, crudOwnershipFinding{File: site.commentFile, Line: site.commentLine, Table: t.Name, Comment: t.Comment, Marker: marker})
+			} else if len(served) > 0 {
+				out = append(out, crudOwnershipFinding{File: site.commentFile, Line: site.commentLine, Table: t.Name, Comment: t.Comment, RPCs: served,
+					Marker: marker, Reason: reason})
 			}
 			continue
 		}
-		served := rpcs[t.Name]
 		if len(served) == 0 || declaresOwnership(t) {
 			continue
 		}
-		sort.Strings(served)
 		out = append(out, crudOwnershipFinding{File: site.createFile, Line: site.createLine, Table: t.Name, Comment: t.Comment, RPCs: served,
 			Entity: codegen.TableEntityName(t), Pending: site.scaffolded()})
 	}

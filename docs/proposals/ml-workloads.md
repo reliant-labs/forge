@@ -171,9 +171,8 @@ and tested without GPUs ([section 13](#13-testing-without-gpus)).
     - CPU inference and training;
     - synthetic exporter fixtures.
 
-    What only hardware can prove is checked on a design partner's cluster
-    before access widens, plus a small scale-to-zero Spot GPU pool as a
-    per-release smoke test
+    There is no GPU spend. What only hardware can prove is checked on the
+    first early-access design partner's cluster before access widens
     ([decision 12](#11-owner-decisions-decided-2026-11-26), settled
     2026-11-26).
 
@@ -191,6 +190,7 @@ The owner accepted the recommendation of every open decision in
 [section 11](#11-owner-decisions-decided-2026-11-26) and
 [decisions 17 to 22](#decisions-17-to-22-decided-2026-11-26) ("take your
 recommendations on all"). Decision 18 was settled earlier the same day.
+The owner then overrode decision 12 (2026-11-26 16:42Z): no GPU spend.
 
 **Amended by the owner, 2026-11-26: no ML-specific collector.** "Simpler is
 better, not sure if we need MLcollector when it's really just an Otel
@@ -247,13 +247,12 @@ telemetry scrapes are stamped `k8s.cluster.name` and `k8s.node.name`. Every
 11. **Pricing:** observability ingest plus a free tier of N accelerators
     through beta. A per-accelerator-hour fee is decided later, with dogfood and
     early-customer data.
-12. **Real GPUs:** a design partner's cluster, with their consent, is the gate
-    before access widens beyond design partners. A scale-to-zero GKE Spot L4
-    (or T4) pool in our own project is approved as a per-release smoke test
-    (est. $15–40/month, unverified: check the prices before creating it). This
-    narrows settled items 9 and 10 ("will not pay for real GPUs", "built and
-    tested without GPUs") by that one
-    smoke test.
+12. **No GPU spend** (owner, 2026-11-26 16:42Z, overriding the
+    recommendation). There is no standing Spot GPU pool, or any GPU we pay
+    for. Testing uses fake GPUs (fake-gpu-operator), KWOK and CPU workloads
+    (settled item 10). The first early-access design partner's cluster, with
+    their consent, is the real-hardware proof before access widens beyond
+    design partners.
 13. **Model storage:** a separate `models/` allowance per plan, sized for
     weights and billed beyond it through the storage pool. `models/` is refused
     for unclaimed orgs.
@@ -1680,7 +1679,7 @@ owner's call.
 | 9   | Label of the one ML nav item (the item and its six sub-pages are settled)                                 | (a) "ML". (b) "ML Workloads". (c) "Machine Learning". (d) "AI/ML".                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | (a) "ML": it is short and fits the nav's one-word rows (Data, Storage, Auth). "Workloads" collides with forge's `Workload` type, which would read as a filter of it. "AI/ML" promises agent and LLM features that live elsewhere.                                                            | Nav registration; slice 1 UI.                                         |
 | 10  | Disconnect and what we installed                                                                          | (a) Today's behaviour: delivered objects are orphaned. (b) Disconnect also removes components labelled `forge-ml` (our installs, the collector); customer workloads stay. (c) Remove everything delivered.                                                                                                                                                                                                                                                                                                                                   | (b). Our DaemonSets on their GPU nodes should not outlive the relationship; their apps should.                                                                                                                                                                                               | Slice 1 install path.                                                 |
 | 11  | Pricing                                                                                                   | (a) Observability ingest only. (b) Per monitored accelerator-hour. (c) A free tier of N accelerators.                                                                                                                                                                                                                                                                                                                                                                                                                                        | (a) + (c) through beta; decide (b) with dogfood and early-customer data.                                                                                                                                                                                                                     | GA.                                                                   |
-| 12  | Spend on real GPUs for what simulation cannot prove ([section 13.2](#132-what-only-real-hardware-proves)) | (a) None: ship on simulation only, and say so in the gated program's terms. (b) A scale-to-zero GKE Spot L4 (or T4) node pool in our own project, used about 4 hours per release (est. $15–40/month, unverified, section 13.3). (c) A design partner's cluster under the gated-access program, with their consent, before each wider grant.                                                                                                                                                                                                  | (c) as the gate for granting access beyond design partners, with (b) as a cheap per-release smoke test (spend approved, owner, 2026-11-26). (a) leaves Xid, profiling counters and image streaming unproven, which is exactly what the gate exists for.                                      | Granting access beyond design partners; the release checklist.        |
+| 12  | Spend on real GPUs for what simulation cannot prove ([section 13.2](#132-what-only-real-hardware-proves)) | (a) None: ship on simulation only, and say so in the gated program's terms. (b) A scale-to-zero GKE Spot L4 (or T4) node pool in our own project, used about 4 hours per release (est. $15–40/month, unverified, section 13.3). (c) A design partner's cluster under the gated-access program, with their consent, before each wider grant.                                                                                                                                                                                                  | **No GPU spend** (owner, 2026-11-26 16:42Z, overriding the recommendation of (c) plus (b)): (a)'s fake GPUs, KWOK and CPU workloads for every slice, with (c), the first early-access design partner's cluster, as the real-hardware proof before access widens. No standing Spot pool.      | Granting access beyond design partners; the release checklist.        |
 | 13  | Size limits and plan for model storage                                                                    | (a) Model bytes count against today's per-plan registry caps (10/25/50 GiB). (b) A separate `models/` allowance per plan, sized for weights (100s of GiB), billed beyond it through the storage pool. (c) Unlimited with storage billed.                                                                                                                                                                                                                                                                                                     | (b). Today's caps would refuse a single 70B model; a separate allowance keeps image quota behaviour unchanged. Refuse `models/` for unclaimed orgs (no content scan past 1 GiB).                                                                                                             | R2, R6; slice 4.                                                      |
 | 14  | Referrers API for signatures and SBOMs on models                                                          | (a) Keep distribution and the `sha256-<hex>` tag fallback, with `models/` added to sigguard's protected set. (b) Move to a distribution release that serves referrers. (c) Replace the registry with zot or Harbor.                                                                                                                                                                                                                                                                                                                          | (a) now, so signing is not blocked; (b) when it ships. (c) is a registry migration whose cost is outside ML and should be decided on its own.                                                                                                                                                | R4; model signing.                                                    |
 | 15  | Scope of the connected-cluster pull credential                                                            | (a) Reuse registrypull's per-org, whole-subtree token. (b) A new token per (cluster, env) binding, read-only and resource-bound to the project's `models/` (and image) paths.                                                                                                                                                                                                                                                                                                                                                                | (b). A credential sitting in a customer's cluster should read only what that env deploys; (a) would expose every project of the org.                                                                                                                                                         | R3; slice 4.                                                          |
@@ -1794,8 +1793,8 @@ before we model a single run.
 
 ## 13. Testing without GPUs
 
-The owner will not pay for GPUs to test this (settled, item 10), apart from the
-per-release Spot smoke test of decision 12 (settled 2026-11-26). Every slice is
+The owner will not pay for GPUs to test this (settled, item 10; decision 12,
+settled 2026-11-26: no GPU spend). Every slice is
 proven in k3d on CPU-only machines, in layers. "Verified" marks what the
 research read in source; the rest is marked.
 
@@ -1847,13 +1846,16 @@ cannot raise a Xid in k3d. The synthetic fixtures stand in for it.
 
 ### 13.3 The cheapest real check
 
-Two options, both under [decision 12](#11-owner-decisions-decided-2026-11-26).
+Two options were weighed under
+[decision 12](#11-owner-decisions-decided-2026-11-26). The owner chose the
+design partner's cluster and **no GPU spend**; the Spot pool is kept below as
+the option not chosen.
 
-**A scale-to-zero GKE Spot pool in our own project.** One zonal cluster (its
+**Not chosen: a scale-to-zero GKE Spot pool in our own project.** One zonal cluster (its
 management fee is covered by GKE's free tier for one cluster per billing
 account), and a GPU pool at zero nodes except during a release check. All
 prices are **unverified**: Google's pricing pages could not be read in this
-pass, so check them in the GCP calculator before approving.
+pass.
 
 | Shape                          | Spot price (est.) | Use                                                                 | Per month (est.) |
 | ------------------------------ | ----------------- | ------------------------------------------------------------------- | ---------------- |
@@ -1866,13 +1868,13 @@ of zero, so it needs a quota request for both `GPUS_ALL_REGIONS` and the
 regional Spot quota. Spot L4 capacity in us-central1 can run out, so the pool
 should allow several zones.
 
-**A design partner's cluster under the gated program.** No spend, and real
+**Chosen: a design partner's cluster under the gated program.** No spend, and real
 production shapes (H100s, an existing GPU Operator, Kueue). It needs the
 partner's consent and an agreed window, and it cannot run per release.
 
-Decided (owner, 2026-11-26, decision 12): the design partner is the gate before
-access widens, with the Spot pool as a per-release smoke test. Verify the
-prices above in the GCP calculator before the pool is created.
+Decided (owner, 2026-11-26 16:42Z, decision 12): no GPU spend. The first
+early-access design partner's cluster is the real-hardware proof before access
+widens; per-release testing stays on fake GPUs, KWOK and CPU workloads.
 
 ## Appendix A: cold-start checklist per cloud
 

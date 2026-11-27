@@ -28,7 +28,10 @@
 #
 # CI is set for every lane, as on a runner: a test that needs docker, a tool or
 # an image fails rather than skipping green (testdocker.Unavailable,
-# requireTool, requireDockerDaemon). Host-looking test output alone cannot
+# requireTool, requireDockerDaemon). The one exception is a missing docker in a
+# Reliant gate (RELIANT_GATE=1): a gate has no docker engine, so those tests
+# skip as "skip: docker unavailable (gate)" and the gate counts each skip in
+# its verdict (RELIANT_GATE_DOCKER_SKIPS). Host-looking test output alone cannot
 # establish that the lane failed ONLY on the host (see below).
 #
 # EXIT. 0 every lane passed; 1 a lane failed; 2 no lane failed but one could

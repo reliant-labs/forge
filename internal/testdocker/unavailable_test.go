@@ -2,6 +2,8 @@ package testdocker
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -15,9 +17,16 @@ type recordingTB struct {
 	testing.TB
 	failed, skipped bool
 	msg             string
+	logs            []string
 }
 
 func (r *recordingTB) Helper() {}
+
+func (r *recordingTB) Name() string { return "TestContainer" }
+
+func (r *recordingTB) Logf(format string, args ...any) {
+	r.logs = append(r.logs, fmt.Sprintf(format, args...))
+}
 
 func (r *recordingTB) Fatalf(format string, args ...any) {
 	r.failed = true
@@ -45,6 +54,7 @@ func TestUnavailableFailsUnderCI(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CI", tc.ci)
+			t.Setenv("RELIANT_GATE", "")
 			r := &recordingTB{}
 			done := make(chan struct{})
 			go func() {
@@ -59,5 +69,60 @@ func TestUnavailableFailsUnderCI(t *testing.T) {
 				t.Errorf("Unavailable message %q does not carry the caller's reason", r.msg)
 			}
 		})
+	}
+}
+
+// callUnavailable runs Unavailable on a recordingTB until it fails or skips.
+func callUnavailable() *recordingTB {
+	r := &recordingTB{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Unavailable(r, "docker is not available: %s", "no daemon")
+	}()
+	<-done
+	return r
+}
+
+// TestUnavailableSkipsInAGate pins the Reliant gate's contract: a gate
+// (RELIANT_GATE=1) has no docker engine, so a container test skips there even
+// though CI is set (scripts/gate.sh sets it), with exactly the message the
+// gate reports, and appends its name to the stage's skip log, one line per
+// skip, which the gate counts into its verdict (reliant's
+// gaterun.StageResult.SkippedDockerTests).
+func TestUnavailableSkipsInAGate(t *testing.T) {
+	skips := filepath.Join(t.TempDir(), "test.gate-run-1")
+	t.Setenv("CI", "1")
+	t.Setenv("RELIANT_GATE", "1")
+	t.Setenv("RELIANT_GATE_DOCKER_SKIPS", skips)
+	for range 2 {
+		r := callUnavailable()
+		if r.failed || !r.skipped {
+			t.Fatalf("Unavailable in a gate: failed=%t skipped=%t; want a skip", r.failed, r.skipped)
+		}
+		if r.msg != "skip: docker unavailable (gate)" {
+			t.Fatalf("Unavailable in a gate skipped with %q; want exactly %q", r.msg, "skip: docker unavailable (gate)")
+		}
+		if !strings.Contains(strings.Join(r.logs, "\n"), "docker is not available: no daemon") {
+			t.Errorf("Unavailable in a gate logged %q, not the caller's reason", r.logs)
+		}
+	}
+	got, err := os.ReadFile(skips)
+	if err != nil {
+		t.Fatalf("the skip log: %v", err)
+	}
+	if string(got) != "TestContainer\nTestContainer\n" {
+		t.Fatalf("the skip log holds %q; want one line per skip", got)
+	}
+}
+
+// TestUnavailableGateNeedsExactlyOne: only RELIANT_GATE=1 marks a gate (what
+// reliant's gaterun.GateEnv sets); any other value keeps the CI failure.
+func TestUnavailableGateNeedsExactlyOne(t *testing.T) {
+	t.Setenv("CI", "1")
+	t.Setenv("RELIANT_GATE", "true")
+	t.Setenv("RELIANT_GATE_DOCKER_SKIPS", "")
+	if r := callUnavailable(); !r.failed {
+		t.Fatalf("Unavailable with RELIANT_GATE=true under CI: failed=%t skipped=%t; want a failure", r.failed, r.skipped)
 	}
 }

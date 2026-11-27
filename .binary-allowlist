@@ -22,3 +22,6 @@ plugins/reliant-forge/assets/*.png
 # browsers request at /favicon.ico whatever the page declares; the scaffold
 # copies it verbatim from these embedded templates.
 internal/templates/frontend/shared-web/public/favicon.ico
+
+# forge site audit test sites: a real PNG og:image the audit fetches.
+internal/cli/testdata/siteaudit/*.png

@@ -49,6 +49,16 @@
       "items": {
         "type": "string"
       }
+    },
+    "sboms": {
+      "description": "SBOMs are the SBOM files the scan wrote to its output directory, one per artifact that has one (`forge vuln gate --out`); absent from every other verb's document.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/SBOMFile"
+      }
     }
   },
   "required": [
@@ -317,6 +327,23 @@
         "action": {
           "description": "Action is what the vuln_gate rule makes of it: block, warn or none.",
           "type": "string"
+        },
+        "rule": {
+          "description": "Rule is what decided Action: block_kev, block_severity, warn_severity, or exemption. Absent when nothing fired, or when an authoritative ledger blocked it without saying which field fired.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "occurrences": {
+          "description": "Occurrences are each place it was found: an artifact, and a path of the package inside it, one per pair. What a scoped exemption's artifacts and locations are matched against (forge.VulnExemption).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/Occurrence"
+          }
         }
       },
       "required": [
@@ -330,7 +357,7 @@
       "additionalProperties": false
     },
     "Exemption": {
-      "description": "Exemption is an accepted advisory, as the env declares it (forge.VulnExemption): time-boxed, with its reason.",
+      "description": "Exemption is an accepted advisory, as the env declares it (forge.VulnExemption): time-boxed, with its reason, and the scope it covers the advisory in (none: everywhere).",
       "type": "object",
       "properties": {
         "id": {
@@ -350,6 +377,34 @@
             "string",
             "null"
           ]
+        },
+        "packages": {
+          "description": "Packages, Artifacts and Locations are the exemption's scope (release.ShapeVulnScopedExempt), absent when it covers the advisory everywhere.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "artifacts": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "locations": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -387,6 +442,23 @@
             "string",
             "null"
           ]
+        },
+        "reason": {
+          "description": "Reason is the verdict's code in the promotion vocabulary: vuln_gate_blocked for block, vuln_gate_unscanned for stale and unscanned (could not determine is never a pass), absent otherwise. It names the rule, not a refusal: whether a promotion is refused is GradedAs's to decide.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exemptions_applied": {
+          "description": "ExemptionsApplied are the unexpired exemptions that took at least one finding out of the gate, sorted by id, each declaration (an id and its scope: release.ShapeVulnScopedExempt.Identity) once. Absent when none did, and when the gate is off (nothing is judged).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/Exemption"
+          }
         }
       },
       "required": [
@@ -409,6 +481,25 @@
           ]
         },
         "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Occurrence": {
+      "description": "Occurrence is one place a finding was found. Artifact is absent for a finding attributed to the release as a whole, Location when the scan names no path.",
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "location": {
           "type": [
             "string",
             "null"
@@ -443,6 +534,55 @@
         },
         "type": {
           "description": "Type is the ecosystem: go-module, npm, apk, deb, python, binary, ...",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SBOMFile": {
+      "description": "SBOMFile is an SBOM a scan wrote to its output directory (`forge vuln gate --out`), or copied there from the SBOM it was given.",
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "description": "Artifact is the artifact the SBOM describes, as the findings name it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Path is the file, relative to the output directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "digest": {
+          "description": "Digest is the sha256 of the file's bytes (`sha256:\u003chex\u003e`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "format": {
+          "description": "Format is the SBOM's format (`cyclonedx-json@1.6`, `spdx-json@2.3`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generator": {
+          "description": "Generator is the tool that wrote it (`syft@v1.57.2`), when known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "Source is what was described: image, binary, lockfile (a directory), or ci-provided (an SBOM the caller supplied).",
           "type": [
             "string",
             "null"

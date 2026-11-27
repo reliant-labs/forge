@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -403,7 +404,51 @@ type ReserveError struct {
 }
 
 func (e *ReserveError) Error() string {
-	return fmt.Sprintf("host disk %s has %.1f GiB free, below the %d GiB reserve; run 'forge storage status' and 'forge storage gc --apply' before building (persistent volumes are never automatically deleted)", e.Path, float64(e.Available)/float64(GiB), e.ReserveGiB)
+	return fmt.Sprintf("host disk %s has %.1f GiB free, below the %d GiB reserve; run 'forge storage status' and 'forge storage gc --apply' before building (persistent volumes are never automatically deleted), or set %s=<GiB> to build under a smaller reserve for this run only", e.Path, float64(e.Available)/float64(GiB), e.ReserveGiB, ReserveOverrideEnv)
+}
+
+// ReserveOverrideEnv overrides the host reserve for ONE run: every admission
+// check in the process (and in the processes it starts — air's rebuild runs
+// `forge storage check`) refuses below this many GiB instead of below the
+// policy's reserve, whatever the build. The policy is machine-wide and often
+// set by whoever administers a shared box; a developer whose build needs
+// megabytes on a disk with 40 GiB free had no way to proceed short of
+// rewriting that file for everyone (Ranger friction #1). The override is never
+// persisted: storage.json is untouched.
+const ReserveOverrideEnv = "FORGE_STORAGE_RESERVE_GIB"
+
+// ReserveOverride reads ReserveOverrideEnv through getenv: the reserve in GiB
+// and true when it is set, an error when it is set to anything but a positive
+// whole number of GiB. A zero reserve is refused on purpose: the check exists
+// so a build never starts on a disk it would fill.
+func ReserveOverride(getenv func(string) string) (uint64, bool, error) {
+	v := strings.TrimSpace(getenv(ReserveOverrideEnv))
+	if v == "" {
+		return 0, false, nil
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil || n == 0 {
+		return 0, false, fmt.Errorf("%s=%q: want a positive whole number of GiB (the free space a build may not start below)", ReserveOverrideEnv, v)
+	}
+	return n, true, nil
+}
+
+// HostBuildReserveGiB caps the host reserve for a HOST build: the go build of
+// one binary for a process `forge env up` runs on the developer's machine, and
+// air's rebuild of it. The binary is tens of megabytes and an incremental build
+// adds little to the Go build cache, so holding it to a reserve sized for image
+// builds and cluster nodes refused a ~30 MB rebuild with 39 GiB free (Ranger
+// friction #1). Between this floor and the policy's reserve the build proceeds
+// with a warning, so the shortfall stays visible.
+const HostBuildReserveGiB = 10
+
+// HostBuild is the policy a host build is admitted under: HostReserveGiB
+// lowered to HostBuildReserveGiB when it is larger, everything else as is.
+func (p Policy) HostBuild() Policy {
+	if p.HostReserveGiB > HostBuildReserveGiB {
+		p.HostReserveGiB = HostBuildReserveGiB
+	}
+	return p
 }
 
 // LightBuildReserveGiB caps the host reserve for a LIGHT build: one that runs

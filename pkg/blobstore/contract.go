@@ -7,7 +7,29 @@
 // The interface is narrow on purpose. A handler presigns an upload for a key
 // it chose (PresignPut), the browser PUTs the file to that URL, and the
 // handler later confirms what landed (Stat), hands out a download URL
-// (PresignGet), lists a prefix or deletes. Nothing here streams bytes.
+// (PresignGet), lists a prefix or deletes. Store itself streams no bytes.
+//
+// # Reading and writing on the server
+//
+// Some bytes have no browser behind them: a server-side confirmation that
+// sniffs and hashes what a presigned PUT stored, or a job that copies a file
+// it already holds into the bucket. Every store here is an ObjectReader and
+// an ObjectWriter for that. The package-level Open streams an object, or one
+// byte range of it (OpenOptions), and PutObject streams a body into one,
+// holding it to a declared length and a MaxBytes limit while it streams: a
+// body that breaks either fails the call, and no object, partial or whole,
+// is stored. Both refuse (ErrUnsupported) a Store that does not offer them.
+//
+// # Inline previews
+//
+// PresignGet serves an object with the Content-Type it was stored with,
+// which is whatever the uploader declared. To preview an object inline, set
+// GetOptions.ResponseContentType (and Inline): the URL then forces that type
+// on the response, whatever was stored. Only the media types a browser
+// renders without running anything are accepted (InlineSafe: PNG, JPEG, GIF,
+// WebP, MP4 and WebM), so a forced type can never make the bucket's origin
+// render HTML or SVG. Decide the type from the object's bytes (Open and
+// sniff), not from what the uploader claimed.
 //
 // The main backend speaks the S3 API (NewS3, over minio-go), which covers
 // MinIO in dev, AWS S3, Cloudflare R2, and Google Cloud Storage through its
@@ -100,8 +122,20 @@ type GetOptions struct {
 	// at most MaxTTL.
 	TTL time.Duration
 	// DownloadName, when set, makes the response a download
-	// (Content-Disposition: attachment) saved under this file name.
+	// (Content-Disposition: attachment) saved under this file name. With
+	// Inline it is the name the browser offers when the preview is saved.
 	DownloadName string
+	// ResponseContentType, when set, is the Content-Type the response
+	// carries, overriding the type the object was stored with. It must be
+	// one InlineSafe accepts (image/png, image/jpeg, image/gif, image/webp,
+	// video/mp4, video/webm), with no parameters; any other is
+	// ErrInvalidOptions.
+	ResponseContentType string
+	// Inline makes the response render in the browser
+	// (Content-Disposition: inline) rather than download. It requires
+	// ResponseContentType, so an inline response never carries a type the
+	// uploader chose.
+	Inline bool
 }
 
 // ListOptions page through List.
@@ -137,6 +171,13 @@ type Object struct {
 	ContentType  string
 	ETag         string
 	LastModified time.Time
+	// SHA256 is the lowercase hex SHA-256 of the object's bytes, set only
+	// where this process saw every byte: PutObject hashes the body as it
+	// streams. Stat, List, ListLevel and Open leave it empty, because the
+	// services do not all report one (GCS keeps only MD5 and CRC32C, and S3
+	// only for uploads that sent a checksum). To hash an object a browser
+	// uploaded, read it with Open.
+	SHA256 string
 }
 
 // ListPage is one page of List.
@@ -171,16 +212,19 @@ var (
 	ErrInvalidKey = svcerr.InvalidArgument("invalid object key")
 	// ErrInvalidOptions is a PutOptions, GetOptions or ListOptions the store
 	// cannot honour: a missing content type, a non-positive length, a TTL
-	// past MaxTTL.
+	// past MaxTTL, a response type InlineSafe refuses. It is also a
+	// PutObject body whose length is not the ContentLength it declared, and
+	// an Open offset past the object's end.
 	ErrInvalidOptions = svcerr.InvalidArgument("invalid storage request")
-	// ErrTooLarge is a PutOptions.ContentLength above its MaxBytes.
+	// ErrTooLarge is a PutOptions.ContentLength above its MaxBytes, or a
+	// PutObject body longer than its PutObjectOptions.MaxBytes.
 	ErrTooLarge = svcerr.InvalidArgument("upload too large")
 	// ErrInvalidPageToken is a LevelOptions.PageToken this store did not
 	// issue for this listing: garbled, from another prefix, bucket or
 	// backend, or refused by the service.
 	ErrInvalidPageToken = svcerr.InvalidArgument("invalid page token")
-	// ErrUnsupported is ListLevel or PresignDownload on a Store that does
-	// not implement it (every store in this package does).
+	// ErrUnsupported is ListLevel, PresignDownload, Open or PutObject on a
+	// Store that does not implement it (every store in this package does).
 	ErrUnsupported = svcerr.Unimplemented("storage operation not supported by this store")
 )
 
@@ -225,9 +269,10 @@ type LevelPage struct {
 }
 
 // ObjectAccess is the byte-level upload and download a client performs
-// against a presigned URL. A real store never moves bytes through the API
-// process, so only an in-process store such as Memory implements it: it
-// performs the transfer directly, so a test can play the browser.
+// against a presigned URL. Only an in-process store such as Memory
+// implements it: it performs the transfer directly, so a test can play the
+// browser. (Server-side reads and writes, which every store offers, are
+// ObjectReader and ObjectWriter.)
 type ObjectAccess interface {
 	// Put stores data at key, as a completed upload of a PresignPut URL
 	// would.

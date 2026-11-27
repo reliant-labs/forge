@@ -192,6 +192,7 @@ func TestMain(m *testing.M) {
 	// with room; storage_reserve_ci_test.go calls checkBuildStorage itself,
 	// and storage_guards_test.go sets its own refusal.
 	checkBuildStorageFn = func(string) error { return nil }
+	checkHostBuildStorageFn = func(string) error { return nil }
 	if err := isolateLedgerHome(); err != nil {
 		fmt.Fprintf(os.Stderr, "cli: isolate the ledger home: %v\n", err)
 		os.Exit(1)
@@ -290,7 +291,11 @@ var sharedTemp struct {
 // one TestMain, and this package's is untagged — so an e2e-tagged TestMain
 // would not compile alongside it. Registering into a var the single TestMain
 // can see is how the tagged lane gets cleanup without a second entry point.
-func registerSharedTempDir(dir string) {
+//
+// Its callers are the e2e files and hermetic_host_test.go (`!e2e &&
+// !integration`), so the `-tags integration` build — which `forge lint` lints
+// in a pass of its own — compiles it with no caller at all.
+func registerSharedTempDir(dir string) { //nolint:unused // called in the default and e2e builds; only -tags integration has no caller (see above)
 	if dir == "" {
 		return
 	}

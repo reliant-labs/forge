@@ -369,6 +369,27 @@ const (
 	// changes:launch imply it at the point of use (see changes.go); nothing
 	// else does, and it implies nothing.
 	ScopeChangesRead Scope = "changes:read"
+
+	// ScopeSBOMWrite records a release's SBOM (control-plane
+	// RecordReleaseSBOM), and does nothing else. It is a narrow upload scope
+	// like tests:write: the CI job that sends the SBOMs of a release someone
+	// else recorded holds this, without deploy:write. It never cuts or
+	// promotes a release, never records a test run and reads nothing back.
+	// A consumer that also accepts deploy:write for the upload (so the job
+	// that cuts the release needs no second token) says so in its own rpc
+	// mapping; this package does not imply it.
+	//
+	// WRITE-ONCE, SO PROTECTED REFS ONLY. A recorded SBOM is never
+	// replaced: a different one for the same artifact is refused, so
+	// whoever writes first wins for good. That is why a CI identity is
+	// minted it only on a protected ref (FederationProtectedRef), where a
+	// run on a branch anyone with push access controls cannot write first.
+	//
+	// It implies nothing and nothing implies it: not vuln:read (sending an
+	// SBOM is not reading what is exploitable in it), not deploy:read. It
+	// binds to nothing (an upload names its release in the request, which a
+	// binding would not confine).
+	ScopeSBOMWrite Scope = "sbom:write"
 )
 
 // AllScopes is the closed set, grouped by product, least authority first.
@@ -418,6 +439,7 @@ var AllScopes = []Scope{
 	ScopeTestsWrite,
 	ScopeMCPForge,
 	ScopeChangesRead,
+	ScopeSBOMWrite,
 }
 
 // ParseScope maps a wire string onto a known Scope. An unknown string is an

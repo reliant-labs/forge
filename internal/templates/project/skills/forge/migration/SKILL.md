@@ -82,15 +82,7 @@ Same shape for both `service` and `cli` targets:
 1. `forge project new <name>-next --kind <kind> --mod <path>` — scaffold the empty project.
 2. Add components (`forge scaffold operator/service/worker/webhook`) one at a time. `forge generate` after each.
 3. Get a green baseline before porting any business logic: `forge generate && go mod tidy && go build ./... && forge lint`. All four must pass.
-4. **Set the contracts floor before porting.** Edit `forge.yaml`:
-   ```yaml
-   contracts:
-     strict: true
-     allow_exported_vars: false
-     allow_exported_funcs: false
-     exclude: []
-   ```
-   See the `contracts` skill. Enabling this upfront prevents a 5-hour backfill at the end.
+4. **Run `forge lint --contract` before porting.** The lane's rules apply without setting contract strictness in `forge.yaml`. Exempt individual packages that intentionally have no contract with `contracts.exclude`; see `contracts`.
 5. Port app code into `internal/`. Everything not imported outside the module lives there — services (`internal/handlers/<svc>/`: `service.go`, the rpc methods and `handlers_crud_ops_gen.go` co-located in ONE dir, no `contract.go`; logic that needs isolation goes in a `forge scaffold package` domain package), workers (`internal/workers/<name>/`), operators (`internal/operators/<name>/`). Order: utility code and domain types first, then the service impls and handlers, then wiring. The wiring is the explicit composition (`internal/app/compose.go` `NewComponents(infra *Infra) (*Components, error)`), off the owned `internal/app/providers.go` `Infra`/`OpenInfra` provider set. Both files are yours: `providers.go` is scaffolded once, and `compose.go` is written once and then reconciled — newly discovered components and `Deps` keys are injected, your value expressions and construction order are kept (`forge project disown internal/app/compose.go` stops reconciliation). There is NO generated `bootstrap.go`/`wire_gen.go` re-emitted under you, so porting wiring is filling each component's `Deps` off `infra.<Field>` (resolved by type) in `NewComponents` and declaring any new collaborator on the `Infra` provider set. (`pkg/` is reserved for code you'll support as public API; absent real external importers, port into `internal/`, not `pkg/`.)
 6. Add `forge lint --contract` to the gate after every port phase. If a port leaves a package without a contract (a `//forge:contract` type, or `contract.go` for a strategy interface), lint fails — fix before moving on.
 

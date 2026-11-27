@@ -57,9 +57,17 @@ func Read(dir string) (*Capture, error) {
 	if _, err := os.Stat(dir); err != nil {
 		return nil, err
 	}
-	paths, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	// Not filepath.Glob(dir + "/*.jsonl"): glob metacharacters in dir itself
+	// ("run[1]") would be read as a pattern, matching nothing or failing.
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
+	}
+	var paths []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".jsonl") {
+			paths = append(paths, filepath.Join(dir, e.Name()))
+		}
 	}
 	sort.Strings(paths)
 	c := &Capture{Shapes: []Shape{}}

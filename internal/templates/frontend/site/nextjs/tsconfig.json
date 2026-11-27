@@ -11,6 +11,8 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "noUncheckedSideEffectImports": false,
+    "types": ["node"],
     "jsx": "react-jsx",
     "incremental": true,
     "plugins": [
@@ -22,6 +24,7 @@
       "@/*": ["./src/*"]
     }
   },
+  "// typescript 7 note": "types and noUncheckedSideEffectImports are spelled out at the values TypeScript 5 already uses here, because TypeScript 7 (the native compiler, tsgo) changed both defaults: it no longer adds every @types package (generated code reads process.env), and it checks side-effect imports, which nothing declares for import \"./globals.css\". So tsc behaves as before, and tsgo --noEmit checks the same rules.",
   "include": [
     "next-env.d.ts",
     "**/*.ts",

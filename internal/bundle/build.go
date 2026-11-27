@@ -733,8 +733,16 @@ func docDeadlineSeconds(doc parsedDoc) int {
 //   - a backend that converges one identity per env must never be handed a
 //     bundle declaring several (Limit would strip them silently);
 //   - a backend that does not route named same-origin APIs would publish a
-//     site whose /_api/@<name> calls 404.
+//     site whose /_api/@<name> calls 404;
+//   - a backend that serves per-release URLs but cannot read an env's
+//     opt-out would serve them anyway.
 func checkReaderHonours(r *release.BundleReader, shape release.Shape, docs []parsedDoc) error {
+	if err := r.CheckScopedVulnExemptions(shape); err != nil {
+		return err
+	}
+	if err := r.CheckReleaseURLs(shape); err != nil {
+		return err
+	}
 	if err := r.CheckIdentities(shape); err != nil {
 		return err
 	}

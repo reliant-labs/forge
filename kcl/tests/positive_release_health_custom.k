@@ -21,6 +21,8 @@ output = forge.render(forge.Bundle {
         error_rate_min_errors = 1
         baseline_window = "48h"
         alert_baseline_min_firings = 0
+        seo_max_score_drop = 0
+        a11y_max_score_drop = 25
     }
     workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api", runtime = forge.OnCluster {target = _k3d}}]
 })
@@ -32,6 +34,7 @@ assert_baseline = output.release_health.require_baseline == "every"
 assert_regressed = output.release_health.regressed_issue_min_events == 1
 assert_error_rate = output.release_health.error_rate_min_errors == 1 and output.release_health.baseline_window_seconds == 172800
 assert_alert_baseline = output.release_health.alert_baseline_min_firings == 0
+assert_score_drops = output.release_health.seo_max_score_drop == 0 and output.release_health.a11y_max_score_drop == 25
 
 # The default baseline policy is left out, so a render that keeps it records
 # the shape it always did.
@@ -77,3 +80,13 @@ _alert_baseline_three = forge.render(forge.Bundle {
     workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api", runtime = forge.OnCluster {target = _k3d}}]
 })
 assert_alert_baseline_three = _alert_baseline_three.release_health.alert_baseline_min_firings == 3
+
+# seo_max_score_drop and a11y_max_score_drop are left out at their default
+# (10), set explicitly or not.
+assert_default_score_drops_absent = "seo_max_score_drop" not in _default_baseline.release_health and "a11y_max_score_drop" not in _default_baseline.release_health
+_same_score_drops = forge.render(forge.Bundle {
+    project = "demo"
+    release_health = forge.ReleaseHealth {seo_max_score_drop = 10, a11y_max_score_drop = 10}
+    workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api", runtime = forge.OnCluster {target = _k3d}}]
+})
+assert_same_score_drops_absent = "seo_max_score_drop" not in _same_score_drops.release_health and "a11y_max_score_drop" not in _same_score_drops.release_health

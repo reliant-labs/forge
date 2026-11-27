@@ -32,6 +32,12 @@ func lintActivity(t *testing.T, methods []codegen.Method) []Finding {
 	t.Helper()
 	dir := t.TempDir()
 	writeReleasesProto(t, dir)
+	return lintActivityIn(t, dir, methods)
+}
+
+// lintActivityIn is lintActivity over a project dir the caller prepared.
+func lintActivityIn(t *testing.T, dir string, methods []codegen.Method) []Finding {
+	t.Helper()
 	desc := codegen.ForgeDescriptor{Services: []codegen.ServiceDef{{
 		Name: "ReleaseService", Package: "releases.v1",
 		ProtoFile: "services/releases/v1/releases.proto", Methods: methods,
@@ -110,5 +116,53 @@ func TestActivityDeclared_NoDescriptorNoFindings(t *testing.T) {
 	}
 	if got := findingsForRule(res.Findings, ruleActivityDeclared); len(got) != 0 {
 		t.Fatalf("findings without a descriptor = %+v, want none", got)
+	}
+}
+
+// TestActivityDeclared_UnwiredStubIsPending pins the one exception: an
+// undeclared mutation whose own handler is still forge's `forge:gen
+// unwired-stub` placeholder is a warning naming it, because that rpc
+// returns Unimplemented and records nothing. The grain is the rpc: a
+// sibling rpc with a real handler stays an error, and a malformed
+// declaration stays an error even when its handler is a stub.
+func TestActivityDeclared_UnwiredStubIsPending(t *testing.T) {
+	dir := t.TempDir()
+	writeReleasesProto(t, dir)
+	hdir := filepath.Join(dir, "internal", "handlers", "release")
+	must(t, mkdirAllImpl(hdir))
+	must(t, writeFile(filepath.Join(hdir, "rpc_rotate_key.go"), `package release
+
+// RotateKey is forge's placeholder.
+`+codegen.UnwiredStubMarkerComment("release", "RotateKey")+`
+func (s *Service) RotateKey() {}
+
+// RestartWorkload is forge's placeholder.
+`+codegen.UnwiredStubMarkerComment("release", "RestartWorkload")+`
+func (s *Service) RestartWorkload() {}
+`))
+	methods := activityMethods()
+	// PromoteRelease loses its declaration: a second undeclared mutation,
+	// with a real handler, which must still gate.
+	methods[2] = codegen.Method{Name: "PromoteRelease", Activity: &codegen.MethodActivity{Mutating: true}}
+	got := lintActivityIn(t, dir, methods)
+
+	byLine := map[int]Finding{}
+	for _, f := range got {
+		byLine[f.Line] = f
+	}
+	if len(got) != 3 {
+		t.Fatalf("findings = %d, want 3 (PromoteRelease, RotateKey pending, RestartWorkload malformed):\n%v", len(got), got)
+	}
+	if f := byLine[10]; f.Severity != SeverityWarning ||
+		!strings.HasPrefix(f.Message, "pending: implement RotateKey") ||
+		!strings.Contains(f.Message, "internal/handlers/release") ||
+		!strings.Contains(f.Remediation, "activity: {") {
+		t.Errorf("RotateKey (forge's stub) = %+v, want a pending warning naming the stub and the fix", f)
+	}
+	if f := byLine[8]; f.Severity != SeverityError || !strings.Contains(f.Message, "PromoteRelease mutates") {
+		t.Errorf("PromoteRelease (implemented, undeclared) = %+v, want an error", f)
+	}
+	if f := byLine[13]; f.Severity != SeverityError || !strings.Contains(f.Message, `no field "workload_idd"`) {
+		t.Errorf("RestartWorkload (stub, malformed declaration) = %+v, want an error", f)
 	}
 }

@@ -162,10 +162,29 @@ func snapshotFrontendSource(s release.Snapshot, k release.ConsumerKey) (release.
 	}
 	return result, version, nil
 }
+
+// refuseSnapshotFrontendURL refuses a frozen frontend whose build env keeps a
+// forge.FrontendURL: a snapshot freezes the build env, and the reference is a
+// fact of the env's live status when forge builds (frontendForBuild). Named
+// here, rather than left to the generic non-public variable refusal, so the
+// message says what to write instead.
+func refuseSnapshotFrontendURL(e FrontendEntity) error {
+	for _, v := range e.EnvVars {
+		if v.FrontendURL != nil {
+			return fmt.Errorf("snapshot frontend %s: %s is a forge.FrontendURL to %s, which a snapshot cannot freeze "+
+				"(it resolves from the env's live status when forge builds); set %s to the site's URL as a literal value",
+				e.Name, v.Name, v.FrontendURL.Frontend, v.Name)
+		}
+	}
+	return nil
+}
 func snapshotSafeSubdir(p string) bool {
 	return p == "" || (p != "." && !strings.Contains(p, "\\") && !strings.HasPrefix(p, "/") && path.Clean(p) == p && p != ".." && !strings.HasPrefix(p, "../"))
 }
 func validateSnapshotFrontend(s release.Snapshot, f snapshotFrontend) error {
+	if err := refuseSnapshotFrontendURL(FrontendEntity(f.Entity)); err != nil {
+		return err
+	}
 	src, version, err := snapshotFrontendSource(s, f.Consumer)
 	if err != nil {
 		return err

@@ -29,13 +29,32 @@ type Machine struct {
 	MemSource string
 }
 
-// DetectMachine reads the CPU and memory this process may use.
+// DetectMachine reads the CPU and memory this process may use: every cgroup
+// limit on the path from its own cgroup to the root counts, the per-process
+// caps a scheduler put on it included. Use it to size this process's own
+// concurrency (GOMAXPROCS, a thread budget). The slot pool is sized from
+// the machine every process sharing it sees instead (CapacityFor).
 func DetectMachine() Machine {
+	return detectMachine(platformCgroupLimits)
+}
+
+// poolMachine reads the machine a slot pool divides: DetectMachine without
+// the limits a cgroup delegatee set inside its own delegated subtree
+// (readCgroupV2Pool). A slot directory is host-wide (per user), so its pool
+// size must not depend on which of the delegatee's children the caller
+// happens to run in: a heavy command that a daemon capped at 4 CPUs saw 2
+// slots of a 16-slot pool, locked only indices 0..1, and contended there with
+// every other capped caller.
+func poolMachine() Machine {
+	return detectMachine(platformPoolCgroupLimits)
+}
+
+func detectMachine(limits func() (cgroupLimit, bool)) Machine {
 	m := Machine{CPUs: float64(runtime.NumCPU()), CPUSource: "nproc"}
 	if mem, src := totalMemory(); mem > 0 {
 		m.MemBytes, m.MemSource = mem, src
 	}
-	if lim, ok := platformCgroupLimits(); ok {
+	if lim, ok := limits(); ok {
 		m = lim.apply(m)
 	}
 	return m
@@ -104,7 +123,11 @@ type Capacity struct {
 	Unlimited bool
 	// Source says where Slots came from, for the waiting line and
 	// `forge slot status`.
-	Source  string
+	Source string
+	// Machine is the machine the pool divides: the same for every caller
+	// sharing the slot directory, whichever per-command cgroup it runs in
+	// (poolMachine). It can be wider than DetectMachine, which is what this
+	// process alone may use.
 	Machine Machine
 	// Express is how many of the Slots are reserved for the express lane:
 	// bulk holders lock only indices [0, Slots-Express). ExpressSlotsEnv
@@ -129,7 +152,7 @@ func CapacityFor(class string, env []string) (Capacity, error) {
 	if err := validClass(class); err != nil {
 		return Capacity{}, err
 	}
-	c := Capacity{Class: class, Machine: DetectMachine()}
+	c := Capacity{Class: class, Machine: poolMachine()}
 	name := SlotsEnv(class)
 	switch v := strings.TrimSpace(lookupEnv(env, name)); strings.ToLower(v) {
 	case "":
@@ -208,6 +231,20 @@ func (l cgroupLimit) apply(m Machine) Machine {
 // root — a cgroup namespace mounts the process's cgroup AS the root — the walk
 // starts at root itself.
 func readCgroupV2(root, selfCgroup string) (cgroupLimit, bool) {
+	return readCgroupV2Pool(root, selfCgroup, nil)
+}
+
+// readCgroupV2Pool is readCgroupV2 for sizing a slot pool: it skips the
+// levels below the outermost delegation boundary on the path, a cgroup that
+// delegated(dir) reports (systemd marks one Delegate=yes with the
+// user.delegate xattr). Below a boundary the cgroups are the delegatee's own,
+// and so are their limits: a daemon caps one command's cgroup at its CPU
+// share, which bounds that command, not the machine the pool's other users
+// share. The boundary's own limits, and every one above it, are the machine
+// manager's and still count. With no boundary on the path — a container
+// whose cgroup namespace hides the levels above it, a service that delegates
+// nothing — this is readCgroupV2 exactly. A nil delegated marks none.
+func readCgroupV2Pool(root, selfCgroup string, delegated func(dir string) bool) (cgroupLimit, bool) {
 	data, err := os.ReadFile(selfCgroup)
 	if err != nil {
 		return cgroupLimit{}, false
@@ -228,9 +265,26 @@ func readCgroupV2(root, selfCgroup string) (cgroupLimit, bool) {
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		dir = root
 	}
+	// levels is the path from dir up to root, innermost first.
+	var levels []string
+	for {
+		levels = append(levels, dir)
+		if dir == root || !strings.HasPrefix(dir, root) {
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+	if delegated != nil {
+		for i := len(levels) - 1; i >= 0; i-- {
+			if delegated(levels[i]) {
+				levels = levels[i:]
+				break
+			}
+		}
+	}
 	var lim cgroupLimit
 	seen := false
-	for {
+	for _, dir := range levels {
 		if cpus, ok := readCPUMax(filepath.Join(dir, "cpu.max")); ok {
 			seen = true
 			if lim.cpus == 0 || cpus < lim.cpus {
@@ -243,10 +297,6 @@ func readCgroupV2(root, selfCgroup string) (cgroupLimit, bool) {
 				lim.mem = mem
 			}
 		}
-		if dir == root || !strings.HasPrefix(dir, root) {
-			break
-		}
-		dir = filepath.Dir(dir)
 	}
 	return lim, seen
 }

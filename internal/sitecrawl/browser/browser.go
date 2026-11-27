@@ -95,6 +95,9 @@ type Options struct {
 	// Settle is how long a page is given after its load event for
 	// client-side rendering (default 750ms).
 	Settle time.Duration
+	// Proxy is the network boundary every request the browser makes goes
+	// through ([Proxy]); its Ports and AllowAddr decide what is reachable.
+	Proxy ProxyOptions
 }
 
 // Renderer renders pages in one headless browser, one fresh tab per page.
@@ -102,9 +105,11 @@ type Renderer struct {
 	o       Options
 	browser context.Context
 	cancel  func()
+	proxy   *Proxy
 }
 
-// Start launches the browser.
+// Start launches the browser behind its proxy (proxy.go): the browser
+// reaches nothing but through it.
 func Start(ctx context.Context, o Options) (*Renderer, error) {
 	if o.PageTimeout <= 0 {
 		o.PageTimeout = 30 * time.Second
@@ -112,7 +117,12 @@ func Start(ctx context.Context, o Options) (*Renderer, error) {
 	if o.Settle <= 0 {
 		o.Settle = 750 * time.Millisecond
 	}
+	proxy, err := StartProxy(o.Proxy)
+	if err != nil {
+		return nil, err
+	}
 	opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(o.ExecPath))
+	opts = append(opts, chromeProxyFlags(proxy.URL())...)
 	if o.UserAgent != "" {
 		opts = append(opts, chromedp.UserAgent(o.UserAgent))
 	}
@@ -127,13 +137,30 @@ func Start(ctx context.Context, o Options) (*Renderer, error) {
 	if err := chromedp.Do(browserCtx); err != nil {
 		cancelBrowser()
 		cancelAlloc()
+		proxy.Close()
 		return nil, fmt.Errorf("start %s: %w", o.ExecPath, err)
 	}
-	return &Renderer{o: o, browser: browserCtx, cancel: func() { cancelBrowser(); cancelAlloc() }}, nil
+	return &Renderer{o: o, browser: browserCtx, proxy: proxy, cancel: func() { cancelBrowser(); cancelAlloc(); proxy.Close() }}, nil
 }
 
-// Close stops the browser.
+// chromeProxyFlags send all of Chrome's traffic through the proxy at
+// proxyURL: loopback included (Chrome bypasses a proxy for it by default),
+// and no UDP that could go around it (WebRTC).
+func chromeProxyFlags(proxyURL string) []chromedp.ExecAllocatorOption {
+	return []chromedp.ExecAllocatorOption{
+		chromedp.ProxyServer(proxyURL),
+		chromedp.Flag("proxy-bypass-list", "<-loopback>"),
+		chromedp.Flag("force-webrtc-ip-handling-policy", "disable_non_proxied_udp"),
+		chromedp.Flag("webrtc-ip-handling-policy", "disable_non_proxied_udp"),
+		chromedp.Flag("disable-quic", true),
+	}
+}
+
+// Close stops the browser and its proxy.
 func (r *Renderer) Close() { r.cancel() }
+
+// Refused counts the requests the browser made that the proxy refused.
+func (r *Renderer) Refused() int64 { return r.proxy.Refused() }
 
 // blockedPatterns keep a render out of the site's own telemetry: the forge
 // web runtime's OTLP and session-replay endpoints, so an audit never writes

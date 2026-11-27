@@ -36,6 +36,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -232,22 +233,29 @@ func attachRenderer(ctx context.Context, copts *sitecrawl.Options, t siteAuditTa
 	} else {
 		*notes = append(*notes, "accessibility not scored: axe-core is not installed (npm i -D axe-core in the site, then re-run with --browser)")
 	}
-	r, err := browser.Start(ctx, browser.Options{ExecPath: exe, AxeScript: axe, UserAgent: sitecrawl.UserAgent})
-	if err != nil {
-		return nil, siteAuditUnrunnable("--browser: %v", err)
+	// Chrome reaches the network only through its proxy, which admits public
+	// addresses (netguard) on the web's ports and the audited site's, and,
+	// for a directory audit, the one loopback server that serves the build.
+	popts := browser.ProxyOptions{Ports: []uint16{80, 443}}
+	if p, err := strconv.ParseUint(t.site.Port(), 10, 16); err == nil && p != 80 && p != 443 {
+		popts.Ports = append(popts.Ports, uint16(p))
 	}
-	stops := []func(){r.Close}
-	copts.Renderer = r
+	var stops []func()
+	stopAll := func() {
+		for i := len(stops) - 1; i >= 0; i-- {
+			stops[i]()
+		}
+	}
 	if t.dir != "" {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			r.Close()
 			return nil, siteAuditUnrunnable("--browser: serve the build on loopback: %v", err)
 		}
 		srv := &http.Server{Handler: sitecrawl.DirHandler(t.dir, t.basePath), ReadHeaderTimeout: 10 * time.Second}
 		go func() { _ = srv.Serve(ln) }()
 		stops = append(stops, func() { _ = srv.Close() })
 		local := ln.Addr().String()
+		popts.AllowAddr = local
 		copts.RenderURL = func(pageURL string) string {
 			u, err := url.Parse(pageURL)
 			if err != nil {
@@ -257,11 +265,14 @@ func attachRenderer(ctx context.Context, copts *sitecrawl.Options, t siteAuditTa
 			return u.String()
 		}
 	}
-	return func() {
-		for i := len(stops) - 1; i >= 0; i-- {
-			stops[i]()
-		}
-	}, nil
+	r, err := browser.Start(ctx, browser.Options{ExecPath: exe, AxeScript: axe, UserAgent: sitecrawl.UserAgent, Proxy: popts})
+	if err != nil {
+		stopAll()
+		return nil, siteAuditUnrunnable("--browser: %v", err)
+	}
+	stops = append(stops, r.Close)
+	copts.Renderer = r
+	return stopAll, nil
 }
 
 // resolveSiteAuditTarget turns the argument into what to crawl.

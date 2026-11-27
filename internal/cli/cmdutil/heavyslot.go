@@ -85,7 +85,14 @@ func HoldHeavySlotInLane(ctx context.Context, stderr io.Writer, lane string) (re
 }
 
 // procShare is the CPU share this process runs on while it holds heavy
-// slots of its own: the first holder's, until the last one releases.
+// slots of its own: the first holder's, until the last one releases. Only
+// the first holder reads the share (Slot.CPUEnv of the environment as it was
+// before any share): a later one would find the GOMAXPROCS the first
+// exported, and so nothing to export, so it only counts itself. A hold that
+// HoldHeavySlot takes while this process already holds a slot is re-entrant
+// (the exported FORGE_SLOT_HELD names that slot), owns no slot and never
+// gets here. TestShareProcess_ComposesAcrossHolders and
+// TestHoldHeavySlot_ConcurrentAndNested pin both.
 var procShare struct {
 	sync.Mutex
 	holders  int
@@ -130,9 +137,22 @@ func shareProcess(s *hostslot.Slot) (restore func()) {
 		}
 		procShare.unexport()
 		if procShare.prior > 0 {
-			runtime.GOMAXPROCS(procShare.prior)
+			restoreGOMAXPROCS(procShare.prior)
 			procShare.prior = 0
 		}
+	}
+}
+
+// restoreGOMAXPROCS puts the runtime's GOMAXPROCS back to prior. Lowering it
+// with runtime.GOMAXPROCS also turned off the runtime's own tracking of the
+// CPU limit (since Go 1.25 the default follows a container's quota as it
+// changes), and setting prior back would leave that off. So the default is
+// restored first, tracking included, and prior is pinned again only when it
+// was not the default: a value somebody had set (a test's -cpu) stays set.
+func restoreGOMAXPROCS(prior int) {
+	runtime.SetDefaultGOMAXPROCS()
+	if runtime.GOMAXPROCS(0) != prior {
+		runtime.GOMAXPROCS(prior)
 	}
 }
 

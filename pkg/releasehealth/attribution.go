@@ -216,6 +216,11 @@ func (r *Report) attribute(i int) bool {
 // is not the live release's is evidence about f's own version: the release's
 // aggregate share never moves a finding on its own.
 func (r Report) unattributed(f Finding) (why string, otherVersion bool) {
+	if slices.Contains(release.SiteAuditFindings, f.Code) {
+		// Judged from an audit of the release itself (site_audit.go), not
+		// from a traffic window: no window or share moves it.
+		return "", false
+	}
 	if r.WindowNotLive != "" {
 		return "the after window is not the live release's", false
 	}

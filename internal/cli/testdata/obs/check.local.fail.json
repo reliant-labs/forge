@@ -121,6 +121,16 @@
       "source": "default"
     },
     {
+      "name": "seo_max_score_drop",
+      "value": "10",
+      "source": "default"
+    },
+    {
+      "name": "a11y_max_score_drop",
+      "value": "10",
+      "source": "default"
+    },
+    {
       "name": "changed_op_min_calls",
       "value": "50",
       "source": "default"

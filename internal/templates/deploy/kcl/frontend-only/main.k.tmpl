@@ -35,7 +35,14 @@ _{{.FrontendIdent}}_frontend = forge.Frontend {
 {{if .FrontendRoutes}}    routes = [{{range .FrontendRoutes}}{{printf "%q" .}}, {{end}}]
 {{end}}    public_dir = "{{.FrontendPublicDir}}"
     telemetry = forge.BrowserTelemetry {replay = _session_replay}
-{{if eq .EnvName "dev"}}{{if .FrontendDevPort}}    # The port the dev server really listens on: its vite.config never reads
+{{if .SiteURL}}    # SITE_URL is the site's public origin, written into its HTML at build
+    # time (canonical link, og:url, robots.txt, sitemap): crawlers read the
+    # HTML as served. Resolved per env: the dev server's URL in dev, the
+    # hosted site's live hostname (custom domain first) when forge builds a
+    # release. A release built before the env has a hostname leaves it empty.
+    # Your own domain somewhere else: value = "https://example.com" instead.
+    env_vars = [forge.EnvVar {name = "SITE_URL", frontend_url = forge.FrontendURL {frontend = "{{.FrontendName}}"}}]
+{{end}}{{if eq .EnvName "dev"}}{{if .FrontendDevPort}}    # The port the dev server really listens on: its vite.config never reads
     # PORT, so `forge env up` cannot move it. To let forge pick a free port per
     # checkout instead, set `server: {port: Number(process.env.PORT) || {{.FrontendDevPort}}, strictPort: Boolean(process.env.PORT)}`
     # in vite.config and change this line to

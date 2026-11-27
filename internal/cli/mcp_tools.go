@@ -9,7 +9,7 @@ import (
 
 // dirInput is embedded by every tool's input.
 type dirInput struct {
-	Dir string `json:"dir,omitempty" jsonschema:"forge project directory to act on; default is the directory the server was started in"`
+	Dir string `json:"dir,omitempty" jsonschema:"repo to act on (default: server cwd)"`
 }
 
 type annotationsInput struct {
@@ -24,15 +24,15 @@ type schemaInput struct {
 
 type librariesInput struct {
 	dirInput
-	Packages []string `json:"packages,omitempty" jsonschema:"packages or symbols to print full signatures for, e.g. crud, svcerr, orm.Context, or all; omit for the index of every library"`
+	Packages []string `json:"packages,omitempty" jsonschema:"packages or symbols to print signatures for, e.g. crud, orm.Context, all; omit for the index"`
 }
 
 type shapesInput struct {
 	dirInput
-	Grep          string `json:"grep,omitempty" jsonschema:"case-insensitive regex over name and detail; use a|b to ask about several entities in one call"`
+	Grep          string `json:"grep,omitempty" jsonschema:"case-insensitive regex over name and detail, e.g. Widget|Order"`
 	Kind          string `json:"kind,omitempty" jsonschema:"comma-separated kinds: rpc,message,enum,table,store,handler,hook,root,workload,deploy-target"`
 	Service       string `json:"service,omitempty" jsonschema:"only this service's rpcs and handlers (ChatService, or Chat)"`
-	Unimplemented bool   `json:"unimplemented,omitempty" jsonschema:"list declared rpcs that have no handler, or only forge's unwired stub"`
+	Unimplemented bool   `json:"unimplemented,omitempty" jsonschema:"only declared rpcs with no handler, or forge's unwired stub"`
 }
 
 // The input of each tool the hosted connector shares (benefits, skill_*) is
@@ -44,7 +44,7 @@ type benefitsInput struct {
 }
 
 type benefitsArgs struct {
-	All      bool   `json:"all,omitempty" jsonschema:"every shipped benefit, not only the ones that apply to dir"`
+	All      bool   `json:"all,omitempty" jsonschema:"every benefit, not only those that apply to dir"`
 	Category string `json:"category,omitempty" jsonschema:"one category: build, data, test, dev, guardrails, security, ship, host, run or agents"`
 }
 
@@ -63,8 +63,8 @@ type skillListInput struct {
 }
 
 type skillListArgs struct {
-	Group             string `json:"group,omitempty" jsonschema:"list this skill group's parent and every sub-skill with full paths, e.g. db or observability"`
-	All               bool   `json:"all,omitempty" jsonschema:"print the exhaustive flat table instead of the grouped view"`
+	Group             string `json:"group,omitempty" jsonschema:"one group and its sub-skills, e.g. db"`
+	All               bool   `json:"all,omitempty" jsonschema:"the flat table of every skill"`
 	IncludeMigrations bool   `json:"include_migrations,omitempty" jsonschema:"include one-time migration playbooks"`
 }
 
@@ -74,7 +74,7 @@ type skillSearchInput struct {
 }
 
 type skillSearchArgs struct {
-	Query string `json:"query" jsonschema:"keywords; scores skill paths, descriptions and bodies"`
+	Query string `json:"query" jsonschema:"keywords"`
 }
 
 type skillLoadInput struct {
@@ -83,46 +83,52 @@ type skillLoadInput struct {
 }
 
 type skillLoadArgs struct {
-	Name string `json:"name" jsonschema:"skill path from skill_list or skill_search, e.g. forge, db, db/seeding"`
+	Name string `json:"name" jsonschema:"skill path, e.g. forge, db, db/seeding"`
 }
 
 type blastRadiusInput struct {
 	dirInput
-	Env   string `json:"env,omitempty" jsonschema:"env whose telemetry weighs each op by its traffic, e.g. prod; omit for the static mapping alone"`
-	Base  string `json:"base,omitempty" jsonschema:"commit the diff starts from (default: the merge base of origin/main, else main, with the head)"`
-	Head  string `json:"head,omitempty" jsonschema:"commit the diff ends at (default: the working tree: base..HEAD's commits, then base against the working tree, staged and unstaged, plus every untracked file .gitignore does not exclude)"`
-	Since string `json:"since,omitempty" jsonschema:"traffic window with env, e.g. 24h or 7d (default 7d)"`
+	Env   string `json:"env,omitempty" jsonschema:"env whose traffic weighs each op, e.g. prod; omit for the mapping alone"`
+	Base  string `json:"base,omitempty" jsonschema:"commit the diff starts from (default: merge base with origin/main)"`
+	Head  string `json:"head,omitempty" jsonschema:"commit the diff ends at (default: the working tree, untracked files included)"`
+	Since string `json:"since,omitempty" jsonschema:"traffic window with env (default 7d)"`
 }
 
 type lintInput struct {
 	dirInput
-	Scope []string `json:"scope,omitempty" jsonschema:"project-relative paths to lint instead of the whole project, e.g. internal/handlers/jobs; whole-project lanes are skipped and named, so run unscoped before merging"`
+	Scope []string `json:"scope,omitempty" jsonschema:"project-relative paths you changed, e.g. internal/handlers/jobs; whole-project lanes are skipped and named"`
 }
 
 type generateInput struct {
 	dirInput
 	DryRun bool `json:"dry_run,omitempty" jsonschema:"print the pipeline plan and stop; writes nothing"`
-	Check  bool `json:"check,omitempty" jsonschema:"generate into a temp dir and report drift against the tree; writes nothing"`
+	Check  bool `json:"check,omitempty" jsonschema:"report drift against the tree; writes nothing"`
 }
 
 type reportBugInput struct {
 	dirInput
-	Severity string `json:"severity" jsonschema:"critical: data loss, or nothing can proceed. high: it blocks this task. medium: there is a workaround. low: cosmetic."`
-	Title    string `json:"title" jsonschema:"one line naming the defect, e.g. 'forge generate drops optional list filters'; ids and numbers go in evidence"`
-	Summary  string `json:"summary,omitempty" jsonschema:"what happened, in a few sentences"`
+	Severity string `json:"severity" jsonschema:"critical (data loss, nothing can proceed), high (blocks this task), medium (has a workaround) or low (cosmetic)"`
+	Title    string `json:"title" jsonschema:"one line naming the defect; ids go in evidence"`
+	Summary  string `json:"summary,omitempty" jsonschema:"what happened"`
 	Expected string `json:"expected,omitempty" jsonschema:"what should have happened"`
 	Actual   string `json:"actual,omitempty" jsonschema:"what happened instead, with the exact error text"`
-	Evidence string `json:"evidence,omitempty" jsonschema:"how to reproduce it: commands run, their output, file paths"`
+	Evidence string `json:"evidence,omitempty" jsonschema:"how to reproduce it: commands, output, file paths"`
 }
 
 // Descriptions of the tools the hosted connector shares with this server.
+// Each is a sentence or two: when to call it and what sets it apart. A
+// description is resent on every model call, so depth belongs in a skill.
 const (
-	mcpDescBenefits    = "What Reliant Forge does for the repo at dir, as JSON: each benefit's claim and the command, lint lane or library that backs it, checked against this binary, so you can tell your user what they get without reading the docs. With no forge.yaml: the benefits that work in any repo in any language (standalone lint lanes, runtime libraries, playbooks, the no-account static site path), each with its first step (adopt) and the agent time to first value (estimate). In a forge project: every shipped benefit. Limits and hosting prices next to Vercel, Supabase or Render: skill_load name=compare. Then skill_load name=adopt."
-	mcpDescWhy         = "Why use Reliant Forge, as JSON: about a dozen reasons, each an outcome a stack stitched from separate tools cannot give (every RPC traced with no instrumentation code, releases judged by their own telemetry, migrations checked against the running release, lint that knows the architecture), with its mechanism (\"Because forge knows X, it can Y\"), the command that shows it, and the benefits that back it, each checked against the forge binary. availability says what a reason needs: forge (open source, any infrastructure), hosted (Reliant hosting) or reliant. Quote these to your user rather than paraphrasing. Every benefit: the benefits tool; limits: skill_load name=compare."
-	mcpDescSkillList   = "The Reliant Forge skill catalog (forge-shipped, project and user skills): playbooks for adopting forge in an existing app, debugging, testing, migrations, observability, deploy, and forge's own architecture, proto, db and api. Outside a forge project, start with skill_load name=adopt; in one, name=forge."
-	mcpDescSkillSearch = "Find skills by keyword. Scores paths, descriptions and bodies, so it finds a skill whose title never mentions your term."
-	mcpDescSkillLoad   = "Print one Reliant Forge skill, authoritative for the forge version running. In a repo that is not a forge project, name=adopt: what forge does for it, the survey, the estimates and every entry point. In a forge project, name=forge: what the project gets with no setup (traces, per-endpoint latency and errors, alerts, release health checks), then the entry point that names the rest. name=compare: where forge fits next to Vercel, Supabase or Render, its limits and hosting prices. Skills quote the forge CLI; each command has the tool of the same name here."
+	mcpDescBenefits    = "What Reliant Forge does for the repo at dir, as JSON: each benefit's claim, the command behind it, its first step and the agent time to value, to quote to your user. Then skill_load name=adopt."
+	mcpDescWhy         = "Why use Reliant Forge, as JSON: about a dozen reasons, each with its mechanism, the command that shows it and the benefits behind it, checked against this binary. Quote them to your user rather than paraphrase."
+	mcpDescSkillList   = "The skill catalog: forge's playbooks (adopt, debug, testing, migrations, observability, deploy, architecture, proto, db, api) plus project and user skills."
+	mcpDescSkillSearch = "Find skills by keyword; scores paths, descriptions and bodies, so it finds a skill whose title never names your term."
+	mcpDescSkillLoad   = "Print one skill, authoritative for this forge: name=forge in a forge project, name=adopt in any other repo, name=compare for forge next to Vercel, Supabase or Render. Skills quote CLI commands; each has the tool of the same name here."
 )
+
+// mcpDescReportBug is report_bug's description: reportBugUsage, which the
+// CLI help prints in full, cut to what decides whether to call it.
+const mcpDescReportBug = "File a defect in forge itself (a command that fails, hangs or generates wrong output; a wrong lint, skill or doc) with the Reliant team. Not for the user's code or your own mistakes; never include credentials or file contents."
 
 // addBenefitsTool registers benefits: what forge does for the repo at dir.
 func addBenefitsTool(srv *mcp.Server, r *mcpRunner, readOnly *mcp.ToolAnnotations) {
@@ -157,50 +163,16 @@ func addWhyTool(srv *mcp.Server, r *mcpRunner, readOnly *mcp.ToolAnnotations) {
 	})
 }
 
-// addForgeTools registers every tool. Read-only ones come first; lint and
-// generate are the two that touch the project (lint: its caches and slot;
-// generate: the generated files), and are annotated so.
-func addForgeTools(srv *mcp.Server, r *mcpRunner) {
+// addCoreTools registers the core group: the tools an agent changing a forge
+// project calls mid-task. lint and generate are the two that touch the
+// project (lint: its caches and slot; generate: the generated files), and are
+// annotated so.
+func addCoreTools(srv *mcp.Server, r *mcpRunner) {
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: ptr(false)}
-
-	// benefits is first: it is the one an agent in a repo that is not a forge
-	// project needs, and the instructions send it here.
-	addBenefitsTool(srv, r, readOnly)
-	addWhyTool(srv, r, readOnly)
-
-	addCmdTool(srv, r, &mcp.Tool{
-		Name:        "capabilities",
-		Description: "Everything Reliant Forge can do, in one call: every command, every lint analyzer (including ones hidden from --help) and every // forge:* marker. Read it before hand-writing a scaffold, check or helper forge already has; one call replaces paging through --help.",
-		Annotations: readOnly,
-	}, func(in dirInput) cmdSpec {
-		return cmdSpec{dir: in.Dir, args: []string{"project", "capabilities"}}
-	})
-
-	addSchemaTool(srv, r, readOnly)
-
-	addCmdTool(srv, r, &mcp.Tool{
-		Name:        "annotations",
-		Description: "The entity-authoring vocabulary: the // forge:* markers in proto, SQL and Go, how each proto field type becomes a column, the projected buf.validate rules, and the (forge.v1.service) / (forge.v1.method) options.",
-		Annotations: readOnly,
-	}, func(in annotationsInput) cmdSpec {
-		args := []string{"project", "annotations"}
-		if in.Kind != "" {
-			args = append(args, "--kind", in.Kind)
-		}
-		return cmdSpec{dir: in.Dir, args: args}
-	})
-
-	addCmdTool(srv, r, &mcp.Tool{
-		Name:        "libraries",
-		Description: "forge's runtime libraries (forge/pkg for Go, @reliantlabs/forge-web-runtime for the frontend). With no packages, an index. Name packages or symbols (crud, svcerr, orm.Context) for every exported signature, which 'go doc' cannot give you. Adopt before porting a utility.",
-		Annotations: readOnly,
-	}, func(in librariesInput) cmdSpec {
-		return cmdSpec{dir: in.Dir, args: append([]string{"project", "libraries"}, in.Packages...)}
-	})
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "audit",
-		Description: "What THIS project currently is, as JSON: forge version pin, services, rpcs, entities, lint roll-ups, codegen drift, stubs, ownership. Findings are reported in the result, not as a tool failure.",
+		Description: "What this project currently is, as JSON: forge pin, services, rpcs, entities, lint roll-ups, codegen drift, stubs, ownership. Findings are the result, not a tool failure.",
 		Annotations: readOnly,
 	}, func(in dirInput) cmdSpec {
 		return cmdSpec{dir: in.Dir, args: []string{"project", "audit", "--json"}, findings: true}
@@ -208,7 +180,7 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "shapes",
-		Description: "Where every symbol is: each rpc, message, enum, table, store, handler and hook with file:line, derived live from proto, migrations and source, so one call answers what a grep across five directories would. Start recon here instead of grepping. grep takes a regex, so ask about several entities at once.",
+		Description: "Where every rpc, message, enum, table, store, handler and hook is, with file:line, derived live from proto, migrations and source. Start recon here instead of grepping; grep is a regex, so ask about several symbols at once.",
 		Annotations: readOnly,
 	}, func(in shapesInput) cmdSpec {
 		args := []string{"project", "shapes"}
@@ -223,27 +195,6 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 		}
 		if in.Unimplemented {
 			args = append(args, "--unimplemented")
-		}
-		return cmdSpec{dir: in.Dir, args: args}
-	})
-
-	addBlastRadiusTool(srv, r)
-	addAccountReadTools(srv, r)
-
-	addCmdTool(srv, r, &mcp.Tool{
-		Name:        "skill_list",
-		Description: mcpDescSkillList,
-		Annotations: readOnly,
-	}, func(in skillListInput) cmdSpec {
-		args := []string{"skill", "list"}
-		if in.Group != "" {
-			args = append(args, in.Group)
-		}
-		if in.All {
-			args = append(args, "--all")
-		}
-		if in.IncludeMigrations {
-			args = append(args, "--include-migrations")
 		}
 		return cmdSpec{dir: in.Dir, args: args}
 	})
@@ -264,12 +215,103 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 		return cmdSpec{dir: in.Dir, args: []string{"skill", "load", in.Name}}
 	})
 
+	addCmdTool(srv, r, &mcp.Tool{
+		Name:        "lint",
+		Description: "Run forge lint --quiet: what failed, then the verdict as the last line; findings are the result, not a tool failure. While iterating, pass scope with the paths you changed (~10s); run the full unscoped lint once before you finish. Works in any repo; never --fix.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(false), IdempotentHint: true, OpenWorldHint: ptr(false)},
+	}, func(in lintInput) cmdSpec {
+		args := []string{"lint", "--quiet"}
+		for _, s := range in.Scope {
+			args = append(args, "--scope", s)
+		}
+		return cmdSpec{dir: in.Dir, args: args, findings: true}
+	})
+
+	addCmdTool(srv, r, &mcp.Tool{
+		Name:        "generate",
+		Description: "Run forge generate: re-project generated code (gen/, *_gen.go, hooks, mocks, deploy config) from the protos and applied migrations; hand-written code is never touched. dry_run prints the plan and check reports drift, both writing nothing.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(false), IdempotentHint: true, OpenWorldHint: ptr(false)},
+	}, func(in generateInput) cmdSpec {
+		args := []string{"generate"}
+		if in.DryRun {
+			args = append(args, "--dry-run")
+		}
+		if in.Check {
+			args = append(args, "--check")
+		}
+		return cmdSpec{dir: in.Dir, args: args}
+	})
+}
+
+// addCatalogTools registers the catalog group: what forge is and offers.
+// benefits comes first: it is the one an agent in a repo that is not a forge
+// project needs, and the instructions send it there.
+func addCatalogTools(srv *mcp.Server, r *mcpRunner) {
+	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: ptr(false)}
+
+	addBenefitsTool(srv, r, readOnly)
+	addWhyTool(srv, r, readOnly)
+
+	addCmdTool(srv, r, &mcp.Tool{
+		Name:        "capabilities",
+		Description: "Every forge command, lint analyzer (hidden ones too) and // forge:* marker in one call. Check it before hand-writing a scaffold, check or helper forge may already have.",
+		Annotations: readOnly,
+	}, func(in dirInput) cmdSpec {
+		return cmdSpec{dir: in.Dir, args: []string{"project", "capabilities"}}
+	})
+
+	addSchemaTool(srv, r, readOnly)
+
+	addCmdTool(srv, r, &mcp.Tool{
+		Name:        "annotations",
+		Description: "The entity-authoring vocabulary: // forge:* markers, how each proto field becomes a column, the projected buf.validate rules and the forge.v1 service and method options.",
+		Annotations: readOnly,
+	}, func(in annotationsInput) cmdSpec {
+		args := []string{"project", "annotations"}
+		if in.Kind != "" {
+			args = append(args, "--kind", in.Kind)
+		}
+		return cmdSpec{dir: in.Dir, args: args}
+	})
+
+	addCmdTool(srv, r, &mcp.Tool{
+		Name:        "libraries",
+		Description: "forge's runtime libraries (forge/pkg, @reliantlabs/forge-web-runtime): an index, or every exported signature of the packages or symbols named, which go doc cannot give. Adopt one before porting a utility.",
+		Annotations: readOnly,
+	}, func(in librariesInput) cmdSpec {
+		return cmdSpec{dir: in.Dir, args: append([]string{"project", "libraries"}, in.Packages...)}
+	})
+
+	addCmdTool(srv, r, &mcp.Tool{
+		Name:        "skill_list",
+		Description: mcpDescSkillList,
+		Annotations: readOnly,
+	}, func(in skillListInput) cmdSpec {
+		args := []string{"skill", "list"}
+		if in.Group != "" {
+			args = append(args, in.Group)
+		}
+		if in.All {
+			args = append(args, "--all")
+		}
+		if in.IncludeMigrations {
+			args = append(args, "--include-migrations")
+		}
+		return cmdSpec{dir: in.Dir, args: args}
+	})
+}
+
+// addSupportTools registers the support group: for when forge itself fails.
+func addSupportTools(srv *mcp.Server, r *mcpRunner) {
+	addExplainErrorTool(srv)
+
 	// report_bug is the one tool that reaches outside the machine: it files
 	// a defect in forge with the Reliant team (`forge report-bug`, which is
-	// the only way forge ever sends anything).
+	// the only way forge ever sends anything). Its description is
+	// reportBugUsage cut to what decides a call; the CLI help keeps it all.
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "report_bug",
-		Description: reportBugUsage,
+		Description: mcpDescReportBug,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(false), IdempotentHint: true, OpenWorldHint: ptr(true)},
 	}, func(in reportBugInput) cmdSpec {
 		args := []string{"report-bug", "--severity", in.Severity, "--title", in.Title}
@@ -282,35 +324,13 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 		}
 		return cmdSpec{dir: in.Dir, args: args}
 	})
+}
 
-	addCmdTool(srv, r, &mcp.Tool{
-		Name:        "lint",
-		Description: "Run forge lint --quiet: only what failed, then the verdict as the last line. Works in any repo: with no forge.yaml it runs migration safety (db/migrations/*.up.sql), the Go lanes in a Go module, and skips the lanes that need a forge project. Report-only (never --fix), but it holds a host slot and refreshes caches. A failing gate is reported in the result. Scope to your slice while iterating, run unscoped before merging.",
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(false), IdempotentHint: true, OpenWorldHint: ptr(false)},
-	}, func(in lintInput) cmdSpec {
-		args := []string{"lint", "--quiet"}
-		for _, s := range in.Scope {
-			args = append(args, "--scope", s)
-		}
-		return cmdSpec{dir: in.Dir, args: args, findings: true}
-	})
-
-	addCmdTool(srv, r, &mcp.Tool{
-		Name:        "generate",
-		Description: "Run forge generate: re-project the generated code (gen/, *_gen.go, hooks, mocks, deploy config) from the protos and applied migrations. Rewrites generated files; never touches hand-written business logic. Use dry_run to see the plan or check to see drift without writing. Refuses when this forge is not the version forge.yaml pins.",
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(false), IdempotentHint: true, OpenWorldHint: ptr(false)},
-	}, func(in generateInput) cmdSpec {
-		args := []string{"generate"}
-		if in.DryRun {
-			args = append(args, "--dry-run")
-		}
-		if in.Check {
-			args = append(args, "--check")
-		}
-		return cmdSpec{dir: in.Dir, args: args}
-	})
-
-	addDeployTools(srv, r)
+// addOpsTools registers the ops group: reads of a deployed env and of a
+// diff's reach into it.
+func addOpsTools(srv *mcp.Server, r *mcpRunner) {
+	addBlastRadiusTool(srv, r)
+	addAccountReadTools(srv, r)
 }
 
 // cmdSpec is one forge invocation a tool call maps to.
@@ -358,9 +378,8 @@ func ptr[T any](v T) *T { return &v }
 // would make the JSON unparseable.
 func addBlastRadiusTool(srv *mcp.Server, r *mcpRunner) {
 	mcp.AddTool(srv, &mcp.Tool{
-		Name: "blast_radius",
-		Description: "The ops a diff can change (rpcs and component methods), why each is reached (method, handler, helper, package or proto), the commits and PRs that changed it, and the changed files no op is mapped from, as JSON (forge.obs.blast_radius/v1). " +
-			"Default diff: this branch's merge base with origin/main to the working tree. With env, each op also carries its traffic (calls, errors, p50/p95/p99 per service) and ops are ordered busiest first; telemetry that cannot be read leaves telemetry.status unavailable and still answers with the mapping. Use it to judge a change's risk before review or release.",
+		Name:        "blast_radius",
+		Description: "The ops (rpcs, component methods) a diff can change, why each is reached and the commits behind it, as JSON; with env, each op's traffic, busiest first. Use it to judge a change's risk before review or release.",
 		// Read-only; open-world because with env it may ask the env's control plane.
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: ptr(true)},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in blastRadiusInput) (*mcp.CallToolResult, any, error) {
@@ -405,7 +424,7 @@ func blastRadiusArgs(in blastRadiusInput) []string {
 func addSchemaTool(srv *mcp.Server, r *mcpRunner, readOnly *mcp.ToolAnnotations) {
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "schema",
-		Description: "A JSON Schema forge publishes. name=env is the env document's (forge.dev/env/v1): the shape of one env's declaration, which is what KCL renders and what a hand-written deploy/envs/<env>.yaml declares instead of KCL — a monitoring-only env is a few lines. Omit name to list the schemas.",
+		Description: "A JSON Schema forge publishes; name=env is the env document (forge.dev/env/v1) that KCL renders or a hand-written deploy/envs/<env>.yaml declares. Omit name to list them.",
 		Annotations: readOnly,
 	}, func(in schemaInput) cmdSpec {
 		args := []string{"project", "schema"}

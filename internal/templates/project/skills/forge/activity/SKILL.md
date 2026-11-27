@@ -71,6 +71,12 @@ do not resolve. It reads the verdict `forge generate` records in
 `gen/forge_descriptor/`, so run `forge generate` first. A read rpc may
 still declare an event. For example, revealing a secret can be a `reveal`.
 
+One exception keeps a fresh scaffold green: while an undeclared rpc's handler
+is still forge's own unwired stub (the method stamped `// forge:gen
+unwired-stub`, returning Unimplemented), it records nothing, so the finding is
+a warning, `pending: implement <Rpc>`. It fails the build once you implement
+the stub: declare the event in the same change that writes the handler.
+
 `activity.Resolve` and `activity.IsMutating` are the only code that interprets
 these rules. The interceptor and the lint both call them.
 

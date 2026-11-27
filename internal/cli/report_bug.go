@@ -25,7 +25,9 @@ import (
 
 // reportBugUsage is the guidance every surface gives: when to report, when
 // not to, and what never belongs in a report. The agent guide
-// (reliant.md.tmpl) and the forge skill carry the same words.
+// (reliant.md.tmpl) and the forge skill carry the same words; the MCP tool
+// carries a short form (mcpDescReportBug), since a client resends it on every
+// model call.
 const reportBugUsage = `Report a defect in forge itself to the Reliant engineering team. One call files it; there is nothing to follow up.
 
 Use it when forge misbehaves, not the user's code: a forge command fails, hangs or generates something wrong, or a forge lint, skill or doc is wrong.

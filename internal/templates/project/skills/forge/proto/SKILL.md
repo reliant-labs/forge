@@ -33,17 +33,11 @@ One service per `.proto` file (`forge lint --conventions` →
 `forgeconv-one-service-per-file`). Cross-service references go through
 `proto/shared/v1/types.proto`; never import another service's proto.
 
-**The proto package `forge scaffold service` writes follows the project.**
-In order: forge.yaml `api.proto_package` (a fixed package like
-`controlplane.v1`, or a pattern like `acme.{service}.v1`); else the
-convention a strict majority of the existing service protos share (an
-outlier is named in the scaffold output, never silently overruled); else
-`services.<service>.v1`, which mirrors the path and satisfies buf
-`STANDARD` as-is. `go_package` stays `gen/services/<service>/v1` either way.
-A package shared across `services/*/v1/` directories needs buf.yaml
-`lint.except: [PACKAGE_DIRECTORY_MATCH, PACKAGE_SAME_DIRECTORY,
-PACKAGE_SAME_GO_PACKAGE]`, and message names must be unique across the
-package.
+**The proto package follows the project, and `services.<service>.v1` is only
+the default.** forge.yaml `api.proto_package` picks another — a
+product-scoped `acme.{service}.v1` for an API non-Go SDKs consume, or one
+package every service shares. The file stays at `proto/services/<service>/v1/`
+either way. For the Buf lint rules and an example: `forge skill load proto/package`.
 
 ## After Editing Protos
 

@@ -394,3 +394,14 @@ func resolveImplicitEdgeLogOptOut(docs []parsedDoc, honoured bool) {
 		}
 	}
 }
+
+// parseStreamFor is parseStream with the implicit edge-log opt-out resolved
+// for the reader the bundle is recorded in.
+func parseStreamFor(stream string, r *release.BundleReader) ([]parsedDoc, error) {
+	docs, err := parseStream(stream)
+	if err != nil {
+		return nil, err
+	}
+	resolveImplicitEdgeLogOptOut(docs, r.Supports(release.CapabilityHonorsEdgeLogOptOut))
+	return docs, nil
+}

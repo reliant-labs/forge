@@ -8,8 +8,8 @@ import (
 // MLStackOutput is one `output.ml_stacks` entry: a declared forge.MLStack
 // (kcl/ml.k), projected so tools read the stack and its decisions from
 // `forge env render <env> --json` without parsing KCL. Every key is always
-// present (empty when unset), but for MLComponentOutput.ServiceNameDeclared;
-// keys are only ever added.
+// present (empty when unset), but for UncollectedTelemetry and
+// MLComponentOutput.ServiceNameDeclared; keys are only ever added.
 type MLStackOutput struct {
 	// Cluster is the stack's kube context (ClusterTarget.cluster).
 	Cluster string `json:"cluster"`
@@ -26,6 +26,12 @@ type MLStackOutput struct {
 	Components []MLComponentOutput `json:"components"`
 	// Decisions are the recommendations the stack dismisses.
 	Decisions []MLDecisionOutput `json:"decisions"`
+	// UncollectedTelemetry are the service names of the
+	// Observability.telemetry entries that scrape the stack's cluster while
+	// no forge node agent runs there to collect them (no forge workload on
+	// the cluster, and the stack does not set node_agent). The key is
+	// present only then, so a stack without renders the v1.13.0 document.
+	UncollectedTelemetry []string `json:"uncollected_telemetry,omitempty"`
 }
 
 // MLAcceleratorsOutput is one forge.Accelerators of a stack.
@@ -146,9 +152,40 @@ func mlScrapeDeprecations(entities *KCLEntities) []string {
 				s.Cluster, schema, c.Kind, c.Slot, strings.Join(fields, ", "), mlScrapeDeprecationVersion, s.Cluster, schema)
 			if c.ServiceName != "" {
 				msg += fmt.Sprintf(". Until then it scrapes as service %q, and a forge.Telemetry of that service_name replaces it", c.ServiceName)
+				// The derived scrape is what places the agent on an otherwise
+				// agentless stack cluster; its replacement does not.
+				msg += fmt.Sprintf(". The fields also run forge's node agent on %q, which a forge.Telemetry alone does not: if no forge workload runs there, set node_agent = True on the forge.MLStack too", s.Cluster)
 			}
 			out = append(out, msg)
 		}
+	}
+	return out
+}
+
+// mlUncollectedTelemetry are the render's warnings for stacks whose cluster
+// an Observability.telemetry entry scrapes while no forge node agent runs
+// there (output.ml_stacks uncollected_telemetry): one per stack, naming the
+// stack, the entries and the opt-in that collects them. A warning only: the
+// v1.13.0 render of such an env placed no agent either, and placing one by
+// default would make the cluster a target of the env, which a local or
+// ephemeral lifecycle, a single-cluster Flux applier or control-plane
+// credential delivery can refuse.
+func mlUncollectedTelemetry(entities *KCLEntities) []string {
+	if entities == nil {
+		return nil
+	}
+	var out []string
+	for _, s := range entities.MLStacks {
+		if len(s.UncollectedTelemetry) == 0 {
+			continue
+		}
+		names := make([]string, len(s.UncollectedTelemetry))
+		for i, n := range s.UncollectedTelemetry {
+			names[i] = fmt.Sprintf("%q", n)
+		}
+		out = append(out, fmt.Sprintf("warning: ml stack %q: Observability.telemetry %s scrapes cluster %q, where forge runs no node agent (no forge workload runs there), so it is not collected. "+
+			"Set node_agent = True on the forge.MLStack to run the agent there; that makes %q a cluster the env deploys to, so a local or ephemeral lifecycle needs it to be a cluster forge creates, applier = \"flux\" needs it to be the env's one cluster, and token_from_control_plane needs a connected cluster for it",
+			s.Cluster, strings.Join(names, ", "), s.Cluster, s.Cluster))
 	}
 	return out
 }

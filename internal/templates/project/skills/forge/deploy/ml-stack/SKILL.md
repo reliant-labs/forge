@@ -80,7 +80,11 @@ and a bad metric name. An Adopt with no port scrapes nothing.
 **Preferred path is changing:** forge#3030 (open, being reworked) deprecates
 these fields, keeping them working with a warning, in favour of
 `Observability.telemetry`. Once it lands, write scrapes as `forge.Telemetry` in
-the env's `observability` and treat Adopt as an inventory statement. Until then
+the env's `observability` and treat Adopt as an inventory statement. On a stack
+cluster no forge workload runs on, such a scrape is collected only when the
+stack sets `node_agent = True` (the deprecated fields placed forge's node agent
+there by themselves); otherwise `forge env render` warns that it is not
+collected. Until then
 the fields above are the released behaviour; do not tell a user they do not exist.
 
 ## Not built — do not promise

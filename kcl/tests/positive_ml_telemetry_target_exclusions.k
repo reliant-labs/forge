@@ -1,8 +1,11 @@
-"""Only an emitted agent adds an ML cluster an Observability.telemetry entry scrapes to apply targets."""
+"""Only an emitted agent adds an ML cluster to apply targets: a stack that sets
+node_agent while the env's own collector owns collection, observability is off,
+or there is no destination gets none; nor does a stack that scrapes its cluster
+without node_agent (v1.13.0's shape)."""
 # kcl-args: mode=external
 # kcl-args: mode=disabled
 # kcl-args: mode=no-destination
-# kcl-args: mode=no-scrape
+# kcl-args: mode=no-opt-in
 import forge
 
 _mode = option("mode", default="external")
@@ -20,11 +23,12 @@ _outs = [forge.render(forge.Bundle {
             service_name = "prometheus", scope = "platform", cluster = "gke_acme_us-central1_gpu"
             namespaces = ["monitoring"], selector = {app = "prometheus"}
             metrics = [forge.MetricsScrape {port = 9090}]
-        }] if _mode not in ["no-scrape", "disabled"] else []
+        }] if _mode != "disabled" else []
     }
     ml_stacks = [forge.MLStack {
         cluster = forge.ClusterTarget {cluster = "gke_acme_us-central1_gpu", namespace = "forge-ml"}
         monitoring = [forge.Adopt {kind = "prometheus", namespace = "monitoring"}]
+        node_agent = _mode != "no-opt-in"
     }]
 }) for policy in ["local", "flux"]]
 assert_no_remote_agent = all out in _outs {len([m for m in out.manifests if m.kind == "ObservabilityAgent" and m.metadata.labels["forge.dev/cluster"] == "gke_acme_us-central1_gpu"]) == 0}

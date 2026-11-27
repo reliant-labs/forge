@@ -213,8 +213,9 @@ _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: 
     _from_manifests = [m.cluster for m in manifests if m.cluster]
     _from_generated = [g.cluster for g in generated if g.cluster]
     _from_secrets = [s.cluster for s in rendered_secrets if s.cluster]
-    # Installs apply charts; scraped ML-only clusters also receive an agent
-    # when forge owns collection and has a destination. Use the same placement
+    # Installs apply charts; ML-only clusters also receive an agent (a
+    # deprecated component scrape, or MLStack.node_agent) when forge owns
+    # collection and has a destination. Use the same placement
     # helper as agent rendering so lifecycle and Flux validate actual targets.
     _from_agents = [t.cluster for t in _cluster_targets(_obs_workloads([], ml_stacks, observability))] \
         if observability and observability.enabled and observability.destination else []
@@ -2317,14 +2318,15 @@ _stamp_cluster = lambda manifest: any, context: str -> any {
     manifest | {metadata = _meta | {labels = {k: v for k, v in _labels if k != "forge.dev/cluster"} | {"forge.dev/cluster" = context}}}
 }
 
-# Include scraped ML clusters in the agent's placement and credential planning,
-# even when they run no forge workloads: a stack with a component scraped
-# through its (deprecated) own fields, or one whose kube context an
-# Observability.telemetry entry scrapes (kcl/ml.k _ml_telemetry_stacks). An
-# external collector owns those scrapes instead when telemetry_collector is
+# Include ML clusters in the agent's placement and credential planning, even
+# when they run no forge workloads: a stack with a component scraped through
+# its (deprecated) own fields, as in v1.13.0, or one that opts in with
+# node_agent (kcl/ml.k _ml_agent_stacks). An Observability.telemetry entry
+# alone never places the agent: kcl/ml.k _ml_uncollected reports it instead.
+# An external collector owns those scrapes when telemetry_collector is
 # declared.
 _obs_workloads = lambda agent_workloads: [any], agent_stacks: [any], agent_obs: any -> [any] {
-    _scraped = ([x.cluster for x in _ml_scrapes(agent_stacks)] + [s.cluster.cluster for s in _ml_telemetry_stacks(agent_stacks, agent_obs)]) \
+    _scraped = ([x.cluster for x in _ml_scrapes(agent_stacks)] + [s.cluster.cluster for s in _ml_agent_stacks(agent_stacks)]) \
         if agent_obs and agent_obs.enabled and not agent_obs.telemetry_collector else []
     agent_workloads + [{kind = "service", runtime = {type = "cluster", target = s.cluster}} for s in agent_stacks if s.cluster.cluster in _scraped]
 }
@@ -3406,7 +3408,8 @@ render = lambda bundle: Bundle -> any {
         # tools that read the stack and its decisions without parsing KCL.
         # Absent when none is declared, so an env without renders as before.
         if bundle.ml_stacks:
-            "ml_stacks": _ml_render(bundle.ml_stacks, _obs_on(bundle))
+            "ml_stacks": _ml_render(bundle.ml_stacks, _obs_on(bundle), bundle.observability, \
+                [t.cluster for t in _cluster_targets(_obs_workloads(bundle.workloads, bundle.ml_stacks, bundle.observability))])
         # The env's own collector, which pulls its cluster targets instead of
         # forge's node agent: the peer the targets' NetworkPolicy rules admit
         # (internal/cluster/telemetry.go). Only beside declared telemetry.

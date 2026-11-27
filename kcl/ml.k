@@ -30,8 +30,12 @@ adopted or installed, is a plain `Observability.telemetry` entry
         metrics = [forge.MetricsScrape {port = 9400, allow = "DCGM_FI_DEV_GPU_UTIL|DCGM_FI_DEV_FB_USED"}]
     }]}
 
-A stack's cluster gets forge's node agent when such an entry scrapes it,
-even if no forge workload runs there.
+forge's node agent collects such an entry. A cluster gets the agent when a
+forge workload runs there; a stack's cluster with none gets it only when the
+stack opts in with `node_agent = True`, because the agent makes the cluster
+one the env deploys to (MLStack.node_agent says what that requires).
+`forge env render` warns for an entry that scrapes a stack's cluster no
+agent runs on: it is not collected.
 
 The scrape fields of forge.Adopt and forge.Install (`selector`, `port`,
 `allow`, `service_name`) are deprecated in v1.14.0 and still work exactly
@@ -362,8 +366,9 @@ schema MLStack:
 
     Scraping a component is not a field of the stack: the DCGM exporter
     above is scraped by an `Observability.telemetry` entry beside it (the
-    module header shows one), and that entry's cluster gets forge's node
-    agent.
+    module header shows one). forge's node agent collects it on a cluster
+    a forge workload runs on, or on this stack's cluster when it sets
+    `node_agent = True`.
 
     The refusals, each naming the kind and the fix: a kind both adopted and
     installed; a kind installed twice; an Install of a kind in `observed`
@@ -378,9 +383,9 @@ schema MLStack:
       * each bundle Install's namespace: a Namespace in `manifests`, unless
         the env already renders or declares it;
       * the stack's cluster: forge's node agent (and its destination
-        credential), when observability is on with a destination, forge
-        owns collection, and an `Observability.telemetry` entry with a
-        selector scrapes that kube context;
+        credential), when the stack sets `node_agent = True` and
+        observability is on with a destination and forge owns collection
+        (no telemetry_collector);
       * deprecated (v1.14.0), still rendered: each component scraped through
         its own fields (an Adopt or an Install with selector and port): a
         `telemetry` target (attachment "observability", source
@@ -408,11 +413,17 @@ schema MLStack:
                 "service_name_declared": true (only when the component
                   declares the deprecated service_name; absent otherwise)
               }],
-              "decisions": [{"id", "decision", "reason", "expires"}]
+              "decisions": [{"id", "decision", "reason", "expires"}],
+              "uncollected_telemetry": ["<service_name>", ...] (only when
+                an Observability.telemetry entry with a selector scrapes
+                the stack's cluster, forge owns collection with a
+                destination, and no node agent runs there; absent
+                otherwise. forge env render warns for each stack)
             }
 
         Every key is always present (empty when unset), but for
-        service_name_declared; keys are only ever added.
+        service_name_declared and uncollected_telemetry; keys are only ever
+        added.
     """
     # Where the stack lives. `cluster` is the kube context.
     cluster: ClusterTarget
@@ -430,6 +441,16 @@ schema MLStack:
     # When that discovery ran, YYYY-MM-DD.
     observed_at?: str
     decisions: [RecommendationDecision] = []
+    # Run forge's node agent (and its destination credential) on this
+    # stack's cluster, so the Observability.telemetry entries that scrape it
+    # are collected even when no forge workload runs there. It takes effect
+    # when observability is on with a destination and forge owns collection
+    # (no telemetry_collector). Off by default: the agent makes the cluster
+    # one the env deploys to, so a local or ephemeral lifecycle needs it to
+    # be a cluster forge creates, applier = "flux" needs it to be the env's
+    # one cluster, and token_from_control_plane needs a connected cluster
+    # for it.
+    node_agent: bool = False
 
     check:
         all k in observed { regex.match(k, _ML_KIND_RE) }, \
@@ -520,12 +541,24 @@ _ml_telemetry = lambda stacks: [any], obs_on: bool, taken: [str] -> [Telemetry] 
     } for x in _ml_scrapes(stacks) if x.svc not in taken] if obs_on else []
 }
 
-# The stacks whose cluster an Observability.telemetry entry scrapes: a
-# selector on that kube context. Each gets forge's node agent, which is what
-# collects a cluster scrape, even when no forge workload runs there.
-_ml_telemetry_stacks = lambda stacks: [any], obs: any -> [any] {
-    _ctxs = [t.cluster for t in obs.telemetry if t.cluster and t.selector] if obs else []
-    [s for s in stacks if s.cluster.cluster in _ctxs]
+# The stacks that run forge's node agent though no forge workload may run on
+# their cluster: those that opt in (MLStack.node_agent). Opt-in, never
+# derived from a scrape: the agent makes the cluster a target of the env, and
+# a v1.13.0 env that scrapes a stack's cluster it does not deploy to (a local
+# or Flux env, or one whose credential delivery has no connected cluster
+# there) must still render.
+_ml_agent_stacks = lambda stacks: [any] -> [any] {
+    [s for s in stacks if s.node_agent]
+}
+
+# The service names of the Observability.telemetry entries that scrape a
+# stack's cluster (a selector on its kube context) and that nothing collects:
+# forge owns collection with a destination, and `agents` (the kube contexts
+# forge's node agent runs on) lacks the cluster. Empty otherwise.
+_ml_uncollected = lambda s: any, obs: any, agents: [str] -> [str] {
+    _owned = bool(obs and obs.enabled and obs.destination and not obs.telemetry_collector)
+    [t.service_name for t in obs.telemetry if t.cluster == s.cluster.cluster and t.selector] \
+        if _owned and s.cluster.cluster not in agents else []
 }
 
 # The HelmChart each Install lowers to, on its stack's cluster: {kind, chart}.
@@ -596,8 +629,10 @@ _ml_render_component = lambda e: any, svc: str -> any {
 
 # output.ml_stacks (see MLStack). A scrape renders when the env's
 # observability is on: as the derived Telemetry, or as the env's own
-# Telemetry of that service name, which replaces it.
-_ml_render = lambda stacks: [any], obs_on: bool -> [any] {
+# Telemetry of that service name, which replaces it. `obs` is the env's
+# Observability and `agents` the kube contexts forge's node agent runs on,
+# for uncollected_telemetry.
+_ml_render = lambda stacks: [any], obs_on: bool, obs: any, agents: [str] -> [any] {
     [{
         "cluster": s.cluster.cluster
         "namespace": s.cluster.namespace
@@ -606,5 +641,9 @@ _ml_render = lambda stacks: [any], obs_on: bool -> [any] {
         "accelerators": [{"vendor": a.vendor, "resource": a.resource, "node_selector": a.node_selector or {}} for a in s.accelerators]
         "components": [_ml_render_component(e, _ml_scrape_svc(e.c, s.cluster.cluster, len(stacks)) if obs_on else "") for e in _ml_entries(s)]
         "decisions": [{"id": d.id, "decision": d.decision, "reason": d.reason, "expires": d.expires} for d in s.decisions]
+        # Only when a scrape goes uncollected, so a stack without one
+        # renders exactly the v1.13.0 document.
+        if _ml_uncollected(s, obs, agents):
+            "uncollected_telemetry": _ml_uncollected(s, obs, agents)
     } for s in stacks]
 }

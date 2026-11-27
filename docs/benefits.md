@@ -4123,12 +4123,13 @@ _In progress · Reliant hosting_
 
 **Use:** Wrap model calls in `pkg/observe/genai` spans (`StartChat`, and `StartWorkflow` / `StartAgent` / `StartTool` for agentic work); AI spans are never sampled away. A `<project>-ai-models.json` replaces a dashboard.
 
-**Why:** No price table yet: a cost is shown only where the gateway reported one. The console lists the new AI group under Custom until it knows it.
+**Why:** Cost is the reported one where a call carries it, else an estimate at LiteLLM's list prices (pkg/llmprice, the rates the Reliant LLM gateway bills with) on the AI cost dashboard, which the platform serves once its tenant has the price table. The console lists the new AI group under Custom until it knows it.
 
 **Evidence:**
 
 - library [`pkg/obsbuiltin`](../pkg/obsbuiltin)
 - library [`pkg/observe/genai`](../pkg/observe/genai)
+- library [`pkg/llmprice`](../pkg/llmprice)
 - source [`pkg/obsbuiltin/ai_clickhouse_test.go`](../pkg/obsbuiltin/ai_clickhouse_test.go)
 - skill `observability/ai` (`forge skill load observability/ai`)
 

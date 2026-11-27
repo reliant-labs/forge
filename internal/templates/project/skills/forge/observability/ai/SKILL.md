@@ -114,7 +114,12 @@ must keep them too (the hosted platform's gateway policy).
 
 ## Not yet
 
-- No price table and no estimated cost (deferred by decision).
+- Estimated cost is on the AI cost dashboard only (`ai-cost`), which the
+  platform serves where your tenant has the price table: a call with no
+  reported cost is priced at LiteLLM's list rates (`pkg/llmprice`, the rates
+  the Reliant LLM gateway bills with; base per-token rates, no tiers), labelled
+  estimated. A model the table does not know has no cost, never $0. The other
+  hub dashboards show the reported cost only.
 - No prompt or completion content: a later, opt-in phase with its own storage,
   redaction and retention. Never put content in span attributes.
 - No run explorer page yet; a trace id in Failed runs opens the trace.

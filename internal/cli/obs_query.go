@@ -84,6 +84,12 @@ writes, DDL, SETTINGS, FORMAT, system tables or table functions), read-only,
 with a 30s timeout and a row cap (--limit). A refused statement exits 1 with
 the reason.
 
+The tables are the env's telemetry: otel_logs, otel_traces, the otel_metrics_*
+tables and, on a hosted env, the platform's own (product_events, rum_sessions,
+error_events, and, for a hosted static site, edge_requests and its daily rollup
+edge_requests_1d: CDN request logs, counted with sum(SampleWeight) /
+sum(Requests); see obs traffic).
+
 --panel FILE is one dashboard panel as JSON (the panels[] element of a
 dashboards/*.json; kinds line, number, table, bar, heatmap, sql) flattened to a
 table. Panels over the hosted platform's own tables (issues, sessions, funnel)

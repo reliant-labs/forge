@@ -101,6 +101,11 @@ type Input struct {
 	// (a frontend built from another repository bakes its own); empty derives
 	// each from the project and frontend name (naming.FrontendServiceName).
 	FrontendServices []string
+	// HostedStaticFrontends are the frontends some environment binds to
+	// Reliant hosting (forge.OnHosted): the CDN in front of them writes edge
+	// request logs, so the frontend dashboard gains its Traffic and Bots &
+	// agents groups. Empty generates exactly what it did before.
+	HostedStaticFrontends []string
 	// HasDatabase adds the database panels: true once the project has a
 	// migration, since the panels read spans the ORM's query hook emits.
 	HasDatabase bool
@@ -250,10 +255,12 @@ type ProjectPart struct {
 type Fragments struct {
 	Frontends        []string
 	FrontendServices []string `json:",omitempty"`
-	HasDatabase      bool
-	Funnels          []FrontendFunnel
-	Counts           []EventCount      `json:",omitempty"`
-	Analytics        *ProductAnalytics `json:",omitempty"`
+	// HostedStaticFrontends is Input.HostedStaticFrontends.
+	HostedStaticFrontends []string `json:",omitempty"`
+	HasDatabase           bool
+	Funnels               []FrontendFunnel
+	Counts                []EventCount      `json:",omitempty"`
+	Analytics             *ProductAnalytics `json:",omitempty"`
 	// Activity is the project's user-activity rules; `forge obs users` reads
 	// them from here, so it counts the users the dashboards count.
 	Activity *obsquery.Activity `json:",omitempty"`
@@ -332,7 +339,7 @@ func (p Process) runsWork() bool { return p.Kind == KindWorkerProc || p.Kind == 
 // BuildParts derives the project's Spec as process parts, sorted by process
 // identity. RPC-free workers and gateways retain their runtime/workload panels.
 func BuildParts(in Input) (ProjectPart, []ProcessPart) {
-	fragments := Fragments{Frontends: in.Frontends, FrontendServices: in.FrontendServices, HasDatabase: in.HasDatabase, Funnels: in.Funnels, Counts: in.Counts, Analytics: in.Analytics}
+	fragments := Fragments{Frontends: in.Frontends, FrontendServices: in.FrontendServices, HostedStaticFrontends: in.HostedStaticFrontends, HasDatabase: in.HasDatabase, Funnels: in.Funnels, Counts: in.Counts, Analytics: in.Analytics}
 	if !in.Activity.IsZero() {
 		a := in.Activity
 		fragments.Activity = &a
@@ -813,5 +820,6 @@ func buildFrontend(in Input) Dashboard {
 		}
 		d.Panels = append(d.Panels, Panel{ID: "funnel-" + f.ID, Title: title, Description: fmt.Sprintf("Product events in order, within %s, counted per %s.", fn.Window, fn.By), Kind: KindFunnel, Signal: Traces, Funnel: &fn, Width: 24, Height: 8})
 	}
+	addEdgeGroups(&d, in)
 	return d
 }

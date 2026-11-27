@@ -117,8 +117,11 @@ Everything else, existing names:
 | GPU device                   | attributes `hw.id`, `hw.type = gpu`, `hw.vendor`, `hw.model`, `hw.serial_number`, `hw.driver_version`, `hw.firmware_version`, `hw.gpu.task`; metrics `hw.gpu.utilization`, `hw.gpu.memory.usage`, `hw.gpu.memory.limit`, `hw.gpu.memory.utilization`, `hw.gpu.io`, `hw.gpu.errors`, `hw.gpu.status`; power and energy through generic `hw.power` and `hw.energy` with `hw.type = gpu` | development |
 | Not in OTel                  | per-GPU temperature, a k8s device attribute, a `gpu.*` namespace, a model digest or version, anything for training                                                                                                                                                                                                                                                                    | —           |
 
-The client-token row is an ML-owned exception, not an OTel mapping. Count input
-and output once per completed operation, including cached input and reasoning
+The client-token row is the supported ML-owned emission and query contract, not
+an OTel mapping. Keep emitting and querying it until a replacement is verified
+against a pinned upstream revision and its migration/query behavior is specified;
+this inventory does not authorize switching to candidate GenAI token series.
+Count input and output once per completed operation, including cached input and reasoning
 output in their respective totals. Queries use `ml.client.tokens`; never add
 legacy and replacement SDK series for the same operation. Legacy
 `gen_ai.client.token.usage` histograms remain ingestible: their sum, split by

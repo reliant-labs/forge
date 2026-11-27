@@ -12,7 +12,7 @@ Slice: inference-server metrics, OTel GenAI semconv, request-trace design, evals
 Confidence: (V) = checked against an upstream source this session (see Sources), (K) = knowledge. Fetched 2026-11-26.
 
 **Headline corrections to earlier notes**
-- (V) The OTel GenAI conventions **moved** out of `open-telemetry/semantic-conventions` into a new repo, `open-telemetry/semantic-conventions-genai`. The old pages say "Moved… no longer maintained". Everything is still **Development** stability. The client token metric was split up: the old single `gen_ai.client.token.usage` histogram (with a `gen_ai.token.type` attribute) is now a set of `gen_ai.client.inference.usage.*` counters plus `gen_ai.client.inference.operation.*_tokens` histograms. Ingest both the old and new names.
+- (V) The OTel GenAI conventions **moved** out of `open-telemetry/semantic-conventions` into a new repo, `open-telemetry/semantic-conventions-genai`. The old pages say "Moved… no longer maintained". Everything is still **Development** stability. The reported client-token split into `gen_ai.client.inference.usage.*` counters and `gen_ai.client.inference.operation.*_tokens` histograms is unverified against a pinned revision, not an adopted rename. `ml.client.tokens` remains the supported emission/query contract; the old `gen_ai.client.token.usage` histogram remains an ingestion compatibility path. Ingest both the old and new names.
 - (V) vLLM's OTLP tracing still emits **its own pre-semconv attribute names** (`gen_ai.usage.prompt_tokens`, `gen_ai.latency.*`), not the current semconv names (`gen_ai.usage.input_tokens`). We need an alias map.
 - (V) vLLM main has grown a lot past the familiar set: waiting-by-reason, admission rejections, KV block lifetime/reuse histograms, cached prompt tokens by source, per-request preemptions, MFU estimates (`estimated_flops_per_gpu_total`), and engine sleep state.
 
@@ -140,11 +140,11 @@ On by default. Labels: `model`, `version`; GPU metrics carry `gpu_uuid` (K). Lat
 | TPOT | request_time_per_output_token_seconds | request_time_per_output_token_seconds | tgi_request_mean_time_per_token_duration | — | — | gen_ai.server.time_per_output_token |
 | e2e | e2e_request_latency_seconds | e2e_request_latency_seconds | tgi_request_duration | nv_inference_request_duration_us | inference_objective_request_duration_seconds | gen_ai.server.request.duration |
 | Prefill / decode time | request_prefill/decode_time_seconds | per_stage_req_latency_seconds | tgi_batch_forward_duration{method} | compute_infer (combined) | — | — |
-| Tokens in/out per s | rate(prompt_tokens / generation_tokens) | rate(*_tokens_total), gen_throughput | Σ histogram sums | — | input/output_tokens | gen_ai.client.inference.usage.* |
+| Tokens in/out per s | rate(prompt_tokens / generation_tokens) | rate(*_tokens_total), gen_throughput | Σ histogram sums | — | input/output_tokens | ML-owned: rate(`ml.client.tokens`), split by `gen_ai.token.type`; no verified OTel replacement |
 | Batch size | num_requests_running, iteration_tokens_total | num_running_reqs | tgi_batch_current_size | count/exec_count, request_type=scheduled | running_requests | — |
 | KV util | kv_cache_usage_perc | token_usage | — | used/max blocks | inference_pool_average_kv_cache_utilization | — |
 | Preemption / eviction | num_preemptions | num_retracted_*, evicted_tokens_total | — | — | — | — |
-| Prefix-cache hit | prefix_cache_hits/queries | cache_hit_rate | — | nv_cache_* (response cache, different) | — | cache_read.input_tokens / input_tokens |
+| Prefix-cache hit | prefix_cache_hits/queries | cache_hit_rate | — | nv_cache_* (response cache, different) | — | Deferred: candidate cache token metrics unverified; `ml.client.tokens` has no cache breakdown |
 | Spec acceptance | accepted/draft tokens | spec_accept_rate, spec_accept_length | — | — | — | — |
 | Errors by reason | request_success{finished_reason}, admission_rejections | num_aborted_requests_total, grammar timeouts | tgi_request_failure{err} | request_failure{reason} | request_error_total{error_code} | error.type |
 | Per-adapter traffic | lora_requests_info (+ model_name = adapter on requests) | lora_pool_* | adapter_id label (K) | — | target_model_name | gen_ai.request.model |
@@ -320,7 +320,7 @@ app span (gen_ai chat, CLIENT)  ── traceparent ──▶
 - **Counter vs gauge semantics**: Triton durations are cumulative counters (rate them); TRT-LLM metrics are last-value gauges per iteration; `vllm:lora_requests_info` and `cache_config_info` carry their information in labels (value = timestamp/1). Never sum them.
 - `kv_cache_usage_perc` is a 0–1 fraction. SGLang `token_usage` is also a fraction.
 - **ITL ≠ TPOT**: vLLM ITL is per token gap; TPOT is the per-request mean. Their p99s differ greatly.
-- **Renames**: vLLM `gpu_cache_usage_perc`→`kv_cache_usage_perc`, `time_per_output_token_seconds`→`inter_token_latency_seconds`, `gpu_prefix_cache_*`→`prefix_cache_*` (K); V0 `num_requests_swapped` / cpu cache gone; GIE `inference_model_*`→`inference_objective_*`; OTel `gen_ai.system`→`gen_ai.provider.name`, `gen_ai.usage.prompt_tokens`→`input_tokens`, `gen_ai.client.token.usage`→`gen_ai.client.inference.usage.*`, prompt/completion events → `gen_ai.input/output.messages` attributes.
+- **Renames**: vLLM `gpu_cache_usage_perc`→`kv_cache_usage_perc`, `time_per_output_token_seconds`→`inter_token_latency_seconds`, `gpu_prefix_cache_*`→`prefix_cache_*` (K); V0 `num_requests_swapped` / cpu cache gone; GIE `inference_model_*`→`inference_objective_*`; OTel `gen_ai.system`→`gen_ai.provider.name`, `gen_ai.usage.prompt_tokens`→`input_tokens`, client-token replacement deferred pending pinned verification (use `ml.client.tokens`; ingest legacy `gen_ai.client.token.usage` sums), prompt/completion events → `gen_ai.input/output.messages` attributes.
 - **Cardinality**: never label metrics by request id, prompt or user. `model_name` can be one value per LoRA adapter (bounded by max_loras). Per-sample eval data goes to rows, not metrics.
 - **Multiple engines per pod (DP)**: vLLM's `engine` label. Sum across engines for throughput; average (not sum) for KV usage.
 - **Multi-host (LWS)**: only the leader serves HTTP/metrics in vLLM multi-node (K), so worker GPUs show utilisation but no engine metrics. Attribute them through the LWS group index.

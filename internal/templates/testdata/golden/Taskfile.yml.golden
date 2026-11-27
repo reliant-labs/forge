@@ -129,7 +129,7 @@ tasks:
       # debugger), and an -ldflags in GOFLAGS is left to decide. Release
       # builds are `forge build` and the Dockerfile, with their own flags.
       DEV_LDFLAGS:
-        sh: 'case "$FORGE_DEV_DWARF" in 1) ;; *) case " $(go env GOFLAGS 2>/dev/null) " in *" -ldflags"*|*" --ldflags"*) ;; *) echo "-ldflags=-w" ;; esac ;; esac'
+        sh: 'w=-ldflags=-w; case "$FORGE_DEV_DWARF" in 1) w= ;; esac; set -f; for f in $(go env GOFLAGS 2>/dev/null); do case "$f" in -ldflags|-ldflags=*|--ldflags|--ldflags=*) w= ;; esac; done; echo "$w"'
     cmds:
       # -trimpath strips local filesystem paths so builds are reproducible
       # across machines (the Dockerfile and `forge build` use it too);
@@ -423,7 +423,7 @@ tasks:
       # GOFLAGS above). FORGE_DEV_DWARF=1 keeps DWARF; a FORGE_GO_BUILD_FLAGS
       # already in your environment wins (Task never overrides one).
       FORGE_GO_BUILD_FLAGS:
-        sh: 'case "$FORGE_DEV_DWARF" in 1) ;; *) case " $(go env GOFLAGS 2>/dev/null) " in *" -ldflags"*|*" --ldflags"*) ;; *) echo "-ldflags=-w" ;; esac ;; esac'
+        sh: 'w=-ldflags=-w; case "$FORGE_DEV_DWARF" in 1) w= ;; esac; set -f; for f in $(go env GOFLAGS 2>/dev/null); do case "$f" in -ldflags|-ldflags=*|--ldflags|--ldflags=*) w= ;; esac; done; echo "$w"'
     cmds:
       - cmd: air
         ignore_error: true

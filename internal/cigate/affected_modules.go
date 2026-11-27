@@ -187,14 +187,16 @@ func moduleTests(ctx context.Context, in AffectedInput, list func(context.Contex
 	rulePkgs := map[string]bool{}
 	for _, f := range files {
 		for _, rule := range in.Rules {
-			if rule.On != config.CIGateOnGoSource {
-				continue
-			}
 			if matched, _ := ruleMatch(f, rule); !matched {
 				continue
 			}
 			if rule.Full {
-				return full(f + " changed — " + rule.Reason)
+				// Keep existing full-lane handling; this path also evaluates
+				// path-only package selections, not new whole-suite triggers.
+				if rule.On == config.CIGateOnGoSource {
+					return full(f + " changed — " + rule.Reason)
+				}
+				continue
 			}
 			for _, pkg := range ruleGraph.rulePackages(f, rule) {
 				rulePkgs[pkg] = true

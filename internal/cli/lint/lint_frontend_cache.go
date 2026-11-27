@@ -18,10 +18,11 @@
 //   - the installed dependencies, through the stamp each package manager
 //     rewrites on every install (node_modules/.package-lock.json,
 //     .modules.yaml, …) in the node_modules the frontend resolves from, and
-//     the packages eslint itself loads (its config's imports, the
-//     eslint-shaped packages package.json lists and theirs, typescript) by
-//     the content of every file, so a dependency patched in place without
-//     a reinstall is a change too (lint_frontend_cache_deps.go).
+//     the complete runtime dependency closure of what eslint loads (eslint,
+//     typescript, its config's imports, the eslint-shaped packages
+//     package.json lists, and everything they depend on) by the content of
+//     every file, so a dependency patched in place without a reinstall is a
+//     change too (lint_frontend_cache_deps.go).
 //   - for a workspace member whose dependencies are hoisted to an ancestor:
 //     that workspace root's own files (manifests, lockfile, shared configs),
 //     its membership — the normalized pnpm-workspace.yaml / package.json

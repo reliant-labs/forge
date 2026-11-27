@@ -125,13 +125,12 @@ const config = [
       // case because cycles silently break code-splitting + cause subtle
       // initialisation bugs; warn-only on the others so users can ratchet.
       //
-      // no-cycle is most of `eslint .`'s time (~30 of ~38s on a fresh
-      // scaffold), and maxDepth does not bound it: 1, 2, 3, 5, 10 and no
-      // limit, with or without ignoreExternal, all measured the same. The
-      // cost is building the import graph (resolving and re-parsing each
-      // imported module), which every depth pays. So the depth stays
-      // where it catches long cycles too; `forge lint` skips the whole
-      // lane when nothing it reads changed since its last pass.
+      // maxDepth does not bound no-cycle's cost: 1, 2, 3, 5, 10 and no
+      // limit, with or without ignoreExternal, measured the same. The cost
+      // is building the import graph (resolving and re-parsing each
+      // imported module), which every depth pays. So the depth stays where
+      // it catches long cycles too; `forge lint` skips the whole lane when
+      // nothing it reads changed since its last pass.
       "import/no-cycle": ["error", { maxDepth: 10 }],
       "import/no-default-export": "warn",
       "import/order": [

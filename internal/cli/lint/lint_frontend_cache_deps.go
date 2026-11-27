@@ -3,25 +3,26 @@
 // The dependencies the frontend lint lane's pass cache keys by content. The
 // install stamps (lint_frontend_cache.go) move on every install, but not when
 // someone edits a resolved package in place — a locally patched eslint
-// plugin, a `patch-package` fix applied by hand — and that edit changes what
-// eslint decides. So the packages eslint actually loads are hashed file by
-// file, the way the frontend's own files are:
+// plugin, a `patch-package` fix applied by hand, a debugging edit to espree —
+// and that edit changes what eslint decides. So the complete runtime
+// dependency closure of what eslint loads is hashed file by file:
 //
-//   - every package the frontend's package.json lists (dependencies,
-//     devDependencies) whose name is eslint-shaped (eslintRelevantPackage),
-//     plus typescript, which typescript-eslint parses with;
-//   - every package the eslint config imports directly (eslint.config.* /
-//     .eslintrc.*: `eslint-config-next`, `eslint-plugin-import`, …);
-//   - transitively, every eslint-shaped dependency of those packages (a
-//     shared config brings its own plugins and resolvers:
-//     eslint-config-next → eslint-plugin-react-hooks,
-//     eslint-import-resolver-typescript, @next/eslint-plugin-next).
+//   - the roots: eslint itself, typescript (typescript-eslint parses with
+//     it), every package the eslint config imports directly
+//     (eslint.config.* / .eslintrc.*), and every package the frontend's
+//     package.json lists (dependencies, devDependencies) whose name is
+//     eslint-shaped (eslintRelevantPackage);
+//   - from each package in the closure, every name its package.json lists
+//     under dependencies, optionalDependencies and peerDependencies, each
+//     resolved the way Node resolves it from that package's real directory
+//     (the nearest node_modules/<name> walking up, symlinks followed — a
+//     pnpm store entry's dependencies are its siblings), deduplicated by
+//     real path. A name that resolves to nothing (an optional or peer
+//     dependency not installed) is keyed as absent, so installing it is a
+//     change.
 //
-// Each name resolves the way Node resolves it — the nearest node_modules/<name>
-// walking up from the importer — and through symlinks to the package's real
-// directory (a pnpm store entry), whose files are hashed minus its nested
-// node_modules. Other packages a plugin requires (espree, minimatch, …) are
-// covered by the install stamps only: an in-place edit there is not seen.
+// Every file of every package in the closure is hashed, minus its nested
+// node_modules: a dependency installed there is visited as its own package.
 
 package lint
 
@@ -150,13 +151,14 @@ func resolvePackage(name, dir string) (string, bool) {
 // lintDep is one resolved package the key covers.
 type lintDep struct{ name, dir string }
 
-// lintDependencies resolves the packages eslint loads for the frontend at
-// dir (see the file header), and the names that resolved to nothing.
+// lintDependencies resolves the runtime dependency closure of what eslint
+// loads for the frontend at dir (see the file header), and the names that
+// resolved to nothing, each as "<name> (from <importer>)".
 func lintDependencies(dir string) (deps []lintDep, absent []string) {
 	type item struct{ name, from string }
 	var queue []item
 	m := readManifestDeps(dir)
-	roots := map[string]bool{"typescript": true}
+	roots := map[string]bool{"eslint": true, "typescript": true}
 	for _, set := range []map[string]string{m.Dependencies, m.DevDependencies} {
 		for name := range set {
 			if eslintRelevantPackage(name) {
@@ -178,9 +180,13 @@ func lintDependencies(dir string) (deps []lintDep, absent []string) {
 		queue = queue[1:]
 		real, ok := resolvePackage(it.name, it.from)
 		if !ok {
-			if !seenAbsent[it.name] {
-				seenAbsent[it.name] = true
-				absent = append(absent, it.name)
+			from := "the frontend"
+			if it.from != dir {
+				from = filepath.Base(it.from)
+			}
+			if key := it.name + " (from " + from + ")"; !seenAbsent[key] {
+				seenAbsent[key] = true
+				absent = append(absent, key)
 			}
 			continue
 		}
@@ -190,11 +196,9 @@ func lintDependencies(dir string) (deps []lintDep, absent []string) {
 		seenDir[real] = true
 		deps = append(deps, lintDep{name: it.name, dir: real})
 		pm := readManifestDeps(real)
-		for _, set := range []map[string]string{pm.Dependencies, pm.PeerDependencies, pm.OptionalDependencies} {
+		for _, set := range []map[string]string{pm.Dependencies, pm.OptionalDependencies, pm.PeerDependencies} {
 			for name := range set {
-				if eslintRelevantPackage(name) {
-					queue = append(queue, item{name, real})
-				}
+				queue = append(queue, item{name, real})
 			}
 		}
 	}
@@ -210,9 +214,9 @@ func lintDependencies(dir string) (deps []lintDep, absent []string) {
 
 // hashLintDeps adds every package lintDependencies resolves to h, by name,
 // real directory and the content of each file under it (nested node_modules
-// excluded), and returns the number of files it read. A package a peer or
-// optional dependency names but nothing installed is keyed as absent, so
-// installing it is a change.
+// excluded: those are packages of the closure in their own right), and
+// returns the number of files it read. A name nothing installed is keyed as
+// absent, so installing it is a change.
 func hashLintDeps(h io.Writer, dir string) (int, error) {
 	deps, absent := lintDependencies(dir)
 	files := 0

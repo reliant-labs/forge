@@ -248,6 +248,13 @@ Signed in to Reliant means signed in to the control plane: there is no second
 `$FORGE_CREDENTIAL_HELPER`, which mints forge a short-lived token from your
 Reliant session. Your own hostname: load `deploy/domains`.
 
+## SEO and accessibility
+
+A new site starts with the head tags, social card, structured data and
+jsx-a11y lint its first audit checks. Its canonical origin is `SITE_URL`, a
+build-time `forge.FrontendURL` each env declares. Load
+`deploy/static-site/seo` for what is scaffolded and how to keep it right.
+
 ## Runtime config
 
 A static bundle cannot read env vars at runtime, so per-env values (an API URL,

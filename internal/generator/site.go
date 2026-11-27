@@ -115,6 +115,7 @@ func WriteSiteScaffold(dir, projectName string, harness Harness, fe SiteFrontend
 			FrontendPublicDir: fe.PublicDir,
 			SessionReplay:     fe.SessionReplay,
 			FrontendDevPort:   fe.DevPort,
+			SiteURL:           true,
 		})
 		if err != nil {
 			return fmt.Errorf("render %s env: %w", env, err)

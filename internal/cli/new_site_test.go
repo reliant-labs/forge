@@ -459,10 +459,26 @@ func TestGreenfieldSiteProductionBuilds(t *testing.T) {
 				strings.Contains(html, `property="og:url"`) || strings.Contains(html, "localhost") {
 				t.Errorf("a build without SITE_URL wrote an origin into index.html:\n%s", html)
 			}
+			// robots.txt is still written, without a Sitemap: line it cannot
+			// make absolute; Vite's forgeSiteFiles writes no sitemap at all.
+			if robots := readFile(t, filepath.Join(root, tc.out, "robots.txt")); strings.Contains(robots, "Sitemap:") {
+				t.Errorf("a build without SITE_URL named a sitemap in robots.txt:\n%s", robots)
+			}
+			if _, err := os.Stat(filepath.Join(root, tc.out, "sitemap.xml")); tc.kind == "vite-spa" && err == nil {
+				t.Error("a Vite build without SITE_URL wrote a sitemap.xml of relative URLs")
+			}
 
 			const site = "https://landing.example.com"
 			npm([]string{"SITE_URL=" + site}, "run", "build")
-			auditFreshSiteBuild(t, filepath.Join(root, tc.out), site, tc.kind == "nextjs")
+			// Both starters generate robots.txt and sitemap.xml into the
+			// build: Next.js from src/app/robots.ts and sitemap.ts, Vite with
+			// forgeSiteFiles().
+			for _, f := range []string{"robots.txt", "sitemap.xml", "og.png"} {
+				if _, err := os.Stat(filepath.Join(root, tc.out, f)); err != nil {
+					t.Errorf("%s/ lacks %s: %v", tc.out, f, err)
+				}
+			}
+			auditFreshSiteBuild(t, filepath.Join(root, tc.out), site)
 		})
 	}
 }
@@ -470,7 +486,7 @@ func TestGreenfieldSiteProductionBuilds(t *testing.T) {
 // auditFreshSiteBuild judges a fresh site's build output as Site insights
 // would judge it served at site: the head tags D3 scaffolds, then
 // siteaudit.Evaluate over the home page, robots.txt and sitemap.
-func auditFreshSiteBuild(t *testing.T, out, site string, generatedRobots bool) {
+func auditFreshSiteBuild(t *testing.T, out, site string) {
 	t.Helper()
 	html := readFile(t, filepath.Join(out, "index.html"))
 	// The home page's canonical and og:url name the origin; Next.js writes
@@ -501,18 +517,14 @@ func auditFreshSiteBuild(t *testing.T, out, site string, generatedRobots bool) {
 	}
 	robots := readFile(t, filepath.Join(out, "robots.txt"))
 	in.Robots = &siteaudit.Fetched{URL: site + "/robots.txt", Status: 200, Body: robots}
-	// The Vite starter's sitemap and Sitemap: line come with forgeSiteFiles;
-	// the Next.js export generates both from SITE_URL.
-	if generatedRobots {
-		if !strings.Contains(robots, "Sitemap: "+site+"/sitemap.xml") {
-			t.Errorf("robots.txt does not name the sitemap:\n%s", robots)
-		}
-		sitemap := readFile(t, filepath.Join(out, "sitemap.xml"))
-		if !strings.Contains(sitemap, "<loc>"+site+"/</loc>") {
-			t.Errorf("sitemap.xml does not list the home page:\n%s", sitemap)
-		}
-		in.Sitemaps = []siteaudit.Fetched{{URL: site + "/sitemap.xml", Status: 200, Body: sitemap}}
+	if !strings.Contains(robots, "Sitemap: "+site+"/sitemap.xml") {
+		t.Errorf("robots.txt does not name the sitemap:\n%s", robots)
 	}
+	sitemap := readFile(t, filepath.Join(out, "sitemap.xml"))
+	if !strings.Contains(sitemap, "<loc>"+site+"/</loc>") {
+		t.Errorf("sitemap.xml does not list the home page:\n%s", sitemap)
+	}
+	in.Sitemaps = []siteaudit.Fetched{{URL: site + "/sitemap.xml", Status: 200, Body: sitemap}}
 	report := siteaudit.Evaluate(in)
 	placeholder := false
 	for _, f := range report.Findings {

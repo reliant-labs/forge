@@ -53,8 +53,10 @@ type ObjectWriter interface {
 	// LastModified is zero when the service does not report it on upload
 	// (an S3 PUT does not; Stat does).
 	//
-	// A body that is not exactly opts.ContentLength bytes (when set) is
-	// ErrInvalidOptions, and one longer than opts.MaxBytes is ErrTooLarge.
+	// The body ends where its Read returns io.EOF itself, as io.Copy reads
+	// it; a Read error, even one wrapping io.EOF, fails the call with that
+	// error. A body that is not exactly opts.ContentLength bytes (when set)
+	// is ErrInvalidOptions, and one longer than opts.MaxBytes is ErrTooLarge.
 	// Either is caught while the body streams, and the upload is abandoned
 	// before the service commits it, so no object is stored and an object
 	// already at key is left as it was. Any other failure leaves it as it
@@ -201,7 +203,13 @@ func (b *putBody) Read(p []byte) (int, error) {
 	b.n += int64(n)
 	b.sha.Write(p[:n])
 	switch {
-	case err == io.EOF: //nolint:errorlint // a Reader ends with io.EOF itself; a wrapped one is a failure, not the end
+	// Only io.EOF itself ends the body. The io.Reader contract has Read
+	// return io.EOF unwrapped, and io.Copy and io.ReadAll compare with ==
+	// too. An error that wraps io.EOF ("copying the source: EOF") is the
+	// source failing, possibly truncated: taking it for the end would store
+	// a short body of unknown size and report success. It fails the call
+	// (still errors.Is io.EOF) and nothing is stored.
+	case err == io.EOF: //nolint:errorlint // only io.EOF itself ends a body; a wrapped one is a failure (see above)
 		if b.exact > 0 && b.n < b.exact {
 			return 0, b.fail(errorf(ErrInvalidOptions, "the body ended after %d of its declared %d bytes", b.n, b.exact))
 		}

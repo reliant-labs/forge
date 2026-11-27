@@ -2,6 +2,20 @@
 # so a CRLF checkout on Windows would break the template/golden tests.
 * text=auto eol=lf
 
+# Route generated files to forge's merge driver, as scaffolded projects do.
+*_gen.go merge=forge-generated
+*_gen.ts merge=forge-generated
+*_gen.test.ts merge=forge-generated
+*_gen.json merge=forge-generated
+*_gen.ndjson merge=forge-generated
+*_gen.k merge=forge-generated
+forge_service_catalog.json merge=forge-generated
+.forge/scaffolded/** merge=forge-generated
+.forge/hashes/** merge=forge-generated
+.forge/disowned.json merge=forge-generated
+# Only the hash-proven forge guide is regenerable; Project Notes merge as text.
+/AGENTS.md merge=forge-generated
+
 # Rendered from internal/benefits/benefits.yaml by `task docs:benefits`
 # (go test ./internal/benefits -run TestRenderedFilesAreCurrent -update).
 # Regenerate them on a merge; never resolve a conflict in them by hand.

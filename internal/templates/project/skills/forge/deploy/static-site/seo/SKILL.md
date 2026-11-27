@@ -38,7 +38,12 @@ technology read, so its first audit scores well before you write a line:
   the home page as every page's canonical. `src/app/robots.ts` and
   `src/app/sitemap.ts` (`dynamic = "force-static"`) generate `robots.txt` and
   `sitemap.xml` into `out/` from `SITE_URL`; add each page to the sitemap's
-  `routes`. The **Vite** starter ships a static `public/robots.txt`.
+  `routes`. The **Vite** starter does the same with `forgeSiteFiles({ siteUrl:
+  process.env.SITE_URL })` in `vite.config.ts` (`@reliantlabs/forge-web-runtime/vite`):
+  `robots.txt` plus a `sitemap.xml` of every `.html` file in `dist/`; list
+  client-side routes with its `routes` option. A file you put in `public/`
+  is never overwritten. With `SITE_URL` empty, `robots.txt` has no
+  `Sitemap:` line and there is no sitemap.
 - **`public/favicon.svg` and `public/og.png`** (1200×630) are neutral
   placeholders carrying the text `forge:placeholder-image`, so the audit
   reports them (`og_image_placeholder`) until you replace them with the

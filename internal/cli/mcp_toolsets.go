@@ -18,8 +18,10 @@ import (
 // deciding what forge offers (catalog). When some group is left out the
 // server also lists forge_tools, which enables the others in-session.
 //
-// The default is every group (--tools all); it is planned to become core in
-// a later minor, and all stays accepted permanently.
+// The default is core (--tools core; owner, 2026-11-27): about a fifth of the
+// full list's bytes on every call. It changes no tool: every one stays
+// reachable mid-session through forge_tools, and --tools all, the default
+// before, lists them all up front and stays accepted permanently.
 
 // mcpToolGroup is one selectable set of tools.
 type mcpToolGroup struct {
@@ -47,6 +49,10 @@ var mcpToolGroups = []mcpToolGroup{
 
 // mcpToolsAll is the --tools value that selects every group.
 const mcpToolsAll = "all"
+
+// mcpToolsDefault is the --tools value `forge mcp` starts with when none is
+// given: the core group, with forge_tools for the rest.
+const mcpToolsDefault = "core"
 
 func mcpToolGroupNames() []string {
 	names := make([]string, len(mcpToolGroups))
@@ -185,14 +191,18 @@ func addForgeToolsTool(ts *mcpToolset) {
 
 // mcpInstructionsFor is the server's instructions for a selection of groups.
 // Every group gets mcpInstructions, the front door for any repo. A selection
-// is the opt-in for a lean server, so it gets a few lines: the
-// disambiguation, the entry skills, and where the other tools are.
+// (core, the default, among them) is a lean server, so it gets a few lines:
+// the disambiguation, the entry skills, and where the other tools are.
 func mcpInstructionsFor(groups []string) string {
 	if len(groups) == len(mcpToolGroups) {
 		return mcpInstructions
 	}
-	s := "This is Reliant Forge (github.com/reliant-labs/forge) — not Atlassian Forge and not Foundry's forge. " +
-		"This server was started with --tools " + strings.Join(groups, ",") + ". "
+	s := "This is Reliant Forge (github.com/reliant-labs/forge) — not Atlassian Forge and not Foundry's forge. "
+	if spec := strings.Join(groups, ","); spec == mcpToolsDefault {
+		s += "This server lists forge's core tools (--tools core, the default). "
+	} else {
+		s += "This server was started with --tools " + spec + ". "
+	}
 	if slices.Contains(groups, "core") {
 		s += "In a forge project start with skill_load name=forge; in any other repo, name=adopt. " +
 			"Recon with shapes before grepping; gate with lint (scoped while iterating) and generate. "

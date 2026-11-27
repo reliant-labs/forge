@@ -80,7 +80,7 @@ import (
 )
 
 // EnginePostgres is the first engine forge supervises natively (the others:
-// zitadel.go, nats.go, temporal.go, mailpit.go). It matches the `engine` discriminator on
+// zitadel.go, nats.go, temporal.go, mailpit.go, minio.go). It matches the `engine` discriminator on
 // the KCL HostInfra schema.
 const EnginePostgres = "postgres"
 
@@ -107,7 +107,7 @@ type Spec struct {
 	// logs.go). Empty keeps the log beside the data, as before Env existed.
 	Env string
 	// Engine selects the implementation: EnginePostgres, EngineZitadel,
-	// EngineNATS, EngineTemporal or EngineMailpit.
+	// EngineNATS, EngineTemporal, EngineMailpit or EngineMinIO.
 	Engine string
 	// Port is the loopback port the server binds — the same number the app's
 	// DSN dials, which is why the environment declares it once and hands it
@@ -170,13 +170,32 @@ type Spec struct {
 	// /metrics on (`--metrics-port`). Zero means a free port the server
 	// picks itself, which nothing can be pointed at.
 	TemporalMetricsPort int
+
+	// ── EngineMinIO only ──────────────────────────────────────────────
+
+	// MinIOConsolePort is the web console's port. Zero means no console.
+	MinIOConsolePort int
+	// MinIORegion is the region the server answers as, the one a client
+	// signs its requests for. Empty means "us-east-1".
+	MinIORegion string
+	// MinIOBuckets are the buckets the env declares on this MinIO, created
+	// once it answers and their anonymous access reconciled on every start.
+	MinIOBuckets []MinIOBucket
+	// MinIOCORSAllowOrigin is the browser origins the S3 API allows, "*" or
+	// a comma-separated list (MINIO_API_CORS_ALLOW_ORIGIN). Empty means "*".
+	MinIOCORSAllowOrigin string
+	// MinIORootUser and MinIORootPassword are the root credentials. They
+	// come from the env's secret store, where forge generated them, never
+	// from a committed declaration.
+	MinIORootUser     string
+	MinIORootPassword string
 }
 
 // unsupportedEngine is Start/StatusOf's answer for an engine forge has no
 // implementation of.
 func unsupportedEngine(spec Spec) error {
-	return fmt.Errorf("host-infra %s: unsupported engine %q (forge supervises %q, %q, %q, %q and %q natively): %w",
-		spec.Name, spec.Engine, EnginePostgres, EngineZitadel, EngineNATS, EngineTemporal, EngineMailpit, ErrUnsupportedEngine)
+	return fmt.Errorf("host-infra %s: unsupported engine %q (forge supervises %q, %q, %q, %q, %q and %q natively): %w",
+		spec.Name, spec.Engine, EnginePostgres, EngineZitadel, EngineNATS, EngineTemporal, EngineMailpit, EngineMinIO, ErrUnsupportedEngine)
 }
 
 // dataDir resolves the instance's data directory against the project root.
@@ -264,6 +283,15 @@ func Start(ctx context.Context, projectDir string, spec Spec) error {
 			return err
 		}
 		fmt.Printf("  %s: mail UI at %s\n", spec.Name, MailpitUIURL(spec))
+		return nil
+	case EngineMinIO:
+		if err := validateMinIO(spec); err != nil {
+			return err
+		}
+		if err := minioEngine.start(ctx, projectDir, spec); err != nil {
+			return err
+		}
+		printMinIOAddresses(spec)
 		return nil
 	default:
 		return unsupportedEngine(spec)
@@ -535,6 +563,8 @@ func StopReport(projectDir string, spec Spec) (stopped bool, err error) {
 		return temporalEngine.stop(projectDir, spec)
 	case EngineMailpit:
 		return mailpitEngine.stop(projectDir, spec)
+	case EngineMinIO:
+		return minioEngine.stop(projectDir, spec)
 	}
 	dataDir := spec.dataDir(projectDir)
 	pgCtl := filepath.Join(dataDir, "runtime", "bin", "pg_ctl")

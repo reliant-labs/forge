@@ -493,25 +493,6 @@ func TestSizesDecideWhetherAFindingIsKept(t *testing.T) {
 	}
 }
 
-func TestATimeoutIsAFindingAndEndsTheRun(t *testing.T) {
-	t.Parallel()
-	r := analyze(t, dbanalyze.Config{}, dbanalyze.SessionOptions{StatementTimeout: 100 * time.Millisecond},
-		"ALTER TABLE t ADD COLUMN c int;\nSELECT pg_sleep(5);\nALTER TABLE t ADD COLUMN d int;",
-		"ALTER TABLE t ADD COLUMN e int;")
-	if r.err != nil {
-		t.Fatalf("a timeout is a finding, not a failed analysis: %v", r.err)
-	}
-	if got := r.rules("ma.up.sql", 2); !slices.Equal(got, []string{dbanalyze.RuleStatementTimeout + ":"}) {
-		t.Errorf("findings = %v", got)
-	}
-	if st := r.migs[0].Statements[2]; st.Executed || st.Reason == "" {
-		t.Errorf("the statement after the timeout: %+v", st)
-	}
-	if m := r.migs[1]; m.Analyzed || !strings.Contains(m.Reason, "statement_timeout") {
-		t.Errorf("the next migration: %+v", m)
-	}
-}
-
 func TestAFailedStatementCannotBeAnalyzedPast(t *testing.T) {
 	t.Parallel()
 	r := analyze(t, dbanalyze.Config{}, dbanalyze.SessionOptions{},

@@ -31,7 +31,12 @@ mkdir -p "$lane"
 # exits.
 report=$(mktemp -d)/vitest.json
 cd "$root/web-runtime"
+# Only executable sources belong in V8 coverage: src/** also selects assets
+# that the uncovered-file remapper cannot parse as JavaScript. testdata is
+# compiler fixture input, excluded from the published build too.
 exec "$root/scripts/ci-forge.sh" test capture --run "$run" --lane frontend --results "$report" -- \
   npx vitest run --reporter=default --reporter=json --outputFile.json="$report" \
-  --coverage.enabled --coverage.provider=v8 --coverage.clean=false --coverage.include='src/**' \
+  --coverage.enabled --coverage.provider=v8 --coverage.clean=false --coverage.include='src/**/*.{ts,tsx}' \
+  --coverage.exclude='src/testdata/**' --coverage.exclude='src/**/*.d.ts' \
+  --coverage.exclude='src/**/*.test.{ts,tsx}' \
   --coverage.reporter=json --coverage.reporter=text-summary --coverage.reportsDirectory="$lane"

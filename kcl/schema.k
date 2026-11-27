@@ -1464,13 +1464,19 @@ schema Bucket:
 
     `cors_origins` are the browser origins that upload and download directly.
     The dev MinIO applies them server-wide (empty = any origin, which is what
-    a dev loop on a moving localhost port wants). On forge.BucketOnS3 forge
+    a dev loop on a moving localhost port wants), the union of every bucket's
+    on that MinIO. On forge.BucketOnS3 forge
     does not manage the bucket, so they are a statement of what the bucket's
     own CORS configuration must allow, set where the bucket lives.
 
     WHERE IT LIVES is its `runtime`, and there is no default:
 
-      * `forge.BucketOnMinIO {port}` — the env's MinIO, a docker-compose
+      * `forge.BucketOnMinIO {infra = "minio"}` — the env's MinIO as a HOST
+        PROCESS: a `forge.HostInfra {engine = "minio"}` forge fetches and
+        supervises, with no container runtime. It creates the bucket at
+        `forge env up`, and the root credentials are generated into the
+        env's secret store, never committed.
+      * `forge.BucketOnMinIO {port}` — the env's MinIO as a docker-compose
         service forge's dev env runs (`forge.minio_workload`). It creates the
         bucket at `forge env up`, and the credentials are the dev MinIO's own.
       * `forge.BucketOnS3 {endpoint, ...}` — an S3-compatible bucket you
@@ -1509,26 +1515,47 @@ schema Bucket:
         len(_duplicates(cors_origins)) == 0, "Bucket '${name}'.cors_origins lists ${_duplicates(cors_origins)} more than once"
 
 schema BucketOnMinIO:
-    """A bucket on the env's MinIO: the docker-compose service `service`
-    (default "minio") that `forge.minio_workload` binds, publishing the S3
-    API on `port` on loopback. Dev and e2e only: a hosted workload cannot
-    reach it, and a reference from one is refused.
+    """A bucket on the env's MinIO. Dev and e2e only: a hosted workload
+    cannot reach it, and a reference from one is refused. Two shapes:
 
-    `access_key` / `secret_key` are the MinIO root credentials, committed on
-    purpose like the dev postgres password: this server binds loopback and
-    holds only local test files. `console_port`, when set, publishes MinIO's
-    web console.
+    ON THE HOST (`infra` set): the `forge.HostInfra {engine = "minio"}` of
+    that name, a MinIO server forge fetches and supervises as a host process,
+    with no container runtime, so a container-free dev env has buckets too.
+
+        infra = [forge.HostInfra {name = "minio", engine = "minio", port = ports.minio}]
+        buckets = [forge.Bucket {name = "uploads", runtime = forge.BucketOnMinIO {infra = "minio"}}]
+
+    Its port, console and region are the HostInfra's, so `port`,
+    `console_port`, `access_key` and `secret_key` stay unset here. Its root
+    credentials are generated into the env's secret store (forge.FileSecrets),
+    under the keys `<INFRA>_ROOT_USER` / `<INFRA>_ROOT_PASSWORD`, and reach a
+    workload as forge.ManagedSecret references, never as committed literals.
+    It binds 127.0.0.1, so only a host process (forge.OnHost) reaches it.
+
+    IN DOCKER COMPOSE (`infra` empty): the compose service `service`
+    (default "minio") that `forge.minio_workload` binds, publishing the S3
+    API on `port` on loopback. `access_key` / `secret_key` are its root
+    credentials, committed on purpose like the dev postgres password: this
+    server binds loopback and holds only local test files. `console_port`,
+    when set, publishes MinIO's web console.
     """
     type: "minio" = "minio"
+    infra: str = ""
     service: str = "minio"
-    port: int
+    port?: int
     console_port?: int
     region: str = "us-east-1"
     access_key: str = "minioadmin"
     secret_key: str = "minioadmin"
 
     check:
-        port > 0 and port < 65536, "BucketOnMinIO.port must be 1..65535"
+        infra or port, "BucketOnMinIO.port is required for the compose MinIO (forge.minio_workload), or set `infra` to bind a forge.HostInfra {engine = \"minio\"}"
+        not infra or (not port and not console_port), \
+            "BucketOnMinIO {infra = \"${infra}\"} takes no port or console_port: a host MinIO's ports are its forge.HostInfra's (port, minio_console_port). Remove them here"
+        not infra or (access_key == "minioadmin" and secret_key == "minioadmin"), \
+            "BucketOnMinIO {infra = \"${infra}\"} takes no access_key or secret_key: a host MinIO's root credentials are generated into the env's secret store, never committed. Remove them"
+        not infra or regex.match(infra, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "BucketOnMinIO.infra '${infra}' must name a forge.HostInfra (an RFC-1123 label)"
+        not port or (port > 0 and port < 65536), "BucketOnMinIO.port must be 1..65535"
         not console_port or (console_port > 0 and console_port < 65536 and console_port != port), \
             "BucketOnMinIO.console_port must be 1..65535 and differ from port"
         len(secret_key) >= 8, "BucketOnMinIO.secret_key must be at least 8 characters: MinIO refuses to start with a shorter root password"
@@ -1579,6 +1606,53 @@ _bucket_minio_values = lambda b: Bucket, endpoint: str -> {str:} {
         "bucket" = b.name
         "access_key_id" = b.runtime.access_key
         "secret_access_key" = b.runtime.secret_key
+        "path_style" = "true"
+    }
+}
+
+# The secret-store keys a host MinIO's root credentials live under: its
+# HostInfra name in upper snake case, then _ROOT_USER / _ROOT_PASSWORD. The
+# env's forge.FileSecrets mints them (render adds them to `generate`).
+_minio_root_secrets = lambda infra: str -> {str:str} {
+    _n = infra.upper().replace("-", "_")
+    {"user" = "${_n}_ROOT_USER", "password" = "${_n}_ROOT_PASSWORD"}
+}
+
+# The minio HostInfra a host-MinIO bucket names ([] when the env declares none).
+_bucket_host_minios = lambda b: Bucket, infra: [any] -> [any] {
+    [i for i in infra if i.engine == "minio" and i.name == b.runtime.infra]
+}
+
+# A host MinIO's region: the declared one, else BucketOnMinIO's default.
+_host_minio_region = lambda i: any -> str {
+    i.minio_region or "us-east-1"
+}
+
+# What of the compose MinIO an env declares: each forge.minio_workload (a
+# compose workload whose process env carries the MinIO root user) and each
+# bucket bound to one (a BucketOnMinIO with no `infra`).
+_compose_minio_names = lambda workloads: [any], buckets: [Bucket] -> [str] {
+    [w.name for w in workloads if w.runtime and w.runtime.type == "compose" and w.runtime.env and "MINIO_ROOT_USER" in w.runtime.env] \
+        + ["bucket ${b.name}" for b in buckets if b.runtime.type == "minio" and not b.runtime.infra]
+}
+
+# The buckets on a host MinIO whose region is not that MinIO's.
+_host_minio_region_mismatches = lambda buckets: [Bucket], infra: [any] -> [str] {
+    [b.name for b in buckets if b.runtime.type == "minio" and b.runtime.infra for i in infra if i.engine == "minio" and i.name == b.runtime.infra and _host_minio_region(i) != b.runtime.region]
+}
+
+# Every BucketRef key of a bucket on a host MinIO `i` (a forge.HostInfra
+# {engine = "minio"}), for a host-process referrer: the credentials are the
+# env's secret-store keys forge generated them under, as ManagedSecrets.
+_bucket_host_minio_values = lambda b: Bucket, i: any -> {str:} {
+    _s = _minio_root_secrets(i.name)
+    {
+        "endpoint" = "http://localhost:${i.port}"
+        "public_endpoint" = "http://localhost:${i.port}"
+        "region" = _host_minio_region(i)
+        "bucket" = b.name
+        "access_key_id" = ManagedSecret {name = _s.user}
+        "secret_access_key" = ManagedSecret {name = _s.password}
         "path_style" = "true"
     }
 }
@@ -1936,7 +2010,8 @@ minio_workload = lambda minio: BucketOnMinIO, buckets: [Bucket] -> Workload {
         _buckets = [forge.Bucket {name = "uploads", runtime = _minio}]
         workloads = _workloads + [forge.minio_workload(_minio, _buckets)]
     """
-    _mine = [b for b in buckets if b.runtime.type == "minio" and b.runtime.service == minio.service]
+    assert not minio.infra, "forge.minio_workload binds the compose MinIO, but this forge.BucketOnMinIO names infra '${minio.infra}', a host MinIO forge runs itself: drop the minio_workload (the forge.HostInfra {engine = \"minio\"} runs it), or unset infra"
+    _mine = [b for b in buckets if b.runtime.type == "minio" and not b.runtime.infra and b.runtime.service == minio.service]
     _origins = sorted({o: 0 for b in _mine for o in b.cors_origins})
     Workload {
         name = minio.service
@@ -2017,6 +2092,18 @@ schema HostInfra:
     a real inbox. A `forge.IdentityOnHost` identity delivers to it (see
     `IdentityOnHost.mail`).
 
+    `minio` runs a MinIO server (pinned, checksum-verified) on loopback, the
+    S3 API forge/pkg/blobstore speaks, on `port`, with its objects under
+    `data_dir`. It serves the env's buckets on `forge.BucketOnMinIO {infra =
+    <name>}`: each is created at `forge env up` (never deleted), its
+    anonymous access reconciled (download for public_read, none otherwise),
+    and the buckets' `cors_origins` applied server-wide (any origin when none
+    is declared). `minio_console_port` adds the web console; unset means
+    none. `minio_region` is the region it answers as (default "us-east-1").
+    Its root credentials are generated into the env's forge.FileSecrets
+    store, under `<NAME>_ROOT_USER` / `<NAME>_ROOT_PASSWORD`, so the env
+    must declare that secret provider; `user`/`password` are ignored.
+
     A zitadel instance's `port` should come from `allocate_port`, not
     `resolve_port`. Zitadel derives the `iss` claim of every token from the
     origin it is reached on, and routes by Host header, so a port that
@@ -2083,6 +2170,13 @@ schema HostInfra:
     # The HTTP monitoring port (/healthz, /varz, /jsz). Unset => none.
     nats_monitor_port?: int
 
+    # ── engine = "minio" only ────────────────────────────────────────────
+    # The web console's port. Unset => no console.
+    minio_console_port?: int
+    # The region the server answers as, the one clients sign for. Unset =>
+    # "us-east-1", BucketOnMinIO's default.
+    minio_region?: str
+
     # ── engine = "temporal" only ─────────────────────────────────────────
     # Namespaces created at launch; readiness waits for each. Unset => only
     # Temporal's own "default".
@@ -2108,8 +2202,14 @@ schema HostInfra:
         not temporal_metrics_port or (temporal_metrics_port > 0 and temporal_metrics_port < 65536 and temporal_metrics_port != port and temporal_metrics_port != temporal_ui_port), \
             "HostInfra.temporal_metrics_port must be 1..65535 and differ from port and temporal_ui_port"
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "HostInfra.name '${name}' must be an RFC-1123 label"
-        engine in ["postgres", "zitadel", "nats", "temporal", "mailpit"], \
-            "HostInfra.engine must be 'postgres', 'zitadel', 'nats', 'temporal' or 'mailpit' (the engines forge supervises natively)"
+        engine in ["postgres", "zitadel", "nats", "temporal", "mailpit", "minio"], \
+            "HostInfra.engine must be 'postgres', 'zitadel', 'nats', 'temporal', 'mailpit' or 'minio' (the engines forge supervises natively)"
+        engine == "minio" or (not minio_console_port and not minio_region), \
+            "HostInfra.minio_console_port / minio_region are for engine 'minio' only ('${name}' is '${engine}')"
+        not minio_console_port or (minio_console_port > 0 and minio_console_port < 65536 and minio_console_port != port), \
+            "HostInfra.minio_console_port must be 1..65535 and differ from port"
+        not minio_region or regex.match(minio_region, r"^[a-z0-9][a-z0-9-]*[a-z0-9]$"), \
+            "HostInfra.minio_region '${minio_region}' must be a region name like us-east-1"
         engine == "nats" or not nats_monitor_port, \
             "HostInfra.nats_monitor_port is for engine 'nats' only ('${name}' is '${engine}')"
         not nats_monitor_port or (nats_monitor_port > 0 and nats_monitor_port < 65536 and nats_monitor_port != port), \
@@ -9722,9 +9822,28 @@ schema Bundle:
         # A forge.BucketRef names a bucket, so the name is unique.
         len(_duplicates([b.name for b in buckets])) == 0, \
             "Bundle.buckets: a bucket name is declared twice: ${_duplicates([b.name for b in buckets])}. forge.BucketRef names one"
-        # A bucket on a MinIO needs the MinIO: a workload of that name.
-        all b in buckets { b.runtime.type != "minio" or b.runtime.service in [w.name for w in workloads] }, \
-            "Bundle.buckets ${[b.name for b in buckets if b.runtime.type == 'minio' and b.runtime.service not in [w.name for w in workloads]]} are on a forge.BucketOnMinIO that no workload runs: add `forge.minio_workload(<the BucketOnMinIO>, <buckets>)` to Bundle.workloads (it binds docker-compose.yml's `minio` service)"
+        # A bucket on a compose MinIO needs the MinIO: a workload of that name.
+        all b in buckets { b.runtime.type != "minio" or b.runtime.infra or b.runtime.service in [w.name for w in workloads] }, \
+            "Bundle.buckets ${[b.name for b in buckets if b.runtime.type == 'minio' and not b.runtime.infra and b.runtime.service not in [w.name for w in workloads]]} are on a forge.BucketOnMinIO that no workload runs: add `forge.minio_workload(<the BucketOnMinIO>, <buckets>)` to Bundle.workloads (it binds docker-compose.yml's `minio` service), or run MinIO as a host process: `forge.HostInfra {name = \"minio\", engine = \"minio\", port = ...}` in Bundle.infra and `infra = \"minio\"` on the BucketOnMinIO"
+        # A bucket on a host MinIO needs the MinIO: the HostInfra it names.
+        all b in buckets { b.runtime.type != "minio" or not b.runtime.infra or len(_bucket_host_minios(b, infra)) == 1 }, \
+            "Bundle.buckets ${[b.name for b in buckets if b.runtime.type == 'minio' and b.runtime.infra and len(_bucket_host_minios(b, infra)) != 1]} are on a forge.BucketOnMinIO whose `infra` names no forge.HostInfra with engine 'minio' in Bundle.infra. Declared minio infra: ${[i.name for i in infra if i.engine == 'minio']}"
+        # One host MinIO answers as one region, and a bucket's clients sign
+        # for the bucket's: the two must agree.
+        len(_host_minio_region_mismatches(buckets, infra)) == 0, \
+            "Bundle.buckets ${_host_minio_region_mismatches(buckets, infra)}: a BucketOnMinIO's region must be its host MinIO's (HostInfra.minio_region, default \"us-east-1\"), which is the region clients sign for"
+        # The compose MinIO reads its root user from MINIO_ROOT_USER, the
+        # very store key a host MinIO named `minio` is generated under, so
+        # beside each other one's credentials silently become the other's.
+        # Any other host MinIO name has keys of its own (`blobs` ->
+        # BLOBS_ROOT_*) and may sit beside the compose MinIO: the host one
+        # serves host processes, the compose one pods and containers.
+        not any i in infra { i.engine == "minio" and _minio_root_secrets(i.name).user == "MINIO_ROOT_USER" } or len(_compose_minio_names(workloads, buckets)) == 0, \
+            "Bundle runs MinIO both on the host (HostInfra 'minio') and in docker compose (${_compose_minio_names(workloads, buckets)}), and their root-credential keys collide: a host MinIO named `minio` is generated under MINIO_ROOT_USER / MINIO_ROOT_PASSWORD, which the compose MinIO reads too. Rename the HostInfra (e.g. \"blobs\") so its keys are BLOBS_ROOT_*, or pick one MinIO per env"
+        # A host MinIO's root credentials are generated into the env's
+        # secret file, never committed: the env needs one.
+        not any i in infra { i.engine == "minio" } or (secret_provider and secret_provider.type == "file"), \
+            "Bundle.infra ${[i.name for i in infra if i.engine == 'minio']} run MinIO on the host, whose root credentials forge generates into the env's secret file (${[_minio_root_secrets(i.name).user for i in infra if i.engine == 'minio']} and their _ROOT_PASSWORD), never into a committed one. Declare `secret_provider = forge.FileSecrets {path = \"secrets/<env>.yaml\"}` on the Bundle"
         # A forge.EmailRef names an Email, so the name is unique.
         len(_duplicates([e.name for e in emails])) == 0, \
             "Bundle.emails: an email name is declared twice: ${_duplicates([e.name for e in emails])}. forge.EmailRef names one"

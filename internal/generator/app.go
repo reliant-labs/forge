@@ -239,8 +239,9 @@ func appWorkloadsK(spec AppSpec) string {
 			fmt.Fprintf(&b, "    env = %s\n", kclEnvDict(env, "    "))
 		}
 		if w.Port > 0 {
-			b.WriteString("    # Up once it accepts connections. With a health endpoint, probe it:\n" +
-				"    # tiers.Probes {readinessPath = \"/health\"}.\n" +
+			b.WriteString("    # Up once it accepts connections. With a health endpoint, probe it, naming\n" +
+				"    # both paths (liveness is the one whose failure restarts the pod):\n" +
+				"    # tiers.Probes {readinessPath = \"/health\", livenessPath = \"/health\"}.\n" +
 				"    probes = tiers.Probes {tcp = True}\n")
 		}
 		b.WriteString("}\n")

@@ -5265,7 +5265,7 @@ benefits:
     availability: forge
     headline: true
     scope: any
-    adopt: "`claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool."
+    adopt: "`claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call `skill_load` with `adopt` (`forge` in a forge project). The other tools are a `forge_tools` call away."
     estimate: "~2 min"
     evidence:
       - command: mcp

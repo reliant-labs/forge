@@ -92,7 +92,7 @@ prints this list for the directory you run it in.
 | [Telemetry for any Node process](#node-telemetry)             | `npm i @reliantlabs/forge-web-runtime @opentelemetry/api`, then `initNodeTelemetry({ serviceName, serviceVersion, endpoint })` at process start.                                                                                                                                 | ~15 min    |
 | [Monitoring for any app](#monitoring-any-language)            | `forge login`, then `forge obs init prod`, and set the `OTEL_*` variables it prints in the app's environment                                                                                                                                                                     | ~15 min    |
 | [Skills that match your forge](#skills-in-the-binary)         | `forge skill load adopt`: what forge can do for this repo, with estimates to quote.                                                                                                                                                                                              | ~2 min     |
-| [Built-in MCP server](#mcp-server)                            | `claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool.                                                                                                                                                                      | ~2 min     |
+| [Built-in MCP server](#mcp-server)                            | `claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call `skill_load` with `adopt` (`forge` in a forge project). The other tools are a `forge_tools` call away.                                                                                    | ~2 min     |
 | [Hosted MCP connector](#hosted-mcp)                           | Add `https://api.reliantapi.com/forge/mcp` as a custom connector and sign in; `forge skill load connect` has the steps per client.                                                                                                                                               | ~2 min     |
 | [Capabilities introspection](#capabilities-introspection)     | `forge project capabilities` in any directory.                                                                                                                                                                                                                                   | ~2 min     |
 | [Library API without source diving](#libraries-introspection) | In a Go module that requires `github.com/reliant-labs/forge`, `forge project libraries <pkg>`.                                                                                                                                                                                   | ~2 min     |
@@ -4404,7 +4404,7 @@ _Enforced · Forge, on any infrastructure_
 
 _Enforced · Forge, on any infrastructure_
 
-**Works in any repo** (no forge.yaml). **Start:** `claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool. **Agent time:** ~2 min.
+**Works in any repo** (no forge.yaml). **Start:** `claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call `skill_load` with `adopt` (`forge` in a forge project). The other tools are a `forge_tools` call away. **Agent time:** ~2 min.
 
 **Evidence:**
 

@@ -294,7 +294,9 @@ func Compute(root, base string, changed []string) (Reach, error) {
 	for _, f := range goFiles {
 		found := false
 		for d := path.Dir(f); ; d = path.Dir(d) {
-			if ip, ok := dirOf[d]; ok {
+			// The module's root package encloses every directory, so it
+			// never stands in for a pkg/ package that has no directory left.
+			if ip, ok := dirOf[d]; ok && !(d == "." && strings.HasPrefix(f, "pkg/")) {
 				if visible[ip] {
 					add(ip)
 				}

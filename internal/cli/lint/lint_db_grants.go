@@ -221,7 +221,7 @@ func (ms migrationSources) locate(root, schema, table, column string) (string, i
 			line := stmt.Line + strings.Count(text[:start], "\n")
 			for _, clause := range clauses {
 				match := columnRE.FindStringSubmatchIndex(clause)
-				if match != nil && normIdent(clause[match[2]:match[3]]) == column && !isConstraintKeyword(strings.ToLower(clause[match[2]:match[3]])) {
+				if len(match) >= 4 && normIdent(clause[match[2]:match[3]]) == column && !isConstraintKeyword(strings.ToLower(clause[match[2]:match[3]])) {
 					rel, err := filepath.Rel(root, m.path)
 					if err != nil {
 						rel = m.path

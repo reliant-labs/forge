@@ -2788,48 +2788,11 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 		return err
 	}
 
-	// The release this deploy is bound to (runDeploy's kclrender.WithRelease),
-	// handed to every build below as FORGE_RELEASE.
-	release := kclrender.Release(ctx)
-
-	var fes []deploytarget.FirebaseFrontend
-	var sites []deploytarget.StaticSiteFrontend
-	var buildOnly []deploytarget.BuildOnlyFrontend
-	var builtDirs []string
-	for _, f := range entities.Frontends {
-		f.Release = release
-		f.Project = entities.Project
-		switch f.Runtime.Type {
-		case FrontendRuntimeBuildOnly:
-			// Built (env-injected) so its output exists on disk before
-			// any shipping frontend assembles a bundle that references it.
-			if err := checkDeployableFrontendMock(f); err != nil {
-				return err
-			}
-			builtDirs = append(builtDirs, f.Path)
-			buildOnly = append(buildOnly, frontendToBuildOnly(f))
-
-		case FrontendRuntimeFirebase:
-			if err := checkDeployableFrontendMock(f); err != nil {
-				return err
-			}
-			builtDirs = append(builtDirs, f.Path)
-			fb := frontendToFirebase(f)
-			fb.RuntimeConfigJS = runtimeConfigs[f.Name]
-			fb.SourcemapPublisher = sourcemapPublisherFor(projectDir, envName, entities)
-			fes = append(fes, fb)
-
-		case FrontendRuntimeBucket:
-			if err := checkDeployableFrontendMock(f); err != nil {
-				return err
-			}
-			builtDirs = append(builtDirs, f.Path)
-			ss := frontendToStaticSite(f)
-			ss.RuntimeConfigJS = runtimeConfigs[f.Name]
-			ss.SourcemapPublisher = sourcemapPublisherFor(projectDir, envName, entities)
-			sites = append(sites, ss)
-		}
+	targets, err := frontendDeployTargets(ctx, os.Stdout, projectDir, envName, entities, runtimeConfigs, kclrender.Release(ctx))
+	if err != nil {
+		return err
 	}
+	fes, sites, buildOnly, builtDirs := targets.firebase, targets.sites, targets.buildOnly, targets.builtDirs
 
 	// Build/deploy-path forge-owned dotenv gate: a committed .env.local /
 	// .env* under a frontend forge builds that hard-codes a forge-owned
@@ -3045,6 +3008,62 @@ func hasShippableFrontend(e *KCLEntities) bool {
 	return false
 }
 
+// frontendTargets are the frontends `forge env deploy` builds itself, by
+// runtime, and their directories (builtDirs) for the dotenv gate.
+type frontendTargets struct {
+	firebase  []deploytarget.FirebaseFrontend
+	sites     []deploytarget.StaticSiteFrontend
+	buildOnly []deploytarget.BuildOnlyFrontend
+	builtDirs []string
+}
+
+// frontendDeployTargets is what `forge env deploy` builds and ships for the
+// env's frontends forge builds itself: each BuildOnly, Firebase and bucket
+// frontend, bound to release (FORGE_RELEASE) and prepared by
+// frontendForBuild, the one preparation every frontend build shares (its
+// forge.FrontendURL references resolved).
+func frontendDeployTargets(ctx context.Context, w io.Writer, projectDir, envName string, entities *KCLEntities, runtimeConfigs map[string]string, release string) (frontendTargets, error) {
+	var t frontendTargets
+	for _, f := range entities.Frontends {
+		f.Release = release
+		switch f.Runtime.Type {
+		case FrontendRuntimeBuildOnly, FrontendRuntimeFirebase, FrontendRuntimeBucket:
+			f = frontendForBuild(ctx, w, envName, entities, f)
+		}
+		switch f.Runtime.Type {
+		case FrontendRuntimeBuildOnly:
+			// Built (env-injected) so its output exists on disk before
+			// any shipping frontend assembles a bundle that references it.
+			if err := checkDeployableFrontendMock(f); err != nil {
+				return frontendTargets{}, err
+			}
+			t.builtDirs = append(t.builtDirs, f.Path)
+			t.buildOnly = append(t.buildOnly, frontendToBuildOnly(f))
+
+		case FrontendRuntimeFirebase:
+			if err := checkDeployableFrontendMock(f); err != nil {
+				return frontendTargets{}, err
+			}
+			t.builtDirs = append(t.builtDirs, f.Path)
+			fb := frontendToFirebase(f)
+			fb.RuntimeConfigJS = runtimeConfigs[f.Name]
+			fb.SourcemapPublisher = sourcemapPublisherFor(projectDir, envName, entities)
+			t.firebase = append(t.firebase, fb)
+
+		case FrontendRuntimeBucket:
+			if err := checkDeployableFrontendMock(f); err != nil {
+				return frontendTargets{}, err
+			}
+			t.builtDirs = append(t.builtDirs, f.Path)
+			ss := frontendToStaticSite(f)
+			ss.RuntimeConfigJS = runtimeConfigs[f.Name]
+			ss.SourcemapPublisher = sourcemapPublisherFor(projectDir, envName, entities)
+			t.sites = append(t.sites, ss)
+		}
+	}
+	return t, nil
+}
+
 // frontendToFirebase maps a rendered FrontendEntity on forge.OnFirebase
 // onto the deploytarget.FirebaseFrontend the provider
 // consumes. The frontend's env_vars become the build-time env injected
@@ -3169,7 +3188,10 @@ func frontendToBuildOnly(f FrontendEntity) deploytarget.BuildOnlyFrontend {
 func frontendBuildEnv(f FrontendEntity) map[string]string {
 	buildEnv := map[string]string{}
 	for _, ev := range f.EffectiveEnvVars() {
-		if ev.Value != "" {
+		// A forge.FrontendURL with no hostname yet is present-but-empty, like
+		// the mock var below, so a SITE_URL left in the shell cannot name
+		// another origin in the build.
+		if ev.Value != "" || ev.FrontendURL != nil {
 			buildEnv[ev.Name] = ev.Value
 		}
 	}

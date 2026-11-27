@@ -56,24 +56,41 @@ func mcpToolGroupNames() []string {
 	return names
 }
 
-// parseMCPTools resolves a --tools value: all, or a comma-separated list of
-// group names. It returns the groups in registration order.
+// parseMCPTools resolves a --tools value: all on its own, or a
+// comma-separated list of group names (case-insensitive, duplicates allowed).
+// Every token is checked before anything is returned, so an unknown or empty
+// token fails wherever it sits, and all beside any other token is refused
+// rather than silently widening the selection. It returns the groups in
+// registration order.
 func parseMCPTools(spec string) ([]string, error) {
+	valid := mcpToolGroupNames()
 	want := map[string]bool{}
-	for _, part := range strings.Split(spec, ",") {
+	sawAll := false
+	tokens := strings.Split(spec, ",")
+	for _, part := range tokens {
 		name := strings.ToLower(strings.TrimSpace(part))
 		switch {
 		case name == mcpToolsAll:
-			return mcpToolGroupNames(), nil
-		case slices.Contains(mcpToolGroupNames(), name):
+			sawAll = true
+		case name == "":
+			return nil, fmt.Errorf("--tools %q: empty group name; want all, or a comma-separated list of %s",
+				spec, strings.Join(valid, ", "))
+		case slices.Contains(valid, name):
 			want[name] = true
 		default:
 			return nil, fmt.Errorf("--tools %q: unknown group %q; want all, or a comma-separated list of %s",
-				spec, name, strings.Join(mcpToolGroupNames(), ", "))
+				spec, name, strings.Join(valid, ", "))
 		}
 	}
+	if sawAll {
+		if len(tokens) > 1 {
+			return nil, fmt.Errorf("--tools %q: all selects every group and cannot be combined with other groups; pass all on its own, or a list of %s",
+				spec, strings.Join(valid, ", "))
+		}
+		return valid, nil
+	}
 	var groups []string
-	for _, name := range mcpToolGroupNames() {
+	for _, name := range valid {
 		if want[name] {
 			groups = append(groups, name)
 		}

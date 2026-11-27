@@ -57,29 +57,45 @@ func TestMCPToolGroupsRegisterExactlyTheirTools(t *testing.T) {
 func TestParseMCPTools(t *testing.T) {
 	all := mcpToolGroupNames()
 	for _, tc := range []struct {
-		spec string
-		want []string
+		spec    string
+		want    []string
+		wantErr string // substring of the error; "" means the spec is valid
 	}{
-		{"all", all},
-		{"core", []string{"core"}},
-		{"ops, CORE", []string{"core", "ops"}},
-		{"core,all", all},
-		{"core,core", []string{"core"}},
+		{spec: "all", want: all},
+		{spec: "ALL", want: all},
+		{spec: " all ", want: all},
+		{spec: "core", want: []string{"core"}},
+		{spec: "ops, CORE", want: []string{"core", "ops"}},
+		{spec: "core,core", want: []string{"core"}},
+		// all is valid only on its own: beside a group it would silently
+		// widen the selection, and beside a typo it would hide the typo.
+		{spec: "core,all", wantErr: "cannot be combined"},
+		{spec: "all,core", wantErr: "cannot be combined"},
+		{spec: "all,all", wantErr: "cannot be combined"},
+		// An unknown token is refused wherever it sits, all or not.
+		{spec: "all,bogus", wantErr: `unknown group "bogus"`},
+		{spec: "bogus,all", wantErr: `unknown group "bogus"`},
+		{spec: "bogus", wantErr: `unknown group "bogus"`},
+		{spec: "core,bogus", wantErr: `unknown group "bogus"`},
+		// An empty token is a mistake (a stray comma), not "nothing".
+		{spec: "", wantErr: "empty group name"},
+		{spec: "core,,ops", wantErr: "empty group name"},
+		{spec: "core,", wantErr: "empty group name"},
 	} {
 		got, err := parseMCPTools(tc.spec)
-		if err != nil || !reflect.DeepEqual(got, tc.want) {
-			t.Errorf("parseMCPTools(%q) = %v, %v; want %v", tc.spec, got, err, tc.want)
-		}
-	}
-	for _, spec := range []string{"", "bogus", "core,,ops", "core,bogus"} {
-		_, err := parseMCPTools(spec)
-		if err == nil {
-			t.Errorf("parseMCPTools(%q) accepted it", spec)
+		if tc.wantErr == "" {
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("parseMCPTools(%q) = %v, %v; want %v", tc.spec, got, err, tc.want)
+			}
 			continue
 		}
-		for _, want := range []string{"unknown group", "want all", "core, catalog, support, ops, deploy"} {
+		if err == nil {
+			t.Errorf("parseMCPTools(%q) = %v, want an error saying %q", tc.spec, got, tc.wantErr)
+			continue
+		}
+		for _, want := range []string{tc.wantErr, "core, catalog, support, ops, deploy"} {
 			if !strings.Contains(err.Error(), want) {
-				t.Errorf("parseMCPTools(%q) error %q does not say %q", spec, err, want)
+				t.Errorf("parseMCPTools(%q) error %q does not say %q", tc.spec, err, want)
 			}
 		}
 	}
@@ -87,15 +103,20 @@ func TestParseMCPTools(t *testing.T) {
 
 // An unknown --tools value fails the command before it serves anything.
 func TestMCPCmdRejectsAnUnknownToolsValue(t *testing.T) {
-	cmd := newMCPCmd()
-	cmd.SetArgs([]string{"--tools", "everything"})
-	cmd.SetOut(new(strings.Builder))
-	cmd.SetErr(new(strings.Builder))
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), `unknown group "everything"`) {
-		t.Fatalf("err = %v, want the unknown group named", err)
+	for spec, want := range map[string]string{
+		"everything": `unknown group "everything"`,
+		"all,bogus":  `unknown group "bogus"`,
+		"core,all":   "cannot be combined",
+	} {
+		cmd := newMCPCmd()
+		cmd.SetArgs([]string{"--tools", spec})
+		cmd.SetOut(new(strings.Builder))
+		cmd.SetErr(new(strings.Builder))
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("--tools %q: err = %v, want it to say %q", spec, err, want)
+		}
 	}
-	if f := cmd.Flags().Lookup("tools"); f == nil || f.DefValue != "all" {
+	if f := newMCPCmd().Flags().Lookup("tools"); f == nil || f.DefValue != "all" {
 		t.Errorf("--tools default = %v, want all", f)
 	}
 }

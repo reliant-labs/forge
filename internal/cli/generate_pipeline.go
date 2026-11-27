@@ -197,13 +197,18 @@ type pipelineContext struct {
 	Strict bool
 
 	// KeepOnBuildFailure turns a failed compile check (the validate step),
-	// and a post generate hook that failed, into a failed step the run goes
-	// on past, keeping its writes. See
+	// a root tidy that cannot resolve an import, and a post generate hook
+	// that failed, into a failed step the run goes on past, keeping its
+	// writes. See
 	// pipelineFlags.KeepOnBuildFailure.
 	KeepOnBuildFailure bool
 	// keptBuildFailure is the compile check's error when KeepOnBuildFailure
 	// kept the run's writes despite it, for the report the run ends with.
 	keptBuildFailure error
+	// keptTidyFailure is the root tidy's unresolved-import error when
+	// KeepOnBuildFailure kept the run's writes despite it
+	// (stepGoModTidyRoot).
+	keptTidyFailure error
 	// keptHookFailures are the post generate hooks that failed while
 	// KeepOnBuildFailure kept the run going, in the order they ran.
 	keptHookFailures []error
@@ -3072,12 +3077,33 @@ func stepFrontendRenamedImports(ctx *pipelineContext) error {
 // stepGoModTidyGen: a failed tidy guarantees the subsequent `go build
 // ./...` validate step fails with missing-import errors that look like
 // codegen bugs but are actually go.mod skew.
+//
+// With --keep-on-build-failure, a tidy that fails because code imports a
+// package nothing resolves (tidyImportError) is kept like a failed compile
+// (stepGoBuildValidate): it is the same "not expected to compile yet" tree —
+// hand-written code importing a package that exists only on an unreleased
+// forge, say — and tidy merely trips over it first. Rolling back there undid
+// the output the flag exists to keep (forge report 1d837dcf). Any other tidy
+// failure (a malformed go.mod, a go.sum mismatch) still rolls back: the
+// module itself is broken, not merely ahead of its code.
 func stepGoModTidyRoot(ctx *pipelineContext) error {
-	if err := runGoModTidyRoot(ctx.ProjectDir); err != nil {
-		return fmt.Errorf("go mod tidy in project root failed: %w", err)
+	if err := goModTidyRoot(ctx.ProjectDir); err != nil {
+		err = fmt.Errorf("go mod tidy in project root failed: %w", err)
+		var tidyErr *tidyImportError
+		if !ctx.KeepOnBuildFailure || !errors.As(err, &tidyErr) {
+			return err
+		}
+		if ctx.keptTidyFailure == nil {
+			ctx.keptTidyFailure = err
+		}
+		return ctx.warnOrFail("go mod tidy (root)", err)
 	}
 	return nil
 }
+
+// goModTidyRoot is the root tidy the tidy steps run. A variable so a test
+// can fail the step without a toolchain.
+var goModTidyRoot = runGoModTidyRoot
 
 // stepGoimports — was Step 8f.
 // Runs goimports on every generated Go file to canonicalize import

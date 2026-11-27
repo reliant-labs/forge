@@ -132,7 +132,7 @@ func TestComposeDownSurvivesAGoneOrUnverifiableContainer(t *testing.T) {
 func composeNetworkFixture(t *testing.T, project string) (string, *fakeRunner) {
 	t.Helper()
 	dir := t.TempDir()
-	rec := composeOwned{Directory: dir, Checkout: dir, Env: "dev", Project: project, Service: "clickstack", IDs: []string{"c-owned"}, Services: map[string]string{"c-owned": "clickstack"}}
+	rec := composeOwned{Directory: dir, Checkout: dir, Env: "dev", Project: project, Service: "clickstack", IDs: []string{"c-owned"}, Networks: []string{"net-empty", "net-running", "net-stopped", "net-foreign", "net-external", "net-gone", "net-a", "net-b"}, Services: map[string]string{"c-owned": "clickstack"}}
 	if err := statefile.Write(composeOwnedPath(dir, "dev", "clickstack"), "compose ownership", rec); err != nil {
 		t.Fatal(err)
 	}
@@ -236,18 +236,17 @@ func TestComposeDownKeepsNetworksWhileTheProjectIsNotSettled(t *testing.T) {
 // daemon that stopped answering, is left for the next env down.
 func TestComposeDownNetworkFailuresDoNotFailEnvDown(t *testing.T) {
 	const project = "forge-abc-dev"
-	ls := "docker network ls --quiet --filter label=com.docker.compose.project=" + project
+	inspect := "docker network inspect net-a"
 	for name, arrange := range map[string]func(r *fakeRunner){
 		"rm refused": func(r *fakeRunner) {
-			r.outputs[ls] = "net-a\nnet-b\n"
 			r.outputs["docker network inspect net-a"] = networkJSON(project, "a-net")
 			r.outputs["docker network inspect net-b"] = networkJSON(project, "b-net")
 			r.outputs["docker network rm net-a"] = "Error response from daemon: error while removing network: network net-a has active endpoints\n"
 			r.runErrs["docker network rm net-a"] = errors.New("exit status 1")
 		},
 		"daemon down": func(r *fakeRunner) {
-			r.outputs[ls] = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock\n"
-			r.runErrs[ls] = errors.New("exit status 1")
+			r.outputs[inspect] = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock\n"
+			r.runErrs[inspect] = errors.New("exit status 1")
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -260,6 +259,71 @@ func TestComposeDownNetworkFailuresDoNotFailEnvDown(t *testing.T) {
 				t.Errorf("one refused rm stopped the rest; calls:\n%s", strings.Join(r.calls, "\n"))
 			}
 		})
+	}
+}
+
+func TestComposeDownKeepsUnrecordedNetworksWithTheSameProjectLabel(t *testing.T) {
+	const project = "shared-name"
+	dir, r := composeNetworkFixture(t, project)
+	r.outputs["docker network ls --quiet --filter label=com.docker.compose.project="+project] = "net-empty\nother-checkout-net\n"
+	r.outputs["docker network inspect net-empty"] = networkJSON(project, "default")
+	r.outputs["docker network inspect other-checkout-net"] = networkJSON(project, "default")
+	if err := (ComposeProvider{ProjectDir: dir, Runner: r}).StopOwned(context.Background(), "dev"); err != nil {
+		t.Fatal(err)
+	}
+	removed := networksRemoved(r)
+	if !removed["net-empty"] || removed["other-checkout-net"] {
+		t.Fatalf("must remove only the recorded network identity: %v", removed)
+	}
+}
+
+func TestComposeDownLegacyRecordDoesNotAdoptNetworks(t *testing.T) {
+	const project = "shared-name"
+	dir, r := composeNetworkFixture(t, project)
+	path := composeOwnedPath(dir, "dev", "clickstack")
+	rec, err := statefile.Read[composeOwned](path, "compose ownership")
+	if err != nil || rec == nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	rec.Networks = nil
+	if err := statefile.Write(path, "compose ownership", rec); err != nil {
+		t.Fatal(err)
+	}
+	r.outputs["docker network ls --quiet --filter label=com.docker.compose.project="+project] = "net-empty\n"
+	r.outputs["docker network inspect net-empty"] = networkJSON(project, "default")
+	if err := (ComposeProvider{ProjectDir: dir, Runner: r}).StopOwned(context.Background(), "dev"); err != nil {
+		t.Fatal(err)
+	}
+	if len(networksRemoved(r)) != 0 {
+		t.Fatal("a legacy record must not adopt networks by project label")
+	}
+}
+
+func TestComposeRecordsNetworkIdentitiesFromVerifiedContainers(t *testing.T) {
+	dir := t.TempDir()
+	spec := &ComposeSpec{ProjectDirectory: dir}
+	inspect, err := json.Marshal([]map[string]any{{
+		"Config": map[string]any{"Labels": map[string]string{
+			"com.docker.compose.project":             "shared-name",
+			"com.docker.compose.project.working_dir": dir,
+			"com.docker.compose.service":             "app",
+		}},
+		"NetworkSettings": map[string]any{"Networks": map[string]any{
+			"shared-name_default": map[string]string{"NetworkID": "concrete-network-id"},
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := "docker " + strings.Join(append(composeArgs(spec), "ps", "--all", "--quiet"), " ")
+	r := &fakeRunner{outputs: map[string]string{ps: "owned-container\n", "docker inspect owned-container": string(inspect)}}
+	p := ComposeProvider{ProjectDir: dir, Runner: r}
+	if err := p.recordOwned(context.Background(), r, nil, spec, "dev", "app", nil); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := statefile.Read[composeOwned](composeOwnedPath(dir, "dev", "app"), "compose ownership")
+	if err != nil || rec == nil || !slices.Equal(rec.Networks, []string{"concrete-network-id"}) {
+		t.Fatalf("network identities were not persisted: %+v, %v", rec, err)
 	}
 }
 

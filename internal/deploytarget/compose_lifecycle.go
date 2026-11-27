@@ -23,6 +23,7 @@ type composeOwned struct {
 	Env       string            `json:"env"`
 	Service   string            `json:"service"`
 	IDs       []string          `json:"ids"`
+	Networks  []string          `json:"networks,omitempty"` // concrete network IDs attached to verified containers
 	Services  map[string]string `json:"services,omitempty"` // includes dependencies created by up
 }
 
@@ -79,7 +80,30 @@ func (p ComposeProvider) recordOwned(ctx context.Context, runner commandRunner, 
 		record.Project = labels["com.docker.compose.project"]
 		record.IDs = append(record.IDs, id)
 		record.Services[id] = labels["com.docker.compose.service"]
+		// Capture identities from a verified container, never from the project
+		// label: independent stacks can use the same Compose project name.
+		out, err := runner.Output(ctx, "docker", "inspect", id)
+		if err != nil {
+			return err
+		}
+		var rows []struct {
+			NetworkSettings struct {
+				Networks map[string]struct{ NetworkID string }
+			}
+		}
+		if err := json.Unmarshal(out, &rows); err != nil {
+			return err
+		}
+		if len(rows) != 1 {
+			return fmt.Errorf("inspect %s returned %d containers", id, len(rows))
+		}
+		for _, network := range rows[0].NetworkSettings.Networks {
+			if network.NetworkID != "" && !slices.Contains(record.Networks, network.NetworkID) {
+				record.Networks = append(record.Networks, network.NetworkID)
+			}
+		}
 	}
+	slices.Sort(record.Networks)
 	if len(record.IDs) == 0 {
 		return nil
 	}
@@ -202,7 +226,12 @@ func (p ComposeProvider) StopOwned(ctx context.Context, env string) error {
 	// settled maps each compose project seen to whether every one of its
 	// records was settled: one unsettled record keeps the project's networks.
 	settled := map[string]bool{}
+	networks := map[string][]string{}
 	for _, path := range paths {
+		rec, readErr := statefile.Read[composeOwned](path, "compose ownership")
+		if readErr == nil && rec != nil && rec.Env == env && sameDirectory(rec.Checkout, p.projectDir()) {
+			networks[rec.Project] = append(networks[rec.Project], rec.Networks...)
+		}
 		project, done, err := p.stopRecord(ctx, env, path)
 		if err != nil {
 			errs = append(errs, err)
@@ -220,18 +249,15 @@ func (p ComposeProvider) StopOwned(ctx context.Context, env string) error {
 	}
 	slices.Sort(projects)
 	for _, project := range projects {
-		p.removeEmptyProjectNetworks(ctx, project)
+		p.removeEmptyProjectNetworks(ctx, project, networks[project])
 	}
 	return errors.Join(errs...)
 }
 
-// removeEmptyProjectNetworks removes the networks compose created for project
-// once nothing uses them. project comes from a settled ownership record, whose
-// name was read from the labels of containers proven ours by their working
-// directory; compose labels a network only with com.docker.compose.project,
-// .network, .version and .config-hash (no working directory), so the project
-// label is the only tie a network has to its stack, and it is checked on the
-// network itself rather than trusted from the list filter.
+// removeEmptyProjectNetworks considers only concrete network IDs recorded from
+// this stack's verified containers at up. A project label is not an ownership
+// discriminator: unrelated Compose invocations can share it. Older records
+// without network IDs safely leave their networks behind.
 //
 // A network is removed only when it carries that project label and a compose
 // network label (an external network is never one compose created), has no
@@ -246,20 +272,14 @@ func (p ComposeProvider) StopOwned(ctx context.Context, env string) error {
 // docker failure (daemon down, permission) keeps the network. The settled
 // records are deleted by then, so env down does not come back for a network
 // kept here; that is the price of never removing what is unproven.
-func (p ComposeProvider) removeEmptyProjectNetworks(ctx context.Context, project string) {
+func (p ComposeProvider) removeEmptyProjectNetworks(ctx context.Context, project string, networks []string) {
 	runner := p.runner()
 	filter := "label=com.docker.compose.project=" + project
 	out, err := runner.Output(ctx, "docker", "container", "ls", "--all", "--quiet", "--filter", filter)
 	if err != nil || len(composeContainerIDs(out)) > 0 {
 		return
 	}
-	out, err = runner.Output(ctx, "docker", "network", "ls", "--quiet", "--filter", filter)
-	if err != nil {
-		return
-	}
-	// `network ls --quiet` prints one ID per line, the shape `compose ps
-	// --quiet` has, diagnostics included.
-	for _, id := range composeContainerIDs(out) {
+	for _, id := range networks {
 		if !networkUnused(ctx, runner, id, project) {
 			continue
 		}

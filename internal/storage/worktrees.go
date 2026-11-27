@@ -67,6 +67,8 @@ var defaultWorktreeRebuildable = []string{
 	".forge/logs", ".forge/workspace-base.tag",
 	// forge's own scratch and its generate fixed-point cache.
 	".forge/tmp", ".forge/generate-cache.json",
+	// forge lint's frontend pass cache: losing it costs one eslint run.
+	".forge/lint-cache.json",
 	// What every `forge generate` writes beside its output and the next one
 	// rewrites: each generate hook's log, the frontend fixture markers, the
 	// go-tool memo, the failed run's preserved snapshot (removed by the next

@@ -96,6 +96,9 @@ type lintFlags struct {
 	// showSuppressed prints the inventory of every declared suppression
 	// instead of linting (lint_show_suppressed.go).
 	showSuppressed bool
+	// noCache is --no-cache: the frontend lint lane runs even when its
+	// inputs are unchanged since its last pass (lint_frontend_cache.go).
+	noCache bool
 }
 
 // lintLongHelp is `forge lint --help`'s long description.
@@ -283,6 +286,14 @@ An off lane does not run and is never silently missing: it is listed as
 "off (forge.yaml lint.lanes)" in the report and the verdict. Naming the lane
 on the command line (forge lint --migration-safety) still runs it.
 
+THE FRONTEND LINT LANE REMEMBERS ITS PASSES. A frontend whose lint inputs (its
+source and configs, package.json and lockfile, the installed dependencies, the
+forge, node and npm binaries) are byte-identical to the ones its last pass
+judged is not linted again: the lane prints "unchanged since its last pass,
+cached pass" and the verdict names it. Only passes are recorded
+(.forge/lint-cache.json); a failure always runs again. --no-cache,
+FORGE_LINT_NO_CACHE=1 or a CI environment (CI set) runs it every time.
+
 Additional maintainer/debug flags exist (forge-repo internals, wiring
 audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`
 
@@ -434,6 +445,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	// span as the argument placeholder.
 	cmd.Flags().StringArrayVar(&flags.allowSkip, "allow-skip", nil, "Accept that a gating lane may NOT run here, by name and with a reason: LANE[,LANE...]=REASON (repeatable), e.g. --allow-skip 'frontend-typecheck=frontends typecheck in the web job'. A gating lane that could not run (a tool missing, a frontend with no node_modules) fails forge lint otherwise; an accepted one is listed as SKIPPED (allowed) in the verdict. forge.yaml lint.allow_skip is the project-level form. Accepts only could-not-run: a lane that ran and found problems still fails")
 	cmd.Flags().BoolVar(&flags.tracing, "tracing", false, "Report where a request's trace is cut: a log call made with a context in scope but not passed it (no trace_id), an *http.Client or database pool opened without forge's traced constructors, a contract package constructed without its generated decorator. With --fix, rewrites every log call to its ...Context form and every undecorated contract construction to NewInstrumented; forge.yaml lint.tracing.log_wrappers adds the project's own logging helpers")
+	cmd.Flags().BoolVar(&flags.noCache, "no-cache", false, "Run the frontend lint lane (npm run lint) even when the frontend's lint inputs are byte-identical to the ones its last pass judged; without it that lane reports \"unchanged since its last pass, cached pass\". Also FORGE_LINT_NO_CACHE=1; a CI environment (CI set) always runs it")
 	cmd.Flags().BoolVar(&flags.skipFrontends, "skip-frontends", false, "Skip the whole frontend lane (eslint/stylelint + TypeScript typecheck + static-export) for a backend-only gate that needs no Node toolchain")
 	cmd.Flags().BoolVar(&flags.install, "install", false, "Install a frontend's missing dependencies (and refresh a node_modules older than its lockfile) with its own package manager, frozen to the lockfile, before the frontend lanes run. Off by default: lint never mutates the checkout, and a frontend with no node_modules is a lane that could NOT run, named in the verdict with its install command. The install's output goes to stderr, and nowhere under --quiet unless it fails")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Apply the mechanical fixes in place (Go formatting, the tracing log rewrite, frontend prettier, eslint --fix), each Go rewrite type-checked and taken back if it breaks its package. Never golangci-lint fixes. Off by default: lint is a gate and reports")
@@ -490,8 +502,10 @@ type lintRunOptions struct {
 	allowSkip skipAllowances
 	// lanesOff is the resolved lint.lanes (lint_lanes.go).
 	lanesOff map[string]bool
-	paths    []string
-	cfg      *config.ProjectConfig
+	// noCache is --no-cache (lint_frontend_cache.go).
+	noCache bool
+	paths   []string
+	cfg     *config.ProjectConfig
 	// scope restricts findings to files under the --scope paths; nil is
 	// the whole project (lint_structured.go).
 	scope *lintScope
@@ -1052,6 +1066,11 @@ type lintVerdict struct {
 	// graced are the findings that warn only because the project's pin has
 	// not been through a release with their rule (lint_rollout.go).
 	graced []gracedRule
+	// cached names the lanes (with what they cover: "frontend lint (web)")
+	// that passed from the pass cache rather than by running
+	// (lint_frontend_cache.go). Named in every mode, --quiet included: a
+	// pass the run did not re-prove must never read as one it did.
+	cached []string
 }
 
 // render prints the success line, or returns the failure — which main
@@ -1133,6 +1152,10 @@ func (v lintVerdict) render(w io.Writer) error {
 	}
 	if len(v.graced) > 0 {
 		extras = append(extras, describeGraced(v.graced))
+	}
+	if len(v.cached) > 0 {
+		extras = append(extras, fmt.Sprintf("%s unchanged since its last pass, cached pass (--no-cache re-runs it)",
+			strings.Join(v.cached, ", ")))
 	}
 
 	// An advisory lane that could not run demotes the headline: it is a

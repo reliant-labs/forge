@@ -336,7 +336,7 @@ func TestLintFrontendDirNeverInstallsWithoutOptIn(t *testing.T) {
 	calls := fakeNPM(t, 0)
 	dir := freshFrontend(t, `{"scripts":{"lint":"eslint ."}}`)
 
-	fs, _ := collectFrontendDirJSON(context.Background(), frontendDepsPolicy{}, "web", dir, false, false)
+	fs, _ := collectFrontendDirJSON(context.Background(), frontendDepsPolicy{}, "web", dir, false, false, nil)
 	if len(fs) != 1 || fs[0].Rule != ruleFrontendLintUnavailable {
 		t.Fatalf("want the lane's could-not-run finding, got %+v", fs)
 	}
@@ -352,7 +352,7 @@ func TestLintFrontendDirNeverInstallsWithoutOptIn(t *testing.T) {
 // that could not run.
 func TestLintFrontendDirWithoutLintScriptNeedsNoDeps(t *testing.T) {
 	dir := freshFrontend(t, `{"scripts":{}}`)
-	fs, gated := collectFrontendDirJSON(context.Background(), frontendDepsPolicy{}, "web", dir, false, false)
+	fs, gated := collectFrontendDirJSON(context.Background(), frontendDepsPolicy{}, "web", dir, false, false, nil)
 	if gated || hasGap(fs) {
 		t.Fatalf("no lint script, no deps: want a plain skip, got gated=%v %+v", gated, fs)
 	}
@@ -368,7 +368,7 @@ func TestLintFrontendDirInstallsMissingDepsThenRunsUnderInstall(t *testing.T) {
 	dir := freshFrontend(t, `{"scripts":{"lint":"eslint ."}}`)
 
 	deps := frontendDepsPolicy{install: true, out: io.Discard}
-	if fs, gated := collectFrontendDirJSON(context.Background(), deps, "web", dir, false, false); gated || hasGap(fs) {
+	if fs, gated := collectFrontendDirJSON(context.Background(), deps, "web", dir, false, false, nil); gated || hasGap(fs) {
 		t.Fatalf("lane failed after a successful install: gated=%v %+v", gated, fs)
 	}
 	got := readLog(t, calls)
@@ -386,7 +386,7 @@ func TestLintFrontendDirFailsLoudlyWhenInstallFails(t *testing.T) {
 	fakeNPM(t, 1)
 	dir := freshFrontend(t, `{"scripts":{"lint":"eslint ."}}`)
 
-	fs, _ := collectFrontendDirJSON(context.Background(), frontendDepsPolicy{install: true, out: io.Discard}, "web", dir, false, false)
+	fs, _ := collectFrontendDirJSON(context.Background(), frontendDepsPolicy{install: true, out: io.Discard}, "web", dir, false, false, nil)
 	if len(fs) != 1 || fs[0].Rule != ruleFrontendLintUnavailable {
 		t.Fatalf("install failure must be a lane that could NOT run, got %+v", fs)
 	}

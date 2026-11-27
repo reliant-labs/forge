@@ -1,0 +1,432 @@
+package lint
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// cacheFrontend writes a minimal installed frontend: a lint script, an
+// eslint config, a source file, a node_modules with npm's install stamp, and
+// the build output and tool state the key must ignore.
+func cacheFrontend(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for rel, body := range map[string]string{
+		"package.json":                    `{"scripts":{"lint":"eslint ."}}`,
+		"eslint.config.mjs":               "export default [];\n",
+		"tsconfig.json":                   "{}\n",
+		"src/app.ts":                      "export const a = 1;\n",
+		"src/gen/client_pb.ts":            "export const g = 1;\n",
+		"node_modules/.package-lock.json": `{"lockfileVersion":3}`,
+		"node_modules/eslint/index.js":    "module.exports = {};\n",
+		".next/cache/x":                   "build\n",
+		".next-prod/x":                    "build\n",
+		"out/index.html":                  "<html></html>\n",
+		"dist/a.js":                       "x\n",
+		"coverage/lcov.info":              "x\n",
+		"tsconfig.tsbuildinfo":            "{}\n",
+		".eslintcache":                    "[]\n",
+	} {
+		writeCacheFile(t, filepath.Join(dir, rel), body)
+	}
+	return dir
+}
+
+func writeCacheFile(t *testing.T, p, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// stubCacheSys pins the forge executable, the tools and the environment the
+// key reads, so a test controls every input.
+func stubCacheSys(t *testing.T, env ...string) {
+	t.Helper()
+	exe := filepath.Join(t.TempDir(), "forge")
+	writeCacheFile(t, exe, "forge")
+	oldExe, oldLook, oldEnv := lintCacheExecutable, lintCacheLookPath, lintCacheEnviron
+	lintCacheExecutable = func() (string, error) { return exe, nil }
+	lintCacheLookPath = func(string) (string, error) { return "", errors.New("absent") }
+	lintCacheEnviron = func() []string { return env }
+	t.Cleanup(func() { lintCacheExecutable, lintCacheLookPath, lintCacheEnviron = oldExe, oldLook, oldEnv })
+}
+
+// stubCacheEnv replaces only the environment the key reads.
+func stubCacheEnv(t *testing.T, env ...string) {
+	t.Helper()
+	old := lintCacheEnviron
+	lintCacheEnviron = func() []string { return env }
+	t.Cleanup(func() { lintCacheEnviron = old })
+}
+
+func mustKey(t *testing.T, c *frontendLintCache, dir string, run frontendLintRun) string {
+	t.Helper()
+	key, _, err := c.fingerprint(dir, run)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	return key
+}
+
+// The key moves with every lint input and with nothing else.
+func TestFrontendLintFingerprintCoversInputsOnly(t *testing.T) {
+	stubCacheSys(t)
+	dir := cacheFrontend(t)
+	c := newFrontendLintCache(t.TempDir(), false, func(string) string { return "" })
+	run := frontendLintRun{scripts: []string{"lint"}, nmDir: dir}
+	base := mustKey(t, c, dir, run)
+	if again := mustKey(t, c, dir, run); again != base {
+		t.Fatal("the key is not deterministic")
+	}
+
+	ignored := []string{
+		"node_modules/eslint/index.js", ".next/cache/x", ".next-prod/x", "out/index.html",
+		"dist/a.js", "coverage/lcov.info", "tsconfig.tsbuildinfo", ".eslintcache",
+		"src/node_modules/nested/x.js",
+	}
+	for _, rel := range ignored {
+		writeCacheFile(t, filepath.Join(dir, rel), "changed "+rel+"\n")
+		if got := mustKey(t, c, dir, run); got != base {
+			t.Errorf("editing %s (not a lint input) changed the key", rel)
+		}
+	}
+
+	inputs := []string{
+		"src/app.ts", "src/gen/client_pb.ts", "eslint.config.mjs", "package.json", "tsconfig.json",
+		"src/new.ts", "node_modules/.package-lock.json", "package-lock.json",
+	}
+	prev := base
+	for _, rel := range inputs {
+		writeCacheFile(t, filepath.Join(dir, rel), "changed "+rel+"\n")
+		got := mustKey(t, c, dir, run)
+		if got == prev {
+			t.Errorf("editing %s (a lint input) did not change the key", rel)
+		}
+		prev = got
+	}
+
+	if got := mustKey(t, c, dir, frontendLintRun{scripts: []string{"lint", "lint:styles"}, nmDir: dir}); got == prev {
+		t.Error("adding lint:styles to the run did not change the key")
+	}
+	stubCacheEnv(t, "ESLINT_USE_FLAT_CONFIG=false")
+	if got := mustKey(t, c, dir, run); got == prev {
+		t.Error("an ESLINT_ variable did not change the key")
+	}
+	stubCacheEnv(t, "HOME=/elsewhere")
+	if got := mustKey(t, c, dir, run); got != prev {
+		t.Error("an unrelated environment variable changed the key")
+	}
+}
+
+// A rebuilt forge (same version string, new binary) is a new judge.
+func TestFrontendLintFingerprintKeysOnTheForgeBinary(t *testing.T) {
+	stubCacheSys(t)
+	dir := cacheFrontend(t)
+	c := newFrontendLintCache(t.TempDir(), false, func(string) string { return "" })
+	run := frontendLintRun{scripts: []string{"lint"}, nmDir: dir}
+	base := mustKey(t, c, dir, run)
+	exe, _ := lintCacheExecutable()
+	writeCacheFile(t, exe, "a rebuilt forge")
+	if got := mustKey(t, c, dir, run); got == base {
+		t.Error("a rebuilt forge binary did not change the key")
+	}
+}
+
+// A member whose dependencies are hoisted to a workspace root also keys on
+// that root's own files and its other members, but not on the rest of the
+// root's tree (a Go module beside the frontends).
+func TestFrontendLintFingerprintHoistedWorkspace(t *testing.T) {
+	stubCacheSys(t)
+	root := t.TempDir()
+	for rel, body := range map[string]string{
+		"pnpm-workspace.yaml":             "packages:\n  - frontends/*\n  - packages/**\n",
+		"package.json":                    `{"private":true}`,
+		"pnpm-lock.yaml":                  "lockfileVersion: '9.0'\n",
+		"node_modules/.modules.yaml":      "layoutVersion: 5\n",
+		"frontends/web/package.json":      `{"scripts":{"lint":"eslint ."}}`,
+		"frontends/web/src/app.ts":        "export const a = 1;\n",
+		"packages/ui/src/button.ts":       "export const b = 1;\n",
+		"internal/handlers/tasks/rpc.go":  "package tasks\n",
+		"frontends/web/eslint.config.mjs": "export default [];\n",
+	} {
+		writeCacheFile(t, filepath.Join(root, rel), body)
+	}
+	dir := filepath.Join(root, "frontends", "web")
+	c := newFrontendLintCache(root, false, func(string) string { return "" })
+	run := frontendLintRun{scripts: []string{"lint"}, nmDir: root}
+	base := mustKey(t, c, dir, run)
+
+	writeCacheFile(t, filepath.Join(root, "internal/handlers/tasks/rpc.go"), "package tasks // edited\n")
+	if got := mustKey(t, c, dir, run); got != base {
+		t.Error("a Go edit outside the workspace members changed the frontend's key")
+	}
+	prev := base
+	for _, rel := range []string{"packages/ui/src/button.ts", "pnpm-lock.yaml", "package.json", "node_modules/.modules.yaml"} {
+		writeCacheFile(t, filepath.Join(root, rel), "changed\n")
+		got := mustKey(t, c, dir, run)
+		if got == prev {
+			t.Errorf("editing the workspace's %s did not change the key", rel)
+		}
+		prev = got
+	}
+}
+
+func TestWorkspaceMembersReadsBothDeclarations(t *testing.T) {
+	root := t.TempDir()
+	for _, d := range []string{"apps/web", "apps/admin", "libs/a", "libs/b/c"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeCacheFile(t, filepath.Join(root, "package.json"), "{\n\t\"workspaces\": {\"packages\": [\"apps/*\", \"!apps/admin\"]}\n}\n")
+	writeCacheFile(t, filepath.Join(root, "pnpm-workspace.yaml"), "packages:\n  - libs/**\n")
+	var got []string
+	for _, m := range workspaceMembers(root) {
+		rel, _ := filepath.Rel(root, m)
+		got = append(got, filepath.ToSlash(rel))
+	}
+	want := "apps/admin apps/web libs"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("members = %v, want %s", got, want)
+	}
+}
+
+// fakeLintRunner replaces the lane's npm with one that counts its runs and
+// returns err (and runs during, when set, inside the run).
+type fakeLintRunner struct {
+	calls  int
+	err    error
+	during func()
+}
+
+func stubLintRunner(t *testing.T) *fakeLintRunner {
+	t.Helper()
+	f := &fakeLintRunner{}
+	old := runFrontendScript
+	runFrontendScript = func(_ context.Context, _ string, _ []string, out io.Writer) error {
+		f.calls++
+		if f.during != nil {
+			f.during()
+		}
+		if f.err != nil {
+			_, _ = io.WriteString(out, "src/app.ts\n  1:1  error  Dependency cycle detected  import/no-cycle\n")
+		}
+		return f.err
+	}
+	t.Cleanup(func() { runFrontendScript = old })
+	return f
+}
+
+func lintDir(c *frontendLintCache, dir string, fix bool) ([]lintJSONFinding, bool) {
+	return collectFrontendDirJSON(context.Background(), frontendDepsPolicy{}, "web", dir, false, fix, c)
+}
+
+func cachedNote(fs []lintJSONFinding) *lintJSONFinding {
+	for i := range fs {
+		if fs[i].Cached {
+			return &fs[i]
+		}
+	}
+	return nil
+}
+
+// A pass is recorded; the same inputs then skip the run with a note that
+// says so; an edit runs it again.
+func TestFrontendLintCacheSkipsOnMatchAndRunsOnMiss(t *testing.T) {
+	stubCacheSys(t)
+	r := stubLintRunner(t)
+	dir := cacheFrontend(t)
+	c := newFrontendLintCache(t.TempDir(), false, func(string) string { return "" })
+
+	fs, gated := lintDir(c, dir, false)
+	if gated || r.calls != 1 || cachedNote(fs) != nil {
+		t.Fatalf("first run: want one clean, uncached run; calls=%d gated=%v %+v", r.calls, gated, fs)
+	}
+
+	fs, gated = lintDir(c, dir, false)
+	if gated || r.calls != 1 {
+		t.Fatalf("unchanged inputs ran npm again: calls=%d gated=%v", r.calls, gated)
+	}
+	n := cachedNote(fs)
+	if n == nil || n.Rule != ruleRanNote || n.Severity != lintSevInfo {
+		t.Fatalf("a cached pass must say so, as an info ran note: %+v", fs)
+	}
+	for _, want := range []string{"web: unchanged since its last pass", "cached pass", "--no-cache"} {
+		if !strings.Contains(n.Message, want) {
+			t.Errorf("cached note %q lacks %q", n.Message, want)
+		}
+	}
+
+	writeCacheFile(t, filepath.Join(dir, "src/app.ts"), "export const a = 2;\n")
+	if fs, _ := lintDir(c, dir, false); r.calls != 2 || cachedNote(fs) != nil {
+		t.Fatalf("an edited source did not re-run the lane: calls=%d", r.calls)
+	}
+}
+
+// Only passes are cached: a failing run runs again next time, and a failure
+// on inputs a pass was recorded for drops that record.
+func TestFrontendLintCacheNeverCachesFailure(t *testing.T) {
+	stubCacheSys(t)
+	r := stubLintRunner(t)
+	dir := cacheFrontend(t)
+	root := t.TempDir()
+	c := newFrontendLintCache(root, false, func(string) string { return "" })
+
+	r.err = errors.New("exit status 1")
+	for i := 1; i <= 2; i++ {
+		if _, gated := lintDir(c, dir, false); !gated || r.calls != i {
+			t.Fatalf("failing run %d: want it run and gated, calls=%d gated=%v", i, r.calls, gated)
+		}
+	}
+
+	// A pass on these inputs, then a failure on the SAME inputs (forced
+	// with --no-cache): the next consulting run must lint, not replay the
+	// older pass.
+	r.err = nil
+	lintDir(c, dir, false)
+	r.err = errors.New("exit status 1")
+	if _, gated := lintDir(newFrontendLintCache(root, true, func(string) string { return "" }), dir, false); !gated {
+		t.Fatal("the forced run should have failed")
+	}
+	r.err = nil
+	calls := r.calls
+	if fs, _ := lintDir(c, dir, false); r.calls != calls+1 || cachedNote(fs) != nil {
+		t.Fatalf("a failure did not drop the recorded pass: calls=%d→%d", calls, r.calls)
+	}
+}
+
+// --no-cache, FORGE_LINT_NO_CACHE and CI run the lane every time, and still
+// record the pass for a later run that consults.
+func TestFrontendLintCacheForceRuns(t *testing.T) {
+	for name, mk := range map[string]func(root string) *frontendLintCache{
+		"--no-cache": func(root string) *frontendLintCache {
+			return newFrontendLintCache(root, true, func(string) string { return "" })
+		},
+		lintNoCacheEnv: func(root string) *frontendLintCache {
+			return newFrontendLintCache(root, false, func(k string) string { return map[string]string{lintNoCacheEnv: "1"}[k] })
+		},
+		"CI": func(root string) *frontendLintCache {
+			return newFrontendLintCache(root, false, func(k string) string { return map[string]string{"CI": "true"}[k] })
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stubCacheSys(t)
+			r := stubLintRunner(t)
+			dir := cacheFrontend(t)
+			root := t.TempDir()
+			forced := mk(root)
+			if forced.consult || forced.why == "" {
+				t.Fatalf("%s: want a cache that does not consult, with its reason; got %+v", name, forced)
+			}
+			lintDir(forced, dir, false)
+			lintDir(forced, dir, false)
+			if r.calls != 2 {
+				t.Fatalf("%s: want every run to lint, calls=%d", name, r.calls)
+			}
+			fs, _ := lintDir(newFrontendLintCache(root, false, func(string) string { return "" }), dir, false)
+			if r.calls != 2 || cachedNote(fs) == nil {
+				t.Fatalf("%s: the forced pass was not recorded for a consulting run: calls=%d", name, r.calls)
+			}
+		})
+	}
+	if c := newFrontendLintCache(t.TempDir(), false, func(k string) string { return map[string]string{"CI": "false"}[k] }); !c.consult {
+		t.Error("CI=false must not turn the cache off")
+	}
+}
+
+// --fix exists to run eslint --fix, so it never skips; and a run that
+// rewrote its inputs (an edit during the run, or the fix itself) records
+// nothing.
+func TestFrontendLintCacheFixAndEditsDuringTheRun(t *testing.T) {
+	stubCacheSys(t)
+	r := stubLintRunner(t)
+	dir := cacheFrontend(t)
+	c := newFrontendLintCache(t.TempDir(), false, func(string) string { return "" })
+	lintDir(c, dir, false)
+	if fs, _ := lintDir(c, dir, true); r.calls != 2 || cachedNote(fs) != nil {
+		t.Fatalf("--fix skipped eslint on a cached pass: calls=%d", r.calls)
+	}
+
+	writeCacheFile(t, filepath.Join(dir, "src/app.ts"), "export const a = 3;\n")
+	r.during = func() { writeCacheFile(t, filepath.Join(dir, "src/app.ts"), "export const fixed = 1;\n") }
+	lintDir(c, dir, false)
+	r.during = nil
+	calls := r.calls
+	if lintDir(c, dir, false); r.calls != calls+1 {
+		t.Fatal("a run whose inputs changed while it ran recorded a pass for them")
+	}
+}
+
+// A run with no cache (every hand-built run, every non-sweep driver) lints
+// every time and writes no record.
+func TestFrontendLintNilCacheAlwaysRuns(t *testing.T) {
+	r := stubLintRunner(t)
+	dir := cacheFrontend(t)
+	lintDir(nil, dir, false)
+	lintDir(nil, dir, false)
+	if r.calls != 2 {
+		t.Fatalf("calls=%d, want 2", r.calls)
+	}
+}
+
+// The cached pass is named in the verdict, --quiet included, and is
+// additive in --json.
+func TestFrontendLintCachedPassIsNeverSilent(t *testing.T) {
+	note := cachedPassNote("web", frontendLintPass{Files: 12}, []string{"lint"})
+	steps := []linterStep{{
+		name: "frontend lint", gates: true, scope: scopeWholeProject,
+		shouldRun: func(*lintRunCtx) (bool, string) { return true, "" },
+		collect: func(*lintRunCtx) ([]lintJSONFinding, bool, error) {
+			return []lintJSONFinding{note}, false, nil
+		},
+	}}
+	for _, quiet := range []bool{true, false} {
+		var out bytes.Buffer
+		if err := renderLintOutcomes(&out, collectLintOutcomesFrom(&lintRunCtx{ctx: context.Background()}, steps), quiet, nil); err != nil {
+			t.Fatalf("quiet=%v: %v", quiet, err)
+		}
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		last := lines[len(lines)-1]
+		if !strings.Contains(last, "frontend lint (web) unchanged since its last pass, cached pass") {
+			t.Errorf("quiet=%v: the verdict does not name the cached pass: %q", quiet, out.String())
+		}
+	}
+
+	data, err := json.Marshal(note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"cached":true`) || !strings.Contains(string(data), `"rule":"ran"`) {
+		t.Errorf("cached note JSON = %s", data)
+	}
+	if data, _ := json.Marshal(ranNote("web: npm run lint passed")); strings.Contains(string(data), "cached") {
+		t.Errorf("an ordinary ran note grew a cached field: %s", data)
+	}
+}
+
+// --no-cache reaches the run: the flag is declared and plumbed into --json's
+// options, and the record lives under .forge/.
+func TestLintNoCacheFlagIsPlumbed(t *testing.T) {
+	cmd := newCmd(nil)
+	if cmd.Flags().Lookup("no-cache") == nil {
+		t.Fatal("forge lint has no --no-cache flag")
+	}
+	if opts := jsonRunOptions(lintFlags{noCache: true}, nil, nil, nil, nil, nil); !opts.noCache {
+		t.Error("--no-cache is not plumbed into --json's run")
+	}
+	c := newFrontendLintCache("/p", false, func(string) string { return "" })
+	if got := filepath.ToSlash(c.path()); got != "/p/.forge/lint-cache.json" {
+		t.Errorf("record path = %s", got)
+	}
+}

@@ -310,6 +310,14 @@ jobs:
         with:
           tool: buf
 
+      # Task: the test-capture tests (test_capture_scaffold_e2e_test.go) run a
+      # scaffolded project's `task test`. Missing since #2816 added them, it
+      # failed shards 2 and 3 on every main push.
+      - name: Install Task
+        uses: ./.github/actions/install-release-tool
+        with:
+          tool: task
+
       # KCL comes from .github/actions/install-release-tool, pinned to
       # templates.KCLVersion (TestReleaseToolPinsMatchForge), so no shard
       # resolves "latest" through api.github.com's 60/hour budget. The action
@@ -416,15 +424,15 @@ jobs:
 
       - name: Verify every required tool resolves
         # Fail here, in five seconds, with the tool named — rather than 20
-        # minutes in when the test that needs it does. This list must stay
-        # equal to the tools requireTool asks for.
+        # minutes in when the test that needs it does. This list must hold
+        # every tool requireTool asks for (TestE2ESuiteVerifiesEveryRequiredTool).
         run: |
           set -euo pipefail
           missing=()
           # docker: TestE2ENextjsDockerfileStaticImageBuilds builds a real
           # frontend image. ubuntu-latest ships the engine; the `docker info`
           # below proves the daemon answers, which `command -v` cannot.
-          for tool in go node npm npx pnpm kcl golangci-lint buf protoc-gen-go protoc-gen-connect-go goimports pre-commit forge git migrate docker k3d kubectl helm dlv; do
+          for tool in go node npm npx pnpm kcl golangci-lint buf protoc-gen-go protoc-gen-connect-go goimports pre-commit forge git bash task migrate docker k3d kubectl helm dlv; do
             if command -v "$tool" >/dev/null 2>&1; then
               printf '  ok       %-24s %s\n' "$tool" "$(command -v "$tool")"
             else

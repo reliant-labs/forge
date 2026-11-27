@@ -323,3 +323,69 @@ export default function Home() { return <main/>; }`,
 		t.Errorf("a root route whose nested segments supply title, description and canonical: findings %v", codes(fs))
 	}
 }
+
+// B1: object syntax the reader does not model makes the segment's whole
+// metadata unknown, never a misread object whose missing fields are judged.
+func TestNextMetadataUnmodelledSyntaxIsUnknown(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"computed key": `export const metadata = { [key]: "x", title: "Acme Rockets — rockets for everyone" };`,
+		"method":       `export const metadata = { generate() { return 1 }, title: "Acme Rockets — rockets for everyone" };`,
+		"getter":       `export const metadata = { get other() { return 1 }, title: "Acme Rockets — rockets for everyone" };`,
+		"shorthand":    `export const metadata = { description, title: "Acme Rockets — rockets for everyone" };`,
+		"run-on value": `export const metadata = { description: "a" + suffix, title: "Acme Rockets — rockets for everyone" };`,
+	}
+	for name, decl := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			write(t, dir, map[string]string{"app/layout.tsx": decl + "\nexport default function L({children}) { return <html lang=\"en\">{children}</html>; }"})
+			p, ok := NextLayout(dir, "web", "https://acme.example/")
+			if !ok {
+				t.Fatal("no layout found")
+			}
+			for _, tag := range []string{"title", "description", "canonical", "og:title", "twitter:card"} {
+				if !p.Dynamic[tag] {
+					t.Errorf("%s is not dynamic: the metadata was read past syntax the reader does not model", tag)
+				}
+			}
+			for _, c := range codes(Judge("https://acme.example/", []Page{p})) {
+				if strings.HasPrefix(c, "title_") || strings.HasPrefix(c, "description_") || strings.HasPrefix(c, "canonical_") || strings.HasPrefix(c, "og_tag_missing") {
+					t.Errorf("judged a field of unknown metadata: %s", c)
+				}
+			}
+		})
+	}
+}
+
+// B2: pages sharing a URL are all judged, each finding naming its own file,
+// whatever order they arrive in.
+func TestJudgeKeepsEveryPageThatSharesAURL(t *testing.T) {
+	t.Parallel()
+	good := `<html lang="en"><head><meta name="viewport" content="width=device-width"><title>Acme Rockets — rockets for everyone</title></head></html>`
+	noTitle := `<html lang="en"><head><meta name="viewport" content="width=device-width"></head></html>`
+	noLang := `<html><head><meta name="viewport" content="width=device-width"><title>Acme Rockets — rockets for everyone</title></head></html>`
+	pages := []Page{
+		{File: "dist/about.html", URL: "https://acme.example/about", HTML: noTitle},
+		{File: "dist/About.html", URL: "https://ACME.example/about#x", HTML: noLang},
+		{File: "dist/index.html", URL: "https://acme.example/", HTML: good},
+	}
+	byFile := func(fs []Finding) []string {
+		var out []string
+		for _, f := range fs {
+			out = append(out, f.File+" "+f.Code)
+		}
+		slices.Sort(out)
+		return out
+	}
+	got := byFile(Judge("https://acme.example/", pages))
+	for _, want := range []string{"dist/about.html title_missing", "dist/About.html lang_missing"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("findings %v lack %q", got, want)
+		}
+	}
+	reversed := []Page{pages[2], pages[1], pages[0]}
+	if again := byFile(Judge("https://acme.example/", reversed)); !slices.Equal(got, again) {
+		t.Errorf("order changed the result:\n%v\n%v", got, again)
+	}
+}

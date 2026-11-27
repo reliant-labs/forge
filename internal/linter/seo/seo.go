@@ -198,28 +198,69 @@ func routeOfFile(rel string) string {
 
 // Judge runs the raw-HTML rules over pages as the site at site, and drops
 // what a page's dynamic tags leave unknown.
+//
+// Every page is judged, and each finding names the file it came from. Pages
+// that share a URL (siteaudit judges one page per URL) are judged in
+// separate rounds: round k holds the k-th page of each URL, pages of one URL
+// ordered by file, so no file escapes the lane and the result is the same
+// whatever order the pages came in.
 func Judge(site string, pages []Page) []Finding {
-	in := siteaudit.Input{Site: site}
-	byRoute := map[string]Page{}
-	for _, p := range pages {
-		in.Pages = append(in.Pages, siteaudit.Page{URL: p.URL, RawHTML: p.HTML})
-		if u, err := url.Parse(p.URL); err == nil {
-			byRoute[routeOf(u)] = p
+	ordered := append([]Page(nil), pages...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].File < ordered[j].File })
+	var rounds [][]Page
+	nth := map[string]int{}
+	for _, p := range ordered {
+		k := pageKey(p.URL)
+		r := nth[k]
+		nth[k]++
+		if r == len(rounds) {
+			rounds = append(rounds, nil)
 		}
+		rounds[r] = append(rounds[r], p)
 	}
-	rep := siteaudit.EvaluateRaw(in)
 	var out []Finding
-	for _, f := range rep.Findings {
-		if _, reported := ruleIDs[f.Code]; !reported {
-			continue
+	seen := map[string]bool{}
+	for _, round := range rounds {
+		in := siteaudit.Input{Site: site}
+		byRoute := map[string]Page{}
+		for _, p := range round {
+			in.Pages = append(in.Pages, siteaudit.Page{URL: p.URL, RawHTML: p.HTML})
+			if u, err := url.Parse(p.URL); err == nil {
+				byRoute[routeOf(u)] = p
+			}
 		}
-		p, ok := byRoute[f.Route]
-		if ok && p.Dynamic[dynamicTag(f)] {
-			continue
+		for _, f := range siteaudit.EvaluateRaw(in).Findings {
+			if _, reported := ruleIDs[f.Code]; !reported {
+				continue
+			}
+			p, ok := byRoute[f.Route]
+			if ok && p.Dynamic[dynamicTag(f)] {
+				continue
+			}
+			key := f.Code + "\x00" + f.Route + "\x00" + f.Ref + "\x00" + p.File
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, Finding{Finding: f, File: p.File})
 		}
-		out = append(out, Finding{Finding: f, File: p.File})
 	}
 	return out
+}
+
+// pageKey is the URL siteaudit identifies a page by: scheme and host
+// lower-cased, fragment dropped, an empty path "/".
+func pageKey(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return raw
+	}
+	u.Scheme, u.Host = strings.ToLower(u.Scheme), strings.ToLower(u.Host)
+	u.Fragment, u.RawFragment = "", ""
+	if u.Path == "" && u.Host != "" {
+		u.Path, u.RawPath = "/", ""
+	}
+	return u.String()
 }
 
 // dynamicTag is the head tag a finding is about, when it is one a source can
@@ -404,7 +445,7 @@ func segmentMetadata(src string) (meta map[string]jsValue, known bool) {
 	if loc := metadataDecl.FindStringIndex(src); loc != nil {
 		p := &jsParser{s: src, i: loc[1] - 1}
 		v, ok := p.value().(map[string]jsValue)
-		if !ok {
+		if !ok || p.bad {
 			return nil, false
 		}
 		if _, spread := v[spreadKey]; spread {
@@ -601,6 +642,11 @@ func jsString(v jsValue) (string, bool) {
 type jsParser struct {
 	s string
 	i int
+	// bad reports syntax the reader does not model (a computed key, a
+	// method, a shorthand property, an unterminated literal): the object it
+	// read is then not what the source says, and its caller treats the
+	// whole metadata as unknown rather than judging a misread.
+	bad bool
 }
 
 func (p *jsParser) skipSpace() {
@@ -699,25 +745,35 @@ func (p *jsParser) object() map[string]jsValue {
 		}
 		var key string
 		if c := p.s[p.i]; c == '"' || c == '\'' {
-			key, _ = p.str()
+			var ok bool
+			if key, ok = p.str(); !ok {
+				p.bad = true
+				return out
+			}
 		} else {
 			start := p.i
 			for p.i < len(p.s) && (isIdent(p.s[p.i])) {
 				p.i++
 			}
 			key = p.s[start:p.i]
-			if key == "" { // something we cannot read: skip it
-				p.skipExpr()
-				p.comma()
-				continue
-			}
 		}
 		p.skipSpace()
-		if p.i < len(p.s) && p.s[p.i] == ':' {
-			p.i++
-			out[key] = p.value()
-		} else {
-			out[key] = jsDynamic(key) // shorthand {title}
+		// Only `key: value` is modelled. A computed key ([k]: v), a method
+		// (title() {…}, get title() {…}) or a shorthand ({title}) stops the
+		// read: what follows cannot be trusted to be the next property.
+		if key == "" || p.i >= len(p.s) || p.s[p.i] != ':' {
+			p.bad = true
+			return out
+		}
+		p.i++
+		out[key] = p.value()
+		if p.bad {
+			return out
+		}
+		p.skipSpace()
+		if p.i < len(p.s) && p.s[p.i] != ',' && p.s[p.i] != '}' {
+			p.bad = true // the value ran on: an expression the reader cut short
+			return out
 		}
 		p.comma()
 	}

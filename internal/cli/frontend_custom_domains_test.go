@@ -77,3 +77,26 @@ func TestHostedStaticSpec_CarriesNamedAPIsAsReferences(t *testing.T) {
 		t.Errorf("a frontend without apis publishes the key: %s", b)
 	}
 }
+
+// Markdown negotiation and the edge-log opt-out reach the StaticSite spec
+// only when declared: a frontend that declares neither publishes the spec
+// it published before the fields (no key at all), and an explicit "on"
+// (edge_logs true, never rendered by KCL) publishes nothing either.
+func TestHostedStaticSpec_EdgeFieldsOnlyWhenDeclared(t *testing.T) {
+	plain, err := json.Marshal(hostedStaticSpec(FrontendEntity{Name: "web"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"keepReleases":10}`; string(plain) != want {
+		t.Errorf("a frontend declaring neither publishes %s, want %s", plain, want)
+	}
+	on := true
+	if b, _ := json.Marshal(hostedStaticSpec(FrontendEntity{Name: "web", EdgeLogs: &on})); string(b) != string(plain) {
+		t.Errorf("edge_logs on publishes %s, want %s", b, plain)
+	}
+	off := false
+	b, _ := json.Marshal(hostedStaticSpec(FrontendEntity{Name: "web", MarkdownNegotiation: true, EdgeLogs: &off}))
+	if want := `{"keepReleases":10,"markdownNegotiation":true,"edgeLogs":false}`; string(b) != want {
+		t.Errorf("declared fields publish %s, want %s", b, want)
+	}
+}

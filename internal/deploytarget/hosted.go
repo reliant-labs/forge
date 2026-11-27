@@ -608,6 +608,40 @@ func limitDeclaredShape(ctx context.Context, c HostedCaller, env string, declare
 	return reader.LimitShape(declared), nil
 }
 
+// checkStaticSiteServed refuses the plan's static sites that ask for Markdown
+// negotiation or opt out of edge logs unless the control plane honours each.
+// It asks the control plane only when a site declares one, so every other
+// deploy costs no call.
+func checkStaticSiteServed(ctx context.Context, c HostedCaller, plan []hostedPlanItem) error {
+	markdown, edgeOff := staticSitesNeedingCapabilities(plan)
+	if len(markdown) == 0 && len(edgeOff) == 0 {
+		return nil
+	}
+	reader, err := HostedBundleReader(ctx, c)
+	if err != nil {
+		return err
+	}
+	return errors.Join(reader.CheckMarkdownNegotiation(markdown), reader.CheckEdgeLogOptOut(edgeOff))
+}
+
+// staticSitesNeedingCapabilities names the plan's static sites that ask for
+// Markdown negotiation, and those that opt out of edge logs, in plan order.
+func staticSitesNeedingCapabilities(plan []hostedPlanItem) (markdown, edgeOff []string) {
+	for _, item := range plan {
+		spec, ok := item.Spec.(v1alpha1.StaticSiteSpec)
+		if !ok {
+			continue
+		}
+		if spec.MarkdownNegotiation {
+			markdown = append(markdown, item.Name)
+		}
+		if spec.EdgeLogs != nil && !*spec.EdgeLogs {
+			edgeOff = append(edgeOff, item.Name)
+		}
+	}
+	return markdown, edgeOff
+}
+
 // checkAutoscaleApplied refuses the plan's autoscaled workloads unless the
 // control plane applies them. An older control plane decodes the spec and
 // ignores the unknown field, so the workload would run at one replica with
@@ -1438,6 +1472,11 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	// Before the environment is ensured or the bundle recorded: a control
 	// plane that predates autoscale would run the workload at one replica.
 	if err := checkAutoscaleApplied(ctx, c, plan); err != nil {
+		return err
+	}
+	// Likewise for a static site's markdown negotiation or edge-log opt-out:
+	// a control plane that predates either would ignore it.
+	if err := checkStaticSiteServed(ctx, c, plan); err != nil {
 		return err
 	}
 	// The env's kind is the CLI's derivation over the WHOLE env, carried on

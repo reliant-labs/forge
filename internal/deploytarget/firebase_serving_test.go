@@ -67,6 +67,10 @@ func TestSPANavigationRegex_IncidentPaths(t *testing.T) {
 		"/version.json",
 		"/forge-assets.json",
 		"/robots.txt",
+		// A Markdown twin that is not in the build (mirrors the hosted
+		// origin's staticFileExtensions): a 404, never the SPA shell.
+		"/pricing.md",
+		"/blog/index.md",
 		"/old-page.html",
 		"/ASSETS/INDEX-ABC.JS",
 		"/deep/nested/logo.PNG",

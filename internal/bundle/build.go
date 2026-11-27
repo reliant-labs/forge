@@ -735,7 +735,9 @@ func docDeadlineSeconds(doc parsedDoc) int {
 //   - a backend that does not route named same-origin APIs would publish a
 //     site whose /_api/@<name> calls 404;
 //   - a backend that serves per-release URLs but cannot read an env's
-//     opt-out would serve them anyway.
+//     opt-out would serve them anyway;
+//   - a backend that does not negotiate Markdown, or does not honour an
+//     edge-log opt-out, would ignore the site's declaration.
 func checkReaderHonours(r *release.BundleReader, shape release.Shape, docs []parsedDoc) error {
 	if err := r.CheckScopedVulnExemptions(shape); err != nil {
 		return err
@@ -746,5 +748,11 @@ func checkReaderHonours(r *release.BundleReader, shape release.Shape, docs []par
 	if err := r.CheckIdentities(shape); err != nil {
 		return err
 	}
-	return r.CheckNamedSiteAPIs(staticSitesWithNamedAPIs(docs))
+	if err := r.CheckNamedSiteAPIs(staticSitesWithNamedAPIs(docs)); err != nil {
+		return err
+	}
+	if err := r.CheckMarkdownNegotiation(staticSitesWhere(docs, specMarkdownNegotiation)); err != nil {
+		return err
+	}
+	return r.CheckEdgeLogOptOut(staticSitesWhere(docs, specEdgeLogsOff))
 }

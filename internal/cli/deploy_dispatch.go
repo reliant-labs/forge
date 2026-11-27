@@ -844,6 +844,16 @@ func hostedStaticSpec(f FrontendEntity) *v1alpha1.StaticSiteSpec {
 			spec.APIs[name] = v1alpha1.WorkloadURLRef{Name: workload}
 		}
 	}
+	// Both written only when they say something: a frontend that declares
+	// neither publishes the spec it published before the fields existed. A
+	// control plane that does not honour one is refused before anything is
+	// recorded (release.CapabilityServesMarkdownNegotiation,
+	// release.CapabilityHonorsEdgeLogOptOut).
+	spec.MarkdownNegotiation = f.MarkdownNegotiation
+	if f.EdgeLogs != nil && !*f.EdgeLogs {
+		off := false
+		spec.EdgeLogs = &off
+	}
 	return spec
 }
 

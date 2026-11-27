@@ -5,9 +5,9 @@ description: Observability — the local ClickStack (HyperDX) that forge env up 
 
 # Observability
 
-Every Forge project ships a full observability stack for the dev loop: **ClickStack** (ClickHouse, the HyperDX UI and an OTLP collector) as the `clickstack` service in `docker-compose.yml`. Nothing to register, no key to copy. It is **on by default**: `forge env up dev` starts it and lists the **HyperDX UI** under **Compose services**.
+Every Forge project ships a full observability stack for the dev loop: **ClickStack** (ClickHouse, the HyperDX UI and an OTLP collector) as the `clickstack` service in `docker-compose.yml`. It is **on by default**: `forge env up dev` starts it and lists the **HyperDX UI** under **Compose services**.
 
-It is one container (HyperDX's no-auth *local mode* image), about 0.8 GB resident. Every port is published on `127.0.0.1` only; ClickHouse is not published and runs behind a generated dev-only user, not the passwordless `default`.
+It is one container (HyperDX's no-auth *local mode* image), ~0.8 GB resident. Every port is published on `127.0.0.1` only; ClickHouse is not published and runs behind a generated dev-only user, not the passwordless `default`.
 
 ## How the data gets there
 
@@ -248,6 +248,7 @@ observability = forge.Observability {                        # per category
 | `traces`, `metrics`, `logs`, `profiles` | the app's SDK exporter: `OTEL_<SIGNAL>_EXPORTER=none` |
 | `metadata` | **customer metadata**, collected by the platform's node agent without the app's help: pod CPU/memory against limits, restarts and last exit reason, Kubernetes events, image and version |
 | `browser` | the frontend SDK: `OTEL_ENDPOINT=off` in every frontend's runtime config (and its build variable), over anything you set |
+| `edge` | hosted sites' CDN log; `retention.edge_days` |
 
 **Session replay is the one opt-IN category**, per frontend:
 `telemetry = forge.BrowserTelemetry {replay = True}` renders its
@@ -257,7 +258,7 @@ observability = forge.Observability {                        # per category
 `signals.replay`). There is no env-wide replay switch to declare.
 
 `enabled = False` renders `OTEL_SDK_DISABLED=true` on every workload plus the
-browser switch. Author-set `OTEL_*` values still win.
+browser and edge switches. Author-set `OTEL_*` values still win.
 
 The resolved opt-out is recorded in the release shape as
 `observability_policy: {enabled, disabled: [...]}` (omitted when you opt out of

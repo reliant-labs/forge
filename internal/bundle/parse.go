@@ -329,3 +329,31 @@ func staticSitesWithNamedAPIs(docs []parsedDoc) []string {
 	}
 	return out
 }
+
+// staticSitesWhere names every forge StaticSite in docs whose spec satisfies
+// want, in stream order.
+func staticSitesWhere(docs []parsedDoc, want func(spec map[string]any) bool) []string {
+	var out []string
+	for _, d := range docs {
+		if d.meta.kind != "StaticSite" || !strings.HasPrefix(d.meta.apiVersion, "forge.dev/") {
+			continue
+		}
+		body, _ := d.body.(map[string]any)
+		if want(mapAt(body, "spec")) {
+			out = append(out, d.meta.name)
+		}
+	}
+	return out
+}
+
+// specMarkdownNegotiation: the spec asks for Markdown negotiation.
+func specMarkdownNegotiation(spec map[string]any) bool {
+	v, _ := spec["markdownNegotiation"].(bool)
+	return v
+}
+
+// specEdgeLogsOff: the spec opts out of edge logs (an explicit false).
+func specEdgeLogsOff(spec map[string]any) bool {
+	v, ok := spec["edgeLogs"].(bool)
+	return ok && !v
+}

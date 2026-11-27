@@ -365,3 +365,6 @@ instead of the SPA fallback), `_headers` (response headers) and
 `/docs/* https://docs.example.com/:splat 301`). Their formats and limits,
 how a path resolves to a file, and the cache policy are in
 `deploy/static-site/serving`. A bad `_redirects` line fails the deploy.
+Markdown twins (`<route>.md`) can be served to agents that ask for
+`text/markdown` with `markdown_negotiation = True` on the frontend (hosting
+only; `deploy/static-site/serving`, "Markdown negotiation").

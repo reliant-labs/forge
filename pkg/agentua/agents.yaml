@@ -289,13 +289,7 @@ agents:
       class: ai_search,
       ranges: "",
     }
-  - {
-      token: ExaUser,
-      name: ExaUser,
-      operator: Exa,
-      class: ai_user,
-      ranges: "",
-    }
+  - { token: ExaUser, name: ExaUser, operator: Exa, class: ai_user, ranges: "" }
   - {
       token: Reflectionbot,
       name: Reflectionbot,
@@ -437,13 +431,7 @@ agents:
       class: other_bot,
       ranges: "",
     }
-  - {
-      token: DotBot,
-      name: DotBot,
-      operator: Moz,
-      class: other_bot,
-      ranges: "",
-    }
+  - { token: DotBot, name: DotBot, operator: Moz, class: other_bot, ranges: "" }
   - {
       token: Barkrowler,
       name: Barkrowler,
@@ -537,20 +525,8 @@ agents:
       ranges: "",
     }
   # --- tools and libraries ---
-  - {
-      token: curl,
-      name: curl,
-      operator: curl,
-      class: tool,
-      ranges: "",
-    }
-  - {
-      token: Wget,
-      name: Wget,
-      operator: GNU,
-      class: tool,
-      ranges: "",
-    }
+  - { token: curl, name: curl, operator: curl, class: tool, ranges: "" }
+  - { token: Wget, name: Wget, operator: GNU, class: tool, ranges: "" }
   - {
       token: python-requests,
       name: python-requests,
@@ -565,13 +541,7 @@ agents:
       class: tool,
       ranges: "",
     }
-  - {
-      token: aiohttp,
-      name: aiohttp,
-      operator: Python,
-      class: tool,
-      ranges: "",
-    }
+  - { token: aiohttp, name: aiohttp, operator: Python, class: tool, ranges: "" }
   - {
       token: Python-urllib,
       name: Python-urllib,
@@ -586,20 +556,8 @@ agents:
       class: tool,
       ranges: "",
     }
-  - {
-      token: fasthttp,
-      name: fasthttp,
-      operator: Go,
-      class: tool,
-      ranges: "",
-    }
-  - {
-      token: axios,
-      name: axios,
-      operator: Node.js,
-      class: tool,
-      ranges: "",
-    }
+  - { token: fasthttp, name: fasthttp, operator: Go, class: tool, ranges: "" }
+  - { token: axios, name: axios, operator: Node.js, class: tool, ranges: "" }
   - {
       token: node-fetch,
       name: node-fetch,
@@ -607,27 +565,9 @@ agents:
       class: tool,
       ranges: "",
     }
-  - {
-      token: undici,
-      name: undici,
-      operator: Node.js,
-      class: tool,
-      ranges: "",
-    }
-  - {
-      token: okhttp,
-      name: okhttp,
-      operator: Square,
-      class: tool,
-      ranges: "",
-    }
-  - {
-      token: Java,
-      name: Java,
-      operator: Java,
-      class: tool,
-      ranges: "",
-    }
+  - { token: undici, name: undici, operator: Node.js, class: tool, ranges: "" }
+  - { token: okhttp, name: okhttp, operator: Square, class: tool, ranges: "" }
+  - { token: Java, name: Java, operator: Java, class: tool, ranges: "" }
   - {
       token: libwww-perl,
       name: libwww-perl,

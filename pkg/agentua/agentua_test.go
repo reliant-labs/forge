@@ -9,7 +9,8 @@ import (
 
 // agentsYAMLSHA256 pins agents.yaml with flow mappings compacted. When you edit
 // the list, bump its `version` AND update this hash, in the same change.
-const agentsYAMLSHA256 = "ed970c86addfd59e6964adde1bb979247a06a2d10846fe05a255919170759e49"
+// Refreshed for Prettier's whitespace-only compact mappings; the list is unchanged.
+const agentsYAMLSHA256 = "cad7117d18d6492cb029f3689d8be068002d374a7ce71f9b6043bcede8f1c0e7"
 
 // agentsYAMLVersion is the version that hash belongs to.
 const agentsYAMLVersion = "2026-11-27.1"

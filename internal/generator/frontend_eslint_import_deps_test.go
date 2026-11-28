@@ -76,7 +76,23 @@ func readManifestText(t *testing.T, path string) string {
 // added to devDependencies at forge's exact pins, every other entry and the
 // file's layout are kept, and a second run changes nothing.
 func TestEnsureESLintImportDependencies_AddsImportedMissingPackages(t *testing.T) {
-	projectDir, feRel, pkgPath := eslintImportFixture(t, preImportXManifest, eslintImportXConfig)
+	// Keep existing devDependencies after both new names alphabetically, so
+	// the exact surgical-edit assertion also holds when the shared manifest
+	// inserter preserves a sorted dependency object rather than prepending.
+	manifest := `{
+  "name": "web",
+  "private": true,
+  "dependencies": {
+    "eslint": "^9.25.0",
+    "eslint-plugin-import": "^2.31.0",
+    "next": "^16.3.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}
+`
+	projectDir, feRel, pkgPath := eslintImportFixture(t, manifest, eslintImportXConfig)
 
 	if !EnsureESLintImportDependencies(projectDir, feRel, "web") {
 		t.Fatal("EnsureESLintImportDependencies reported no change for a manifest missing both packages")
@@ -92,7 +108,7 @@ func TestEnsureESLintImportDependencies_AddsImportedMissingPackages(t *testing.T
 		}
 	}
 	// Nothing else moved: the old plugin, the other entries, the layout.
-	want := strings.Replace(preImportXManifest, `"devDependencies": {`,
+	want := strings.Replace(manifest, `"devDependencies": {`,
 		`"devDependencies": {`+"\n"+
 			`    "`+resolverTSImport+`": "`+eslintPin(t, resolverTSImport)+`",`+"\n"+
 			`    "`+pluginImportX+`": "`+eslintPin(t, pluginImportX)+`",`, 1)

@@ -48,6 +48,7 @@ import (
 
 // runDeployEverything is the no-version form.
 func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) error {
+	ctx = withSBOMUploadOutcomes(ctx)
 	projectDir := projectDirForKCL()
 	rollout := cluster.RolloutPolicy{
 		Mode:     cluster.RolloutMode(f.rolloutMode),

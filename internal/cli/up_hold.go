@@ -18,6 +18,11 @@ var holdPoll = time.Second
 // trees, and the hold used to keep waiting on a signal that never came — a
 // supervisor holding nothing, its exited children's siblings left as zombies
 // until someone killed it. A supervisor with nothing left to supervise exits.
+//
+// Its own children are not the whole stack once `forge env restart` has run:
+// the replacement carries this run's marker, and a restart in progress holds a
+// lease. Either keeps the hold (joinedRunAlive), and Ctrl-C's shutdown sweeps
+// the replacement like any process of this run.
 func awaitHoldEnd(ctx context.Context, procs *procRegistry) (stackGone bool) {
 	tick := time.NewTicker(holdPoll)
 	defer tick.Stop()
@@ -26,7 +31,7 @@ func awaitHoldEnd(ctx context.Context, procs *procRegistry) (stackGone bool) {
 		case <-ctx.Done():
 			return false
 		case <-tick.C:
-			if procs.allExited() {
+			if procs.allExited() && !procs.joinedRunAlive() {
 				return true
 			}
 		}

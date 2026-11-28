@@ -520,6 +520,10 @@ func runnerOrDefault(r string) string {
 	return r
 }
 
+// Dir is the directory the runner starts in: WorkingDir resolved against
+// ProjectDir, as BuildCmd sets the command's Dir.
+func (s RunnerSpec) Dir() string { return resolveWorkingDir(s.WorkingDir, s.ProjectDir) }
+
 // resolveWorkingDir returns the effective cmd.Dir for the given spec.
 // Empty workingDir = projectDir: the process runs in the project root,
 // which is where every relative path a host workload declares (its air

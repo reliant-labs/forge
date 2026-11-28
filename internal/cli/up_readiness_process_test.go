@@ -18,10 +18,12 @@ func TestHostReadinessProcessHelper(t *testing.T) {
 	case "exit":
 		fmt.Fprintln(os.Stderr, "compiler failed: test diagnostic")
 		os.Exit(7)
-	case "slow":
-		// Longer than the old 15-second gate; no actual compiler or cache
-		// makes this test dependent on machine speed.
-		time.Sleep(16 * time.Second)
+	case "slow", "listen":
+		if os.Getenv("FORGE_READINESS_HELPER") == "slow" {
+			// Longer than the old 15-second gate; no actual compiler or cache
+			// makes this test dependent on machine speed.
+			time.Sleep(16 * time.Second)
+		}
 		ln, err := net.Listen("tcp", os.Getenv("FORGE_READINESS_ADDR"))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -35,6 +37,63 @@ func TestHostReadinessProcessHelper(t *testing.T) {
 			}
 			_ = conn.Close()
 		}
+	}
+}
+
+// Restart uses these same preflight and readiness gates in runUp even when
+// detached. The old listener must be gone before the new runner is launched,
+// and the lease spans the handoff until the new listener is owned and ready.
+func TestRestartReplacesLivePortHolder(t *testing.T) {
+	testkit.Slow(t, "starts and replaces real marked listeners")
+	requireProcInspection(t)
+	dir, projectID, env := testStack(t)
+	t.Chdir(dir)
+	port := freePort(t)
+	e := entitiesOnPort(port)
+	release, err := takeRestartLease(projectID, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	start := func() *procRegistry {
+		t.Helper()
+		reg := newProcRegistry(projectID, dir, env)
+		cmd := exec.Command(os.Args[0], "-test.run=^TestHostReadinessProcessHelper$")
+		cmd.Env = append(os.Environ(), "FORGE_READINESS_HELPER=listen",
+			fmt.Sprintf("FORGE_READINESS_ADDR=127.0.0.1:%d", port))
+		if err := reg.start("api", cmd, true); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = reg.shutdown() })
+		return reg
+	}
+	wait := func(reg *procRegistry) {
+		t.Helper()
+		if err := waitHostServicesReady(t.Context(), e, projectID, env, []string{"api"}, hostReadyTimeout, hostReadyPoll, reg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := start()
+	wait(old)
+	if err := upPreflight(projectID, env, e, []string{"api"}, false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-old.processes[0].done:
+	case <-time.After(testWaitTimeout):
+		t.Fatal("preflight returned without stopping the old runner")
+	}
+	if portInUse(port) {
+		t.Fatal("preflight returned while the old listener still held the port")
+	}
+	if !restartLeaseHeld(projectID, env, time.Now()) {
+		t.Fatal("restart lost its lease before launching the replacement")
+	}
+	replacement := start()
+	wait(replacement)
+	release()
+	if restartLeaseHeld(projectID, env, time.Now()) {
+		t.Fatal("lease remained after replacement readiness")
 	}
 }
 

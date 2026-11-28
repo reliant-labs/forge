@@ -9,15 +9,17 @@ import (
 	yaml "gopkg.in/yaml.v3"
 )
 
-// TestWindowsChangedJobGatesTheMergeQueue holds the merge queue's Windows job
-// (owner, 2026-11-13: four Windows-only reds reached main that day, each in a
-// package its pull request changed) to what makes it a gate: it runs on a
-// native Windows runner in the merge queue and nowhere on an unlabelled pull
-// request, `CI gate` needs it and refuses a merge-queue run in which it
-// skipped, it tests what scripts/ci-changed-packages.sh says the entry reaches
-// under -short, it needs no other job (so it starts with the merge tier, not
-// after it), and it is bounded at 20 minutes.
-func TestWindowsChangedJobGatesTheMergeQueue(t *testing.T) {
+// TestWindowsChangedJobRunsOnRequestNotInTheMergeQueue holds the
+// changed-packages Windows job (owner, 2026-11-13: four Windows-only reds
+// reached main that day, each in a package its pull request changed) to its
+// shape since it left the merge queue (2026-11-28: at 10-20 minutes it was the
+// merge tier's critical path, and it failed 136 merge groups in 72 hours): it
+// runs on a native Windows runner on a pull request labelled ci:windows and
+// nowhere else, `CI gate` needs it (so a labelled pull request's red is red)
+// but does not refuse a merge-queue run in which it skipped, it tests what
+// scripts/ci-changed-packages.sh says the change reaches under -short, it
+// needs no other job, and it is bounded at 20 minutes.
+func TestWindowsChangedJobRunsOnRequestNotInTheMergeQueue(t *testing.T) {
 	t.Parallel()
 	const maxMinutes = 20
 	raw, err := os.ReadFile(ciWorkflow)
@@ -45,14 +47,14 @@ func TestWindowsChangedJobGatesTheMergeQueue(t *testing.T) {
 	if !ok {
 		t.Fatalf("%s has no windows-changed job; update this guard if it was renamed", ciWorkflow)
 	}
-	if strings.TrimSpace(j.If) != windowsQueueTier {
-		t.Errorf("windows-changed runs if %q, want %q", j.If, windowsQueueTier)
+	if strings.TrimSpace(j.If) != windowsLabelTier {
+		t.Errorf("windows-changed runs if %q, want %q: never in the merge queue", j.If, windowsLabelTier)
 	}
 	if !strings.HasPrefix(j.RunsOn, "windows-") {
 		t.Errorf("windows-changed runs on %q: only a native Windows run finds what it is for", j.RunsOn)
 	}
 	if len(j.Needs) != 0 {
-		t.Errorf("windows-changed needs %v: it would start after them and lengthen every merge", j.Needs)
+		t.Errorf("windows-changed needs %v: it would start after them and lengthen the run", j.Needs)
 	}
 	if j.TimeoutMinutes <= 0 || j.TimeoutMinutes > maxMinutes {
 		t.Errorf("windows-changed's timeout-minutes is %d; it must be set, between 1 and %d (owner, 2026-11-13)", j.TimeoutMinutes, maxMinutes)
@@ -69,7 +71,7 @@ func TestWindowsChangedJobGatesTheMergeQueue(t *testing.T) {
 			depth = true
 		}
 		if strings.HasPrefix(s.Uses, "actions/cache/save@") || strings.HasSuffix(s.Uses, "/save-go-caches") {
-			t.Errorf("windows-changed saves a cache (%s): a merge group's cache is visible to no other run", s.Uses)
+			t.Errorf("windows-changed saves a cache (%s): a pull request's cache is visible to no other run", s.Uses)
 		}
 	}
 	if !plans {
@@ -83,7 +85,7 @@ func TestWindowsChangedJobGatesTheMergeQueue(t *testing.T) {
 	}
 	gate := wf.Jobs["gate"]
 	if !slices.Contains(gate.Needs, "windows-changed") {
-		t.Error("CI gate does not need windows-changed: a Windows failure would merge")
+		t.Error("CI gate does not need windows-changed: a ci:windows pull request's Windows failure would not show in CI gate")
 	}
 	var every string
 	for _, s := range gate.Steps {
@@ -91,7 +93,10 @@ func TestWindowsChangedJobGatesTheMergeQueue(t *testing.T) {
 			every = s.Run
 		}
 	}
-	if !strings.Contains(every, `.key == "windows-changed"`) {
-		t.Error(`CI gate's "Every job passed" does not refuse a merge-queue run whose windows-changed job skipped`)
+	if every == "" {
+		t.Fatal(`CI gate has no "Every job passed" step; update this guard if it was renamed`)
+	}
+	if strings.Contains(every, `.key == "windows-changed"`) {
+		t.Error(`CI gate's "Every job passed" refuses a merge-queue run whose windows-changed job skipped: it no longer runs there, so every merge would fail`)
 	}
 }

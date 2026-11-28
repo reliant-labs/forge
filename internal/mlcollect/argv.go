@@ -29,6 +29,7 @@ package mlcollect
 // deeper than maxScriptDepth is replaced whole.
 
 import (
+	"net/url"
 	"path"
 	"regexp"
 	"strings"
@@ -241,7 +242,37 @@ var (
 
 // argText applies the substring rules: a URL's userinfo password, a
 // sensitive header, a credential-named assignment, a vendor-format token.
+// urlText finds URL-shaped words before shell splitting can separate query
+// parameters. ParseQuery decodes names, including percent-encoded SAS sig keys.
+var urlText = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>]+`)
+
+func redactURLText(s string) string {
+	return urlText.ReplaceAllStringFunc(s, func(raw string) string {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return Redacted
+		}
+		q, err := url.ParseQuery(u.RawQuery)
+		if err != nil {
+			return Redacted
+		}
+		changed := false
+		for k := range q {
+			if strings.EqualFold(k, "sig") || credentialName.MatchString(k) {
+				q[k] = []string{Redacted}
+				changed = true
+			}
+		}
+		if changed {
+			u.RawQuery = q.Encode()
+			return u.String()
+		}
+		return raw
+	})
+}
+
 func argText(a string) string {
+	a = redactURLText(a)
 	a = argUserinfo.ReplaceAllString(a, "${1}"+Redacted+"@")
 	a = argHeader.ReplaceAllString(a, "${1}"+Redacted)
 	a = argAssign.ReplaceAllString(a, "${1}"+Redacted)

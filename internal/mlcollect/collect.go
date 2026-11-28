@@ -310,6 +310,9 @@ func (r *reader) listApps(ctx context.Context) {
 		for i := range items {
 			strip(&items[i].ObjectMeta)
 			stripTemplate(&items[i].Spec.Template)
+			for j := range items[i].Status.Conditions {
+				items[i].Status.Conditions[j].Message = ""
+			}
 		}
 		r.s.DaemonSets = items
 	}
@@ -321,6 +324,9 @@ func (r *reader) listApps(ctx context.Context) {
 		for i := range items {
 			strip(&items[i].ObjectMeta)
 			stripTemplate(&items[i].Spec.Template)
+			for j := range items[i].Status.Conditions {
+				items[i].Status.Conditions[j].Message = ""
+			}
 		}
 		r.s.Deployments = items
 	}
@@ -333,7 +339,14 @@ func (r *reader) listApps(ctx context.Context) {
 			strip(&items[i].ObjectMeta)
 			stripTemplate(&items[i].Spec.Template)
 			for j := range items[i].Spec.VolumeClaimTemplates {
-				strip(&items[i].Spec.VolumeClaimTemplates[j].ObjectMeta)
+				pvc := &items[i].Spec.VolumeClaimTemplates[j]
+				strip(&pvc.ObjectMeta)
+				for k := range pvc.Status.Conditions {
+					pvc.Status.Conditions[k].Message = ""
+				}
+			}
+			for j := range items[i].Status.Conditions {
+				items[i].Status.Conditions[j].Message = ""
 			}
 		}
 		r.s.StatefulSets = items
@@ -349,6 +362,9 @@ func (r *reader) listBatchAndAutoscaling(ctx context.Context) {
 		for i := range items {
 			strip(&items[i].ObjectMeta)
 			stripTemplate(&items[i].Spec.Template)
+			for j := range items[i].Status.Conditions {
+				items[i].Status.Conditions[j].Message = ""
+			}
 		}
 		r.s.Jobs = items
 	}
@@ -361,6 +377,9 @@ func (r *reader) listBatchAndAutoscaling(ctx context.Context) {
 	} else {
 		for i := range items {
 			strip(&items[i].ObjectMeta)
+			for j := range items[i].Status.Conditions {
+				items[i].Status.Conditions[j].Message = ""
+			}
 		}
 		r.s.HPAs = items
 	}
@@ -493,6 +512,9 @@ func (r *reader) dynamicList(ctx context.Context, gvr schema.GroupVersionResourc
 			u := l.Items[i]
 			u.SetManagedFields(nil)
 			u.SetAnnotations(nil)
+			labels := u.GetLabels()
+			redactStringMap(labels)
+			u.SetLabels(labels)
 			out = append(out, RedactObject(u.Object))
 		}
 		next := l.GetContinue()
@@ -580,7 +602,25 @@ func stripPodSpec(p *corev1.PodSpec) {
 // option maps/URLs, and GMSA documents, all handled above. Node specs/status
 // retain addresses, IDs, resource quantities, version information and reference
 // names; provider/image URLs are sanitized below. Status reason codes, phases,
-// timestamps and readiness stay, but diagnostic messages do not.
+// timestamps and readiness stay, but diagnostic messages do not. Workload
+// condition messages (including claim-template status) follow the same rule.
+//
+// Remaining PodSpec fields are typed switches, numeric limits, scheduling and
+// identity references: selectors/affinity/tolerations, resource quantities,
+// ports, mount/device paths, DNS/host aliases, service-account and pull-secret
+// names. Volume sources other than the option maps/URLs above contain paths,
+// device/host identifiers, typed settings or Secret/ConfigMap references, not
+// inline secret data. Container resources, resize/restart policy, ports, mounts,
+// devices and security settings likewise carry configuration, not secret data.
+// PodStatus additionally retains IPs, resource allocations, container IDs,
+// restart counts and reference/condition codes. Node status retains capacity,
+// allocatable resources, daemon endpoints, OS/runtime versions, attached-volume
+// and config references; its free-form config error is dropped below.
+// Workload specs/status retain replica/job counters, selectors, strategy and
+// revision settings, PVC specs and HPA metrics/targets; pod templates use this
+// same sanitizer. These are inventory, not arbitrary application payloads.
+// This is semantic redaction: an opaque secret deliberately placed in an
+// otherwise innocuous identifier cannot be distinguished from inventory.
 //
 // Status messages are arbitrary application/runtime output, not inventory.
 // Keep scheduling state, resource counts, identities and references, but never

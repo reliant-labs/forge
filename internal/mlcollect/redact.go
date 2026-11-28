@@ -220,10 +220,12 @@ func redactArgList(strs []string) []any {
 	return out
 }
 
-// isDocument reports whether s is a multi-line YAML/JSON document of its own
-// (an OpenTelemetryCollector's `config: |`).
+// isDocument reports whether s is a YAML/JSON document of its own
+// (an OpenTelemetryCollector's `config: |`, including inline JSON).
 func isDocument(s string) bool {
-	if !strings.Contains(s, "\n") || !strings.Contains(s, ":") {
+	trimmed := strings.TrimSpace(s)
+	inlineJSON := strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
+	if !inlineJSON && (!strings.Contains(s, "\n") || !strings.Contains(s, ":")) {
 		return false
 	}
 	var doc any

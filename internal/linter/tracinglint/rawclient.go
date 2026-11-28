@@ -21,6 +21,22 @@
 // OTLP (exportsTelemetry — tracing an exporter traces its own exports),
 // whether through an OTel exporter package or an OTLP/JSON payload the file
 // encodes itself.
+//
+// Nor is a library's default for a client its caller supplies:
+//
+//	hc := o.HTTPClient
+//	if hc == nil {
+//		hc = &http.Client{}
+//	}
+//
+// in a package another module can import directly (reach.go). Internal
+// dependencies of public packages do not qualify. Whether that client is traced is the
+// importing program's choice, made in another module forge cannot see, and
+// importing forge's observe into a public SDK to build the default would
+// impose forge's telemetry stack on every user of it. Only the exact shape is
+// exempt: the client (or http.DefaultClient) is the whole right-hand side of
+// an assignment, directly in the body of `if X == nil`, to that same X.
+// Internal code keeps the finding: there the author controls both sides.
 
 package tracinglint
 
@@ -28,6 +44,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"go/types"
 	"reflect"
 	"strconv"
 	"strings"
@@ -37,23 +54,37 @@ import (
 
 const httpPath = "net/http"
 
+// rawHTTPClientRemediation is the finding's fix, naming both escapes for code
+// whose traces are not the author's to make.
+const rawHTTPClientRemediation = "use observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: …}), or wrap your own transport: " +
+	"Transport: observe.NewHTTPTransport(base). A library another module imports should take the client from its caller " +
+	"and default it only when none is given (`if o.HTTPClient == nil { o.HTTPClient = &http.Client{} }` is not flagged there); " +
+	"a whole SDK file that must not import forge takes `// forge:lint-disable-file " + RuleRawHTTPClient + ": <why>`"
+
 // rawHTTPClientFindings flags untraced *http.Client constructions and uses of
-// the package-level default client.
-func rawHTTPClientFindings(f *goFile) []finding.Finding {
+// the package-level default client. external says another module can reach
+// f's package, which exempts the caller-supplied-client default.
+func rawHTTPClientFindings(f *goFile, external bool) []finding.Finding {
 	httpName := f.importName(httpPath)
 	if httpName == "" || exportsTelemetry(f) {
 		return nil
 	}
+	var fallback map[ast.Node]bool
+	if external {
+		fallback = nilFallbacks(f.file)
+	}
 	var out []finding.Finding
 	flag := func(n ast.Node, what string) {
+		if fallback[n] {
+			return
+		}
 		out = append(out, finding.Finding{
-			Rule:     RuleRawHTTPClient,
-			Severity: finding.SeverityError,
-			File:     f.rel,
-			Line:     f.line(n.Pos()),
-			Message:  what + ": its calls open no client span and propagate no traceparent, so the callee is invisible in the caller's trace",
-			Remediation: "use observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: …}), or wrap your own transport: " +
-				"Transport: observe.NewHTTPTransport(base)",
+			Rule:        RuleRawHTTPClient,
+			Severity:    finding.SeverityError,
+			File:        f.rel,
+			Line:        f.line(n.Pos()),
+			Message:     what + ": its calls open no client span and propagate no traceparent, so the callee is invisible in the caller's trace",
+			Remediation: rawHTTPClientRemediation,
 		})
 	}
 	// Assignments to http.DefaultClient (installing a traced default) are
@@ -99,6 +130,57 @@ func rawHTTPClientFindings(f *goFile) []finding.Finding {
 		})
 	})
 	return out
+}
+
+// nilFallbacks returns the right-hand sides (parentheses and & stripped) of
+// every `X = <expr>` that sits directly in the body of an `if X == nil` (or
+// `nil == X`) testing that same X: the default a library gives a value its
+// caller did not supply.
+func nilFallbacks(file *ast.File) map[ast.Node]bool {
+	out := map[ast.Node]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		st, ok := n.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		tested := nilTested(st.Cond)
+		if tested == "" {
+			return true
+		}
+		for _, s := range st.Body.List {
+			as, ok := s.(*ast.AssignStmt)
+			if !ok || as.Tok != token.ASSIGN || len(as.Lhs) != 1 || len(as.Rhs) != 1 ||
+				types.ExprString(ast.Unparen(as.Lhs[0])) != tested {
+				continue
+			}
+			rhs := ast.Unparen(as.Rhs[0])
+			if u, ok := rhs.(*ast.UnaryExpr); ok && u.Op == token.AND {
+				rhs = ast.Unparen(u.X)
+			}
+			out[rhs] = true
+		}
+		return true
+	})
+	return out
+}
+
+// nilTested returns X for a condition `X == nil` or `nil == X`, or "".
+func nilTested(cond ast.Expr) string {
+	be, ok := ast.Unparen(cond).(*ast.BinaryExpr)
+	if !ok || be.Op != token.EQL {
+		return ""
+	}
+	isNil := func(e ast.Expr) bool {
+		id, ok := ast.Unparen(e).(*ast.Ident)
+		return ok && id.Name == "nil"
+	}
+	switch {
+	case isNil(be.Y) && !isNil(be.X):
+		return types.ExprString(ast.Unparen(be.X))
+	case isNil(be.X) && !isNil(be.Y):
+		return types.ExprString(ast.Unparen(be.Y))
+	}
+	return ""
 }
 
 // exportsTelemetry reports a file that speaks OTLP — it imports an OTLP

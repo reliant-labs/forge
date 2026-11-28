@@ -17,6 +17,26 @@ alone:
 | `forge-tracing-raw-sql-open` | `sql.Open`, `sqlx.Connect`, a pgx pool with no tracer | `dbtrace.Open(driver, dsn)`; for a native pgx pool, `cfg.ConnConfig.Tracer = dbtrace.NewPgxTracer()` before `pgxpool.NewWithConfig` |
 | `forge-tracing-contract-uninstrumented` | an instrumented contract's `pkg.New(…)` used without its decorator, anywhere (`providers.go`, `*_wire.go`, another binary) | autofixed to `pkg.NewInstrumented(…)` — New's signature, decorated |
 
+The rules cover only code a traced process can run, so two places are left
+alone without a directive:
+
+- **Programs no traced process runs.** A `package main` is traced when its
+  local import closure imports `forge/pkg/serverkit` or any
+  `go.opentelemetry.io/` package, or calls `observe.Setup`. A main that does
+  none of that (a load generator, an example client) installs no tracer, so
+  it and the packages only such mains reach are skipped, unless another
+  module can run them through a public package. A package no main reaches
+  is still linted. Build-constraint uncertainty keeps code linted too: if any
+  file in a main's closure is excluded by the current Go build context, that
+  main cannot establish the untraced exemption.
+- **A library's default for a client its caller supplies.** In a package
+  another module can import directly (not its internal implementation dependencies),
+  `if o.HTTPClient == nil { o.HTTPClient = &http.Client{} }` (or
+  `http.DefaultClient`, assigned to the very value tested) is not flagged:
+  tracing is the caller's choice. Internal code keeps the finding. A public
+  SDK file that must not import forge but builds clients some other way
+  takes `// forge:lint-disable-file forge-tracing-raw-http-client: <why>`.
+
 A logging helper of your own (`logging.Info(msg, args...)`) joins the log rule
 through forge.yaml:
 

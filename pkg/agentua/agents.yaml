@@ -1,0 +1,577 @@
+# The AI-agent and crawler list behind pkg/agentua.
+#
+# Each entry: token (the product token matched in a User-Agent, case-insensitive,
+# on word boundaries), name, operator, class, and ranges (the URL of the IP-range
+# JSON the operator publishes, "" when it publishes none we could verify).
+#
+# ORDER MATTERS: Classify returns the FIRST entry whose token matches, so a more
+# specific token goes above any token it contains or that its UA also carries
+# (Claude-SearchBot and Claude-User above ClaudeBot, Applebot-Extended above
+# Applebot, Googlebot-Image above Googlebot). TestEveryTokenMatchesOnlyItsOwnAgent
+# fails an ordering that lets one entry shadow another.
+#
+# EVERY EDIT bumps `version` (YYYY-MM-DD.N) and the sha256 pinned in
+# agentua_test.go (TestVersionBumpedWithList says both). Stored rows carry the
+# version they were classified with, so a query can reclassify old rows.
+#
+# Classes: browser, search_crawler, ai_crawler, ai_search, ai_user, tool,
+# monitor, other_bot (see the Class constants in agentua.go).
+#
+# Ranges URLs were each fetched on 2026-11-27 and returned the
+# {"prefixes":[{"ipv4Prefix"|"ipv6Prefix":…}]} format. Operators that publish no
+# such list (Anthropic, Common Crawl, ByteDance, Amazon, Meta, …) have "", so
+# their agents are never Verified: the name is a claim only.
+#
+# Robots-only tokens: Google-Extended and Applebot-Extended are robots.txt
+# product tokens that control AI-training use of content crawled by Googlebot /
+# Applebot; Google never sends Google-Extended as a User-Agent. They are listed
+# so robots-aware tooling shares one vocabulary; a UA naming them is a claim.
+version: "2026-11-27.1"
+agents:
+  # --- OpenAI ---
+  - {
+      token: ChatGPT-User,
+      name: ChatGPT-User,
+      operator: OpenAI,
+      class: ai_user,
+      ranges: "https://openai.com/chatgpt-user.json",
+    }
+  - {
+      token: OAI-SearchBot,
+      name: OAI-SearchBot,
+      operator: OpenAI,
+      class: ai_search,
+      ranges: "https://openai.com/searchbot.json",
+    }
+  - {
+      token: GPTBot,
+      name: GPTBot,
+      operator: OpenAI,
+      class: ai_crawler,
+      ranges: "https://openai.com/gptbot.json",
+    }
+  # --- Anthropic (publishes no IP-range JSON; checked 2026-11-27) ---
+  - {
+      token: Claude-SearchBot,
+      name: Claude-SearchBot,
+      operator: Anthropic,
+      class: ai_search,
+      ranges: "",
+    }
+  - {
+      token: Claude-User,
+      name: Claude-User,
+      operator: Anthropic,
+      class: ai_user,
+      ranges: "",
+    }
+  - {
+      token: ClaudeBot,
+      name: ClaudeBot,
+      operator: Anthropic,
+      class: ai_crawler,
+      ranges: "",
+    }
+  - {
+      token: anthropic-ai,
+      name: anthropic-ai,
+      operator: Anthropic,
+      class: ai_crawler,
+      ranges: "",
+    }
+  - {
+      token: Claude-Web,
+      name: Claude-Web,
+      operator: Anthropic,
+      class: ai_user,
+      ranges: "",
+    }
+  # --- Perplexity ---
+  - {
+      token: Perplexity-User,
+      name: Perplexity-User,
+      operator: Perplexity,
+      class: ai_user,
+      ranges: "https://www.perplexity.ai/perplexity-user.json",
+    }
+  - {
+      token: PerplexityBot,
+      name: PerplexityBot,
+      operator: Perplexity,
+      class: ai_search,
+      ranges: "https://www.perplexity.ai/perplexitybot.json",
+    }
+  # --- Google ---
+  - {
+      token: Google-Extended,
+      name: Google-Extended,
+      operator: Google,
+      class: ai_crawler,
+      ranges: "",
+    }
+  - {
+      token: Googlebot-Image,
+      name: Googlebot-Image,
+      operator: Google,
+      class: search_crawler,
+      ranges: "https://developers.google.com/static/search/apis/ipranges/googlebot.json",
+    }
+  - {
+      token: Googlebot-Video,
+      name: Googlebot-Video,
+      operator: Google,
+      class: search_crawler,
+      ranges: "https://developers.google.com/static/search/apis/ipranges/googlebot.json",
+    }
+  - {
+      token: Googlebot-News,
+      name: Googlebot-News,
+      operator: Google,
+      class: search_crawler,
+      ranges: "https://developers.google.com/static/search/apis/ipranges/googlebot.json",
+    }
+  - {
+      token: Googlebot,
+      name: Googlebot,
+      operator: Google,
+      class: search_crawler,
+      ranges: "https://developers.google.com/static/search/apis/ipranges/googlebot.json",
+    }
+  - {
+      token: GoogleOther,
+      name: GoogleOther,
+      operator: Google,
+      class: other_bot,
+      ranges: "",
+    }
+  - {
+      token: Google-InspectionTool,
+      name: Google-InspectionTool,
+      operator: Google,
+      class: monitor,
+      ranges: "https://developers.google.com/static/search/apis/ipranges/googlebot.json",
+    }
+  - {
+      token: AdsBot-Google,
+      name: AdsBot-Google,
+      operator: Google,
+      class: other_bot,
+      ranges: "https://developers.google.com/static/search/apis/ipranges/special-crawlers.json",
+    }
+  - {
+      token: Cloud-CDN-Google,
+      name: Cloud-CDN-Google,
+      operator: Google,
+      class: other_bot,
+      ranges: "",
+    }
+  # --- Microsoft ---
+  - {
+      token: bingbot,
+      name: bingbot,
+      operator: Microsoft,
+      class: search_crawler,
+      ranges: "https://www.bing.com/toolbox/bingbot.json",
+    }
+  - {
+      token: AzureAI-SearchBot,
+      name: AzureAI-SearchBot,
+      operator: Microsoft,
+      class: ai_search,
+      ranges: "",
+    }
+  # --- Apple ---
+  - {
+      token: Applebot-Extended,
+      name: Applebot-Extended,
+      operator: Apple,
+      class: ai_crawler,
+      ranges: "",
+    }
+  - {
+      token: Applebot,
+      name: Applebot,
+      operator: Apple,
+      class: search_crawler,
+      ranges: "https://search.developer.apple.com/applebot.json",
+    }
+  # --- Meta ---
+  - {
+      token: meta-externalagent,
+      name: meta-externalagent,
+      operator: Meta,
+      class: ai_crawler,
+      ranges: "",
+    }
+  - {
+      token: meta-externalfetcher,
+      name: meta-externalfetcher,
+      operator: Meta,
+      class: ai_user,
+      ranges: "",
+    }
+  - {
+      token: meta-webindexer,
+      name: Meta-WebIndexer,
+      operator: Meta,
+      class: search_crawler,
+      ranges: "",
+    }
+  - {
+      token: facebookexternalhit,
+      name: facebookexternalhit,
+      operator: Meta,
+      class: other_bot,
+      ranges: "",
+    }
+  - {
+      token: FacebookBot,
+      name: FacebookBot,
+      operator: Meta,
+      class: ai_crawler,
+      ranges: "",
+    }
+  # --- DuckDuckGo ---
+  - {
+      token: DuckAssistBot,
+      name: DuckAssistBot,
+      operator: DuckDuckGo,
+      class: ai_user,
+      ranges: "https://duckduckgo.com/duckassistbot.json",
+    }
+  - {
+      token: DuckDuckBot,
+      name: DuckDuckBot,
+      operator: DuckDuckGo,
+      class: search_crawler,
+      ranges: "https://duckduckgo.com/duckduckbot.json",
+    }
+  # --- other AI ---
+  - {
+      token: CCBot,
+      name: CCBot,
+      operator: Common Crawl,
+      class: ai_crawler,
+      ranges: "",
+    }
+  - {
+      token: Bytespider,
+      name: Bytespider,
+      operator: ByteDance,
+      class: ai_crawler,
+      ranges: "",
+    }
+  - {
+      token: Amazonbot,
+      name: Amazonbot,
+      operator: Amazon,
+      class: ai_crawler,
+      ranges: "",
+    }
+  - {
+      token: cohere-ai,
+      name: cohere-ai,
+      operator: Cohere,
+      class: ai_crawler,
+      ranges: "",
+    }
+  - {
+      token: Diffbot,
+      name: Diffbot,
+      operator: Diffbot,
+      class: ai_crawler,
+      ranges: "",
+    }
+  - {
+      token: ExaSearchBot,
+      name: ExaSearchBot,
+      operator: Exa,
+      class: ai_search,
+      ranges: "",
+    }
+  - { token: ExaUser, name: ExaUser, operator: Exa, class: ai_user, ranges: "" }
+  - {
+      token: Reflectionbot,
+      name: Reflectionbot,
+      operator: Reflection AI,
+      class: ai_crawler,
+      ranges: "",
+    }
+  - {
+      token: RiverBot,
+      name: RiverBot,
+      operator: River,
+      class: ai_search,
+      ranges: "",
+    }
+  - {
+      token: KeenableBot,
+      name: KeenableBot,
+      operator: Keenable,
+      class: ai_search,
+      ranges: "",
+    }
+  - {
+      token: ShapBot,
+      name: ShapBot,
+      operator: Shap,
+      class: ai_crawler,
+      ranges: "",
+    }
+  - {
+      token: LinkupBot,
+      name: LinkupBot,
+      operator: Linkup,
+      class: ai_search,
+      ranges: "",
+    }
+  - {
+      token: Hunyuan,
+      name: Hunyuan,
+      operator: Tencent,
+      class: ai_crawler,
+      ranges: "",
+    }
+  - {
+      token: Epochal-Search,
+      name: Epochal-Search,
+      operator: Epochal,
+      class: ai_search,
+      ranges: "",
+    }
+  - {
+      token: CrolBot,
+      name: CrolBot,
+      operator: cloro,
+      class: ai_search,
+      ranges: "",
+    }
+  - {
+      token: UnfragileBot,
+      name: UnfragileBot,
+      operator: Unfragile,
+      class: ai_search,
+      ranges: "",
+    }
+  - {
+      token: BrickBlueBot,
+      name: BrickBlueBot,
+      operator: brick.blue,
+      class: ai_crawler,
+      ranges: "",
+    }
+  - {
+      token: MistralAI-User,
+      name: MistralAI-User,
+      operator: Mistral AI,
+      class: ai_user,
+      ranges: "",
+    }
+  - {
+      token: YouBot,
+      name: YouBot,
+      operator: You.com,
+      class: ai_search,
+      ranges: "",
+    }
+  - {
+      token: PetalBot,
+      name: PetalBot,
+      operator: Huawei,
+      class: search_crawler,
+      ranges: "",
+    }
+  # --- search engines and SEO crawlers ---
+  - {
+      token: YandexBot,
+      name: YandexBot,
+      operator: Yandex,
+      class: search_crawler,
+      ranges: "",
+    }
+  - {
+      token: Baiduspider,
+      name: Baiduspider,
+      operator: Baidu,
+      class: search_crawler,
+      ranges: "",
+    }
+  - {
+      token: SeznamBot,
+      name: SeznamBot,
+      operator: Seznam,
+      class: search_crawler,
+      ranges: "",
+    }
+  - {
+      token: ibou-search,
+      name: ibou-search,
+      operator: ibou,
+      class: search_crawler,
+      ranges: "",
+    }
+  - {
+      token: AhrefsBot,
+      name: AhrefsBot,
+      operator: Ahrefs,
+      class: other_bot,
+      ranges: "",
+    }
+  - {
+      token: SemrushBot,
+      name: SemrushBot,
+      operator: Semrush,
+      class: other_bot,
+      ranges: "",
+    }
+  - {
+      token: MJ12bot,
+      name: MJ12bot,
+      operator: Majestic,
+      class: other_bot,
+      ranges: "",
+    }
+  - { token: DotBot, name: DotBot, operator: Moz, class: other_bot, ranges: "" }
+  - {
+      token: Barkrowler,
+      name: Barkrowler,
+      operator: Babbar,
+      class: other_bot,
+      ranges: "",
+    }
+  - {
+      token: SERankingBacklinksBot,
+      name: SERankingBacklinksBot,
+      operator: SE Ranking,
+      class: other_bot,
+      ranges: "",
+    }
+  - {
+      token: trendictionbot,
+      name: trendictionbot,
+      operator: Talkwalker,
+      class: other_bot,
+      ranges: "",
+    }
+  - {
+      token: Dataprovider.com,
+      name: Dataprovider.com,
+      operator: Dataprovider.com,
+      class: other_bot,
+      ranges: "",
+    }
+  - {
+      token: BuiltWith,
+      name: BuiltWith,
+      operator: BuiltWith,
+      class: other_bot,
+      ranges: "",
+    }
+  - {
+      token: HubSpot Crawler,
+      name: HubSpot Crawler,
+      operator: HubSpot,
+      class: other_bot,
+      ranges: "",
+    }
+  # --- monitors ---
+  - {
+      token: UptimeRobot,
+      name: UptimeRobot,
+      operator: UptimeRobot,
+      class: monitor,
+      ranges: "",
+    }
+  - {
+      token: Pingdom,
+      name: Pingdom,
+      operator: SolarWinds,
+      class: monitor,
+      ranges: "",
+    }
+  - {
+      token: Better Uptime Bot,
+      name: Better Stack,
+      operator: Better Stack,
+      class: monitor,
+      ranges: "",
+    }
+  - {
+      token: Betterstack,
+      name: Better Stack,
+      operator: Better Stack,
+      class: monitor,
+      ranges: "",
+    }
+  - {
+      token: StatusCake,
+      name: StatusCake,
+      operator: StatusCake,
+      class: monitor,
+      ranges: "",
+    }
+  - {
+      token: Site24x7,
+      name: Site24x7,
+      operator: Zoho,
+      class: monitor,
+      ranges: "",
+    }
+  - {
+      token: LinkChecker,
+      name: LinkChecker,
+      operator: LinkChecker,
+      class: monitor,
+      ranges: "",
+    }
+  # --- tools and libraries ---
+  - { token: curl, name: curl, operator: curl, class: tool, ranges: "" }
+  - { token: Wget, name: Wget, operator: GNU, class: tool, ranges: "" }
+  - {
+      token: python-requests,
+      name: python-requests,
+      operator: Python,
+      class: tool,
+      ranges: "",
+    }
+  - {
+      token: python-httpx,
+      name: python-httpx,
+      operator: Python,
+      class: tool,
+      ranges: "",
+    }
+  - { token: aiohttp, name: aiohttp, operator: Python, class: tool, ranges: "" }
+  - {
+      token: Python-urllib,
+      name: Python-urllib,
+      operator: Python,
+      class: tool,
+      ranges: "",
+    }
+  - {
+      token: Go-http-client,
+      name: Go-http-client,
+      operator: Go,
+      class: tool,
+      ranges: "",
+    }
+  - { token: fasthttp, name: fasthttp, operator: Go, class: tool, ranges: "" }
+  - { token: axios, name: axios, operator: Node.js, class: tool, ranges: "" }
+  - {
+      token: node-fetch,
+      name: node-fetch,
+      operator: Node.js,
+      class: tool,
+      ranges: "",
+    }
+  - { token: undici, name: undici, operator: Node.js, class: tool, ranges: "" }
+  - { token: okhttp, name: okhttp, operator: Square, class: tool, ranges: "" }
+  - { token: Java, name: Java, operator: Java, class: tool, ranges: "" }
+  - {
+      token: libwww-perl,
+      name: libwww-perl,
+      operator: Perl,
+      class: tool,
+      ranges: "",
+    }

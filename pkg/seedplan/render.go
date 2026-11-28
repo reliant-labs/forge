@@ -529,6 +529,9 @@ func (p *Plan) statement(tp tablePlan) string {
 		vals := make([]string, len(written))
 		for j, cp := range written {
 			vals[j] = p.cellLiteral(tp, cp, i, 0)
+			if vals[j] == "" {
+				return "" // unplaceable JSON; Validate explains the refusal
+			}
 		}
 		b.WriteString("    (")
 		b.WriteString(strings.Join(vals, ", "))
@@ -613,10 +616,16 @@ func (p *Plan) Render() string {
 // same JSON type is the least invention that satisfies it (see
 // JSONDocumentFor).
 func (p *Plan) jsonDocument(table string, col schemadef.Column) string {
-	return sqlString(JSONDocumentFor(p.byName[table], col))
+	doc := JSONDocumentFor(p.byName[table], col)
+	if doc == "" {
+		return "" // unplaceable; Validate reports the excluding CHECKs
+	}
+	return sqlString(doc)
 }
 
 // JSONDocumentFor is the document jsonDocument seeds into col, unquoted.
+// It returns an empty string (not a JSON document) when every candidate is
+// excluded by CHECKs; callers must not use that result as a value.
 // Exported for codegen's lifecycle-test fixtures, which mint create requests
 // against the same schema: one model of what a json column holds.
 func JSONDocumentFor(t schemadef.Table, col schemadef.Column) string {
@@ -639,7 +648,40 @@ func JSONDocumentFor(t schemadef.Table, col schemadef.Column) string {
 			return c
 		}
 	}
-	return base // every candidate excluded: the INSERT reports the CHECK
+	return "" // no placeable document; never return a known-excluded value
+}
+
+// jsonDocumentRefusal reports exhausted JSON synthesis only for cells the
+// plan actually writes, so a vocabulary overlay can supply a valid document.
+func (p *Plan) jsonDocumentRefusal() error {
+	var problems []string
+	for _, tp := range p.tables {
+		for _, cp := range tp.cols {
+			if cp.omit || cp.col.Type != schemadef.TypeJSON || cp.col.IsArray {
+				continue
+			}
+			for i := 0; i < tp.n; i++ {
+				if p.cellLiteral(tp, cp, i, 0) != "" {
+					continue
+				}
+				var checks []string
+				for _, ck := range tp.table.Checks {
+					for _, name := range ck.Columns {
+						if name == cp.col.Name {
+							checks = append(checks, fmt.Sprintf("CHECK %q (%s)", ck.Name, ck.Def))
+							break
+						}
+					}
+				}
+				problems = append(problems, fmt.Sprintf("%s.%s: every JSON document candidate is excluded by %s; supply db/seeds/vocab.yaml", tp.table.Name, cp.col.Name, strings.Join(checks, ", ")))
+				break
+			}
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("refusing to seed JSON without a placeable document:\n  %s", strings.Join(problems, "\n  "))
 }
 
 // jsonDefaultDocument unwraps a column DEFAULT that is a literal JSON

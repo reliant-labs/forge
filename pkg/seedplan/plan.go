@@ -342,15 +342,16 @@ func (p *Plan) Warnings() []string {
 // at APPLY time, so BuildPlan can still be used for fixtures and previews.
 func (p *Plan) Validate() error {
 	diamondErr, arrayErr := p.diamondRefusal(), p.arrayShapeRefusal()
+	jsonErr := p.jsonDocumentRefusal()
 	if len(p.vocabErrs) == 0 {
-		if arrayErr == nil {
+		if arrayErr == nil && jsonErr == nil {
 			return diamondErr
 		}
-		return errors.Join(diamondErr, arrayErr)
+		return errors.Join(diamondErr, arrayErr, jsonErr)
 	}
 	vocabErr := fmt.Errorf("refusing to seed: db/seeds/vocab.yaml declares a value the schema cannot hold:\n  %s",
 		strings.Join(p.vocabErrs, "\n  "))
-	return errors.Join(vocabErr, diamondErr, arrayErr)
+	return errors.Join(vocabErr, diamondErr, arrayErr, jsonErr)
 }
 
 // Tables returns the planned table names in insert (topological) order.

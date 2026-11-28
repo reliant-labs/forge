@@ -255,6 +255,25 @@ jsx-a11y lint its first audit checks. Its canonical origin is `SITE_URL`, a
 build-time `forge.FrontendURL` each env declares. Load
 `deploy/static-site/seo` for what is scaffolded and how to keep it right.
 
+`forge site audit` judges the built site the way search engines, link previews
+and assistive technology see it, with the rules Reliant's site insights run
+after every promotion of a hosted site:
+
+```bash
+npm run build && forge site audit          # the project's build (the env's public_dir)
+forge site audit dist/                     # a build directory
+forge site audit https://example.com       # a live site (public addresses only)
+forge site audit --browser                 # also render with your Chrome; axe-core when installed
+```
+
+Every finding names its fix: a missing title or description, a canonical to
+another host, noindex where the site should be indexed, missing Open Graph
+tags, robots.txt and sitemap problems, broken internal links, images without
+alt text. Scores are Lighthouse-compatible, not Lighthouse. `--json` prints the
+report document; the exit code is 1 when an error finding exists, 2 when the
+audit could not run. forge never rewrites a site's own files, so an existing
+site fixes what the audit names.
+
 ## Runtime config
 
 A static bundle cannot read env vars at runtime, so per-env values (an API URL,

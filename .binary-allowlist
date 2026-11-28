@@ -23,6 +23,9 @@ plugins/reliant-forge/assets/*.png
 # copies it verbatim from these embedded templates.
 internal/templates/frontend/shared-web/public/favicon.ico
 
+# forge site audit test sites: a real PNG og:image the audit fetches.
+internal/cli/testdata/siteaudit/*.png
+
 # The site starters' placeholder social card (1200x630), carrying the
 # forge:placeholder-image marker the site audit flags (pkg/siteaudit).
 internal/templates/frontend/site/*/public/og.png

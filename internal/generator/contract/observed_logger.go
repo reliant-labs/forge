@@ -22,6 +22,7 @@ package contract
 
 import (
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"os"
@@ -65,6 +66,14 @@ func findLoggerBinding(dir, impl string, target InterfaceDef) (loggerBinding, bo
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || strings.HasSuffix(name, "_gen.go") {
+			continue
+		}
+		// Do not combine fields and receivers from mutually exclusive builds.
+		matches, err := build.Default.MatchFile(dir, name)
+		if err != nil {
+			return loggerBinding{}, false
+		}
+		if !matches {
 			continue
 		}
 		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)

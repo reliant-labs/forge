@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"go/build"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -99,8 +100,9 @@ func TestObservedDecorator_LoggerBindingShapes(t *testing.T) {
 			"&service{deps: deps}", "&service{}",
 		).Replace(loggerService),
 		"nil embedded pointer Deps": strings.NewReplacer(
-			"deps Deps\n}", "*Deps\n}",
-			"&service{deps: deps}", "&service{}",
+			"type service struct {\n\tdeps Deps\n}", "type service struct {\n\t*Deps\n}",
+			"&service{deps: deps}", "service{}",
+			"func (s *service)", "func (s service)",
 		).Replace(loggerService),
 		"blank Deps": strings.NewReplacer(
 			"deps Deps\n}", "_ Deps\n}",
@@ -114,6 +116,35 @@ func TestObservedDecorator_LoggerBindingShapes(t *testing.T) {
 		if !strings.Contains(got, "return &forgeMiddlewareService{inner: inner, chain: newObserveChain()}") {
 			t.Errorf("%s: the constructor should stay the one-liner:\n%s", name, got)
 		}
+	}
+}
+
+func TestObservedDecorator_LoggerBindingBuildConstraints(t *testing.T) {
+	otherOS := "windows"
+	if build.Default.GOOS == otherOS {
+		otherOS = "linux"
+	}
+	for _, name := range []string{"alternate_" + otherOS + ".go", "alternate.go"} {
+		t.Run(name, func(t *testing.T) {
+			// Only the excluded implementation has a Deps field. Combining it
+			// with the active implementation would emit an invalid selector.
+			active := strings.NewReplacer(
+				"deps Deps\n}", "name string\n}",
+				"&service{deps: deps}", "&service{}",
+			).Replace(loggerService)
+			dir := writeLoggerPackage(t, active)
+			excluded := loggerService
+			if name == "alternate.go" {
+				excluded = "//go:build !" + build.Default.GOOS + "\n\n" + excluded
+			}
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(excluded), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got := genDecorator(t, dir, "Service", "store")
+			if strings.Contains(got, "WithLogger") {
+				t.Fatalf("bound a field from an excluded implementation:\n%s", got)
+			}
+		})
 	}
 }
 

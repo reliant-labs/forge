@@ -7,15 +7,22 @@ import (
 	"testing"
 )
 
-// agentsYAMLSHA256 pins agents.yaml. When you edit the list, bump its
-// `version` AND update this hash, in the same change.
+// agentsYAMLSHA256 pins agents.yaml with flow mappings compacted. When you edit
+// the list, bump its `version` AND update this hash, in the same change.
 const agentsYAMLSHA256 = "ed970c86addfd59e6964adde1bb979247a06a2d10846fe05a255919170759e49"
 
 // agentsYAMLVersion is the version that hash belongs to.
 const agentsYAMLVersion = "2026-11-27.1"
 
 func TestVersionBumpedWithList(t *testing.T) {
-	sum := sha256.Sum256(agentsYAML)
+	// Prettier expands flow mappings; that whitespace-only change does not
+	// change the classification version stored on rows. Hash the compact form.
+	compact := strings.NewReplacer(
+		"{\n      ", "{",
+		",\n      ", ", ",
+		",\n    }", "}",
+	).Replace(string(agentsYAML))
+	sum := sha256.Sum256([]byte(compact))
 	got := hex.EncodeToString(sum[:])
 	if got != agentsYAMLSHA256 || Version() != agentsYAMLVersion {
 		t.Fatalf("agents.yaml changed (sha256 %s, version %q) but the pins say (sha256 %s, version %q).\n"+

@@ -188,3 +188,14 @@ func TestSiteAuditRefusesAURLWithCredentials(t *testing.T) {
 		}
 	}
 }
+
+func TestSiteAuditSiteURLRefusesCredentials(t *testing.T) {
+	t.Parallel()
+	for _, flag := range []string{"https://trusted.example@127.0.0.1/", "https://user:pass@public.example/"} {
+		var out bytes.Buffer
+		err := runSiteAudit(context.Background(), &out, siteAuditTestdata("good"), siteAuditOptions{siteURL: flag, maxPages: 10})
+		if got := siteAuditExit(err); got != exitUndetermined || !strings.Contains(err.Error(), "the URL carries credentials") {
+			t.Errorf("--site-url %s: exit %d (%v), want 2 naming the credentials", flag, got, err)
+		}
+	}
+}

@@ -283,9 +283,7 @@ func resolveSiteAuditTarget(ctx context.Context, target string, o siteAuditOptio
 			return siteAuditTarget{}, siteAuditUnrunnable("%q is not a URL", target)
 		}
 		if u.User != nil {
-			// Never sent, and never trusted: https://trusted.example@127.0.0.1/
-			// is a request to 127.0.0.1.
-			return siteAuditTarget{}, siteAuditUnrunnable("the URL carries credentials (user@%s): an audit sends none, so give the site's URL without them", u.Hostname())
+			return siteAuditTarget{}, siteAuditCredentials(u)
 		}
 		u.Fragment, u.RawFragment = "", ""
 		if err := sitecrawl.RefusedHost(u); err != nil {
@@ -306,6 +304,13 @@ func resolveSiteAuditTarget(ctx context.Context, target string, o siteAuditOptio
 		return siteAuditTarget{dir: target, site: site, label: target, siteFrom: from, searchDirs: []string{target}}, nil
 	}
 	return resolveProjectSite(ctx, o)
+}
+
+// siteAuditCredentials refuses a URL that carries user@ or user:pass@
+// (exit 2). Credentials are never sent, and never trusted:
+// https://trusted.example@127.0.0.1/ is a request to 127.0.0.1.
+func siteAuditCredentials(u *url.URL) error {
+	return siteAuditUnrunnable("the URL carries credentials (user@%s): an audit sends none, so give the site's URL without them", u.Hostname())
 }
 
 // siteBase is u as a site base: no query or fragment, path ending in "/".
@@ -332,6 +337,9 @@ func siteAuditDirURL(dir, basePath, flag, envSiteURL string) (*url.URL, string, 
 		u, err := url.Parse(flag)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return nil, "", siteAuditUnrunnable("--site-url %q is not an absolute http(s) URL", flag)
+		}
+		if u.User != nil {
+			return nil, "", siteAuditCredentials(u)
 		}
 		if u.Path == "" || u.Path == "/" {
 			u.Path = base

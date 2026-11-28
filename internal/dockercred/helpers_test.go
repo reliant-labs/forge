@@ -87,3 +87,86 @@ func TestHelperBesideTool(t *testing.T) {
 		t.Fatalf("no gcloud on PATH locates nothing, got %q", got)
 	}
 }
+
+// ConfigPath is where the docker CLI in this environment reads: the
+// $DOCKER_CONFIG directory when set, else ~/.docker.
+func TestConfigPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DOCKER_CONFIG", dir)
+	if got, want := ConfigPath(), filepath.Join(dir, "config.json"); got != want {
+		t.Errorf("with DOCKER_CONFIG set, ConfigPath() = %q, want %q", got, want)
+	}
+
+	home := t.TempDir()
+	t.Setenv("DOCKER_CONFIG", "")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads this on Windows
+	if got, want := ConfigPath(), filepath.Join(home, ".docker", "config.json"); got != want {
+		t.Errorf("with no DOCKER_CONFIG, ConfigPath() = %q, want %q", got, want)
+	}
+}
+
+func TestConfigPathIsEmptyWithoutAHomeDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+		t.Skip("os.UserHomeDir does not read $HOME on this OS")
+	}
+	t.Setenv("DOCKER_CONFIG", "")
+	t.Setenv("HOME", "")
+	if got := ConfigPath(); got != "" {
+		t.Errorf("ConfigPath() = %q, want \"\" when no home directory is known", got)
+	}
+}
+
+// A config that names helpers but cannot be read or parsed names none: docker
+// has no helper to run then.
+func TestMissingHelpersIgnoresAnUnreadableConfig(t *testing.T) {
+	t.Parallel()
+	notJSON := writeHelperConfig(t, `credsStore: desktop`)
+	if got := MissingHelpers(notJSON, lookPathIn(nil)); got != nil {
+		t.Errorf("a config that is not JSON named helpers %+v", got)
+	}
+	dir := t.TempDir() // reading a directory fails with something other than not-exist
+	if got := MissingHelpers(dir, lookPathIn(nil)); got != nil {
+		t.Errorf("an unreadable config named helpers %+v", got)
+	}
+}
+
+// credsStore also named as a credHelpers value is reported once, with its hosts.
+func TestMissingHelpersReportsASharedStoreOnce(t *testing.T) {
+	t.Parallel()
+	cfg := writeHelperConfig(t, `{"credsStore":"gcloud","credHelpers":{"gcr.io":"gcloud"}}`)
+	got := MissingHelpers(cfg, lookPathIn(nil))
+	want := []MissingHelper{{Helper: "gcloud", Hosts: []string{"gcr.io"}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("MissingHelpers = %+v, want %+v", got, want)
+	}
+}
+
+// With every helper on PATH nothing is missing.
+func TestMissingHelpersEmptyWhenAllHelpersExist(t *testing.T) {
+	t.Parallel()
+	cfg := writeHelperConfig(t, `{"credsStore":"desktop","credHelpers":{"gcr.io":"gcloud"}}`)
+	got := MissingHelpers(cfg, lookPathIn(map[string]string{
+		"docker-credential-desktop": "/bin/d",
+		"docker-credential-gcloud":  "/bin/g",
+	}))
+	if len(got) != 0 {
+		t.Fatalf("MissingHelpers = %+v, want none", got)
+	}
+}
+
+// gcloud on PATH whose directory does not hold the helper locates nothing.
+func TestHelperBesideToolWithoutTheHelperFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	gcloud := filepath.Join(dir, "gcloud")
+	if err := os.WriteFile(gcloud, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := HelperBesideTool("gcloud", lookPathIn(map[string]string{"gcloud": gcloud})); got != "" {
+		t.Fatalf("HelperBesideTool = %q, want \"\" when the helper is not beside gcloud", got)
+	}
+	if got := HelperBesideTool("gcloud", lookPathIn(map[string]string{"gcloud": filepath.Join(dir, "vanished")})); got != "" {
+		t.Fatalf("HelperBesideTool = %q, want \"\" when the resolved tool does not exist", got)
+	}
+}

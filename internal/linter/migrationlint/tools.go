@@ -65,6 +65,7 @@ var ruleTools = map[string]ruleScope{
 	RuleVolatileDefault:           {},
 	RuleSetNotNullWithoutBackfill: {},
 	RuleBlockingIndexBuild:        {},
+	RuleBlockingPrimaryKeyBuild:   {},
 
 	RuleNonTransactionalStatement: oneTransactionPerFile,
 	RuleEnumValueUsedBeforeCommit: oneTransactionPerFile,

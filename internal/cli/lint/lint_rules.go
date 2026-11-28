@@ -81,7 +81,7 @@ func gradableRules() []string {
 		migrationlint.RuleDuplicateVersion, migrationlint.RuleEnumValueUsedBeforeCommit,
 		migrationlint.RuleInvalidAdoption, migrationlint.RuleNoDownMigration,
 		migrationlint.RuleNonTimestampVersion, migrationlint.RuleNonTransactionalStatement,
-		migrationlint.RuleVersionBelowMergedHead, migrationlint.RuleBlockingIndexBuild,
+		migrationlint.RuleVersionBelowMergedHead, migrationlint.RuleBlockingIndexBuild, migrationlint.RuleBlockingPrimaryKeyBuild,
 		"destructive-change", "set-not-null-without-backfill", "unsafe-add-not-null-column", "volatile-default",
 		// forge conventions (proto, Go tree, frontend env)
 		"forgeconv-activity-declared", "forgeconv-allocate-port-spacing",

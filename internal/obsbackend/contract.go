@@ -112,6 +112,16 @@ type OpsReader interface {
 	Ops(ctx context.Context, req OpsRequest) (OpsResult, error)
 }
 
+// AIReader reads one window's GenAI model and tool calls per service:
+// release health's AI findings (`forge obs check`). Both backends implement
+// it with the same pkg/obsquery panels; the cloud one runs them through
+// QueryPanel.
+//
+//forge:contract
+type AIReader interface {
+	AI(ctx context.Context, req AIRequest) (AIResult, error)
+}
+
 // AlertReader lists the env's active alerts, firing or pending. Only the
 // cloud backend implements it: locally the alert state is the `alerts`
 // workload's own (`forge obs alerts check` evaluates the rules once).

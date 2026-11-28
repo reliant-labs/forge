@@ -382,14 +382,23 @@ func TestObsCheckChangedOpsNotEvaluated(t *testing.T) {
 			h := newObsCheckHarness()
 			h.opChanges, h.wrapLocal = tc.changes, tc.wrap
 			out, _, err := h.run(t, devFacts(), nil, equalTraffic(), "check", "dev", "--since", "20m", "--json")
-			if err != nil {
-				t.Fatalf("a changed op the check cannot judge never fails it: %v", err)
+			wantCode, wantVerdict := 0, "PASS"
+			if name == "no OpsReader" {
+				// This wrapper also lacks an AI reader: unlike changed-op
+				// uncertainty, unread AI calls keep a release unproven.
+				wantCode, wantVerdict = 2, "INCONCLUSIVE"
+			}
+			if exitCodeForError(err) != wantCode {
+				t.Fatalf("exit %d, want %d: %v", exitCodeForError(err), wantCode, err)
 			}
 			doc := decode(t, out)
+			if name == "no OpsReader" && !strings.Contains(fmt.Sprint(doc["not_evaluated"]), releasehealth.NotEvaluatedAI) {
+				t.Errorf("missing unread AI uncertainty: %v", doc["not_evaluated"])
+			}
 			if ne := fmt.Sprint(doc["not_evaluated"]); !strings.Contains(ne, tc.want) {
 				t.Errorf("not_evaluated = %s, want %q", ne, tc.want)
 			}
-			if doc["verdict"] != "PASS" || findingOf(doc, release.HealthChangedOpErrors) != nil {
+			if doc["verdict"] != wantVerdict || findingOf(doc, release.HealthChangedOpErrors) != nil {
 				t.Errorf("verdict %v, findings %v", doc["verdict"], doc["findings"])
 			}
 		})

@@ -974,6 +974,53 @@ func (m *MockOpsReader) OpsCalls() []MockOpsReaderOpsCall {
 // Compile-time check.
 var _ OpsReader = (*MockOpsReader)(nil)
 
+// forge:section MockAIReader
+// forge:hash=b60b2fce53817309baea373940fed92fbd5ca48b7a8bdf2c455e28beb30a1b13
+
+// MockAIReader is a test mock for the AIReader interface.
+//
+// The embedded contractkit.Recorder records every call so tests can
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockAIReader.<Method>Func not set" error.
+type MockAIReader struct {
+	contractkit.Recorder
+	AIFunc func(context.Context, AIRequest) (AIResult, error)
+}
+
+// AI records the call and delegates to AIFunc when set.
+func (m *MockAIReader) AI(ctx context.Context, req AIRequest) (AIResult, error) {
+	m.Recorder.Record("AI", ctx, req)
+	if m.AIFunc != nil {
+		return m.AIFunc(ctx, req)
+	}
+	return AIResult{}, contractkit.MockNotSet("MockAIReader", "AI")
+}
+
+// MockAIReaderAICall is one recorded call of MockAIReader.AI, one
+// field per parameter.
+type MockAIReaderAICall struct {
+	Ctx context.Context
+	Req AIRequest
+}
+
+// AICalls returns every recorded AI call, oldest first, with
+// its arguments typed. It reads the same log as Calls("AI").
+func (m *MockAIReader) AICalls() []MockAIReaderAICall {
+	var out []MockAIReaderAICall
+	for _, c := range m.Recorder.Calls("AI") {
+		var r MockAIReaderAICall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(AIRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// Compile-time check.
+var _ AIReader = (*MockAIReader)(nil)
+
 // forge:section MockAlertReader
 // forge:hash=ece01d4e694f90f5dd176520f4cc23aeab74012512a08cb98895d35b69a78736
 

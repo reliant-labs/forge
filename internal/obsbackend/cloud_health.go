@@ -196,13 +196,13 @@ func (c Cloud) ReleaseHealth(ctx context.Context, req HealthRequest) (HealthResu
 }
 
 // cloudOverrides are the --threshold overrides the control plane is sent:
-// all but the changed-op thresholds. A control plane that predates them
-// refuses an unknown name, which would cost the whole check; the caller
-// applies them itself (releasehealth.WithChangedOps).
+// all but the changed-op and AI thresholds. A control plane that predates
+// them refuses an unknown name, which would cost the whole check; the caller
+// applies them itself (releasehealth.WithChangedOps, releasehealth.WithAI).
 func cloudOverrides(overrides map[string]string) map[string]string {
 	out := make(map[string]string, len(overrides))
 	for k, v := range overrides {
-		if !slices.Contains(releasehealth.ChangedOpThresholds, k) {
+		if !slices.Contains(releasehealth.ChangedOpThresholds, k) && !slices.Contains(releasehealth.AIThresholds, k) {
 			out[k] = v
 		}
 	}

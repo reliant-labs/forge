@@ -67,10 +67,63 @@
       "message": "web: 1 new accessibility critical violation since v1: a11y_violation button-name on /pricing"
     }
   ],
+  "ai": [
+    {
+      "service": "api",
+      "before": {
+        "model": {
+          "calls": 0,
+          "errors": 0
+        },
+        "tool": {
+          "calls": 100,
+          "errors": 0
+        },
+        "model_p95_ms": 0
+      },
+      "after": {
+        "model": {
+          "calls": 0,
+          "errors": 0
+        },
+        "tool": {
+          "calls": 100,
+          "errors": 0
+        },
+        "model_p95_ms": 0
+      },
+      "after_version": "v2"
+    }
+  ],
   "thresholds": [
     {
       "name": "min_requests",
       "value": "50",
+      "source": "default"
+    },
+    {
+      "name": "ai_min_calls",
+      "value": "50",
+      "source": "default"
+    },
+    {
+      "name": "ai_max_error_rate_increase",
+      "value": "0.05",
+      "source": "default"
+    },
+    {
+      "name": "ai_min_errors",
+      "value": "5",
+      "source": "default"
+    },
+    {
+      "name": "ai_max_p95_ratio",
+      "value": "1.5",
+      "source": "default"
+    },
+    {
+      "name": "ai_tool_max_error_rate_increase",
+      "value": "0.1",
       "source": "default"
     },
     {

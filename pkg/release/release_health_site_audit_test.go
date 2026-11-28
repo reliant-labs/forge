@@ -10,14 +10,15 @@ import (
 )
 
 // TestSiteAuditCodesAreFindings: the site-audit codes are finding codes a
-// policy may fail on, appended at the end (the order findings sort in), and
-// the default policy fails on neither (design D2: warn-only by default).
+// policy may fail on, appended after the changed-op codes (the order findings
+// sort in), and the default policy fails on neither (design D2: warn-only by
+// default).
 func TestSiteAuditCodesAreFindings(t *testing.T) {
-	n := len(HealthFindings)
-	if !reflect.DeepEqual(HealthFindings[n-2:], []string{HealthSEORegressed, HealthA11yRegressed}) || HealthFindings[n-3] != HealthChangedOpLatency {
-		t.Errorf("HealthFindings = %v: the site-audit codes must be appended at the end", HealthFindings)
+	i := slices.Index(HealthFindings, HealthSEORegressed)
+	if i < 1 || i+2 > len(HealthFindings) || !reflect.DeepEqual(HealthFindings[i:i+2], []string{HealthSEORegressed, HealthA11yRegressed}) || HealthFindings[i-1] != HealthChangedOpLatency {
+		t.Errorf("HealthFindings = %v: the site-audit codes must follow the changed-op codes", HealthFindings)
 	}
-	if !reflect.DeepEqual(SiteAuditFindings, HealthFindings[n-2:]) {
+	if !reflect.DeepEqual(SiteAuditFindings, HealthFindings[i:i+2]) {
 		t.Errorf("SiteAuditFindings = %v", SiteAuditFindings)
 	}
 	if HealthSEORegressed != "seo_regressed" || HealthA11yRegressed != "a11y_regressed" {

@@ -210,6 +210,12 @@ const (
 	// it the whole shape. So it is sent the policy without them, and judges
 	// them as the default does: warn.
 	BundleFeatureReleaseHealthChangedOps = "shape-release-health-changed-ops"
+	// BundleFeatureReleaseHealthAI is the AI finding codes (AIFindings) in
+	// ShapeReleaseHealth.FailOn: a value feature, as
+	// BundleFeatureReleaseHealthChangedOps is. A control plane that predates
+	// it is sent the policy without them; `forge obs check` judges them
+	// itself either way.
+	BundleFeatureReleaseHealthAI = "shape-release-health-ai"
 	// BundleFeatureReleaseHealthSiteAudit is the site-audit finding codes
 	// (HealthSEORegressed, HealthA11yRegressed) in ShapeReleaseHealth.FailOn,
 	// and their thresholds, ShapeReleaseHealth.SEOMaxScoreDrop and
@@ -396,7 +402,7 @@ const CapabilityAutoscalesWorkloads = "autoscales-workloads"
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities, BundleFeatureStatusPage, BundleFeatureVulnScopedExemptions, BundleFeatureReleaseURLs, BundleFeatureReleaseHealthSiteAudit}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities, BundleFeatureStatusPage, BundleFeatureVulnScopedExemptions, BundleFeatureReleaseURLs, BundleFeatureReleaseHealthSiteAudit, BundleFeatureReleaseHealthAI}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -511,6 +517,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		}
 		if changedOp := func(c string) bool { return slices.Contains(ChangedOpFindings, c) }; !r.Supports(BundleFeatureReleaseHealthChangedOps) && slices.ContainsFunc(h.FailOn, changedOp) {
 			h.FailOn, limited = slices.DeleteFunc(slices.Clone(h.FailOn), changedOp), true
+		}
+		if ai := func(c string) bool { return slices.Contains(AIFindings, c) }; !r.Supports(BundleFeatureReleaseHealthAI) && slices.ContainsFunc(h.FailOn, ai) {
+			h.FailOn, limited = slices.DeleteFunc(slices.Clone(h.FailOn), ai), true
 		}
 		if !r.Supports(BundleFeatureReleaseHealthSiteAudit) {
 			if siteAudit := func(c string) bool { return slices.Contains(SiteAuditFindings, c) }; slices.ContainsFunc(h.FailOn, siteAudit) {

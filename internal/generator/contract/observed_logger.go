@@ -68,23 +68,25 @@ func findLoggerBinding(dir, impl string, target InterfaceDef) (loggerBinding, bo
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || strings.HasSuffix(name, "_gen.go") {
 			continue
 		}
-		// Do not combine fields and receivers from mutually exclusive builds.
-		matches, err := build.Default.MatchFile(dir, name)
+		if strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution|parser.ParseComments)
 		if err != nil {
 			return loggerBinding{}, false
 		}
-		if !matches {
-			continue
-		}
-		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
-		if err != nil {
-			continue
-		}
+		// The decorator is shared by all targets, not just the generator's
+		// GOOS/GOARCH. Read even excluded files and decline binding if a
+		// relevant declaration can vary by build context.
+		unconditional := loggerFileUnconditional(dir, name, f)
 		for _, d := range f.Decls {
 			switch d := d.(type) {
 			case *ast.FuncDecl:
 				if d.Recv == nil || receiverType(d.Recv) != impl || !targetMethods[d.Name.Name] {
 					continue
+				}
+				if !unconditional {
+					return loggerBinding{}, false
 				}
 				methods++
 				if !plainReceiver(d.Recv) {
@@ -96,7 +98,13 @@ func findLoggerBinding(dir, impl string, target InterfaceDef) (loggerBinding, bo
 			case *ast.GenDecl:
 				for _, s := range d.Specs {
 					ts, ok := s.(*ast.TypeSpec)
-					if !ok || ts.TypeParams != nil {
+					if !ok {
+						continue
+					}
+					if (ts.Name.Name == impl || ts.Name.Name == "Deps") && !unconditional {
+						return loggerBinding{}, false
+					}
+					if ts.TypeParams != nil {
 						continue
 					}
 					st, ok := ts.Type.(*ast.StructType)
@@ -119,6 +127,24 @@ func findLoggerBinding(dir, impl string, target InterfaceDef) (loggerBinding, bo
 		return loggerBinding{}, false
 	}
 	return b, true
+}
+
+// loggerFileUnconditional rejects explicit build constraints and implicit
+// GOOS/GOARCH filename constraints. Empty target names let go/build recognize
+// platform suffixes without selecting the generator host's implementation.
+func loggerFileUnconditional(dir, name string, file *ast.File) bool {
+	for _, group := range file.Comments {
+		for _, comment := range group.List {
+			if strings.HasPrefix(comment.Text, "//go:build") || strings.HasPrefix(comment.Text, "// +build") {
+				return false
+			}
+		}
+	}
+	ctx := build.Default
+	ctx.GOOS, ctx.GOARCH = "", ""
+	ctx.UseAllFiles = false
+	matches, err := ctx.MatchFile(dir, name)
+	return err == nil && matches
 }
 
 // plainReceiver reports a receiver of a non-generic type: T or *T.

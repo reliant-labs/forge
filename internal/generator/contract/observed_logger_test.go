@@ -148,6 +148,31 @@ func TestObservedDecorator_LoggerBindingBuildConstraints(t *testing.T) {
 	}
 }
 
+// Generation must not bake in the host's selector: the same generated file
+// will also be compiled against the other platform's implementation.
+func TestObservedDecorator_LoggerBindingCrossGOOS(t *testing.T) {
+	for _, constraint := range []string{"filename", "build tag"} {
+		t.Run(constraint, func(t *testing.T) {
+			dir := writeContract(t, loggerContract)
+			for _, goos := range []string{"linux", "windows"} {
+				src := strings.ReplaceAll(loggerService, "deps", goos+"Deps")
+				name := "service_" + goos + ".go"
+				if constraint == "build tag" {
+					name = goos + "_service.go"
+					src = "//go:build " + goos + "\n\n" + src
+				}
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got := genDecorator(t, dir, "Service", "store")
+			if strings.Contains(got, "WithLogger") {
+				t.Fatalf("bound a platform-specific selector into a shared decorator:\n%s", got)
+			}
+		})
+	}
+}
+
 // An unrelated pointer-receiver helper does not prevent service values from
 // satisfying Service or having their logger bound by the decorator.
 func TestObservedDecorator_ValueLoggerWithPointerHelper(t *testing.T) {

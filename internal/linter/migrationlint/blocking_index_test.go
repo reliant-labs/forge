@@ -53,6 +53,18 @@ func TestBlockingIndexBuild(t *testing.T) {
 		{"attaching a partition may expose its existing rows", "CREATE TABLE products (id int) PARTITION BY LIST (id);\nALTER TABLE products ATTACH PARTITION old_products FOR VALUES IN (1);\nCREATE INDEX i ON products (id);", 1},
 		{"unknown CREATE ends an earlier emptiness proof", "CREATE TABLE products (id int);\nCREATE EXTENSION custom_backfill;\nCREATE INDEX i ON products (id);", 1},
 		{"plain CREATE TABLE and CREATE INDEX preserve a fresh proof", "CREATE TABLE products (id int);\nCREATE TABLE orders (id int);\nCREATE INDEX i ON products (id);\nCREATE INDEX j ON products (id);", 0},
+		// forge's entity scaffold writes the parent's foreign key between
+		// the CREATE TABLE and its index (obs c40fad01): the FK reads and
+		// writes no rows of an empty table, so the proof survives it.
+		{"the scaffold's create table, foreign key, then index", "CREATE TABLE tasks (id text PRIMARY KEY, project_id text NOT NULL);\nALTER TABLE tasks ADD CONSTRAINT tasks_project_id_fkey FOREIGN KEY (project_id) REFERENCES projects (id);\nCREATE INDEX tasks_project_id_idx ON tasks (project_id);", 0},
+		{"a foreign key with referential actions keeps the proof", "CREATE TABLE public.tasks (id text, project_id text);\nALTER TABLE ONLY public.tasks ADD CONSTRAINT \"tasks_fk\" FOREIGN KEY (project_id) REFERENCES public.projects(id) ON DELETE CASCADE ON UPDATE SET NULL DEFERRABLE INITIALLY DEFERRED;\nCREATE INDEX i ON public.tasks (project_id);", 0},
+		{"a foreign key on another, existing table ends the proof", "CREATE TABLE tasks (id text, project_id text);\nALTER TABLE old_tasks ADD CONSTRAINT f FOREIGN KEY (project_id) REFERENCES projects (id);\nCREATE INDEX i ON tasks (project_id);", 1},
+		{"a CHECK constraint can call a function and ends the proof", "CREATE TABLE tasks (id text);\nALTER TABLE tasks ADD CONSTRAINT c CHECK (validate_task(id));\nCREATE INDEX i ON tasks (id);", 1},
+		{"a foreign key does not prove an IF NOT EXISTS table empty", "CREATE TABLE IF NOT EXISTS tasks (id text, project_id text);\nALTER TABLE tasks ADD CONSTRAINT f FOREIGN KEY (project_id) REFERENCES projects (id);\nCREATE INDEX i ON tasks (project_id);", 1},
+		// Validating a foreign key over an IF NOT EXISTS table's existing
+		// rows can run a user-defined equality operator that writes to the
+		// fresh table, so it ends that table's proof too.
+		{"a foreign key on an IF NOT EXISTS table ends another fresh table's proof", "CREATE TABLE fresh (id text);\nCREATE TABLE IF NOT EXISTS old (id text, project_id text);\nALTER TABLE old ADD CONSTRAINT f FOREIGN KEY (project_id) REFERENCES projects (id);\nCREATE INDEX i ON fresh (id);", 1},
 		{"a generated column is not CREATE TABLE AS", "CREATE TABLE products (id text, n int GENERATED ALWAYS AS (1) STORED);\nCREATE INDEX i ON products (id);", 0},
 	}
 	for _, tc := range cases {

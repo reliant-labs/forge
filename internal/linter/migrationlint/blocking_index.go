@@ -59,6 +59,16 @@ var (
 	// default, generated expression, constraint, or unknown type is not a
 	// proof: it can execute SQL, even in an otherwise plain ADD COLUMN.
 	addOneColumnRe = regexp.MustCompile(`(?is)^\s*alter\s+table\s+(?:only\s+)?(` + indexRelationPattern + `)\s+add\s+column\s+` + indexIdentifierPattern + `\s+(?:text|smallint|integer|int|bigint|boolean|bool|uuid|bytea)\s*$`)
+	// A named foreign key on a table: what forge's entity scaffold writes
+	// between a CREATE TABLE and its indexes (`ALTER TABLE tasks ADD
+	// CONSTRAINT tasks_project_id_fkey FOREIGN KEY (project_id) REFERENCES
+	// projects (id);`). Validating it over an empty table reads no rows and
+	// writes none, and it runs no user SQL (unlike a CHECK, which may call a
+	// function). Only plain column lists and the standard referential
+	// clauses are accepted. Group 1 is the table.
+	addForeignKeyRe = regexp.MustCompile(`(?is)^\s*alter\s+table\s+(?:only\s+)?(` + indexRelationPattern + `)\s+add\s+constraint\s+` + indexIdentifierPattern +
+		`\s+foreign\s+key\s*\([^()]*\)\s*references\s+` + indexRelationPattern + `\s*(?:\([^()]*\))?` +
+		`(?:\s*(?:match\s+(?:full|simple|partial)|on\s+(?:delete|update)\s+(?:cascade|restrict|no\s+action|set\s+null|set\s+default)(?:\s*\([^()]*\))?|not\s+deferrable|deferrable|initially\s+(?:deferred|immediate)|not\s+valid))*\s*$`)
 )
 
 // A differently qualified name is not proof of the same relation: without
@@ -134,6 +144,12 @@ func preservesEmptyTables(stmt string, emptyTables map[indexRelation]tableProof)
 	case "comment", "grant", "revoke":
 		return true
 	case "alter":
+		// Only a table proved empty: validating a foreign key over a table
+		// named IF NOT EXISTS (it may already hold rows) can run user-defined
+		// equality operators, which may write to another fresh table.
+		if m := addForeignKeyRe.FindStringSubmatch(stmt); len(m) >= 2 {
+			return emptyTables[relationKey(m[1])] == createdEmpty
+		}
 		m := addOneColumnRe.FindStringSubmatch(stmt)
 		return len(m) >= 2 && emptyTables[relationKey(m[1])] != 0
 	case "create":

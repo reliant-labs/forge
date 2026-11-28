@@ -185,14 +185,33 @@ func derivedColumn(ck schemadef.CheckConstraint) (string, bool) {
 // forge's placement is PROVEN to satisfy. ok is false for every expression
 // whose truth the placement does not establish — those are named by the
 // caller's warning rather than guessed at.
-func orderRelsFromCheck(ck schemadef.CheckConstraint) ([]orderRel, bool) {
-	body, ok := checkBody(ck.Def)
+//
+// A top-level term bounding ONE column by a literal (`min_members >= 0`) is
+// not an edge, and it is not unreadable either: the bounds model owns it
+// (conjuncts.go), every synthesized value is clamped into it, and
+// orderedLiteral refuses a placement outside it. So it is stepped over here,
+// and only the remaining terms must be provable orderings. bounded reports a
+// constraint made of such terms alone — nothing for this pass to place, and
+// nothing to warn about.
+func orderRelsFromCheck(ck schemadef.CheckConstraint) (rels []orderRel, ok, bounded bool) {
+	terms, ok := checkConjuncts(ck.Def)
 	if !ok {
-		return nil, false
+		return nil, false, false
 	}
-	rels, ok := provableOrdering(body)
-	if !ok || len(rels) == 0 {
-		return nil, false
+	sawBound := false
+	for _, term := range terms {
+		if col, _, isBound := conjunctBound(term); isBound && spansColumn(ck, col) {
+			sawBound = true
+			continue
+		}
+		found, ok := provableOrdering(term)
+		if !ok {
+			return nil, false, false
+		}
+		rels = append(rels, found...)
+	}
+	if len(rels) == 0 {
+		return nil, false, sawBound
 	}
 	// Every parsed column must be one postgres says the constraint spans, or
 	// the expression was not what the matcher thought it was.
@@ -202,11 +221,11 @@ func orderRelsFromCheck(ck schemadef.CheckConstraint) ([]orderRel, bool) {
 	}
 	for i := range rels {
 		if !spans[rels[i].lo] || !spans[rels[i].hi] {
-			return nil, false
+			return nil, false, false
 		}
 		rels[i].constraint = ck.Name
 	}
-	return rels, true
+	return rels, true, false
 }
 
 // checkBody strips the `CHECK (...)` wrapper — and the `NOT VALID` suffix a
@@ -423,7 +442,10 @@ func tableOrderChains(t schemadef.Table) (map[string]orderSlot, []string) {
 		if len(ck.Columns) < 2 || claimed[ck.Name] {
 			continue
 		}
-		found, ok := orderRelsFromCheck(ck)
+		found, ok, bounded := orderRelsFromCheck(ck)
+		if bounded {
+			continue // per-column bounds only; the bounds model places them
+		}
 		if !ok {
 			// A derivation is a DIFFERENT failure from an unreadable
 			// comparison, and it has a fix the author can act on. Saying only

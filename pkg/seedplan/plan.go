@@ -342,15 +342,16 @@ func (p *Plan) Warnings() []string {
 // at APPLY time, so BuildPlan can still be used for fixtures and previews.
 func (p *Plan) Validate() error {
 	diamondErr, arrayErr := p.diamondRefusal(), p.arrayShapeRefusal()
+	jsonErr := p.jsonDocumentRefusal()
 	if len(p.vocabErrs) == 0 {
-		if arrayErr == nil {
+		if arrayErr == nil && jsonErr == nil {
 			return diamondErr
 		}
-		return errors.Join(diamondErr, arrayErr)
+		return errors.Join(diamondErr, arrayErr, jsonErr)
 	}
 	vocabErr := fmt.Errorf("refusing to seed: db/seeds/vocab.yaml declares a value the schema cannot hold:\n  %s",
 		strings.Join(p.vocabErrs, "\n  "))
-	return errors.Join(vocabErr, diamondErr, arrayErr)
+	return errors.Join(vocabErr, diamondErr, arrayErr, jsonErr)
 }
 
 // Tables returns the planned table names in insert (topological) order.
@@ -378,6 +379,9 @@ func (p *Plan) SetBounds(b CheckBounds) {
 // FK-topological seed plan. A NOT NULL foreign-key cycle is a hard error
 // naming the cycle (it is equally unsatisfiable for the app itself).
 func BuildPlan(tables []schemadef.Table, pools EnumPools, cfg Config) (*Plan, error) { //nolint:gocognit,funlen // one flat, independent branch per column kind and constraint form.
+	if err := conjunctBoundsRefusal(tables); err != nil {
+		return nil, err
+	}
 	byName := make(map[string]schemadef.Table, len(tables))
 	names := make([]string, 0, len(tables))
 	for _, t := range tables {

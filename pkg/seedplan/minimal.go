@@ -357,8 +357,9 @@ func defaultIs(col schemadef.Column, raw string) bool {
 }
 
 // defaultHonorsColumnChecks reports whether col's DEFAULT satisfies the
-// single-column constraints the planner can read on it: a CHECK vocabulary, a
-// numeric range, a length bound, a pattern. An expression DEFAULT is the
+// single-column constraints the planner can read on it: a CHECK vocabulary, an
+// excluded literal, a numeric range (including one stated as a term of a
+// multi-column CHECK), a length bound, a pattern. An expression DEFAULT is the
 // database's own business and is trusted; so is any constraint the planner
 // cannot read. The question it answers is narrow on purpose — "can a minimal
 // row leave this column out?" — and a wrong "yes" is caught where it matters,
@@ -380,11 +381,19 @@ func defaultHonorsColumnChecks(t schemadef.Table, col schemadef.Column, pools En
 			return false
 		}
 	}
+	// `selector jsonb NOT NULL DEFAULT '{}' CHECK (selector <> '{}')`: the
+	// DEFAULT is the one value the column may not hold (conjuncts.go).
+	if literalExcluded(col, raw, ExcludedLiterals(t, col.Name)) {
+		return false
+	}
 	for _, ck := range t.Checks {
-		if len(ck.Columns) != 1 || ck.Columns[0] != col.Name {
-			continue
+		b, bounded := multiColumnConjunctBounds(ck)[col.Name]
+		if !bounded {
+			if len(ck.Columns) != 1 || ck.Columns[0] != col.Name {
+				continue
+			}
+			b, bounded = boundFromCheckDef(col.Name, ck.Def)
 		}
-		b, bounded := boundFromCheckDef(col.Name, ck.Def)
 		if !bounded {
 			continue
 		}

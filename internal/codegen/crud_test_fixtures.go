@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -265,6 +266,25 @@ func (fx *crudTestFixtures) unplacedConstraintNote(table, failure string) string
 	if len(relevant) == 0 {
 		return ""
 	}
+	// When postgres names the constraint it rejected and no note is about
+	// it, the notes are NOT the cause, and listing them as though they were
+	// sends the author to restate a constraint that was never the problem
+	// (measured: reliant's machine_pools failed on an excluded-literal CHECK
+	// while the note named an unrelated bounds CHECK). Say what failed, and
+	// that forge expected to satisfy it.
+	if m := violatedCheckRE.FindStringSubmatch(failure); m != nil {
+		named := false
+		for _, w := range relevant {
+			if strings.Contains(w, `"`+m[1]+`"`) {
+				named = true
+				break
+			}
+		}
+		if !named {
+			return fmt.Sprintf("\n  forge planned a value for constraint %q and believed it satisfied, so this is a forge defect:"+
+				" report it with `forge report-bug`, and take the factory over with `forge project disown <this file>` meanwhile.", m[1])
+		}
+	}
 	var b strings.Builder
 	b.WriteString("\n  forge could not place these constraints, so the parent rows it seeds satisfy them only by chance:")
 	for _, w := range relevant {
@@ -275,6 +295,10 @@ func (fx *crudTestFixtures) unplacedConstraintNote(table, failure string) string
 	b.WriteString("\n  or take the factory over with `forge project disown <this file>` and build the request by hand.")
 	return b.String()
 }
+
+// violatedCheckRE reads the constraint name out of postgres's CHECK violation
+// (SQLSTATE 23514): `violates check constraint "machine_pools_selector_present"`.
+var violatedCheckRE = regexp.MustCompile(`violates check constraint "([^"]+)"`)
 
 // ensurePlan builds (once) the entity seed plan for a table the model knows.
 func (fx *crudTestFixtures) ensurePlan(table string) {
@@ -546,7 +570,7 @@ func (fx *crudTestFixtures) deriveFieldFixture(svc ServiceDef, ent EntityDef, in
 	// JSON input and postgres rejects the INSERT with SQLSTATE 22P02 at
 	// create #1. Emit a valid-JSON literal instead.
 	if col.Type == schemadef.TypeJSON && !col.IsArray {
-		return fx.jsonFixture()
+		return fx.jsonFixture(t, col)
 	}
 
 	// A column the schema requires to sit ABOVE another column of the same
@@ -1013,8 +1037,20 @@ func (fx *crudTestFixtures) stringFixture(t schemadef.Table, col schemadef.Colum
 // parses its input as a JSON document, so the legacy "test-value" bare word
 // is rejected as invalid JSON (SQLSTATE 22P02) at create #1 — emit
 // valid-JSON Go string literals, two distinct documents.
-func (fx *crudTestFixtures) jsonFixture() (string, string, bool) {
-	return strconv.Quote("{}"), strconv.Quote(`{"k":"v"}`), true
+//
+// A document a CHECK excludes is skipped: `CHECK (selector <> '{}'::jsonb)`
+// rejects the empty document create #1 would otherwise carry.
+func (fx *crudTestFixtures) jsonFixture(t schemadef.Table, col schemadef.Column) (string, string, bool) {
+	var docs []string
+	for _, doc := range []string{"{}", `{"k":"v"}`, `{"k":"w"}`} {
+		if !seedplan.CheckExcludes(t, col, doc) {
+			docs = append(docs, doc)
+		}
+	}
+	if len(docs) < 2 {
+		return "", "", false
+	}
+	return strconv.Quote(docs[0]), strconv.Quote(docs[1]), true
 }
 
 // intFixture derives a numeric column's create values: a CHECK VOCABULARY

@@ -69,7 +69,9 @@ func planFromTables(ctx context.Context, db schemadef.Queryer, tables []schemade
 	if err != nil {
 		return nil, err
 	}
-	plan.bounds = bounds
+	// The live introspector reads single-column CHECKs only; the bounds a
+	// multi-column CHECK states as top-level terms come from the model.
+	plan.bounds = mergeCheckBounds(bounds, conjunctBoundsFromTables(tables))
 	return plan, nil
 }
 

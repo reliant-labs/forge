@@ -2,6 +2,7 @@ package seedplan
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -93,6 +94,23 @@ func multiColumnConjunctBounds(ck schemadef.CheckConstraint) map[string]NumBound
 		out[col] = intersectBounds(out[col], b)
 	}
 	return out
+}
+
+// conjunctBoundsRefusal rejects empty intervals before synthesis can clamp a
+// value into a range that cannot satisfy the CHECK.
+func conjunctBoundsRefusal(tables []schemadef.Table) error {
+	for _, t := range tables {
+		for _, ck := range t.Checks {
+			bounds := multiColumnConjunctBounds(ck)
+			for _, col := range ck.Columns {
+				b := bounds[col]
+				if b.Min != nil && b.Max != nil && *b.Min > *b.Max {
+					return fmt.Errorf("seeddata: %s CHECK %s has contradictory bounds on %s: minimum %d exceeds maximum %d", t.Name, ck.Name, col, *b.Min, *b.Max)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // spansColumn reports whether postgres says ck spans col.

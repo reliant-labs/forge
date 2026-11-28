@@ -2,6 +2,7 @@ package seedplan
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/schemadef"
@@ -9,6 +10,37 @@ import (
 
 // The CHECK spellings below are pg_get_constraintdef's, as introspection
 // returns them (check_excluded_pg_test.go applies the source SQL to postgres).
+
+func TestBuildPlan_ContradictoryConjunctBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		def  string
+	}{
+		{"lower_first", "CHECK (((x >= 10) AND (x <= 0) AND (y >= 0)))"},
+		{"upper_first", "CHECK (((x <= 0) AND (x >= 10) AND (y >= 0)))"},
+		{"strict", "CHECK (((x > 0) AND (x <= 0) AND (y >= 0)))"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tbl := schemadef.Table{
+				Name: "bounds_test",
+				Columns: []schemadef.Column{
+					{Name: "x", Type: schemadef.TypeInt, NotNull: true},
+					{Name: "y", Type: schemadef.TypeInt, NotNull: true},
+				},
+				Checks: []schemadef.CheckConstraint{check("impossible_range", tc.def, "x", "y")},
+			}
+			p, err := BuildPlan([]schemadef.Table{tbl}, nil, Config{})
+			if err == nil || p != nil {
+				t.Fatalf("BuildPlan = %v, %v; want refusal before SQL generation", p, err)
+			}
+			for _, want := range []string{"bounds_test", "impossible_range", "contradictory bounds on x"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err, want)
+				}
+			}
+		})
+	}
+}
 
 func TestExcludedLiterals_TopLevelTermsOnly(t *testing.T) {
 	tbl := schemadef.Table{

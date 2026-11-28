@@ -378,6 +378,9 @@ func (p *Plan) SetBounds(b CheckBounds) {
 // FK-topological seed plan. A NOT NULL foreign-key cycle is a hard error
 // naming the cycle (it is equally unsatisfiable for the app itself).
 func BuildPlan(tables []schemadef.Table, pools EnumPools, cfg Config) (*Plan, error) { //nolint:gocognit,funlen // one flat, independent branch per column kind and constraint form.
+	if err := conjunctBoundsRefusal(tables); err != nil {
+		return nil, err
+	}
 	byName := make(map[string]schemadef.Table, len(tables))
 	names := make([]string, 0, len(tables))
 	for _, t := range tables {

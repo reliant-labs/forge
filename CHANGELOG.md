@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.13.0] - 2026-11-27
+
+### Added
+
+- **seed:** let tables opt out of synthesized dev data with forge:no-seed ([#2962](https://github.com/reliant-labs/forge/pull/2962))
+- **vuln:** scope a vulnerability exemption to packages, artifacts or paths ([#2916](https://github.com/reliant-labs/forge/pull/2916))
+- **testkit:** show server-side RPC causes when handler tests fail ([#2973](https://github.com/reliant-labs/forge/pull/2973))
+- **apikey:** let projects choose their API key prefix ([#2981](https://github.com/reliant-labs/forge/pull/2981))
+- **lint:** each lane's result prints as the lane finishes, and --quiet names the advisories it hid ([#2943](https://github.com/reliant-labs/forge/pull/2943))
+- **ml:** forge.MLStack, Adopt and Install declare a cluster's ML stack ([#2887](https://github.com/reliant-labs/forge/pull/2887))
+- **vuln:** forge vuln gate judges local build output offline, against a read-only database ([#3001](https://github.com/reliant-labs/forge/pull/3001))
+- **ci:** task gate runs the full Linux suite, and .reliant/pipeline.yaml for the merge queue ([#3012](https://github.com/reliant-labs/forge/pull/3012))
+- **accesstoken:** sbom:write scope for CI SBOM uploads ([#2991](https://github.com/reliant-labs/forge/pull/2991))
+- **blobstore:** server-side Open and PutObject, inline presigned GET for safe media types ([#3025](https://github.com/reliant-labs/forge/pull/3025))
+
+### Changed
+
+- **skills:** remove rejected contract settings from migration recipes ([#2975](https://github.com/reliant-labs/forge/pull/2975))
+- **proposals:** record the owner's 2026-11-26 decisions across open proposals ([#2989](https://github.com/reliant-labs/forge/pull/2989))
+- **seedplan,obsquery,migratekit,dbanalyze,querycapture,testreport:** pin behaviour to reach the 90% data-package bar ([#2951](https://github.com/reliant-labs/forge/pull/2951))
+- **coverage-floor:** raise the floor to 82.23 (main measured 82.33%) ([#2990](https://github.com/reliant-labs/forge/pull/2990))
+- **cli:** pin the cluster, deploy-guard, smoke and env-up decision logic ([#2993](https://github.com/reliant-labs/forge/pull/2993))
+- run the merge tier on the cicd self-hosted runners for merge groups only ([#3006](https://github.com/reliant-labs/forge/pull/3006))
+- self-hosted runners skip the Go cache restores and use the machine's shared caches ([#3011](https://github.com/reliant-labs/forge/pull/3011))
+- **test:** drop -count=1 from cache-sound test lanes; keep it only where child processes read files the cache cannot see (owner 2026-11-26: never re-run cached tests) ([#3010](https://github.com/reliant-labs/forge/pull/3010))
+- **apigate:** document Break.String ([#3014](https://github.com/reliant-labs/forge/pull/3014))
+- **ml:** a stack of one component renders only that component ([#3016](https://github.com/reliant-labs/forge/pull/3016))
+- **pipeline:** opt in to unisolated runc gates until sysbox gate machines exist ([#3028](https://github.com/reliant-labs/forge/pull/3028))
+- test-upload uses GitHub OIDC ([#3033](https://github.com/reliant-labs/forge/pull/3033))
+
+### Fixed
+
+- **storage:** a host build is refused only below 10 GiB, and FORGE_STORAGE_RESERVE_GIB overrides the reserve for one run ([#2905](https://github.com/reliant-labs/forge/pull/2905))
+- **scaffold:** preserve the birth record when rescaffold cannot restore a file ([#2963](https://github.com/reliant-labs/forge/pull/2963))
+- **dev:** air no longer rebuilds the server for directories its binary never imports ([#2945](https://github.com/reliant-labs/forge/pull/2945))
+- **ci:** affected mode never selects less than a test that names a file, a module or a plan says ([#2873](https://github.com/reliant-labs/forge/pull/2873))
+- **test:** say in the CI run summary when test results were not uploaded, and upload forge's merge-queue runs ([#3007](https://github.com/reliant-labs/forge/pull/3007))
+- **lint:** internal/pathshadow declares its contract opt-out, and registerSharedTempDir's integration-build gap is explained, not flagged ([#3024](https://github.com/reliant-labs/forge/pull/3024))
+- **scaffold:** let custom subcommands test independently of the server graph ([#2980](https://github.com/reliant-labs/forge/pull/2980))
+- **ci:** select affected readers of owned Go source ([#3021](https://github.com/reliant-labs/forge/pull/3021))
+- **templates:** make frontend tsconfigs TypeScript 7-ready ([#3022](https://github.com/reliant-labs/forge/pull/3022))
+- **blobstore:** bound PutObject's buffer, hold S3 ranges to 206, test pinning and tamper ([#3035](https://github.com/reliant-labs/forge/pull/3035))
+- **scaffold:** reconcile command bridges and host execution configuration ([#3036](https://github.com/reliant-labs/forge/pull/3036))
+- **blobstore:** refuse a PutObject body that fails with io.ErrUnexpectedEOF ([#3037](https://github.com/reliant-labs/forge/pull/3037))
+
 ## [v1.12.0] - 2026-11-26
 
 ### Added
@@ -9746,7 +9791,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.12.0...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.13.0...HEAD
+[v1.13.0]: https://github.com/reliant-labs/forge/compare/v1.12.0...v1.13.0
 [v1.12.0]: https://github.com/reliant-labs/forge/compare/v1.11.0...v1.12.0
 [v1.11.0]: https://github.com/reliant-labs/forge/compare/v1.10.0...v1.11.0
 [v1.10.0]: https://github.com/reliant-labs/forge/compare/v1.9.0...v1.10.0

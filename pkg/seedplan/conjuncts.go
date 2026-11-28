@@ -212,8 +212,11 @@ func sameColumnValue(col schemadef.Column, a, b string) bool {
 	switch col.Type {
 	case schemadef.TypeJSON:
 		var va, vb any
-		if json.Unmarshal([]byte(a), &va) == nil && json.Unmarshal([]byte(b), &vb) == nil {
-			return reflect.DeepEqual(va, vb)
+		da, db := json.NewDecoder(strings.NewReader(a)), json.NewDecoder(strings.NewReader(b))
+		da.UseNumber()
+		db.UseNumber()
+		if json.Valid([]byte(a)) && json.Valid([]byte(b)) && da.Decode(&va) == nil && db.Decode(&vb) == nil {
+			return sameJSONValue(va, vb)
 		}
 	case schemadef.TypeInt:
 		// PostgreSQL integers are signed and at most 64 bits. Do not round
@@ -235,6 +238,46 @@ func sameColumnValue(col schemadef.Column, a, b string) bool {
 		return errA == nil && errB == nil && fa == fb
 	}
 	return false
+}
+
+// sameJSONValue compares decoded JSON recursively, retaining PostgreSQL's exact
+// numeric equality even inside objects and arrays (1, 1.0 and 1e0 are equal).
+func sameJSONValue(a, b any) bool {
+	switch a := a.(type) {
+	case json.Number:
+		b, ok := b.(json.Number)
+		if !ok {
+			return false
+		}
+		ra, okA := new(big.Rat).SetString(string(a))
+		rb, okB := new(big.Rat).SetString(string(b))
+		return okA && okB && ra.Cmp(rb) == 0
+	case []any:
+		b, ok := b.([]any)
+		if !ok || len(a) != len(b) {
+			return false
+		}
+		for i := range a {
+			if !sameJSONValue(a[i], b[i]) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		b, ok := b.(map[string]any)
+		if !ok || len(a) != len(b) {
+			return false
+		}
+		for key, value := range a {
+			other, exists := b[key]
+			if !exists || !sameJSONValue(value, other) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(a, b)
+	}
 }
 
 // CheckExcludes reports whether the table's CHECKs forbid col to hold raw

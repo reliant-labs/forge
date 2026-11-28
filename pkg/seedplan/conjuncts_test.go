@@ -60,6 +60,31 @@ func TestBuildPlan_NullableContradictoryConjunctBounds(t *testing.T) {
 	}
 }
 
+func TestSameColumnValue_ExactJSONNumbers(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{"large_distinct", `9007199254740992`, `9007199254740993`, false},
+		{"large_equal", `9007199254740993`, `9007199254740993.0`, true},
+		{"fraction_distinct", `0.12345678901234567890`, `0.12345678901234567891`, false},
+		{"exponent_equal", `1e30`, `1000000000000000000000000000000.0`, true},
+		{"nested_distinct", `{"n":[9007199254740992]}`, `{"n":[9007199254740993]}`, false},
+		{"nested_equal", `{"n":[1,2.0]}`, `{"n":[1e0,2]}`, true},
+		{"number_not_string", `1`, `"1"`, false},
+		{"different_null_keys", `{"a":null}`, `{"b":null}`, false},
+		{"trailing_data", `1 2`, `1`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			col := schemadef.Column{Type: schemadef.TypeJSON}
+			if got := sameColumnValue(col, tc.a, tc.b); got != tc.want {
+				t.Errorf("sameColumnValue(%s, %s) = %v; want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSameColumnValue_ExactNumericExclusions(t *testing.T) {
 	for _, tc := range []struct {
 		name string

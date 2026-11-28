@@ -173,6 +173,62 @@ func TestObservedDecorator_LoggerBindingCrossGOOS(t *testing.T) {
 	}
 }
 
+// Generate once for Linux, then compile those exact bytes for both targets.
+func TestObservedDecorator_LoggerBindingCrossGOOSCompile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("-short: cross-compiles a throwaway module; runs in task test")
+	}
+	t.Setenv("GOOS", "linux")
+	t.Setenv("GOARCH", "amd64")
+	forgeRoot, err := filepath.Abs("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, err := os.ReadFile(filepath.Join(forgeRoot, "go.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, constraint := range []string{"filename", "build tag"} {
+		t.Run(constraint, func(t *testing.T) {
+			root := t.TempDir()
+			files := map[string]string{
+				"go.mod": "module example.com/proj\n\ngo 1.22\n\n" +
+					"require github.com/reliant-labs/forge v0.0.0\n\n" +
+					"replace github.com/reliant-labs/forge => " + filepath.ToSlash(forgeRoot) + "\n",
+				"go.sum":                     string(sum),
+				"internal/store/contract.go": loggerContract,
+			}
+			for _, goos := range []string{"linux", "windows"} {
+				src := strings.ReplaceAll(loggerService, "deps", goos+"Deps")
+				name := "service_" + goos + ".go"
+				if constraint == "build tag" {
+					name = goos + "_service.go"
+					src = "//go:build " + goos + "\n\n" + src
+				}
+				files["internal/store/"+name] = src
+			}
+			writeTree(t, root, files)
+			dir := filepath.Join(root, "internal", "store")
+			cf, err := ParseContract(filepath.Join(dir, "contract.go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			def := &DefaultChain{Scope: "example.com/proj/internal/store", Name: "store", LogLevel: "slog.LevelDebug"}
+			if _, err := WriteObservedDecorator(cf, dir, "Service", "", "", "store", def, Options{}); err != nil {
+				t.Fatal(err)
+			}
+			for _, goos := range []string{"linux", "windows"} {
+				cmd := exec.Command("go", "build", "./...")
+				cmd.Dir = root
+				cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off", "CGO_ENABLED=0", "GOOS="+goos))
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("go build for %s: %v\n%s", goos, err, out)
+				}
+			}
+		})
+	}
+}
+
 // An unrelated pointer-receiver helper does not prevent service values from
 // satisfying Service or having their logger bound by the decorator.
 func TestObservedDecorator_ValueLoggerWithPointerHelper(t *testing.T) {

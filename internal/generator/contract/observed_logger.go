@@ -22,7 +22,6 @@ package contract
 
 import (
 	"go/ast"
-	"go/build"
 	"go/parser"
 	"go/token"
 	"os"
@@ -78,7 +77,7 @@ func findLoggerBinding(dir, impl string, target InterfaceDef) (loggerBinding, bo
 		// The decorator is shared by all targets, not just the generator's
 		// GOOS/GOARCH. Read even excluded files and decline binding if a
 		// relevant declaration can vary by build context.
-		unconditional := loggerFileUnconditional(dir, name, f)
+		unconditional := loggerFileUnconditional(name, f)
 		for _, d := range f.Decls {
 			switch d := d.(type) {
 			case *ast.FuncDecl:
@@ -130,9 +129,8 @@ func findLoggerBinding(dir, impl string, target InterfaceDef) (loggerBinding, bo
 }
 
 // loggerFileUnconditional rejects explicit build constraints and implicit
-// GOOS/GOARCH filename constraints. Empty target names let go/build recognize
-// platform suffixes without selecting the generator host's implementation.
-func loggerFileUnconditional(dir, name string, file *ast.File) bool {
+// GOOS/GOARCH filename constraints without consulting the generator's target.
+func loggerFileUnconditional(name string, file *ast.File) bool {
 	for _, group := range file.Comments {
 		for _, comment := range group.List {
 			if strings.HasPrefix(comment.Text, "//go:build") || strings.HasPrefix(comment.Text, "// +build") {
@@ -140,11 +138,18 @@ func loggerFileUnconditional(dir, name string, file *ast.File) bool {
 			}
 		}
 	}
-	ctx := build.Default
-	ctx.GOOS, ctx.GOARCH = "", ""
-	ctx.UseAllFiles = false
-	matches, err := ctx.MatchFile(dir, name)
-	return err == nil && matches
+	// Go recognizes _GOOS, _GOARCH and _GOOS_GOARCH before .go.
+	// Checking both trailing components is conservative (it also rejects
+	// _GOARCH_GOOS), and includes historical targets for older toolchains.
+	parts := strings.Split(strings.TrimSuffix(name, ".go"), "_")
+	for i := len(parts) - 1; i > 0 && i >= len(parts)-2; i-- {
+		switch parts[i] {
+		case "aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos", "ios", "js", "linux", "nacl", "netbsd", "openbsd", "plan9", "solaris", "wasip1", "windows",
+			"386", "amd64", "amd64p32", "arm", "armbe", "arm64", "arm64be", "loong64", "mips", "mipsle", "mips64", "mips64le", "mips64p32", "mips64p32le", "ppc", "ppc64", "ppc64le", "riscv", "riscv64", "s390", "s390x", "sparc", "sparc64", "wasm":
+			return false
+		}
+	}
+	return true
 }
 
 // plainReceiver reports a receiver of a non-generic type: T or *T.

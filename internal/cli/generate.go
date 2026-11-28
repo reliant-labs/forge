@@ -135,6 +135,17 @@ Hooks:
   already has forge's driver: then it keeps the driver pointed at the pinned
   forge ('manual' stops that). FORGE_NO_MERGE_DRIVER=1 silences both.
 
+Scoped:
+  --scope <dir> (repeatable) refreshes only the derived contract files of
+  the packages under each named internal/ directory: contract_gen.go from a
+  //forge:contract type, mock_gen.go from it or contract.go and a
+  forge:deps deps.go, and middleware_gen.go. It writes through the same
+  writers as a full run, so the bytes match, and validates by compiling the
+  scoped packages and their dependencies: any compile error rolls the run
+  back unless --keep-on-build-failure is set. Unrelated packages are not
+  compiled. It runs in seconds, in the express lane, and is never recorded
+  as verified. A proto, migration or config change still needs the full run.
+
 Skipping:
   A full run that changes nothing records the tree as a verified fixed point
   (.forge/generate-cache.json, per checkout). The next run that finds every
@@ -157,6 +168,7 @@ Examples:
   forge generate --explain  # Print per-file provenance log after generate
   forge generate --verbose  # Also print routine lines (skipped steps, pinned-tool resolution)
   forge generate --keep-on-build-failure  # Mid-migration: keep the output although the project does not compile yet
+  forge generate --scope internal/assigner  # After a contract or deps.go edit: refresh that package's mock_gen.go, contract_gen.go, middleware_gen.go
 
 Additional maintainer/debug flags exist (pipeline narrowing, drift
 forensics, parallel-lane and migration escape hatches); run
@@ -183,6 +195,7 @@ func newGenerateCmd() *cobra.Command {
 		timings         bool
 		noCache         bool
 		steps           string
+		scope           []string
 	)
 
 	cmd := &cobra.Command{
@@ -190,6 +203,10 @@ func newGenerateCmd() *cobra.Command {
 		Short: "Generate code from proto files",
 		Long:  generateLongHelp,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			scoped, err := normalizeGenerateScope(".", scope)
+			if err != nil {
+				return err
+			}
 			if checkOnly {
 				// No slot here: the regenerate is a child `forge generate`,
 				// which queues for its own. Holding one across it would
@@ -207,7 +224,7 @@ func newGenerateCmd() *cobra.Command {
 					Strict:          strict,
 					Verbose:         verbose,
 					Steps:           steps,
-				})
+				}.withScope(scoped))
 			}
 			flags := pipelineFlags{
 				Force:              force,
@@ -226,13 +243,12 @@ func newGenerateCmd() *cobra.Command {
 				Cache:              true,
 				NoCache:            noCache,
 				Steps:              steps,
-			}
+			}.withScope(scoped)
 			// A run with nothing to do must not queue for a heavy slot
 			// behind real work first: the cache check is a second of
 			// hashing, not heavy work. --explain wants a pipeline to explain.
 			skipped := false
 			if !explain {
-				var err error
 				if skipped, err = generateCachedNoop(".", flags); err != nil {
 					return err
 				}
@@ -273,9 +289,8 @@ func newGenerateCmd() *cobra.Command {
 				}
 				return pipeErr
 			}
-			var err error
 			if !skipped {
-				err = generateLockedInSlot(cmd, body)
+				err = generateLockedInSlotFor(cmd, flags, body)
 			}
 			if generateRunEndsCommand(err, watch) {
 				return err
@@ -299,7 +314,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "Run generate into a tmpdir and diff against the current tree; exit 1 on drift (for CI guards)")
 	cmd.Flags().BoolVar(&forceCleanup, "force-cleanup", false, "Also delete stale generated files that carry hand-edits. Generate always deletes the stale files nobody edited; without this flag it lists the edited ones and keeps them.")
 	cmd.Flags().BoolVar(&templatesOnly, "templates-only", false, "Re-render template-driven files only. Skips cleanup sweep, drift-guard, and validation. Use when a template change needs to propagate to a project that has uncommitted WIP and can't tolerate a full regen.")
-	cmd.Flags().Var((*stepPresetValue)(&steps), "steps", "Narrow the pipeline to a named step preset. Valid values: \"bootstrap-only\" (used internally by 'forge scaffold worker'), \"mocks\" (regen both kinds of mock_gen.go — contract-derived and service-derived — after a contract.go or proto change; skips the Tier-1 drift guard since mocks cannot stomp Tier-1 files), \"harness\" (regen only each component's helpers_gen_test.go — NewTest<Svc>, With<Svc>Deps, the doubles it installs — and the contract mock_gen.go files it installs them from, after a Deps edit; a proto or migration change needs the full run), \"env-config\" (write only the config modules every env's KCL imports — config_gen.k, frontend_config_gen.k, each env's config.k — so the envs render; used internally by 'forge project rescaffold').")
+	cmd.Flags().Var((*stepPresetValue)(&steps), "steps", "Narrow the pipeline to a named step preset. Valid values: \"bootstrap-only\" (used internally by 'forge scaffold worker'), \"contracts\" (what --scope runs: each contract package's contract_gen.go, mock_gen.go and middleware_gen.go; with --scope, only the named packages, then a compile of them), \"mocks\" (regen both kinds of mock_gen.go — contract-derived and service-derived — after a contract.go or proto change; skips the Tier-1 drift guard since mocks cannot stomp Tier-1 files), \"harness\" (regen only each component's helpers_gen_test.go — NewTest<Svc>, With<Svc>Deps, the doubles it installs — and the contract mock_gen.go files it installs them from, after a Deps edit; a proto or migration change needs the full run), \"env-config\" (write only the config modules every env's KCL imports — config_gen.k, frontend_config_gen.k, each env's config.k — so the envs render; used internally by 'forge project rescaffold').")
 	// Loud-by-default architecture flags. See the per-flag fields on
 	// pipelineFlags for the rationale; runGeneratePlan + warnOrFail consume them.
 	cmd.Flags().BoolVar(&strict, "strict", false, "Stop at the first failed step and roll the tree back, instead of running the steps that do not depend on it. Either way a failed step makes generate exit non-zero.")
@@ -331,6 +346,8 @@ func newGenerateCmd() *cobra.Command {
 	// second keeps a tree half-written by ANY failed step, mid-pipeline.
 	cmd.Flags().BoolVar(&keepOnFailure, "keep-on-build-failure", false, "Keep the generated files when the project does not compile yet, instead of rolling the tree back. For a migration whose hand-written code is ported after generating (connect-go v2, say): a failed compile check, a go mod tidy that cannot resolve an import, or a failed post generate hook (forge.yaml generate.hooks) no longer rolls back, every step and hook still runs, each failure's output is printed, and the run exits non-zero and is not recorded as verified, so the next plain 'forge generate' checks the tree again. A failed input hook still rolls back: later steps project from its output.")
 	cmd.MarkFlagsMutuallyExclusive("keep-on-build-failure", "strict")
+	cmd.Flags().StringSliceVar(&scope, "scope", nil, "Refresh only the derived contract files (contract_gen.go, mock_gen.go, middleware_gen.go) of the packages under this internal/ directory, validated by compiling those packages alone — the inner loop after editing a //forge:contract type, contract.go or a forge:deps deps.go. Repeatable. A proto, migration or config change needs the full run.")
+	markGenerateScopeExclusive(cmd)
 
 	// User-vs-maintainer surface split: the flags below are fully
 	// functional but hidden from --help (visible via --help-dev). The
@@ -541,6 +558,12 @@ type pipelineFlags struct {
 	// even when the tree is a recorded fixed point. The run still records,
 	// so it is also how to refresh the record.
 	NoCache bool
+
+	// Scope (--scope) narrows the run to the derived contract files of the
+	// packages under these module-relative directories; set it with
+	// withScope, which also selects the "contracts" step preset. Empty is
+	// every package. See generate_scope.go.
+	Scope contractScope
 }
 
 // announceSkippedChecks names, before any step runs, each check this run

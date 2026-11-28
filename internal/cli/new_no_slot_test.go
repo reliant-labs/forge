@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ func TestBootstrapPipelineFlags(t *testing.T) {
 	if skip.SkipPreChecks || skip.SkipConfigCheck || skip.Force {
 		t.Errorf("default bootstrap = %+v: only the compile tail may be skipped", skip)
 	}
-	if got := bootstrapPipelineFlags(true); got != (pipelineFlags{}) {
+	if got := bootstrapPipelineFlags(true); !reflect.DeepEqual(got, pipelineFlags{}) {
 		t.Errorf("--verify bootstrap = %+v, want the full pipeline", got)
 	}
 }

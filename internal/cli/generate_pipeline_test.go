@@ -140,6 +140,8 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"detect renamed Tier-1 exports",
 		"check disowned-sibling dangling refs",
 		"check stale scaffold tests",
+		// A --scope run's compile check; gated off in every other run.
+		"go build (validate scoped packages)",
 		"go build (validate generated code)",
 		// After the emitters, because the tree it checks is the one they
 		// just produced. A deploy tree that does not compile fails generate

@@ -73,6 +73,10 @@ func TestGenerateHelpSurface(t *testing.T) {
 		// VISIBLE on purpose: a skipped run says "--no-cache runs every
 		// step", and the flag it names must be one --help shows.
 		"no-cache",
+		// VISIBLE on purpose: the inner loop after a contract or deps.go
+		// edit — refresh one package's mock_gen.go without a whole-project
+		// run (forge friction #36). Agents guess it from `forge lint --scope`.
+		"scope",
 		"verbose",
 		"watch",
 	})

@@ -225,6 +225,10 @@ type pipelineContext struct {
 	// for the rationale; consumed by the gate-loop in runGeneratePipelineFlags.
 	Verbose bool
 
+	// Scope narrows the contracts step to these packages and turns on their
+	// compile check. See pipelineFlags.Scope and generate_scope.go.
+	Scope contractScope
+
 	// ForceCleanup makes the stale-artifact sweep delete hand-edited
 	// stale files too. Without it the sweep deletes only pristine ones —
 	// certified files no emitter wrote this run, byte-identical to what
@@ -384,6 +388,7 @@ func newPipelineContextWithFlags(projectDir string, flags pipelineFlags) (*pipel
 		Strict:             flags.Strict,
 		KeepOnBuildFailure: flags.KeepOnBuildFailure,
 		Verbose:            flags.Verbose,
+		Scope:              flags.Scope,
 		connectMajorV:      major,
 	}, nil
 }
@@ -648,6 +653,9 @@ func generateSteps() []GenStep {
 		// pb reference there would otherwise surface only at the user's
 		// next `go test`. See generate_stale_scaffold.go.
 		{Name: "check stale scaffold tests", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCheckStaleScaffoldTests, Tag: "validate"},
+		// A --scope run compiles the packages it regenerated instead of the
+		// tree (generate_scope.go); the full run never passes this gate.
+		{Name: scopedValidateStep, Gate: and(gateScoped, gateValidateNotSkipped, hasGoModule), GateReason: "not a --scope run, or --skip-validate was passed, or " + noGoModuleReason, Run: stepValidateScopedPackages, Tag: "validate"},
 		{Name: goBuildValidateStep, Gate: and(gateValidateNotSkipped, hasGoModule), GateReason: "--skip-validate was passed, or " + noGoModuleReason, Run: stepGoBuildValidate, Tag: "validate"},
 		// The deploy tree must COMPILE, and a tree that does not is a hard
 		// failure rather than a warning. See generate_kcl_loadable.go: a
@@ -816,6 +824,26 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		"per-service test helpers":     true,
 		"goimports on generated Go":    true,
 		"rehash tracked files":         true,
+	},
+	// The "contracts" step preset is `forge generate --scope <dir>`: the
+	// derived contract files (contract_gen.go, mock_gen.go,
+	// middleware_gen.go) of the scoped packages, and nothing else — the
+	// inner loop after editing a //forge:contract type, a contract.go or a
+	// forge:deps deps.go, which move nothing outside their own package.
+	// Unlike "mocks" it leaves internal/handlers/mocks (a proto projection)
+	// alone, and it ends with a compile check of the scoped packages only,
+	// so another package that does not compile neither blocks it nor is
+	// blamed on it. The Tier-1 stomp guard is skipped for the reason given
+	// at "mocks"; the writers still refuse a hand-edited file without
+	// --force. Without --scope it covers every contract package and the
+	// compile check is gated off, like "mocks".
+	contractsStepPreset: {
+		"load project config":        true,
+		"load checksums":             true,
+		"internal package contracts": true,
+		"goimports on generated Go":  true,
+		"rehash tracked files":       true,
+		scopedValidateStep:           true,
 	},
 	// The "env-config" step preset writes what every env's KCL imports
 	// from generate — config_gen.k, frontend_config_gen.k and each env's
@@ -2346,7 +2374,7 @@ func stepServiceMocks(ctx *pipelineContext) error {
 // canonical Service / Deps / New(Deps) shape from contract.go and
 // surfaces it as the bootstrap step's source of truth.
 func stepInternalContracts(ctx *pipelineContext) error {
-	if err := generateInternalPackageContracts(ctx.ProjectDir, ctx.Cfg, ctx.Checksums); err != nil {
+	if err := generateInternalPackageContractsIn(ctx.ProjectDir, ctx.Cfg, ctx.Checksums, ctx.Scope); err != nil {
 		return fmt.Errorf("internal package contract generation failed: %w", err)
 	}
 	return nil

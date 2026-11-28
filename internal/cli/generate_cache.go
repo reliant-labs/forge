@@ -151,7 +151,7 @@ func generateCacheModeFor(flags pipelineFlags) generateCacheMode {
 	}
 	// Flags that change WHAT a run writes: such a run is not the run the
 	// manifest describes, and proves nothing about one.
-	if flags.Steps != "" || flags.TemplatesOnly || flags.ExplainDrift || flags.Force || flags.Heal || flags.ForceCleanup {
+	if flags.Steps != "" || len(flags.Scope) > 0 || flags.TemplatesOnly || flags.ExplainDrift || flags.Force || flags.Heal || flags.ForceCleanup {
 		return generateCacheMode{}
 	}
 	m := generateCacheMode{

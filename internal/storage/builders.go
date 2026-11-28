@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // RegisterBuilder adopts a named local builder without requiring a registry or
@@ -155,16 +156,123 @@ func (r Runner) builderRunner(info builderInfo) Runner {
 	return r
 }
 
+// BuildCacheFloorEnv overrides the policy's build_cache_floor for one process
+// and the processes it starts: a duration of at least 1h, or "off" for the
+// earlier age-gated budget. Never persisted.
+const BuildCacheFloorEnv = "FORGE_STORAGE_BUILD_CACHE_FLOOR"
+
+const (
+	// defaultBuildCacheFloor is the build-cache budget's safety floor. The
+	// Go-cache trim's floor is 2h for the same reason: long enough to cover a
+	// build that just finished and the next one that reuses its layers.
+	defaultBuildCacheFloor = 2 * time.Hour
+	minBuildCacheFloor     = time.Hour
+	buildCacheFloorOff     = "off"
+)
+
+// Pressure trades warm-cache reuse for disk recovery. Keep a 10-minute
+// grace period for just-finished builds; BuildKit itself protects records
+// still in use by active builds, regardless of their age. The size target
+// remains bounded, and an explicit floor "off" retains the age-only policy.
+const pressureBuildCacheFloor = 10 * time.Minute
+
+// parseBuildCacheFloor reads a build_cache_floor value: the floor, whether the
+// size rule is on, or an error. Empty is the default floor.
+func parseBuildCacheFloor(v string) (time.Duration, bool, error) {
+	v = strings.TrimSpace(v)
+	switch strings.ToLower(v) {
+	case "":
+		return defaultBuildCacheFloor, true, nil
+	case buildCacheFloorOff:
+		return 0, false, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < minBuildCacheFloor {
+		return 0, false, fmt.Errorf("want a duration of at least %s, or %q, got %q", minBuildCacheFloor, buildCacheFloorOff, v)
+	}
+	return d, true, nil
+}
+
+// buildCachePrune is what one builder's prune asks BuildKit for.
+type buildCachePrune struct {
+	// MaxUsed is --max-used-space: BuildKit removes least recently used
+	// records until the cache is no larger.
+	MaxUsed uint64
+	// Until is the --filter until= age: no record used more recently is
+	// removed.
+	Until string
+	// SizeRule is false for the earlier, age-gated budget (floor "off").
+	SizeRule bool
+}
+
+// buildCachePrune resolves the prune from the policy, $BuildCacheFloorEnv and
+// the pass's pressure.
+//
+// The budget used to apply only to cache unused for build_cache_unused (7
+// days). BuildKit removes a record only when it is both older than the
+// filter AND over the budget, so a cache that a week of builds filled — every
+// record younger than 7 days — was never pruned, however far over budget: on a
+// shared machine at 92% disk that pass freed 0 B. The size rule enforces the
+// budget against everything older than the floor.
+func (r Runner) buildCachePrune() buildCachePrune {
+	floor, sizeRule, err := parseBuildCacheFloor(r.Policy.BuildCacheFloor)
+	if err != nil { // Validate refuses this; a hand-built Policy may not have run it
+		floor, sizeRule = defaultBuildCacheFloor, true
+	}
+	if v := os.Getenv(BuildCacheFloorEnv); strings.TrimSpace(v) != "" {
+		if d, on, err := parseBuildCacheFloor(v); err != nil {
+			r.print("warning: %s: %v; using the policy's floor\n", BuildCacheFloorEnv, err)
+		} else {
+			floor, sizeRule = d, on
+		}
+	}
+	p := buildCachePrune{MaxUsed: r.Policy.BuildCacheGiB * GiB, Until: r.Policy.BuildCacheUnused, SizeRule: sizeRule}
+	if r.Pressure {
+		// Half the budget, but not below 1 GiB, and never above the budget
+		// itself: pressure only ever asks for less cache than the policy does.
+		p.MaxUsed = min(max(p.MaxUsed/2, GiB), p.MaxUsed)
+	}
+	if !sizeRule {
+		return p
+	}
+	if r.Pressure {
+		floor = min(floor, pressureBuildCacheFloor)
+	}
+	// The floor never protects more than the age rule it replaces did.
+	if unused, err := time.ParseDuration(r.Policy.BuildCacheUnused); err == nil && unused < floor {
+		floor = unused
+	}
+	p.Until = compactDuration(floor)
+	return p
+}
+
+// compactDuration prints whole hours as "2h" rather than "2h0m0s".
+func compactDuration(d time.Duration) string {
+	if d%time.Hour == 0 {
+		return fmt.Sprintf("%dh", d/time.Hour)
+	}
+	return d.String()
+}
+
 func (r Runner) builderGC(ctx context.Context, builder string, apply bool) error {
 	info, err := r.localBuilder(ctx, builder)
 	if err != nil {
 		return err
 	}
-	r.print("builder %s: evict unused cache older than %s toward %d GiB\n", builder, r.Policy.BuildCacheUnused, r.Policy.BuildCacheGiB)
+	p := r.buildCachePrune()
+	pressure := ""
+	if r.Pressure {
+		pressure = " (disk pressure: half of build_cache_gib)"
+	}
+	if p.SizeRule {
+		r.print("builder %s: evict least recently used cache toward %.1f GiB%s, never cache used in the last %s\n", builder, float64(p.MaxUsed)/float64(GiB), pressure, p.Until)
+	} else {
+		r.print("builder %s: evict unused cache older than %s toward %.1f GiB%s (build_cache_floor off)\n", builder, p.Until, float64(p.MaxUsed)/float64(GiB), pressure)
+	}
 	if !apply {
 		return nil
 	}
-	b, err := r.builderRunner(info).docker(ctx, "buildx", "prune", "--builder", builder, "--force", "--max-used-space", fmt.Sprintf("%dB", r.Policy.BuildCacheGiB*GiB), "--filter", "until="+r.Policy.BuildCacheUnused)
+	b, err := r.builderRunner(info).docker(ctx, "buildx", "prune", "--builder", builder, "--force", "--max-used-space", fmt.Sprintf("%dB", p.MaxUsed), "--filter", "until="+p.Until)
 	if err == nil {
 		r.print("%s\n", b)
 	}

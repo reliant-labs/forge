@@ -27,13 +27,31 @@ const GiB = uint64(1 << 30)
 
 // Policy defines one machine’s cache budgets and protected references.
 type Policy struct {
-	Projects         []string `json:"projects,omitempty"`
-	LogBudgetGiB     uint64   `json:"log_budget_gib"`
-	HostReserveGiB   uint64   `json:"host_reserve_gib"`
-	HostPaths        []string `json:"host_paths,omitempty"`
-	BuildCacheGiB    uint64   `json:"build_cache_gib"`
-	BuildCacheUnused string   `json:"build_cache_unused"`
-	ImageUnused      string   `json:"image_unused"`
+	Projects       []string `json:"projects,omitempty"`
+	LogBudgetGiB   uint64   `json:"log_budget_gib"`
+	HostReserveGiB uint64   `json:"host_reserve_gib"`
+	HostPaths      []string `json:"host_paths,omitempty"`
+	// BuildCacheGiB is the size each registered builder's BuildKit cache is
+	// pruned down to, least recently used first. It is enforced by size
+	// alone: nothing used in the last build_cache_floor is removed, and
+	// nothing else is spared for being younger than build_cache_unused.
+	BuildCacheGiB uint64 `json:"build_cache_gib"`
+	// BuildCacheUnused bounded the budget before it was enforced by size:
+	// only cache unused this long could be pruned toward build_cache_gib, so a
+	// cache filled by a week of builds was never pruned at all. It still caps
+	// the floor (the floor is the shorter of the two), and it is the whole
+	// rule again with build_cache_floor "off".
+	BuildCacheUnused string `json:"build_cache_unused"`
+	// BuildCacheFloor is the safety floor of the build-cache budget: cache
+	// used this recently is never pruned, whatever the budget says. BuildKit
+	// never prunes a record a running build holds; the floor also keeps the
+	// layers a build just wrote for the next build of the same commit. Empty
+	// means the default (2h); minimum 1h. "off" turns the size rule off and
+	// restores the earlier, age-gated budget (only cache unused for
+	// build_cache_unused is pruned toward build_cache_gib).
+	// $FORGE_STORAGE_BUILD_CACHE_FLOOR overrides it for one process.
+	BuildCacheFloor string `json:"build_cache_floor,omitempty"`
+	ImageUnused     string `json:"image_unused"`
 	// GoCacheUnused is how long a Go build cache entry (in every Go-format
 	// cache the trim reaches) may sit unused before it is trimmed. The
 	// default is forge/pkg/gocache's DefaultUnused. The age rule never reaches
@@ -265,6 +283,9 @@ func (p Policy) Validate() error {
 	}
 	if _, err := p.anonymousVolumeUnused(); err != nil {
 		return err
+	}
+	if _, _, err := parseBuildCacheFloor(p.BuildCacheFloor); err != nil {
+		return fmt.Errorf("storage: build_cache_floor: %w", err)
 	}
 	for _, v := range []string{p.ImageUnused, p.BuildCacheUnused, p.SourceCacheUnused, p.SourceCacheSlimAfter, p.GoCacheUnused} {
 		d, err := time.ParseDuration(v)

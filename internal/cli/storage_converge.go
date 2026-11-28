@@ -251,6 +251,12 @@ func reportEnvRegistryRetention(out io.Writer, path string, policy storage.Polic
 // extraGoCaches are Go build caches the pass trims beyond the shared one and
 // the policy's go_caches (`--go-cache`).
 func runAutoGC(ctx context.Context, path string, out io.Writer, extraGoCaches ...string) error {
+	return runAutoGCWith(ctx, path, out, false, extraGoCaches...)
+}
+
+// runAutoGCWith is runAutoGC with the pass's pressure: true prunes each
+// builder's cache toward half of build_cache_gib (storage.Runner.Pressure).
+func runAutoGCWith(ctx context.Context, path string, out io.Writer, pressure bool, extraGoCaches ...string) error {
 	policy, err := storage.Load(path)
 	if err != nil {
 		return err
@@ -259,6 +265,7 @@ func runAutoGC(ctx context.Context, path string, out io.Writer, extraGoCaches ..
 	defer cancel()
 	err = storage.WithMaintenance(ctx, path, out, func(ctx context.Context) error {
 		r, trims := recordingGoCacheTrims(maintenanceRunner(policy, path, out))
+		r.Pressure = pressure
 		r.ExtraGoCacheRoots = extraGoCaches
 		gcErr := nonDisruptiveGCFn(ctx, r)
 		// Recorded whether or not it succeeded: the interval rate-limits
@@ -288,6 +295,7 @@ func runAutoGC(ctx context.Context, path string, out io.Writer, extraGoCaches ..
 // `gc`, because it is a different pass: non-disruptive layers only, bounded,
 // and recorded as an opportunistic attempt rather than a full GC.
 func newStorageAutoGCCmd(policyPath *string) *cobra.Command {
+	var pressure bool
 	var goCaches []string
 	cmd := &cobra.Command{
 		Use:    "auto-gc",
@@ -300,9 +308,10 @@ func newStorageAutoGCCmd(policyPath *string) *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			return runAutoGC(ctx, *policyPath, cmd.OutOrStdout(), goCaches...)
+			return runAutoGCWith(ctx, *policyPath, cmd.OutOrStdout(), pressure, goCaches...)
 		},
 	}
+	cmd.Flags().BoolVar(&pressure, "pressure", false, "the disk is short of room: prune each builder's cache toward half of build_cache_gib (still never cache used inside build_cache_floor)")
 	addGoCacheFlag(cmd, &goCaches)
 	return cmd
 }

@@ -3,6 +3,7 @@ package seedplan
 import (
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
@@ -214,7 +215,21 @@ func sameColumnValue(col schemadef.Column, a, b string) bool {
 		if json.Unmarshal([]byte(a), &va) == nil && json.Unmarshal([]byte(b), &vb) == nil {
 			return reflect.DeepEqual(va, vb)
 		}
-	case schemadef.TypeInt, schemadef.TypeFloat:
+	case schemadef.TypeInt:
+		// PostgreSQL integers are signed and at most 64 bits. Do not round
+		// bigint literals through float64 (which loses integers above 2^53).
+		ia, errA := strconv.ParseInt(a, 10, 64)
+		ib, errB := strconv.ParseInt(b, 10, 64)
+		return errA == nil && errB == nil && ia == ib
+	case schemadef.TypeFloat:
+		decl, _, _ := strings.Cut(strings.ToUpper(strings.TrimSpace(col.DeclType)), "(")
+		if decl = strings.TrimSpace(decl); decl == "NUMERIC" || decl == "DECIMAL" {
+			// These share the canonical float type, but SQL compares their
+			// decimal values exactly, including fractional and exponent forms.
+			ra, okA := new(big.Rat).SetString(a)
+			rb, okB := new(big.Rat).SetString(b)
+			return okA && okB && ra.Cmp(rb) == 0
+		}
 		fa, errA := strconv.ParseFloat(a, 64)
 		fb, errB := strconv.ParseFloat(b, 64)
 		return errA == nil && errB == nil && fa == fb

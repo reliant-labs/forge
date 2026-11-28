@@ -60,6 +60,32 @@ func TestBuildPlan_NullableContradictoryConjunctBounds(t *testing.T) {
 	}
 }
 
+func TestSameColumnValue_ExactNumericExclusions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		col  schemadef.Column
+		a, b string
+		want bool
+	}{
+		{"adjacent_bigints", schemadef.Column{Type: schemadef.TypeInt, DeclType: "BIGINT"}, "9007199254740992", "9007199254740993", false},
+		{"bigint_max", schemadef.Column{Type: schemadef.TypeInt}, "9223372036854775807", "+9223372036854775807", true},
+		{"bigint_min", schemadef.Column{Type: schemadef.TypeInt}, "-9223372036854775808", "-9223372036854775807", false},
+		{"bigint_overflow", schemadef.Column{Type: schemadef.TypeInt}, "9223372036854775808", "+9223372036854775808", false},
+		{"integer_leading_zero", schemadef.Column{Type: schemadef.TypeInt}, "010", "10", true},
+		{"decimal_precision", schemadef.Column{Type: schemadef.TypeFloat, DeclType: "NUMERIC(30,10)"}, "9007199254740992.1", "9007199254740992.2", false},
+		{"decimal_scale", schemadef.Column{Type: schemadef.TypeFloat, DeclType: "DECIMAL"}, "1.00", "1", true},
+		{"decimal_exponent", schemadef.Column{Type: schemadef.TypeFloat, DeclType: "numeric"}, "9007199254740993", "9.007199254740993e15", true},
+		{"decimal_invalid", schemadef.Column{Type: schemadef.TypeFloat, DeclType: "NUMERIC"}, "invalid", "1", false},
+		{"float_rounding", schemadef.Column{Type: schemadef.TypeFloat, DeclType: "DOUBLE PRECISION"}, "9007199254740992", "9007199254740993", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := literalExcluded(tc.col, tc.a, []string{tc.b}); got != tc.want {
+				t.Errorf("literalExcluded(%q, %q) = %t, want %t", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestExcludedLiterals_TopLevelTermsOnly(t *testing.T) {
 	tbl := schemadef.Table{
 		Name: "machine_pools",

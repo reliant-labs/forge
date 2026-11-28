@@ -36,6 +36,14 @@ const maxTestBuffer = 1 << 20
 //
 // Verbose (the lane ran `go test -v`): every event's Output, in order — which
 // is exactly what `go test -v` prints.
+//
+// Either way, Close then adds the one line `go test` lacks: how many tests
+// skipped, and how many of those were [testkit.Slow] tests left to the full
+// tier. Without -v, `go test -short` prints a skipped test nowhere, so a
+// package whose slow test never ran shows the same green "ok" as one where
+// it passed, and agents took that "ok" for coverage of the slow test.
+//
+// [testkit.Slow]: https://pkg.go.dev/github.com/reliant-labs/forge/pkg/testkit#Slow
 type Renderer struct {
 	w       io.Writer
 	verbose bool
@@ -43,7 +51,18 @@ type Renderer struct {
 	// package and name; order is their start order, for Close.
 	open  map[testKey]*testBlock
 	order []testKey
+	// slowMarked holds the running tests that printed testkit.Slow's skip
+	// message; skipped and slowSkipped count the finished skips.
+	slowMarked           map[testKey]bool
+	skipped, slowSkipped int
 }
+
+// SlowSkipMarker is the start of the message testkit.Slow skips a test with,
+// under -short ("slow test, skipped under -short: <why>; …") and in the
+// integration lane ("slow test, skipped in the integration lane: …"). A
+// skipped test whose output carries it is counted as a slow test.
+// TestSlowSkipMarkerMatchesTestkit holds it to testkit's real message.
+const SlowSkipMarker = "slow test, skipped "
 
 type testKey struct{ pkg, test string }
 
@@ -66,7 +85,7 @@ func (b *testBlock) add(line string) {
 
 // NewRenderer renders to w. verbose is `go test -v`'s rendering.
 func NewRenderer(w io.Writer, verbose bool) *Renderer {
-	return &Renderer{w: w, verbose: verbose, open: map[testKey]*testBlock{}}
+	return &Renderer{w: w, verbose: verbose, open: map[testKey]*testBlock{}, slowMarked: map[testKey]bool{}}
 }
 
 // Text prints a line that is not an event (a wrapper's output, a build error
@@ -75,6 +94,7 @@ func (r *Renderer) Text(line string) { _, _ = io.WriteString(r.w, line) }
 
 // Event renders one event.
 func (r *Renderer) Event(e Event) {
+	r.countSkip(e)
 	if r.verbose {
 		r.Text(e.Output)
 		return
@@ -108,6 +128,61 @@ func (r *Renderer) Event(e Event) {
 	case "pass", "skip":
 		r.finish(k, false)
 	}
+}
+
+// countSkip counts e when it ends a skipped test, as a slow test when the
+// test printed testkit.Slow's message first.
+func (r *Renderer) countSkip(e Event) {
+	if e.Test == "" {
+		return
+	}
+	k := testKey{e.Package, e.Test}
+	if k.pkg == "" {
+		k.pkg = e.ImportPath
+	}
+	switch e.Action {
+	case "output":
+		if strings.Contains(e.Output, SlowSkipMarker) {
+			r.slowMarked[k] = true
+		}
+	case "skip":
+		r.skipped++
+		if r.slowMarked[k] {
+			r.slowSkipped++
+		}
+		delete(r.slowMarked, k)
+	case "pass", "fail":
+		delete(r.slowMarked, k)
+	}
+}
+
+// skipSummary is the line Close prints when tests skipped, "" when none did.
+func (r *Renderer) skipSummary() string {
+	if r.skipped == 0 {
+		return ""
+	}
+	tests := func(n int) string {
+		if n == 1 {
+			return "1 test"
+		}
+		return fmt.Sprintf("%d tests", n)
+	}
+	var b strings.Builder
+	b.WriteString("skipped: ")
+	if r.slowSkipped > 0 {
+		fmt.Fprintf(&b, "%s marked testkit.Slow", tests(r.slowSkipped))
+		if other := r.skipped - r.slowSkipped; other > 0 {
+			fmt.Fprintf(&b, ", %d other", other)
+		}
+		b.WriteString(". Slow tests run in the full tier (go test without -short, task test).")
+	} else {
+		b.WriteString(tests(r.skipped) + ".")
+	}
+	if !r.verbose {
+		b.WriteString(" Add -v to see which and why.")
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 func (r *Renderer) packageEvent(pkg string, e Event) {
@@ -215,7 +290,8 @@ func (r *Renderer) compact() {
 }
 
 // Close prints what the stream left unfinished: tests that never reported a
-// result are the ones a crash or a cut-off stream was in the middle of.
+// result are the ones a crash or a cut-off stream was in the middle of. Its
+// last line counts the skipped tests, when any skipped.
 func (r *Renderer) Close() {
 	for _, k := range r.order {
 		if _, open := r.open[k]; open && !strings.Contains(k.test, "/") {
@@ -228,6 +304,7 @@ func (r *Renderer) Close() {
 		}
 	}
 	r.compact()
+	r.Text(r.skipSummary())
 }
 
 // isFraming reports the -v lines `go test` without -v never prints.

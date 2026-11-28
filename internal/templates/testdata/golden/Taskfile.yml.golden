@@ -208,11 +208,27 @@ tasks:
     #                 keep it on.
     #   -timeout 60s  a test that needs longer under -short wants a
     #                 testing.Short() gate, not a bigger budget.
+    #   -json         read by `forge test capture --no-record`, which prints
+    #                 what `go test` prints, exits with its status, records
+    #                 nothing, and ends with a line counting the skipped tests:
+    #                 `go test -short` alone shows a package whose
+    #                 testkit.Slow tests all skipped as the same green `ok` as
+    #                 one where they ran. `-- -v` lists each skip and why;
+    #                 `-- -json` prints the raw stream.
     #
     # Go only — frontends run in `task test` / `task test:frontend`.
     desc: "Inner-loop Go tests: -short, cached, no race. Scope it: task test:short -- ./internal/foo/..."
+    vars:
+      # CAPTURE is the forge that prints this run: FORGE, unless FORGE is a
+      # `go run` of the pin (about a second per call, even cached) and the
+      # forge on PATH has `test capture --no-record` (a tenth of that). `test
+      # capture` is the same plumbing in every forge that has it and never
+      # hands off to the pin, so which one prints the run changes nothing but
+      # what the inner loop waits for.
+      CAPTURE:
+        sh: 'case "{{.FORGE}}" in "go run "*) forge test capture --no-record --help >/dev/null 2>&1 && echo forge || echo "{{.FORGE}}";; *) echo "{{.FORGE}}";; esac'
     cmds:
-      - go test -short -timeout 60s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
+      - '{{.CAPTURE}} test capture --no-record{{if contains "-json" .CLI_ARGS}} --render raw{{end}} -- go test -short -json -timeout 60s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}'
 
   test:frontend:
     desc: Run every frontend's tests

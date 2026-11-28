@@ -442,7 +442,7 @@ forge telemetry on	cmd	project-dir/C:string
 forge telemetry status	cmd	project-dir/C:string
 forge test	group	allow-version-skew:bool project-dir/C:string
 forge test begin	cmd	base:string project-dir/C:string
-forge test capture	cmd	format:string lane:string project-dir/C:string render:string results:string run:string
+forge test capture	cmd	format:string lane:string no-record:bool project-dir/C:string render:string results:string run:string
 forge test collect	cmd	allow-version-skew:bool json:bool lane:string project-dir/C:string reset:bool run:string workload:stringArray
 forge test coverage	cmd	allow-version-skew:bool by:string commit:string diff:string json:bool lane:string project-dir/C:string run:string
 forge test flakes	group	all:bool allow-version-skew:bool dry-run:bool issues:bool json:bool project-dir/C:string repo:string state:stringSlice

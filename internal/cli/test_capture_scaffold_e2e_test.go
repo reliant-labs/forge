@@ -218,6 +218,48 @@ func TestE2EScaffoldedTaskTestRecordsRun(t *testing.T) {
 	}
 }
 
+// TestE2EScaffoldedTaskTestShortReportsSlowSkips: `task test:short` in a
+// fresh service project ends with a line counting the tests testkit.Slow
+// skipped — without it, `go test -short` shows a package whose slow tests
+// all skipped as the same green "ok" as one where they ran — and records no
+// run: the inner loop is not what a report counts.
+func TestE2EScaffoldedTaskTestShortReportsSlowSkips(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
+	forgeBin := buildforgeBinary(t)
+	requireTool(t, "task", "git")
+
+	projectDir, env := newCaptureProjectE2E(t, forgeBin, "capshort", "--service", "item")
+	pkgDir := filepath.Join(projectDir, "internal", "slowmark")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "package slowmark\n\nimport (\n\t\"testing\"\n\n\t\"github.com/reliant-labs/forge/pkg/testkit\"\n)\n\n" +
+		"func TestMarkedSlow(t *testing.T) {\n\ttestkit.Slow(t, \"proves task test:short reports it\")\n}\n\n" +
+		"func TestFast(t *testing.T) {}\n"
+	if err := os.WriteFile(filepath.Join(pkgDir, "slowmark_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code := runCaptureE2E(t, projectDir, env, "task", "test:short", "--", "./internal/slowmark/...")
+	if code != 0 {
+		t.Fatalf("`task test:short` exited %d:\n%s", code, out)
+	}
+	for _, want := range []string{
+		"ok  \texample.com/capshort/internal/slowmark",
+		"skipped: 1 test marked testkit.Slow. Slow tests run in the full tier (go test without -short, task test). Add -v to see which and why.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("`task test:short` output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `"Action"`) {
+		t.Errorf("`task test:short` printed the raw -json stream:\n%s", out)
+	}
+	if runs := captureRunDirsE2E(t, projectDir); len(runs) != 0 {
+		t.Errorf("`task test:short` recorded runs %v; the inner loop records nothing", runs)
+	}
+}
+
 // reportStepRunE2E returns the `run:` line of the "Report test results" step
 // of every job in the scaffolded ci.yml that has one, keyed by job id.
 func reportStepRunE2E(t *testing.T, ciYML string) map[string]string {

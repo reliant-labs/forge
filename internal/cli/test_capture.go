@@ -18,9 +18,10 @@ import (
 func newTestCaptureCmd() *cobra.Command {
 	var (
 		run, lane, results, format, render string
+		noRecord                           bool
 	)
 	cmd := &cobra.Command{
-		Use:   "capture --run <dir> --lane <name> [--results <file>] -- <command> [args...]",
+		Use:   "capture (--run <dir> --lane <name> [--results <file>] | --no-record) -- <command> [args...]",
 		Short: "Run a test lane's command unchanged and record its results (plumbing)",
 		Long: `Runs <command> exactly as given (no shell, stdin and environment passed
 through) and exits with its exit status: 128+n when signal n killed it, 127
@@ -45,26 +46,38 @@ its start, end and exit status, the results and the coverage files found.
 Nothing about the record changes the exit status. An unwritable run, a full
 disk or a bad --lane is a warning on stderr; the command runs regardless.
 Without --run, FORGE_TEST_RUN is the run, else a new one is begun. With
-FORGE_TESTS=off the command runs and nothing is recorded.`,
+FORGE_TESTS=off the command runs and nothing is recorded.
+
+--no-record runs and prints the command the same way and records nothing (no
+run, no lane; --lane is not needed): the inner loop, ` + "`task test:short`" + `, which
+re-runs on every edit and whose results no report should count.
+
+However it is run, a rendered stream ends with one line counting the tests
+that skipped, and how many of them are testkit.Slow tests, which skip under
+-short and run in the full tier. ` + "`go test`" + ` without -v prints a skipped test
+nowhere, so without it a package whose slow tests all skipped shows the same
+"ok" as one where they passed.`,
 		Example: `  forge test capture --run "$RUN" --lane unit -- \
     go test -json -coverprofile="$RUN/unit/cover.out" ./...
   forge test capture --run "$RUN" --lane web --results web/junit.xml -- \
-    npx vitest run --reporter=junit --outputFile=web/junit.xml`,
+    npx vitest run --reporter=junit --outputFile=web/junit.xml
+  forge test capture --no-record -- go test -short -json ./internal/foo/...`,
 		Args:         cobra.MinimumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, _ := cmdutil.FindProjectRoot()
 			dir, _ := cmdutil.ResolutionRoot()
 			res := testcapture.Capture(cmd.Context(), testcapture.CaptureOptions{
-				RunDir:  run,
-				Lane:    lane,
-				Results: results,
-				Format:  format,
-				Render:  render,
-				Command: args,
-				Stdin:   cmd.InOrStdin(),
-				Stdout:  cmd.OutOrStdout(),
-				Stderr:  cmd.ErrOrStderr(),
+				RunDir:   run,
+				Lane:     lane,
+				Results:  results,
+				Format:   format,
+				Render:   render,
+				NoRecord: noRecord,
+				Command:  args,
+				Stdin:    cmd.InOrStdin(),
+				Stdout:   cmd.OutOrStdout(),
+				Stderr:   cmd.ErrOrStderr(),
 				Begin: testcapture.BeginOptions{
 					Dir:          dir,
 					ProjectRoot:  root,
@@ -80,6 +93,7 @@ FORGE_TESTS=off the command runs and nothing is recorded.`,
 	cmd.Flags().StringVar(&lane, "lane", "", "Lane name: letters, digits, '-' and '_' (e.g. unit, integration, web)")
 	cmd.Flags().StringVar(&results, "results", "", "Report file the command writes (JUnit XML, Vitest JSON), copied into the lane after it exits")
 	cmd.Flags().StringVar(&format, "format", "", "Format of --results: go-json, junit or vitest (default: detected)")
+	cmd.Flags().BoolVar(&noRecord, "no-record", false, "Run and print the command, record nothing (the inner loop: task test:short)")
 	cmd.Flags().StringVar(&render, "render", testcapture.RenderAuto, "How a go test -json stream is printed: auto (verbose when the command passes -v), text, verbose or raw")
 	return cmd
 }
@@ -96,13 +110,13 @@ func captureVerdict(res testcapture.CaptureResult, lane string, argv []string) e
 	if res.LaneDir != "" {
 		where = " (recorded in " + res.LaneDir + ")"
 	}
-	name := strings.TrimSpace(lane)
-	if name == "" {
-		name = "-"
+	name := ""
+	if l := strings.TrimSpace(lane); l != "" {
+		name = "lane " + l + ": "
 	}
 	return exitCodeError{
 		code:    res.ExitCode,
-		msg:     fmt.Sprintf("forge test capture: lane %s: %s exited with status %d%s", name, argv[0], res.ExitCode, where),
+		msg:     fmt.Sprintf("forge test capture: %s%s exited with status %d%s", name, argv[0], res.ExitCode, where),
 		verdict: true,
 	}
 }

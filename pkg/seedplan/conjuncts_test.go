@@ -42,6 +42,24 @@ func TestBuildPlan_ContradictoryConjunctBounds(t *testing.T) {
 	}
 }
 
+func TestBuildPlan_NullableContradictoryConjunctBounds(t *testing.T) {
+	tbl := schemadef.Table{
+		Name: "bounds_test",
+		Columns: []schemadef.Column{
+			{Name: "x", Type: schemadef.TypeInt},
+			{Name: "y", Type: schemadef.TypeInt, NotNull: true},
+		},
+		Checks: []schemadef.CheckConstraint{
+			check("nullable_range", "CHECK (((x >= 10) AND (x <= 0) AND (y >= 0)))", "x", "y"),
+		},
+	}
+	// x = NULL, y = 0 makes the CHECK UNKNOWN, which PostgreSQL accepts.
+	p, err := BuildPlan([]schemadef.Table{tbl}, nil, Config{})
+	if err != nil || p == nil {
+		t.Fatalf("BuildPlan = %v, %v; want a plan for nullable contradictory bounds", p, err)
+	}
+}
+
 func TestExcludedLiterals_TopLevelTermsOnly(t *testing.T) {
 	tbl := schemadef.Table{
 		Name: "machine_pools",

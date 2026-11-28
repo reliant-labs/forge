@@ -24,7 +24,8 @@
 # once in full mode, without -race (main's `test` job runs them under it):
 # 1.5-2.5 minutes on a loaded 48-core dev machine (2026-11-22), nearly all of
 # it run time: the -short tier just compiled the same packages with the same
-# flags.
+# flags. The merge tier's critical path is windows-changed (9-13
+# minutes), which runs beside test-short.
 #
 # TRIGGERS are git pathspecs; TESTS are <package dir>.<TestName>, run with an
 # anchored -run per package. A test listed here that the package no longer

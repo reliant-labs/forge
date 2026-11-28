@@ -604,13 +604,15 @@ func ownershipStatementText(s string) string {
 				i++
 				if c == '\\' && backslash && i < len(s) {
 					i++
-				} else if c == '\'' {
-					if i < len(s) && s[i] == '\'' {
-						i++
-					} else {
-						break
-					}
+					continue
 				}
+				if c != '\'' {
+					continue
+				}
+				if i >= len(s) || s[i] != '\'' {
+					break
+				}
+				i++ // A doubled quote belongs to the literal body.
 			}
 		case s[i] == '$' && (i == 0 || !isIdentByte(s[i-1])):
 			tag := dollarTagRe.FindString(s[i:])

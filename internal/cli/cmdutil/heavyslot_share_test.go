@@ -199,6 +199,8 @@ func setupShare(t *testing.T) {
 	t.Setenv(hostslot.EnvDir, t.TempDir())
 	t.Setenv(hostslot.EnvHeld, "")
 	t.Setenv(hostslot.SlotsEnv(hostslot.Heavy), "2")
+	// Both holders must fit in bulk; the default reserves one slot for express.
+	t.Setenv(hostslot.ExpressSlotsEnv(hostslot.Heavy), "0")
 	t.Setenv(hostslot.ShareEnv(hostslot.Heavy), "1")
 	t.Setenv("GOMAXPROCS", "")
 	t.Setenv("UV_THREADPOOL_SIZE", "")

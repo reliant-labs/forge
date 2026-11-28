@@ -106,6 +106,33 @@ func TestObsCheckAIReadsNothingOrFails(t *testing.T) {
 	}
 }
 
+// An unread AI panel must not end --early-pass while the service/window
+// evidence alone would pass. Keep polling until the window closes.
+func TestObsCheckEarlyPassWaitsWhenAIReadFails(t *testing.T) {
+	open := healthReply("RELEASE_VERDICT_INCONCLUSIVE", false, "", "")
+	closed := healthReply("RELEASE_VERDICT_PASS", true, "", "")
+	caller := &seqCaller{replies: map[string][]string{
+		procHealth:  {open, open, closed},
+		procAIPanel: {`not json`},
+	}}
+	h := newObsCheckHarness()
+	out, _, err := h.run(t, cloudFacts(), caller, nil,
+		"check", "prod", "--wait", "--early-pass", "1m", "--json")
+	doc := decode(t, out)
+	if exitCodeForError(err) != 2 || doc["verdict"] != "INCONCLUSIVE" {
+		t.Fatalf("failed AI read: exit %d, verdict %v", exitCodeForError(err), doc["verdict"])
+	}
+	if h.sleeps != 2 || caller.n[procHealth] != 3 {
+		t.Errorf("stopped before window completion: sleeps %d, health reads %d", h.sleeps, caller.n[procHealth])
+	}
+	if doc["early_pass"] != nil {
+		t.Errorf("unread AI evidence passed early: %v", doc["early_pass"])
+	}
+	if !strings.Contains(fmt.Sprint(doc["not_evaluated"]), releasehealth.NotEvaluatedAI+" the AI calls could not be read") {
+		t.Errorf("missing AI uncertainty: %v", doc["not_evaluated"])
+	}
+}
+
 // The local backend runs the same panel over the ClickStack.
 func TestAIPanelIsOneTableReadPerWindow(t *testing.T) {
 	if obsbackend.AIPanelID != "ai-calls" {

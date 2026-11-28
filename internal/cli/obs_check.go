@@ -553,6 +553,13 @@ func earlyPassWhy(r releasehealth.Report, min time.Duration) string {
 		r.WindowNotLive != "" || r.RolloutIncomplete != "" {
 		return ""
 	}
+	// Attribution may rejudge the service/window evidence, but unread or
+	// quiet AI evidence still cannot prove the release good early.
+	for _, note := range r.NotEvaluated {
+		if strings.HasPrefix(note, releasehealth.NotEvaluatedAI) {
+			return ""
+		}
+	}
 	minReq := release.DefaultReleaseHealth().MinRequests
 	for _, th := range r.Thresholds {
 		if th.Name == releasehealth.ThresholdMinRequests {

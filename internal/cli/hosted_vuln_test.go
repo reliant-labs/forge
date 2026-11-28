@@ -49,6 +49,8 @@ type fakeVulnService struct {
 	// refuseUpload answers RecordReleaseSBOM PermissionDenied, as
 	// control-plane's unclaimed-org lock does for an anonymous deploy.
 	refuseUpload bool
+	// conflictingUpload answers RecordReleaseSBOM AlreadyExists for a different SBOM.
+	conflictingUpload bool
 	// digestOverride is what RecordReleaseSBOM answers as the digest,
 	// instead of the one it derives from the bytes.
 	digestOverride string
@@ -111,6 +113,10 @@ func (f *fakeVulnService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.records = append(f.records, body)
 		if f.refuseUpload {
 			connectErr(w, http.StatusForbidden, "permission_denied", "this organization has not been claimed yet; claim it before changing anything but its deploy")
+			return
+		}
+		if f.conflictingUpload {
+			connectErr(w, http.StatusConflict, "already_exists", "a different SBOM is already recorded")
 			return
 		}
 		gz, err := base64.StdEncoding.DecodeString(str("sbom"))
@@ -246,6 +252,35 @@ func TestHostedCutUploadsEachSBOM(t *testing.T) {
 	}
 	if n := fake.count("controlplane.v1.DeployService/GetCapabilities"); n != 1 {
 		t.Errorf("GetCapabilities asked %d times, want once per store", n)
+	}
+}
+
+func TestHostedCutConflictingSBOMIsNotKept(t *testing.T) {
+	t.Parallel()
+	ctx := withSBOMUploadOutcomes(context.Background())
+	fake := &fakeVulnService{features: []string{hostedVulnFeatureSBOMUpload}, conflictingUpload: true}
+	hs, r, warn := hostedSBOMCut(t, fake, "api")
+	if _, err := hs.Cut(ctx, r); err != nil {
+		t.Fatalf("a conflicting SBOM failed the cut: %v", err)
+	}
+	if !strings.Contains(warn.String(), "already records a different SBOM") {
+		t.Fatalf("missing conflict warning: %s", warn)
+	}
+	v := hostedVulnPlan(ctx, envLedger{Bindings: hs, Releases: hs}, r.Version)
+	if v.SBOMsKept == nil || *v.SBOMsKept {
+		t.Fatalf("conflicting SBOM reported as kept: %+v", v)
+	}
+	var out bytes.Buffer
+	renderPlanVulns(&out, v)
+	if !strings.Contains(out.String(), "did not keep this release's SBOMs") {
+		t.Fatalf("plan promises retention after conflict: %s", &out)
+	}
+	doc, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(doc, []byte(`"sboms_kept":false`)) {
+		t.Fatalf("JSON does not report failed retention: %s", doc)
 	}
 }
 

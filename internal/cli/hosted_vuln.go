@@ -341,8 +341,9 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 		if err := s.client.Call(cloud.WithRequestTimeout(ctx, sbomUploadTimeout(len(gz))), procRecordReleaseSBOM, req, &resp); err != nil {
 			switch {
 			case hostedErrorHasCode(err, cloud.CodeAlreadyExists):
-				// The control plane keeps an SBOM for it: kept, if not
-				// this machine's copy.
+				// The control plane keeps a different SBOM, not the one
+				// recorded by this release.
+				failed = true
 				fmt.Fprintf(warn, "[ledger] warning: %s already records a different SBOM for %s in release %s and keeps it; this machine's copy is %s\n", s.endpoint, name, r.Version, ref.Digest)
 				continue
 			case claimable:

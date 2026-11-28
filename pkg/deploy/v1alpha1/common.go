@@ -71,6 +71,11 @@ const (
 //     forge.BucketRef. It mirrors DatabaseRef: it NAMES A BUCKET, never a
 //     Secret, and resolves to the Secret the platform writes for it.
 //
+//   - KeyValueStoreRef — one connection fact (url, host, password, ...) of
+//     a ManagedKeyValueStore in the same namespace. Like BucketRef it NAMES
+//     A STORE, never a Secret, and resolves to the store's credential
+//     Secret.
+//
 //   - WorkloadURL — the public URL of a sibling workload (a backend's
 //     CORS_ORIGINS naming its StaticSite). Added with StaticSite runtime
 //     config, which uses the same reference kind. Like DatabaseRef it NAMES
@@ -131,6 +136,12 @@ type EnvVar struct {
 	// the Secret the platform writes for it (BucketCredentialSecretName).
 	// +optional
 	BucketRef *BucketRef `json:"bucketRef,omitempty"`
+
+	// KeyValueStoreRef projects one connection fact of a
+	// ManagedKeyValueStore, read from its credential Secret
+	// (deploy.KeyValueStoreCredentialSecretName).
+	// +optional
+	KeyValueStoreRef *KeyValueStoreRef `json:"keyValueStoreRef,omitempty"`
 
 	// WorkloadURL is the public URL of another workload in the SAME
 	// environment — the canonical case is a backend's CORS_ORIGINS naming

@@ -391,6 +391,23 @@ const CapabilityHonorsEdgeLogOptOut = "honors-edge-log-opt-out"
 // workload there ([BundleReader.CheckAutoscaledWorkloads]).
 const CapabilityAutoscalesWorkloads = "autoscales-workloads"
 
+// CapabilityManagesKeyValueStores is advertised beside the bundle features by
+// a control plane that RUNS hosted key-value stores: its operator converges
+// each hosted ManagedKeyValueStore (pkg/deploy/v1alpha1) into a Valkey with
+// its own volume and writes the credential Secret, and its workload operator
+// resolves a keyValueStoreRef env var against it.
+//
+// Decoding the kind and the env channel is a matter of the forge a control
+// plane pins, which it would gain on any pin bump; running them is not. An
+// older control plane would refuse the unknown kind, or prune an unknown
+// keyValueStoreRef from a workload's spec and start it with the variable
+// empty. So, like [CapabilityEnforcesPromotionChecks], it is deliberately not
+// in [BundleDocFeatures]: a control plane adds it by hand, in the change that
+// runs the stores, and only where its operator is enabled. Until it does,
+// forge refuses to record a hosted key-value store, or a reference to one,
+// there, naming this capability.
+const CapabilityManagesKeyValueStores = "manages-key-value-stores"
+
 // BundleDocFeatures is every optional bundle feature this version's
 // [DecodeBundleDoc] and [ValidateManifestsLayer] accept. A control plane
 // advertises exactly this list, so what it claims to decode and what its

@@ -40,6 +40,7 @@ func fullWorkload() *Workload {
 				{Name: "FEATURES", ConfigMapRef: &ConfigMapKeyRef{Name: "flags", Key: "features"}},
 				{Name: "POD_NAME", FieldRef: &FieldRef{FieldPath: "metadata.name"}},
 				{Name: "UPLOADS_BUCKET", BucketRef: &BucketRef{Name: "uploads", Key: BucketKeyBucket}},
+				{Name: "REDIS_URL", KeyValueStoreRef: &KeyValueStoreRef{Name: "queue", Key: KeyValueStoreKeyURL}},
 			},
 			Resources:                 Resources{CPURequestMillicores: 500, CPULimitMillicores: 1000, MemoryRequestBytes: 2 << 30, MemoryLimitBytes: 2 << 30},
 			Ports:                     []Port{{Name: "metrics", Port: 8080, Protocol: ProtocolTCP, AppProtocol: "http"}, {Name: "webhook", Port: 9443}},
@@ -119,10 +120,21 @@ func fullBucket() *ManagedBucket {
 	}
 }
 
+func fullKeyValueStore() *ManagedKeyValueStore {
+	return &ManagedKeyValueStore{
+		TypeMeta:   metav1.TypeMeta{APIVersion: GroupVersion.String(), Kind: "ManagedKeyValueStore"},
+		ObjectMeta: metav1.ObjectMeta{Name: "queue"},
+		Spec:       ManagedKeyValueStoreSpec{Engine: EngineValkey, Mode: KeyValueStoreModeDurable, MemoryMiB: 1024, StorageGiB: 4, DeletionPolicy: DeletionPolicyDelete},
+		Status: ManagedKeyValueStoreStatus{Phase: PhaseReady, ObservedGeneration: 1, StatefulSetName: "queue", ServiceName: "queue",
+			SecretName: "forge-kvs-queue", EngineVersion: "9.0.1", MaxMemoryBytes: 614 << 20, ReadyAt: ptr(metav1.Unix(1700000000, 0)), Message: "ready",
+			Persistence: &KeyValueStorePersistenceStatus{AOFEnabled: true, LastRDBSaveAt: ptr(metav1.Unix(1700000100, 0)), LastBgsaveOK: true, LastAOFRewriteOK: true}},
+	}
+}
+
 // TestTierTypesRoundTripJSON: every kind survives encode→decode unchanged, and
 // the encoding re-encodes byte-identically (no field lost to a tag mismatch).
 func TestTierTypesRoundTripJSON(t *testing.T) {
-	for name, obj := range map[string]runtime.Object{"Workload": fullWorkload(), "StaticSite": fullSite(), "ManagedDatabase": fullDatabase(), "ManagedBucket": fullBucket()} {
+	for name, obj := range map[string]runtime.Object{"Workload": fullWorkload(), "StaticSite": fullSite(), "ManagedDatabase": fullDatabase(), "ManagedBucket": fullBucket(), "ManagedKeyValueStore": fullKeyValueStore()} {
 		t.Run(name, func(t *testing.T) {
 			b, err := json.Marshal(obj)
 			if err != nil {
@@ -148,7 +160,7 @@ func TestTierTypesRoundTripJSON(t *testing.T) {
 // (NamespacedRBAC / ClusterRBAC are RBAC tiers, not target coordinates.)
 func TestSpecCarriesNoHostedIdentity(t *testing.T) {
 	forbidden := regexp.MustCompile(`(?i)^(org|tena|environment|deployment|namespace($|name)|cluster($|name|id))`)
-	for _, typ := range []reflect.Type{reflect.TypeOf(WorkloadSpec{}), reflect.TypeOf(StaticSiteSpec{}), reflect.TypeOf(ManagedDatabaseSpec{}), reflect.TypeOf(ManagedBucketSpec{})} {
+	for _, typ := range []reflect.Type{reflect.TypeOf(WorkloadSpec{}), reflect.TypeOf(StaticSiteSpec{}), reflect.TypeOf(ManagedDatabaseSpec{}), reflect.TypeOf(ManagedBucketSpec{}), reflect.TypeOf(ManagedKeyValueStoreSpec{})} {
 		for i := 0; i < typ.NumField(); i++ {
 			if f := typ.Field(i); forbidden.MatchString(f.Name) {
 				t.Errorf("%s.%s: hosted identity and target coordinates are not spec", typ.Name(), f.Name)
@@ -164,7 +176,7 @@ func TestSchemeRegistersAllKinds(t *testing.T) {
 	if err := AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"Workload", "WorkloadList", "StaticSite", "StaticSiteList", "ManagedDatabase", "ManagedDatabaseList", "ManagedBucket", "ManagedBucketList"} {
+	for _, k := range []string{"Workload", "WorkloadList", "StaticSite", "StaticSiteList", "ManagedDatabase", "ManagedDatabaseList", "ManagedBucket", "ManagedBucketList", "ManagedKeyValueStore", "ManagedKeyValueStoreList"} {
 		if !s.Recognizes(GroupVersion.WithKind(k)) {
 			t.Errorf("%s not registered under %s", k, GroupVersion)
 		}

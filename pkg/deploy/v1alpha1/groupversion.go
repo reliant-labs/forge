@@ -34,6 +34,7 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&StaticSite{}, &StaticSiteList{},
 		&ManagedDatabase{}, &ManagedDatabaseList{},
 		&ManagedBucket{}, &ManagedBucketList{},
+		&ManagedKeyValueStore{}, &ManagedKeyValueStoreList{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil

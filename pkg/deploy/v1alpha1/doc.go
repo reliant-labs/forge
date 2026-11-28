@@ -1,6 +1,6 @@
 // Package v1alpha1 is the ONE declaration of forge's deploy kinds —
-// Workload, StaticSite, ManagedDatabase and ManagedBucket — in API group
-// forge.dev.
+// Workload, StaticSite, ManagedDatabase, ManagedBucket and
+// ManagedKeyValueStore — in API group forge.dev.
 //
 // # ONE DECLARATION, TWO DESTINATIONS
 //

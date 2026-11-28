@@ -1,8 +1,6 @@
 package lint
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -186,6 +184,38 @@ func TestCRUDOwnership_EveryEditSpellingGates(t *testing.T) {
 	}
 }
 
+// SQL examples in another table's documentation and quoted function bodies
+// are not edits to tasks. Real statements following them must still be read.
+func TestCRUDOwnership_QuotedSQLDoesNotEditTable(t *testing.T) {
+	born := bornTasksSQL(t)
+	for _, stmt := range []string{
+		"COMMENT ON TABLE projects IS 'Example: ALTER TABLE tasks ADD COLUMN notes TEXT';",
+		"COMMENT ON TABLE projects IS 'Example: ''ALTER TABLE tasks ADD COLUMN notes TEXT''';",
+		`COMMENT ON TABLE projects IS E'Example: \'ALTER TABLE tasks ADD COLUMN notes TEXT';`,
+		"COMMENT ON TABLE projects IS $$Example: ALTER TABLE tasks ADD COLUMN notes TEXT$$;",
+		"COMMENT ON TABLE projects IS $doc$Example: ' -- ALTER TABLE tasks ADD COLUMN notes TEXT$doc$;",
+		"CREATE FUNCTION example() RETURNS void AS $body$ BEGIN ALTER TABLE tasks ADD COLUMN notes TEXT; END $body$ LANGUAGE plpgsql;",
+		"SELECT 'DROP TABLE tasks; CREATE TABLE tasks (id TEXT); COMMENT ON TABLE tasks IS NULL;';",
+		"SELECT 'CREATE INDEX example ON tasks (title); CREATE RULE example AS ON INSERT TO tasks DO NOTHING; DROP TRIGGER example ON tasks;';",
+	} {
+		t.Run(stmt, func(t *testing.T) {
+			migrations := map[string]string{
+				"0001_create_tasks.up.sql": born,
+				"0002_other.up.sql":        stmt + "\nCOMMENT ON TABLE projects IS 'still unrelated';\n",
+			}
+			fs := ownershipFindings(t, migrations, allGenerated, taskService(true))
+			if len(fs) != 1 || fs[0].Table != "tasks" || !fs[0].Pending || fs[0].severity() != lintSevWarning {
+				t.Fatalf("quoted SQL must leave tasks pending; findings = %+v", fs)
+			}
+			migrations["0002_other.up.sql"] += "ALTER TABLE tasks ADD COLUMN notes TEXT;\n"
+			fs = ownershipFindings(t, migrations, allGenerated, taskService(true))
+			if len(fs) != 1 || fs[0].Pending || fs[0].severity() != lintSevError {
+				t.Fatalf("a real edit after quoted SQL must gate; findings = %+v", fs)
+			}
+		})
+	}
+}
+
 // COMMENT ON replaces the comment whatever the literal's spelling, and IS
 // NULL removes it: an owner set by a dollar quote answers the rule, and a
 // later IS NULL takes the answer away again.
@@ -254,24 +284,7 @@ func TestCRUDOwnership_MalformedDeclarationOnScaffoldedTableGates(t *testing.T) 
 // finding is a pending one passes, at every pin, and a raised lint.rules
 // entry still makes it gate.
 func TestCRUDOwnership_PendingFindingDoesNotGateTheLane(t *testing.T) {
-	root := writeGrantsProject(t, map[string]string{"0001_create_tasks.up.sql": bornTasksSQL(t)})
-	desc := `{"Services":[{"Name":"TaskService","Package":"services.task.v1","GoPackage":"example.com/app/gen/services/task/v1",` +
-		`"ProtoFile":"proto/services/task/v1/task.proto","Methods":[` +
-		`{"Name":"GetTask","InputType":"GetTaskRequest","OutputType":"GetTaskResponse","AuthRequired":true}]}]}`
-	for path, body := range map[string]string{
-		"gen/forge_descriptor/fixture.json": desc,
-		"go.mod":                            "module example.com/app\n\ngo 1.24\n",
-		"internal/handlers/task/handlers_crud_ops_gen.go": "package task\n\n" +
-			"func (s *Service) crudGetTaskOp() crud.GetOp[pb.GetTaskRequest, pb.GetTaskResponse, *db.Task] {\n\treturn nil\n}\n",
-	} {
-		full := filepath.Join(root, filepath.FromSlash(path))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	root := writeOwnershipLaneProject(t, map[string]string{"0001_create_tasks.up.sql": bornTasksSQL(t)})
 	cfg := &config.ProjectConfig{}
 	fs, gated, err := lintStepNamed(t, "crud-ownership lint").collect(&lintRunCtx{cwd: root, cfg: cfg})
 	if err != nil {

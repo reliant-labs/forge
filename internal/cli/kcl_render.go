@@ -1497,6 +1497,14 @@ type FrontendEntity struct {
 	// publishes them as the StaticSite spec's apis; `forge env up`'s dev
 	// server proxies the same paths. Empty when the frontend declares none.
 	APIs map[string]string `json:"apis,omitempty"`
+	// MarkdownNegotiation is Frontend.markdown_negotiation (rendered only
+	// when true, and only on forge.OnHosted).
+	MarkdownNegotiation bool `json:"markdown_negotiation,omitempty"`
+	// EdgeLogs is false when the env EXPLICITLY opted out of hosted edge
+	// request logs (ObservabilitySignals.edge = False); nil, the rendered
+	// absence, means on unless observability is disabled (the implicit
+	// opt-out, edgeLogsOffIfHonoured).
+	EdgeLogs *bool `json:"edge_logs,omitempty"`
 	// APIURLs are the same APIs resolved to each workload's own URL, for the
 	// config.js forge writes itself (an own bucket, Firebase). Empty on a
 	// hosted env, where the control plane publishes `/_api/@<name>`. For a
@@ -1761,6 +1769,9 @@ type ObservabilityEntity struct {
 		ReplayDays        int `json:"replay_days"`
 		ErrorsDays        int `json:"errors_days"`
 		ProductEventsDays int `json:"product_events_days"`
+		// EdgeDays is ObservabilityRetention.edge_days; 0 when unset (the
+		// env's info-log retention).
+		EdgeDays int `json:"edge_days,omitempty"`
 	} `json:"retention"`
 	Agent struct {
 		Namespace      string `json:"namespace"`

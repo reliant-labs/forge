@@ -9,9 +9,12 @@ tmp_dir = "tmp"
   #
   # $FORGE_GO_BUILD_FLAGS is how `forge env up` hands this build the
   # workload's declared GoBuild.flags (deploy/kcl: the scaffolded -trimpath,
-  # so every worktree shares one Go build cache) and, for test coverage in a
-  # local or preview env, -cover -covermode=atomic -coverpkg=… (kcl/schema.k
-  # Tests). Unset, it expands to nothing, so bare `air` builds as before.
+  # so every worktree shares one Go build cache), -ldflags=-w (the dev build
+  # links without DWARF, about half the link; FORGE_DEV_DWARF=1 keeps it, for
+  # a debugger; a command here that is not a `go build`, or passes its own
+  # -ldflags, gets none) and, for test coverage in a local or preview env,
+  # -cover -covermode=atomic -coverpkg=… (kcl/schema.k Tests). Unset, it
+  # expands to nothing, so bare `air` builds as before.
   cmd = "forge storage check ./tmp && CGO_ENABLED=0 go build $FORGE_GO_BUILD_FLAGS -buildvcs=false -o ./tmp/{{.Name}}.tmp ./cmd/{{.Name}} && mv ./tmp/{{.Name}}.tmp ./tmp/{{.Name}}"
   delay = 1000
   # exclude_dir entries are root-relative: the bare "node_modules" only

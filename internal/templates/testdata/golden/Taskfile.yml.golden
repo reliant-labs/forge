@@ -122,13 +122,19 @@ tasks:
 
   build:
     desc: Build Go binaries and every frontend's bundle
+    vars:
+      # A dev build: -ldflags=-w links without DWARF debug info, about half
+      # the link time and memory of a large binary; panics, stack traces and
+      # pprof still work. FORGE_DEV_DWARF=1 keeps DWARF (to attach a
+      # debugger), and an -ldflags in GOFLAGS is left to decide. Release
+      # builds are `forge build` and the Dockerfile, with their own flags.
+      DEV_LDFLAGS:
+        sh: 'w=-ldflags=-w; case "$FORGE_DEV_DWARF" in 1) w= ;; esac; set -f; for f in $(go env GOFLAGS 2>/dev/null); do case "$f" in -ldflags|-ldflags=*|--ldflags|--ldflags=*) w= ;; esac; done; echo "$w"'
     cmds:
       # -trimpath strips local filesystem paths so builds are reproducible
-      # across machines; -buildvcs=true embeds the commit/dirty flag for
-      # runtime correlation. Keep these flags in lockstep with the
-      # Dockerfile and CI workflow so locally-built, CI-built, and
-      # Docker-built binaries all hash identically from the same source.
-      - go build -trimpath -buildvcs=true ./...
+      # across machines (the Dockerfile and `forge build` use it too);
+      # -buildvcs=true embeds the commit/dirty flag for runtime correlation.
+      - go build -trimpath -buildvcs=true {{.DEV_LDFLAGS}} ./...
       - task: build:frontend
 
   build:frontend:
@@ -412,6 +418,12 @@ tasks:
     # not as a `VAR=val cmd` prefix, so it works on Windows too.
     env:
       ENVIRONMENT: development
+      # .air.toml's `go build` expands it: -ldflags=-w, the dev-loop link
+      # without DWARF that `forge env up` gives air too (-trimpath comes from
+      # GOFLAGS above). FORGE_DEV_DWARF=1 keeps DWARF; a FORGE_GO_BUILD_FLAGS
+      # already in your environment wins (Task never overrides one).
+      FORGE_GO_BUILD_FLAGS:
+        sh: 'w=-ldflags=-w; case "$FORGE_DEV_DWARF" in 1) w= ;; esac; set -f; for f in $(go env GOFLAGS 2>/dev/null); do case "$f" in -ldflags|-ldflags=*|--ldflags|--ldflags=*) w= ;; esac; done; echo "$w"'
     cmds:
       - cmd: air
         ignore_error: true

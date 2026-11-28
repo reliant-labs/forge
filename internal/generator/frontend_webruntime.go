@@ -369,12 +369,103 @@ func insertDependency(text, name, spec string) (string, error) {
 	return insertIntoObject(text, dependenciesOpenRe, "dependencies", name, spec)
 }
 
+// jsonObjectMember records direct members without changing their original bytes.
+type jsonObjectMember struct {
+	name       string
+	start, end int
+	valueStart int
+}
+
+func jsonObjectMembers(text string) ([]jsonObjectMember, error) {
+	dec := json.NewDecoder(strings.NewReader(text))
+	token, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	if token != json.Delim('{') {
+		return nil, fmt.Errorf("expected JSON object")
+	}
+	var members []jsonObjectMember
+	for dec.More() {
+		start := int(dec.InputOffset())
+		start += len(text[start:]) - len(strings.TrimLeft(text[start:], " \t\r\n,"))
+		token, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		name, ok := token.(string)
+		if !ok {
+			return nil, fmt.Errorf("expected object member name")
+		}
+		valueStart := int(dec.InputOffset())
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil, err
+		}
+		end := int(dec.InputOffset())
+		// The key token ends before the colon. Decode validated the separator;
+		// skip it and JSON whitespace in the original text to locate the value.
+		prefix := text[valueStart:end]
+		valueStart += len(prefix) - len(strings.TrimLeft(prefix, " \t\r\n:"))
+		members = append(members, jsonObjectMember{name: name, start: start, end: end, valueStart: valueStart})
+	}
+	_, err = dec.Token()
+	return members, err
+}
+
 // insertIntoObject adds name@spec to the object whose opening brace openRe
 // matches (key names it in the error), matching the surrounding indentation.
-func insertIntoObject(text string, openRe *regexp.Regexp, key, name, spec string) (string, error) {
-	loc := openRe.FindStringIndex(text)
+//
+// The entry goes where npm and pnpm would put it: before the first entry
+// whose name sorts after it, else after the last entry. It used to go first
+// whatever its name, so `forge generate` added rrweb above @bufbuild/protobuf
+// (obs 016c599b), and the next `npm install` re-sorted the file into a diff
+// nobody asked for. Nothing else in the object moves.
+func insertIntoObject(text string, _ *regexp.Regexp, key, name, spec string) (string, error) {
+	members, err := jsonObjectMembers(text)
+	if err != nil {
+		return "", err
+	}
+	var loc []int
+	var entries []jsonObjectMember
+	for _, member := range members {
+		if member.name != key {
+			continue
+		}
+		entries, err = jsonObjectMembers(text[member.valueStart:member.end])
+		if err != nil {
+			return "", fmt.Errorf("%q object: %w", key, err)
+		}
+		loc = []int{member.start, member.valueStart + 1}
+		break
+	}
 	if loc == nil {
 		return "", fmt.Errorf("no %q object", key)
+	}
+	entry := jsonString(name) + ": " + jsonString(spec)
+	for _, e := range entries {
+		if e.name > name {
+			// Before this direct member, at its original indentation.
+			at := loc[1] - 1 + e.start
+			lineStart := strings.LastIndexByte(text[:at], '\n') + 1
+			indent := text[lineStart:at]
+			if strings.TrimSpace(indent) != "" {
+				return text[:at] + entry + ", " + text[at:], nil
+			}
+			return text[:at] + entry + ",\n" + indent + text[at:], nil
+		}
+	}
+	if len(entries) > 0 {
+		// After the last direct member's complete value, including nested JSON.
+		last := entries[len(entries)-1]
+		at := loc[1] - 1 + last.end
+		lastStart := loc[1] - 1 + last.start
+		lineStart := strings.LastIndexByte(text[:lastStart], '\n') + 1
+		indent := text[lineStart:lastStart]
+		if strings.TrimSpace(indent) != "" {
+			return text[:at] + ", " + entry + text[at:], nil
+		}
+		return text[:at] + ",\n" + indent + entry + text[at:], nil
 	}
 	lineStart := strings.LastIndexByte(text[:loc[0]], '\n') + 1
 	keyIndent := text[lineStart:loc[0]]
@@ -382,7 +473,6 @@ func insertIntoObject(text string, openRe *regexp.Regexp, key, name, spec string
 		keyIndent = "  " // "dependencies" did not start its own line
 	}
 	entryIndent := keyIndent + "  "
-	entry := jsonString(name) + ": " + jsonString(spec)
 
 	after := loc[1]
 	rest := text[after:]

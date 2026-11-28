@@ -364,6 +364,25 @@ const CapabilityCollectsTelemetry = "collects-telemetry"
 // /_api/@<name> calls 404.
 const CapabilityServesNamedSiteAPIs = "serves-named-site-apis"
 
+// CapabilityServesMarkdownNegotiation is advertised beside the bundle
+// features by a control plane that NEGOTIATES a hosted static site's Markdown
+// twins (StaticSiteSpec.MarkdownNegotiation): its origin serves a page's
+// `.md` twin to a request preferring text/markdown, with `Vary: Accept` and a
+// `Link` rel=alternate. Like [CapabilityServesNamedSiteAPIs] it is
+// deliberately not in [BundleDocFeatures]: a control plane adds it by hand,
+// in the change that serves it. Until it does, forge refuses to record a
+// site that asks for it ([BundleReader.CheckMarkdownNegotiation]).
+const CapabilityServesMarkdownNegotiation = "serves-markdown-negotiation"
+
+// CapabilityHonorsEdgeLogOptOut is advertised beside the bundle features by a
+// control plane that DROPS a hosted static site's edge request log when the
+// env opted out (StaticSiteSpec.EdgeLogs = false). Not in
+// [BundleDocFeatures], for the same reason: decoding the field is not
+// honouring it. Until a control plane names it, forge refuses to record a
+// site that opts out there ([BundleReader.CheckEdgeLogOptOut]) rather than
+// let the opt-out be silently ignored.
+const CapabilityHonorsEdgeLogOptOut = "honors-edge-log-opt-out"
+
 // CapabilityAutoscalesWorkloads is advertised beside the bundle features by a
 // control plane that APPLIES a hosted workload's autoscale
 // (WorkloadSpec.Autoscale): its operator renders the HorizontalPodAutoscaler,
@@ -699,6 +718,35 @@ func (r *BundleReader) CheckNamedSiteAPIs(sites []string) error {
 		"does not serve them (it does not advertise %q), so every call to one would 404. Upgrade the control plane, or call those "+
 		"backends by URL (a literal in runtime_config) until it is",
 		strings.Join(sites, ", "), CapabilityServesNamedSiteAPIs)
+}
+
+// CheckMarkdownNegotiation refuses static sites that ask for Markdown
+// negotiation (sites names them) to a reader that does not negotiate: one
+// that does not advertise [CapabilityServesMarkdownNegotiation] would serve
+// HTML to every agent asking for Markdown. No such site, and the nil reader,
+// always pass. Callers run it before anything is written.
+func (r *BundleReader) CheckMarkdownNegotiation(sites []string) error {
+	if len(sites) == 0 || r.Supports(CapabilityServesMarkdownNegotiation) {
+		return nil
+	}
+	return fmt.Errorf("static site %s declares markdown_negotiation, and this control plane does not negotiate Markdown twins "+
+		"(it does not advertise %q), so it would serve HTML to every request asking for text/markdown. Upgrade the control plane, "+
+		"or remove markdown_negotiation until it is (the .md twins are still served at their own URLs)",
+		strings.Join(sites, ", "), CapabilityServesMarkdownNegotiation)
+}
+
+// CheckEdgeLogOptOut refuses static sites whose env opted out of edge logs
+// (sites names them) to a reader that does not honour the opt-out: one that
+// does not advertise [CapabilityHonorsEdgeLogOptOut] might keep logging them.
+// No such site, and the nil reader, always pass. Callers run it before
+// anything is written.
+func (r *BundleReader) CheckEdgeLogOptOut(sites []string) error {
+	if len(sites) == 0 || r.Supports(CapabilityHonorsEdgeLogOptOut) {
+		return nil
+	}
+	return fmt.Errorf("static site %s opts out of edge logs (ObservabilitySignals.edge = False, or observability disabled), and this "+
+		"control plane does not honour that opt-out (it does not advertise %q). Upgrade the control plane, or remove the opt-out until it is",
+		strings.Join(sites, ", "), CapabilityHonorsEdgeLogOptOut)
 }
 
 // CheckAutoscaledWorkloads refuses hosted workloads that declare autoscale

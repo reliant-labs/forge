@@ -29,6 +29,9 @@ import (
 // invented.
 func TestBuildHostServiceCmd(t *testing.T) {
 	ctx := context.Background()
+	// The dev-loop -ldflags=-w is judged against the shell: pin it.
+	t.Setenv(hostlaunch.DevDWARFEnv, "")
+	t.Setenv("GOFLAGS", "")
 	withRunner := func(r string) func(*WorkloadEntity) {
 		return func(w *WorkloadEntity) { w.Runtime.Host.Runner = r }
 	}
@@ -50,12 +53,12 @@ func TestBuildHostServiceCmd(t *testing.T) {
 		{
 			name: "go-run runs the GoBuild cmd with the workload's args",
 			svc:  hostWL("api", sharedBinary, withArgs("api")),
-			want: []string{"go", "run", "./cmd/myproj", "api"},
+			want: []string{"go", "run", "-ldflags=-w", "./cmd/myproj", "api"},
 		},
 		{
 			name: "empty runner is go-run",
 			svc:  hostWL("api", sharedBinary, withRunner(""), withArgs("api")),
-			want: []string{"go", "run", "./cmd/myproj", "api"},
+			want: []string{"go", "run", "-ldflags=-w", "./cmd/myproj", "api"},
 		},
 		{
 			name: "air with custom config",
@@ -114,6 +117,55 @@ func TestBuildHostServiceCmd(t *testing.T) {
 				t.Fatalf("args:\n got  %q\n want %q", cmd.Args, c.want)
 			}
 		})
+	}
+}
+
+// TestWithDevLinkFlags_GOFLAGS: the dev-loop -ldflags=-w defers to an
+// -ldflags in the GOFLAGS the build's go reads — the env's own when it sets
+// GOFLAGS, else the go env file's (`go env GOFLAGS`, consulted only then) —
+// and FORGE_DEV_DWARF=1 keeps DWARF without consulting anything.
+func TestWithDevLinkFlags_GOFLAGS(t *testing.T) {
+	spec := hostlaunch.RunnerSpec{GoPkg: "./cmd/app", GoBuildFlags: []string{"-trimpath"}}
+	fileGOFLAGS, asked := "", 0
+	prev := goEnvGOFLAGS
+	goEnvGOFLAGS = func([]string) string { asked++; return fileGOFLAGS }
+	t.Cleanup(func() { goEnvGOFLAGS = prev })
+	cases := []struct {
+		name      string
+		env       []string
+		file      string
+		want      string
+		wantAsked int
+	}{
+		{"no GOFLAGS anywhere", []string{"PATH=/bin"}, "", "-trimpath -ldflags=-w", 1},
+		{"go env file -ldflags", []string{"PATH=/bin"}, "-ldflags=-X=main.v=dev", "-trimpath", 1},
+		{"env GOFLAGS -ldflags", []string{"GOFLAGS=-ldflags=-s"}, "", "-trimpath", 0},
+		{"env GOFLAGS hides the file's", []string{"GOFLAGS=-mod=mod"}, "-ldflags=-s", "-trimpath -ldflags=-w", 0},
+		{"FORGE_DEV_DWARF=1", []string{"FORGE_DEV_DWARF=1"}, "", "-trimpath", 0},
+	}
+	for _, c := range cases {
+		fileGOFLAGS, asked = c.file, 0
+		got := withDevLinkFlags(spec, c.env)
+		if strings.Join(got.GoBuildFlags, " ") != c.want || asked != c.wantAsked {
+			t.Errorf("%s: flags %q (go env asked %d times), want %q (%d)", c.name, got.GoBuildFlags, asked, c.want, c.wantAsked)
+		}
+	}
+}
+
+// TestBuildHostServiceCmd_DevDWARF: FORGE_DEV_DWARF=1 in the shell gives
+// go-run's build its DWARF back.
+func TestBuildHostServiceCmd_DevDWARF(t *testing.T) {
+	t.Setenv(hostlaunch.DevDWARFEnv, "1")
+	w := hostWL("api", func(w *WorkloadEntity) {
+		w.Build = BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/myproj", Flags: []string{"-trimpath"}}}
+		w.Spec.Args = []string{"server"}
+	})
+	cmd, _, err := buildHostServiceCmd(t.Context(), nil, w, nil, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(cmd.Args, " "), "go run -trimpath ./cmd/myproj server"; got != want {
+		t.Errorf("args = %q, want %q", got, want)
 	}
 }
 

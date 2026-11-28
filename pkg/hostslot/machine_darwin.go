@@ -13,3 +13,5 @@ func totalMemory() (uint64, string) {
 }
 
 func platformCgroupLimits() (cgroupLimit, bool) { return cgroupLimit{}, false }
+
+func platformPoolCgroupLimits() (cgroupLimit, bool) { return cgroupLimit{}, false }

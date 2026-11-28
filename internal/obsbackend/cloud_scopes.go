@@ -14,6 +14,9 @@ type ScopeDeclarer interface {
 // releases) need deploy:read, which the base credential carries, so they are
 // not declared.
 //
+// It also tells a client that takes response limits (ResponseLimitDeclarer)
+// the bigger read GetTrace needs (MaxTraceResponseBytes).
+//
 // Keep it in step with the procedures above: an undeclared one still works
 // (the client elevates after one refusal), it just costs that refusal, and a
 // wrong declaration falls back to that same reactive path.
@@ -38,4 +41,21 @@ func DeclareCloudScopes(c ScopeDeclarer) {
 		procExportPGOProfile, procGetFlamegraph,
 	)
 	c.DeclareScope("obs:triage", procUpdateIssueStatus, procAddIssueComment, procUpdateIssueComment, procDeleteIssueComment, procAssignIssue)
+	if d, ok := c.(ResponseLimitDeclarer); ok {
+		d.DeclareResponseLimit(MaxTraceResponseBytes, procGetTrace)
+	}
 }
+
+// ResponseLimitDeclarer is a control-plane client that can be told the most
+// bytes of a procedure's reply it reads; *cloud.Client satisfies it.
+type ResponseLimitDeclarer interface {
+	DeclareResponseLimit(limit int64, procedures ...string)
+}
+
+// MaxTraceResponseBytes bounds the GetTrace answer read. A trace is up to
+// obsquery.MaxSpansPerTrace spans, each with its span and resource attributes:
+// a 10,000-span prod trace measured 17 MiB (about 1.7 KiB a span), well over
+// the client's 8 MiB default, which cut it off and failed to decode it
+// ("unexpected end of JSON input"). 64 MiB leaves room for spans with
+// several times those attributes, and stays a bound.
+const MaxTraceResponseBytes int64 = 64 << 20

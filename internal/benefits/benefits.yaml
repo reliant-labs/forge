@@ -4936,11 +4936,15 @@ benefits:
       `StartWorkflow` / `StartAgent` / `StartTool` for agentic work); AI spans
       are never sampled away. A `<project>-ai-models.json` replaces a dashboard.
     why: >-
-      No price table yet: a cost is shown only where the gateway reported one.
-      The console lists the new AI group under Custom until it knows it.
+      Cost is the reported one where a call carries it, else an estimate at
+      LiteLLM's list prices (pkg/llmprice, the rates the Reliant LLM gateway
+      bills with) on the AI cost dashboard, which the platform serves once its
+      tenant has the price table. The console lists the new AI group under
+      Custom until it knows it.
     evidence:
       - library: pkg/obsbuiltin
       - library: pkg/observe/genai
+      - library: pkg/llmprice
       - path: pkg/obsbuiltin/ai_clickhouse_test.go
       - skill: observability/ai
 

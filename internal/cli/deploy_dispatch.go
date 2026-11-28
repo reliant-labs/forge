@@ -749,6 +749,7 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 		services = append(services, deploytarget.ResolvedService{
 			Name: f.Name,
 			Hosted: &deploytarget.HostedWorkload{Tier: deploytarget.HostedTierStatic, Static: hostedStaticSpec(f),
+				EdgeLogsOffIfHonoured: edgeLogsOffIfHonoured(entities, f),
 				// The ledger keys a site by the repository it was pushed to,
 				// so the deploy must look it up under the same key — through
 				// the one rule the build pushed by, which resolves a bare
@@ -844,7 +845,26 @@ func hostedStaticSpec(f FrontendEntity) *v1alpha1.StaticSiteSpec {
 			spec.APIs[name] = v1alpha1.WorkloadURLRef{Name: workload}
 		}
 	}
+	// Both written only when they say something: a frontend that declares
+	// neither publishes the spec it published before the fields existed. A
+	// control plane that does not honour one is refused before anything is
+	// recorded (release.CapabilityServesMarkdownNegotiation,
+	// release.CapabilityHonorsEdgeLogOptOut).
+	spec.MarkdownNegotiation = f.MarkdownNegotiation
+	if f.EdgeLogs != nil && !*f.EdgeLogs {
+		off := false
+		spec.EdgeLogs = &off
+	}
 	return spec
+}
+
+// edgeLogsOffIfHonoured reports the IMPLICIT edge-log opt-out: the env
+// disabled observability (`Observability {enabled = False}`) without saying
+// anything about edge logs. Unlike the explicit `edge = False`, which
+// hostedStaticSpec always writes, it is sent only to a control plane that
+// honours it, so an env that deployed before the field is never refused.
+func edgeLogsOffIfHonoured(e *KCLEntities, f FrontendEntity) bool {
+	return e != nil && e.Observability != nil && !e.Observability.Enabled && f.EdgeLogs == nil
 }
 
 // hostedArtifactKey is the ONE rule for which release artifact a hosted

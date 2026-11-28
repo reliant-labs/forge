@@ -131,7 +131,7 @@ func NewRootCmd() *cobra.Command {
 	// They need the same descriptor-only cache refresh as standalone forge;
 	// otherwise a merged proto edit makes lint demand a full regeneration.
 	if descriptorSelfExecAllowed() {
-		codegen.RegisterDescriptorBuilder(buildDescriptorOnDemand)
+		codegen.RegisterDescriptorPolicyBuilder(buildDescriptorOnDemandWithQuiet)
 	}
 	var projectDir string
 

@@ -40,8 +40,9 @@ var goflagsExempt = map[string]string{
 	"internal/testretry/run.go:Run": "pins the effective GOFLAGS go itself reported (file layer included), so it drops nothing",
 	// -pgo=off for a go-run / air build whose GoBuild disables PGO; that
 	// build's -trimpath is declared in GoBuild.flags, on its command line.
-	"internal/hostlaunch/hostlaunch.go:WithPGO":   "a dev-loop build trims by its declared GoBuild.flags (command line), not GOFLAGS",
-	"internal/hostlaunch/pgo_test.go:TestWithPGO": "inputs to WithPGO, asserting it merges -pgo=off; never handed to go",
+	"internal/hostlaunch/hostlaunch.go:WithPGO":            "a dev-loop build trims by its declared GoBuild.flags (command line), not GOFLAGS",
+	"internal/hostlaunch/pgo_test.go:TestWithPGO":          "inputs to WithPGO, asserting it merges -pgo=off; never handed to go",
+	"internal/cli/up_test.go:TestWithDevLinkFlags_GOFLAGS": "inputs to withDevLinkFlags, asserting which GOFLAGS -ldflags it defers to; never handed to go",
 }
 
 // TestGOFLAGSOverridesKeepTrimpath pins that a child environment which SETS

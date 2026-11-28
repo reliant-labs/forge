@@ -656,6 +656,17 @@ _obs_disabled = lambda b: Bundle -> [str] {
     ([] if not b.observability else (OBS_CATEGORIES if not b.observability.enabled else [c for c in OBS_CATEGORIES if _obs_category_off(_s, c)]))
 }
 
+# The author EXPLICITLY switched hosted sites' edge request logs off
+# (ObservabilitySignals.edge = False). Rendered as `edge_logs: false` on each
+# hosted frontend only then, so an env that keeps them renders as before.
+# `Observability {enabled = False}` alone is the IMPLICIT opt-out: it renders
+# nothing here, and the Go side sends it only to a control plane that honours
+# it (deploytarget.HostedWorkload.EdgeLogsOffIfHonoured), so an env that
+# deployed before the field never starts being refused.
+_obs_edge_off = lambda b: Bundle -> bool {
+    bool(b.observability) and not b.observability.signals.edge
+}
+
 # Browser telemetry is off: the author disabled it, or everything.
 _obs_browser_off = lambda b: Bundle -> bool {
     bool(b.observability) and (not b.observability.enabled or not b.observability.signals.browser)
@@ -2712,7 +2723,7 @@ _render_observability = lambda b: Bundle -> any {
             "replay_days": _o.retention.replay_days
             "errors_days": _o.retention.errors_days
             "product_events_days": _o.retention.product_events_days
-        }
+        } | ({"edge_days": _o.retention.edge_days} if _o.retention.edge_days else {})
         "agent": {
             "namespace": _o.agent.namespace
             "image": _o.agent.image
@@ -3769,6 +3780,8 @@ _frontend_violations = lambda f: Frontend -> [str] {
             if f.image and _t != "hosted" else []) \
         + (["image is REQUIRED on forge.OnHosted: the site release is pushed to a registry, and the registry is part of the reference (e.g. image = \"ghcr.io/<owner>/${f.name}\"). forge appends the platform's own static.v1 layout to it. There is no env-level registry"] \
             if _t == "hosted" and not f.image else []) \
+        + (["markdown_negotiation: only the Reliant hosting origin (forge.OnHosted) varies a page on the Accept header; ${'a bucket serves one object per URL' if _t == 'bucket' else ('Firebase serves one file per URL' if _t == 'firebase' else ('the dev server serves the HTML page' if _host else 'the build is not served here'))}. Bind '${f.name}' to forge.OnHosted in this env, or drop markdown_negotiation (the .md twins are still files at their own URLs)"] \
+            if f.markdown_negotiation and _t != "hosted" else []) \
         + _not_static_export(f) \
         # A BARE image is accepted on forge.OnHosted, exactly as it is on a
         # hosted workload (ADR-0003 F1, _check_image_names_registry): forge
@@ -4039,7 +4052,9 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
       | ({"changes_from_source": False} if f.changes_from_source == False else {}) \
       | ({"release_urls": False} if f.release_urls == False else {}) \
       | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {}) \
-      | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {})
+      | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {}) \
+      | ({"markdown_negotiation": True} if f.markdown_negotiation else {}) \
+      | ({"edge_logs": False} if f.runtime.type == "hosted" and _obs_edge_off(bundle) else {})
 }
 
 # Render an EnvVar to its stable dict form. Unset / empty-string

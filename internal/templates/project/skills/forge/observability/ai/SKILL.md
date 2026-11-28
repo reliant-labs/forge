@@ -120,6 +120,24 @@ after window counts only the judged release's own `service.version`. The
 thresholds are `--threshold` overrides (`--threshold ai_min_calls=20`); the
 JSON's `ai` array holds each service's figures. `ai_cost` comes later.
 
+## Spans from other SDKs (OpenInference, OpenLLMetry)
+
+An app instrumented with OpenInference (Arize/Phoenix) or OpenLLMetry
+(Traceloop), or one still on the GenAI names OTel renamed (`gen_ai.system`,
+`gen_ai.usage.prompt_tokens`), needs no change: point its OTLP exporter at the
+env (`reliant forge obs init <env>`). Reliant hosting's gateway normalises at
+ingest from one forge table, `pkg/observe/genai/conventions`: it ADDS the
+canonical keys above where a span lacks them (`openinference.span.kind=LLM` →
+`gen_ai.operation.name=chat`, `llm.token_count.prompt` →
+`gen_ai.usage.input_tokens`, `session.id` → `gen_ai.conversation.id`, ...),
+never overwrites or deletes, and stamps `forge.ai.convention` (`genai`,
+`openinference`, `openllmetry`) so you can see where a span came from. The
+original attributes stay queryable. An OpenLLMetry workflow's run is its trace
+(`forge.ai.run.id` = the trace id). The rules, the names forge marks
+unverified and the golden vectors are in the package
+(`reliant forge project libraries observe/genai/conventions`). Message content
+is not mapped (see "Not yet").
+
 ## Never sampled
 
 Token totals are sums over spans, so a sampled-away call is a missing cost.
@@ -132,7 +150,12 @@ must keep them too (the hosted platform's gateway policy).
 
 ## Not yet
 
-- No price table and no estimated cost (deferred by decision).
+- Estimated cost is on the AI cost dashboard only (`ai-cost`), which the
+  platform serves where your tenant has the price table: a call with no
+  reported cost is priced at LiteLLM's list rates (`pkg/llmprice`, the rates
+  the Reliant LLM gateway bills with; base per-token rates, no tiers), labelled
+  estimated. A model the table does not know has no cost, never $0. The other
+  hub dashboards show the reported cost only.
 - No prompt or completion content: a later, opt-in phase with its own storage,
   redaction and retention. Never put content in span attributes.
 - No run explorer page yet; a trace id in Failed runs opens the trace.

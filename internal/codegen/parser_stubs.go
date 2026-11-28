@@ -192,12 +192,21 @@ func protoSourceDeclaresService(projectDir string) bool {
 // does not match them (the registered builder; see descriptor_dir.go), and
 // refuses one that still does not match.
 func LoadDescriptor(projectDir string) (*ForgeDescriptor, error) {
+	return LoadDescriptorWithQuiet(projectDir, false)
+}
+
+// LoadDescriptorWithQuiet loads metadata using an invocation-local output policy.
+func LoadDescriptorWithQuiet(projectDir string, quiet bool) (*ForgeDescriptor, error) {
 	desc, err := ReadDescriptor(projectDir)
 	if err != nil {
 		return nil, err
 	}
-	if descriptorBuilder != nil && (desc == nil || DescriptorDrift(projectDir, desc.Sources) != "") && len(DescriptorSources(projectDir)) > 0 {
-		if err := descriptorBuilder(projectDir); err != nil {
+	if DescriptorBuilderRegistered() && (desc == nil || DescriptorDrift(projectDir, desc.Sources) != "") && len(DescriptorSources(projectDir)) > 0 {
+		build := descriptorBuilder
+		if descriptorContextBuilder != nil {
+			build = func(dir string) error { return descriptorContextBuilder(dir, quiet) }
+		}
+		if err := build(projectDir); err != nil {
 			return nil, fmt.Errorf("extract the forge descriptor (%s/) from proto/: %w", DescriptorDir, err)
 		}
 		if desc, err = ReadDescriptor(projectDir); err != nil {

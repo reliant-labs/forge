@@ -72,6 +72,20 @@ code stay watched. An air config that sets `[build] include_dir` chooses its
 watch set itself and gets nothing added, as does one whose build command does
 not name the package (`make build`).
 
+Dev-loop builds link without DWARF. go-run's `go run` and air's `go build`
+get `-ldflags=-w`: air in `$FORGE_GO_BUILD_FLAGS`, after the GoBuild's `flags`
+(`-trimpath -ldflags=-w`, plus the cover flags in a cover build). The
+scaffolded Taskfile's `task build` and `task dev` do the same. The link takes
+about half the time and memory of a large binary; panics, stack traces and
+pprof still work (`-w` keeps the symbol table). Only a debugger needs DWARF:
+`FORGE_DEV_DWARF=1 forge env up dev` keeps it, for `forge debug start --attach`.
+forge adds no `-w` when an `-ldflags` decides it: `GOFLAGS`, an air command's
+own `-ldflags`, or an existing `FORGE_GO_BUILD_FLAGS`; nor to an air command
+that is not itself a `go build` (a script must add `-w` itself). An `-ldflags` in
+GoBuild.flags gets ` -w` merged in under go-run and passes unchanged to air.
+Debug builds (the delve runner, `.air-debug.toml`, `forge build --debug`) and
+release builds (`forge build`, the Dockerfile) keep their own flags.
+
 Rebinding is editing one line: `_on_k3d(_api)` runs the API as a pod. To run
 ONE service alone (to debug it), bind `_on_host(wl.item)` and give it a root
 of its own (a `//forge:root` struct in internal/app — `architecture`, "Roots

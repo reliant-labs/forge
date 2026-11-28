@@ -41,7 +41,7 @@ var spaStaticExtensions = []string{
 	// scripts, styles, maps, modules
 	"js", "mjs", "cjs", "css", "map", "wasm",
 	// data and documents a build ships as files
-	"json", "webmanifest", "xml", "txt", "html", "htm", "pdf",
+	"json", "webmanifest", "xml", "txt", "md", "html", "htm", "pdf",
 	// images
 	"ico", "png", "jpg", "jpeg", "gif", "svg", "webp", "avif", "bmp",
 	// fonts

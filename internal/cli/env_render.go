@@ -1321,7 +1321,9 @@ func writeHostedAndHostSummary(w io.Writer, envName string, e *KCLEntities) {
 	}
 	fmt.Fprintf(w, "\nhost (run on this machine by `forge env up`):\n")
 	for _, h := range hosts {
-		spec := hostRunnerSpec(h)
+		// With the dev-loop -ldflags env up adds, judged against this shell
+		// and the workload's declared env (FORGE_DEV_DWARF, GOFLAGS).
+		spec := withDevLinkFlags(hostRunnerSpec(h), hostlaunch.LayerHostEnv(os.Environ(), nil, nil, h.HostEnv()))
 		cmd, err := hostlaunch.BuildCmd(context.Background(), h.Name, spec)
 		if err != nil {
 			fmt.Fprintf(w, "  %s: %v\n", h.Name, err)

@@ -8,7 +8,8 @@
 import js from "@eslint/js";
 import nextCoreWebVitals from "eslint-config-next/core-web-vitals";
 import nextTypeScript from "eslint-config-next/typescript";
-import importPlugin from "eslint-plugin-import";
+import { createTypeScriptImportResolver } from "eslint-import-resolver-typescript";
+import { importX } from "eslint-plugin-import-x";
 import react from "eslint-plugin-react";
 import unicorn from "eslint-plugin-unicorn";
 
@@ -75,15 +76,22 @@ const config = [
   {
     plugins: {
       react,
-      import: importPlugin,
+      "import-x": importX,
       unicorn,
     },
     settings: {
       // Classify "@/..." tsconfig-path imports as the "internal" group
-      // deterministically. Without this, eslint-plugin-import can't
+      // deterministically. Without this, eslint-plugin-import-x can't
       // resolve the alias and files drift between "unknown" orderings —
       // generated code must lint identically on every machine.
-      "import/internal-regex": "^@/",
+      "import-x/internal-regex": "^@/",
+      // The import-x rules need their OWN resolver and extensions:
+      // eslint-config-next sets both only under the old `import/*` keys,
+      // and import-x's default extensions are .js/.mjs/.cjs, so without
+      // these two lines import-x/no-cycle parses no .ts/.tsx file and
+      // silently reports nothing.
+      "import-x/resolver-next": [createTypeScriptImportResolver()],
+      "import-x/extensions": [".ts", ".tsx", ".cts", ".mts", ".js", ".jsx", ".cjs", ".mjs"],
     },
     rules: {
       ...a11yRules,
@@ -124,9 +132,9 @@ const config = [
       // named exports and grouped/sorted imports. Errors on the cycle
       // case because cycles silently break code-splitting + cause subtle
       // initialisation bugs; warn-only on the others so users can ratchet.
-      "import/no-cycle": ["error", { maxDepth: 10 }],
-      "import/no-default-export": "warn",
-      "import/order": [
+      "import-x/no-cycle": ["error", { maxDepth: 10 }],
+      "import-x/no-default-export": "warn",
+      "import-x/order": [
         "warn",
         {
           groups: [
@@ -178,7 +186,7 @@ const config = [
       "**/*.config.{js,ts,mjs}",
     ],
     rules: {
-      "import/no-default-export": "off",
+      "import-x/no-default-export": "off",
     },
   },
   {

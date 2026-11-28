@@ -47,6 +47,7 @@ import (
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // WebRuntimePackage is the npm package name of forge's frontend runtime
@@ -538,12 +539,14 @@ func FrontendDependencyNotices(projectDir, feRelDir string) []string {
 			}
 		}
 	}
-	return append(out, telemetryDependencyNotices(feDir, text)...)
+	out = append(out, telemetryDependencyNotices(feDir, text)...)
+	return append(out, eslintImportDependencyNotices(feDir, text)...)
 }
 
 // SyncFrontendLock brings the lockfile that governs feRelDir's package.json
 // back in step with the dependency ranges forge manages there
-// (WebRuntimePackage, and the telemetry peers EnsureTelemetryDependencies
+// (WebRuntimePackage, the telemetry peers EnsureTelemetryDependencies
+// declares, and the eslint import packages EnsureESLintImportDependencies
 // declares).
 //
 // The Ensure* functions above rewrite those ranges in package.json and nothing
@@ -566,6 +569,9 @@ func SyncFrontendLock(projectDir, feRelDir string) error {
 		return nil
 	}
 	managed := append([]string{WebRuntimePackage}, telemetryPeers...)
+	for _, p := range templates.ESLintImportPackages {
+		managed = append(managed, p.Name)
+	}
 	drift, err := frontenddeps.LockDrift(lock, manifestDir, managed...)
 	if err != nil {
 		return fmt.Errorf("%s: compare package.json with %s: %w", feRelDir, lock.File, err)

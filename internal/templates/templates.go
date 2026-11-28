@@ -96,6 +96,16 @@ func FuncMap() template.FuncMap {
 			}
 			return spec, nil
 		},
+		// eslintImportPin renders the exact version forge pins for a
+		// package the Next.js eslint config imports (ESLintImportPackages).
+		// An unknown name fails the render.
+		"eslintImportPin": func(name string) (string, error) {
+			v, ok := eslintImportPin(name)
+			if !ok {
+				return "", fmt.Errorf("forge pins no eslint import package %q", name)
+			}
+			return v, nil
+		},
 		"joinStrings":  strings.Join,
 		"default":      getDefault,
 		"add":          add,

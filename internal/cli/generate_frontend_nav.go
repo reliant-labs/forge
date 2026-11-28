@@ -455,6 +455,7 @@ func generateReactNativeFrontend(cfg *config.ProjectConfig, projectDir string, f
 		printDependencyNotices(fe.Name, feDir, generator.FrontendDependencyNotices(projectDir, feDir))
 	} else {
 		generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
+		generator.EnsureESLintImportDependencies(projectDir, feDir, fe.Name)
 	}
 	return nil
 }
@@ -484,6 +485,7 @@ func reconcileFrontendDependencies(projectDir, feDir string, fe config.FrontendC
 	}
 	generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
 	generator.EnsureTelemetryDependencies(projectDir, feDir)
+	generator.EnsureESLintImportDependencies(projectDir, feDir, fe.Name)
 }
 
 // frontendManifestDisowned reports whether the project disowned the

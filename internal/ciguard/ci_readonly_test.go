@@ -174,7 +174,7 @@ func TestCandidateCIGateDoesNotDelegateItsVerdict(t *testing.T) {
 		name, event, results string
 		pass                 bool
 	}{
-		{"all queue checks pass", "merge_group", `{"test-short":{"result":"success"},"checks":{"result":"success"},"golangci":{"result":"success"},"windows-changed":{"result":"skipped"},"lint":{"result":"skipped"}}`, true},
+		{"all queue checks pass", "merge_group", `{"test-short":{"result":"success"},"checks":{"result":"success"},"golangci":{"result":"success"},"windows-changed":{"result":"success"},"lint":{"result":"skipped"}}`, true},
 		{"ordinary pull request skips merge tier", "pull_request", `{"pr-checks":{"result":"success"},"test-short":{"result":"skipped"}}`, true},
 		{"queue check skipped", "merge_group", `{"test-short":{"result":"skipped"}}`, false},
 		{"job failed", "merge_group", `{"test-short":{"result":"failure"}}`, false},

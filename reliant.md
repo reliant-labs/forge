@@ -227,7 +227,7 @@ another runner to queue for (the org runs 20 jobs at once, and was saturated hal
   would replace the head's `CI gate` verdict). `ci:e2e` and `ci:canary` still start their
   own workflows on `labeled`.
 
-**Merge-queue entry** (`merge_group`; the merge tier, 4 jobs):
+**Merge-queue entry** (`merge_group`; the merge tier, 5 jobs):
 
 - **Test** — three entries: the `-short` tier, no `-race`, as 2 package shards
   (`scripts/ci-test-shard.sh` over `scripts/ci-test-packages.sh short I N`), and the
@@ -258,14 +258,14 @@ another runner to queue for (the org runs 20 jobs at once, and was saturated hal
   well under the tier's other jobs; `internal/cli` is the slow case. Run it locally with
   `scripts/ci-golangci-changed.sh` (base: the merge base with `origin/main`; `--plan` lists
   the packages). Packages the diff did not touch stay with **Lint** on main.
-- **Windows is not in the merge tier.** `Windows (changed packages, -short)`
-  (`windows-changed`) ran in every merge group from 2026-11-13 and left it on 2026-11-28:
-  at 10-20 minutes it was the tier's critical path, and it failed 136 merge groups in 72
-  hours. It now runs only on a pull request labelled **`ci:windows`** (read on the next
-  push): `go test -short` over `scripts/ci-changed-packages.sh HEAD^1` (the packages the
-  pull request changed plus their direct importers; go.mod/go.sum runs every package),
-  capped at 20 minutes. Label a change to paths, file modes, HOME or open file handles
-  with it. Main's full **Windows** job runs every package after the merge.
+- **Windows (changed packages, -short)** (`windows-changed`; owner, 2026-11-13, after four
+  Windows-only reds reached main in a day): a native Windows runner runs `go test -short`
+  over `scripts/ci-changed-packages.sh HEAD^1` — the packages the entry changed plus their
+  direct importers, guards dropped; go.mod/go.sum runs every package. About five minutes
+  for a small `pkg/` diff, 10-15 when it reaches `internal/cli` or `internal/generator`:
+  the one merge-tier job over the budget, on purpose. Capped at 20 minutes. Label a pull
+  request **`ci:windows`** (read on the next push) to run it before review. Main's full
+  **Windows** job still runs every package.
 - **Review marker** — every pull request in the group must carry `pr-review`'s pass marker
   for its current head (`scripts/ci-review-marker.sh`), so a head pushed after a pass cannot
   ride an armed auto-merge in.

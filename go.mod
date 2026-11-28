@@ -8,7 +8,7 @@ require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2
 	buf.build/go/protovalidate v1.4.1
 	cel.dev/cel-go v0.33.4
-	cloud.google.com/go/auth v0.24.4
+	cloud.google.com/go/auth v0.24.5
 	cloud.google.com/go/compute/metadata v0.10.0
 	cloud.google.com/go/storage v1.71.0
 	connectrpc.com/connect v1.21.1
@@ -19,8 +19,8 @@ require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.51.0
 	github.com/MicahParks/keyfunc/v3 v3.9.2
 	github.com/XSAM/otelsql v0.44.0
-	github.com/brianvoe/gofakeit/v7 v7.18.9
-	github.com/chromedp/cdproto v0.160.1
+	github.com/brianvoe/gofakeit/v7 v7.18.11
+	github.com/chromedp/cdproto v0.160.9
 	github.com/chromedp/chromedp v0.24.0
 	github.com/ebitengine/purego v0.11.3
 	github.com/evanw/esbuild v0.28.2
@@ -46,11 +46,11 @@ require (
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
-	github.com/prometheus/alertmanager v0.35.0
+	github.com/prometheus/alertmanager v0.35.1
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/common v0.74.0
 	github.com/robfig/cron/v3 v3.0.1
-	github.com/sigstore/sigstore-go v1.4.0
+	github.com/sigstore/sigstore-go v1.4.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.1.0
 	github.com/tdewolff/parse/v2 v2.25.0
@@ -90,7 +90,7 @@ require (
 	golang.org/x/text v0.44.0
 	golang.org/x/time v0.16.0
 	golang.org/x/tools v0.53.0
-	google.golang.org/api v0.316.0
+	google.golang.org/api v0.317.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20261116203732-fd2c7689a808
 	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
@@ -100,7 +100,7 @@ require (
 	k8s.io/apiextensions-apiserver v0.37.2
 	k8s.io/apimachinery v0.37.2
 	k8s.io/client-go v0.37.2
-	k8s.io/streaming v0.37.2
+	k8s.io/streaming v0.37.3
 	kcl-lang.io/kcl-go v0.13.2
 	kcl-lang.io/kpm v0.13.2
 	kcl-lang.io/lib v0.13.2
@@ -119,6 +119,7 @@ require (
 	cloud.google.com/go/iam v1.15.1 // indirect
 	cloud.google.com/go/monitoring v1.32.1 // indirect
 	dario.cat/mergo v1.0.2 // indirect
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20261013165250-51075c6ea6bc // indirect
 	github.com/ClickHouse/ch-go v0.76.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.63.0 // indirect
@@ -202,8 +203,8 @@ require (
 	github.com/go-openapi/jsonpointer v1.0.3 // indirect
 	github.com/go-openapi/jsonreference v1.0.3 // indirect
 	github.com/go-openapi/loads v0.25.3 // indirect
-	github.com/go-openapi/runtime v0.33.3 // indirect
-	github.com/go-openapi/runtime/server-middleware v0.33.3 // indirect
+	github.com/go-openapi/runtime v0.33.4 // indirect
+	github.com/go-openapi/runtime/server-middleware v0.33.4 // indirect
 	github.com/go-openapi/spec v1.0.1 // indirect
 	github.com/go-openapi/strfmt v0.27.4 // indirect
 	github.com/go-openapi/swag v0.29.2 // indirect
@@ -218,7 +219,7 @@ require (
 	github.com/go-openapi/swag/stringutils v0.29.2 // indirect
 	github.com/go-openapi/swag/typeutils v0.29.2 // indirect
 	github.com/go-openapi/swag/yamlutils v0.29.2 // indirect
-	github.com/go-openapi/validate v1.0.0 // indirect
+	github.com/go-openapi/validate v1.0.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/gobuffalo/flect v1.0.3 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
@@ -315,10 +316,10 @@ require (
 	github.com/sergi/go-diff v1.4.5 // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
 	github.com/shopspring/decimal v1.6.0 // indirect
-	github.com/sigstore/protobuf-specs v0.5.2 // indirect
-	github.com/sigstore/rekor v1.5.5 // indirect
-	github.com/sigstore/rekor-tiles/v2 v2.4.0 // indirect
-	github.com/sigstore/sigstore v1.11.1 // indirect
+	github.com/sigstore/protobuf-specs v0.5.3-0.20261112181914-a84bc5ff572a // indirect
+	github.com/sigstore/rekor v1.6.1 // indirect
+	github.com/sigstore/rekor-tiles/v2 v2.4.2 // indirect
+	github.com/sigstore/sigstore v1.11.4 // indirect
 	github.com/sigstore/timestamp-authority/v2 v2.2.0 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/skeema/knownhosts v1.3.3 // indirect
@@ -360,7 +361,7 @@ require (
 	golang.org/x/telemetry v0.0.0-20261116191925-e77a43154acb // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
 	google.golang.org/genproto v0.0.0-20261116203732-fd2c7689a808 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20261116203732-fd2c7689a808 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261118221215-c8830f628b3f // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.68.0 // indirect
 	gopkg.in/telebot.v3 v3.3.8 // indirect

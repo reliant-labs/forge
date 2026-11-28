@@ -86,16 +86,18 @@ type ComponentChain struct {
 // quiet under a production Info handler). It is exactly what the scaffolded
 // seam assembles; write the seam only to change it.
 //
-// The logger is slog.Default() as of the call, and the tracer and meter come
-// from the global providers, which delegate to whatever the process installs
-// later — so a decorator built before observe.Setup still reports.
+// The logger is slog.Default() as of the call — until WithLogger binds the
+// component's own (the generated decorator binds its Deps.Logger) — and the
+// tracer and meter come from the global providers, which delegate to whatever
+// the process installs later — so a decorator built before observe.Setup
+// still reports.
 func DefaultComponentChain(scope, name string, successLevel slog.Level) *ComponentChain {
 	logger := slog.Default()
 	return NewComponentChain(
-		RecoverMiddleware(logger),
+		recoverMiddleware{logger: logger, componentDefault: true},
 		TraceMiddleware(otel.Tracer(scope)),
 		MetricsMiddleware(otel.Meter(scope), name),
-		LogMiddleware(logger, successLevel),
+		&logMiddleware{logger: logger, policy: newLogPolicy(successLevel, nil), componentDefault: true},
 	)
 }
 
@@ -166,11 +168,19 @@ func (c *ComponentChain) Around[T any](ctx context.Context, method string, next 
 // middleware) into an error, logs it with a stack trace, and returns it — so
 // one component's panic can't tear down the caller. It is the OUTERMOST layer
 // in the canonical seam so it observes panics from every inner middleware too.
+//
+// A nil logger means the component's: the logger WithLogger binds (the
+// generated decorator binds the component's Deps.Logger), else slog.Default().
 func RecoverMiddleware(logger *slog.Logger) ComponentMiddleware {
-	return recoverMiddleware{logger: logger}
+	return recoverMiddleware{logger: logger, componentDefault: logger == nil}
 }
 
-type recoverMiddleware struct{ logger *slog.Logger }
+type recoverMiddleware struct {
+	logger *slog.Logger
+	// componentDefault: the logger was not chosen by the caller, so
+	// WithLogger may replace it (component_logger.go).
+	componentDefault bool
+}
 
 func (m recoverMiddleware) WrapComponent(ctx context.Context, method string, next ComponentOp) (err error) {
 	defer func() {
@@ -308,15 +318,19 @@ func (m metricsMiddleware) WrapComponent(ctx context.Context, method string, nex
 //
 // opts are the RPC edge's: WithSuccessSampling, WithSlowThreshold,
 // WithSuccessLevel keyed by the "<pkg>.<Method>" operation name,
-// WithExpectedErrors, WithUserErrorLevel and WithErrorClassifier. nil logger
-// falls back to slog.Default.
+// WithExpectedErrors, WithUserErrorLevel and WithErrorClassifier. A nil
+// logger means the component's: the logger WithLogger binds (the generated
+// decorator binds the component's Deps.Logger), else slog.Default.
 func LogMiddleware(logger *slog.Logger, level slog.Level, opts ...LogOption) ComponentMiddleware {
-	return &logMiddleware{logger: logger, policy: newLogPolicy(level, opts)}
+	return &logMiddleware{logger: logger, policy: newLogPolicy(level, opts), componentDefault: logger == nil}
 }
 
 type logMiddleware struct {
 	logger *slog.Logger
 	policy *logPolicy
+	// componentDefault: the logger was not chosen by the caller, so
+	// WithLogger may replace it (component_logger.go).
+	componentDefault bool
 }
 
 func (m *logMiddleware) WrapComponent(ctx context.Context, method string, next ComponentOp) error {

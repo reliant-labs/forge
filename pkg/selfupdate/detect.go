@@ -33,19 +33,20 @@ type Kind int
 const (
 	// Unknown is the zero Kind; it never permits a swap.
 	Unknown Kind = iota
-	// SelfOwned: nothing else owns the install, so it may replace itself.
+	// SelfOwned means nothing else owns the install, so it may replace itself.
 	SelfOwned
-	// Stamped: a managed-by stamp names the owner. Authoritative.
+	// Stamped means a managed-by stamp names the owner. Authoritative.
 	Stamped
-	// Bundle: the binary sits inside an app bundle or AppImage, whose own
+	// Bundle means the binary sits inside an app bundle or AppImage, whose own
 	// updater replaces it.
 	Bundle
-	// PackageManager: Homebrew, dpkg, rpm, pacman, snap or nix installed it.
+	// PackageManager means Homebrew, dpkg, rpm, pacman, snap or nix installed
+	// it.
 	PackageManager
-	// Managed: something else runs it and replaces it: the app's own
+	// Managed means something else runs it and replaces it: the app's own
 	// predicate, a Kubernetes pod or a container (the image is the unit).
 	Managed
-	// ReadOnly: this user cannot write the binary's directory.
+	// ReadOnly means this user cannot write the binary's directory.
 	ReadOnly
 )
 
@@ -114,6 +115,14 @@ type DetectOptions struct {
 	// Managed is the app's own "something else runs me" predicate (Reliant:
 	// host.Managed(), true in a cloud pod). It returns the owner's name.
 	Managed func() (owner string, managed bool)
+	// Container replaces the container probe: by default a Kubernetes pod
+	// (KUBERNETES_SERVICE_HOST set) or a Docker or Podman container
+	// (/.dockerenv or /run/.containerenv exists). When it reports ok, Detect
+	// refuses the install as [Managed] by owner, with hint as the update
+	// command and reason as [Install.Reason]. Nil keeps the default probe; a
+	// probe that always returns ok false tests outside-a-container behaviour
+	// on a host that is itself a container.
+	Container func() (owner, hint, reason string, ok bool)
 }
 
 // Detect resolves the binary and says who may replace it. It refuses on any
@@ -181,8 +190,12 @@ func detect(opts DetectOptions, env detectEnv) (Install, error) {
 	// platform that runs it rolls a new one. A binary that replaced itself
 	// there would be undone by the next restart, and would make the running
 	// pod disagree with the image it reports.
-	if env.container != nil {
-		if owner, hint, reason, ok := env.container(); ok {
+	probe := env.container
+	if opts.Container != nil {
+		probe = opts.Container
+	}
+	if probe != nil {
+		if owner, hint, reason, ok := probe(); ok {
 			return refuse(in, Managed, owner, hint, reason), nil
 		}
 	}

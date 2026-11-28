@@ -199,6 +199,15 @@ func TestProbesSplit(t *testing.T) {
 		t.Errorf("readiness timings %v, want %+v", ready, r)
 	}
 
+	// An adopted app that names only its own health path is liveness-probed
+	// on it, never on a /healthz it does not serve.
+	adopted := svc("fider", httpPort(true))
+	adopted.Spec.Probes = &v1alpha1.Probes{ReadinessPath: "/_health"}
+	c = get(podOf(objects(t, render(t, v1alpha1.ProfileFull, adopted))["Deployment/fider"]), "containers", 0)
+	if get(c, "readinessProbe", "httpGet", "path") != "/_health" || get(c, "livenessProbe", "httpGet", "path") != "/_health" {
+		t.Errorf("readinessPath only: readiness %v liveness %v, want both on /_health", get(c, "readinessProbe"), get(c, "livenessProbe"))
+	}
+
 	pg := wl("pg", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, Ports: []v1alpha1.Port{{Name: "pg", Port: 5432}}, Probes: &v1alpha1.Probes{TCP: true}})
 	c = get(podOf(objects(t, render(t, v1alpha1.ProfileFull, pg))["Deployment/pg"]), "containers", 0)
 	for _, probe := range []string{"readinessProbe", "livenessProbe"} {
@@ -768,7 +777,11 @@ func TestPodEscapeHatches(t *testing.T) {
 // asserts the EXACT object kinds: only what reaches the hosted user's own pods.
 // No RBAC, ever.
 func TestRestrictedKindSet(t *testing.T) {
-	objs := render(t, v1alpha1.ProfileRestricted, restrictedSet()...)
+	// restrictedSet is pinned by restricted.golden.yaml, so the autoscaled
+	// workload that adds the HorizontalPodAutoscaler joins here only.
+	scaler := wl("scaler", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker, Image: "ghcr.io/acme/app:v1", Args: []string{"scale"},
+		Autoscale: &v1alpha1.Autoscale{MinReplicas: 1, MaxReplicas: 4}})
+	objs := render(t, v1alpha1.ProfileRestricted, append(restrictedSet(), scaler)...)
 	got := map[string]bool{}
 	for _, o := range objs {
 		got[o.GetKind()] = true
@@ -2423,5 +2436,48 @@ func TestRestrictedProfileAcceptsAllowedSourceCIDRs(t *testing.T) {
 	got := render(t, v1alpha1.ProfileRestricted, svc("feeds", port))
 	if len(got) != len(plain) {
 		t.Fatalf("rendered %d objects, want the same %d as without the field", len(got), len(plain))
+	}
+}
+
+// TestCronScheduleFieldsRender: a cron's concurrencyPolicy,
+// startingDeadlineSeconds and timeZone render as declared, and unset renders
+// none of them: forge adds no default, so a CronJob a cluster already runs
+// keeps Kubernetes' (Allow, no deadline, the controller's zone). The
+// jobTemplate carries the workload's labels, so every spawned Job is
+// selectable by name and kind.
+func TestCronScheduleFieldsRender(t *testing.T) {
+	deadline := int64(120)
+	set := wl("sweep", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Schedule: "*/5 * * * *", Args: []string{"x"},
+		ConcurrencyPolicy: v1alpha1.CronConcurrencyReplace, StartingDeadlineSeconds: &deadline, TimeZone: "Asia/Tokyo"})
+	unset := wl("plain", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Schedule: "@daily", Args: []string{"x"}})
+	o := objects(t, render(t, v1alpha1.ProfileFull, set, unset))
+
+	cj := o["CronJob/sweep"]
+	for keys, want := range map[[2]string]any{
+		{"spec", "concurrencyPolicy"}:       "Replace",
+		{"spec", "startingDeadlineSeconds"}: int64(120),
+		{"spec", "timeZone"}:                "Asia/Tokyo",
+	} {
+		if got := get(cj, keys[0], keys[1]); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("CronJob/sweep %v = %v, want %v", keys, got, want)
+		}
+	}
+	plain := o["CronJob/plain"]
+	for _, f := range []string{"concurrencyPolicy", "startingDeadlineSeconds", "timeZone"} {
+		if got := get(plain, "spec", f); got != nil {
+			t.Errorf("CronJob/plain spec.%s = %v, want unset (Kubernetes' default)", f, got)
+		}
+	}
+	if got := get(plain, "spec", "jobTemplate", "spec", "backoffLimit"); got != nil {
+		t.Errorf("CronJob/plain jobTemplate backoffLimit = %v, want unset (Kubernetes' default)", got)
+	}
+	for _, name := range []string{"sweep", "plain"} {
+		for k, want := range map[string]string{
+			LabelName: name, LabelKind: "cron", LabelManagedBy: "forge",
+		} {
+			if got := get(o["CronJob/"+name], "spec", "jobTemplate", "metadata", "labels", k); got != want {
+				t.Errorf("CronJob/%s jobTemplate label %s = %v, want %q", name, k, got, want)
+			}
+		}
 	}
 }

@@ -30,8 +30,10 @@ lint:
     - proto/buf/validate
   # Common STANDARD rules that legacy protos frequently trip during
   # migration. Uncomment any rule you need to silence for a project
-  # that's importing pre-existing .proto files; the forge scaffold
-  # itself produces shapes that satisfy STANDARD without exceptions.
+  # that's importing pre-existing .proto files; the default scaffold
+  # satisfies STANDARD without exceptions. If api.proto_package sets a
+  # product-scoped wire package, add lint.ignore_only for
+  # PACKAGE_DIRECTORY_MATCH on those files (forge skill load proto/package).
   #
   # - PACKAGE_VERSION_SUFFIX:        package names must end in `.v1`/`.v2`/etc.
   # - RPC_REQUEST_STANDARD_NAME:     RPC inputs must be named `<Rpc>Request`.

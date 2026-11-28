@@ -76,6 +76,9 @@ type observedMethod struct {
 	// Capture is the method's forensics capture type and its
 	// RecordForensics method, or "" (observed_forensics.go).
 	Capture string
+	// Doc is the comment above the wrapper, or "" (a lifecycle method's
+	// direct delegation says why it has no span — observed_lifecycle.go).
+	Doc string
 }
 
 // observedOp is one entry of the decorator's Ops table: the constant
@@ -164,7 +167,8 @@ var {{ .OpsVar }} = struct {
 {{ range .Ops }}	{{ .Method }}: observe.NewOp({{ printf "%q" .Name }}, {{ printf "%q" .Function }}, {{ printf "%q" .File }}),
 {{ end }}}
 {{ end }}{{ range .Methods }}
-func ({{ $.Receiver }} *{{ $.StructName }}) {{ .Name }}({{ .Signature }}){{ if .Results }} {{ .Results }}{{ end }} {
+{{ if .Doc }}{{ .Doc }}
+{{ end }}func ({{ $.Receiver }} *{{ $.StructName }}) {{ .Name }}({{ .Signature }}){{ if .Results }} {{ .Results }}{{ end }} {
 	{{ .Body }}
 }
 {{ if .Capture }}
@@ -216,6 +220,7 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 	ifaceFile := codeFile(root, filepath.Join(dir, cf.sourceName()))
 	opsVar := structName + "Ops"
 
+	lifecycle := lifecycleExempt(target.Methods)
 	methods := make([]observedMethod, 0, len(target.Methods))
 	var ops []observedOp
 	for _, orig := range target.Methods {
@@ -223,16 +228,21 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 		// Render from a copy whose parameter names cannot shadow what the
 		// wrapper body spells — see decoratorBodyIdents.
 		m := orig.withBodyScopedNames(append(decoratorBodyIdents(orig), "observe", opsVar, argsType)...)
-		if m.SkipObserve {
-			// Method-level `// forge:no-observe`: the wrapper still exists (the
+		if m.SkipObserve || lifecycle[m.Name] {
+			// Method-level `// forge:no-observe`, or a lifecycle method
+			// (observed_lifecycle.go): the wrapper still exists (the
 			// decorator satisfies the whole interface) but this method routes
 			// AROUND the chain — a direct delegation to the inner impl.
-			methods = append(methods, observedMethod{
+			dm := observedMethod{
 				Name:      m.Name,
 				Signature: m.ParamSignature(),
 				Results:   m.ResultSignature(),
 				Body:      renderDirectBody(m),
-			})
+			}
+			if !m.SkipObserve {
+				dm.Doc = lifecycleDoc(m.Name)
+			}
+			methods = append(methods, dm)
 			continue
 		}
 		op := observedOp{Method: m.Name, Name: opNamespace + "." + m.Name, File: ifaceFile}
@@ -263,7 +273,7 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 		Package:     cf.Package,
 		Receiver:    decoratorReceiver,
 		Source:      cf.sourceName(),
-		Imports:     observedImports(cf, *target, def != nil),
+		Imports:     observedImports(cf, *target, lifecycle, def != nil),
 		Iface:       ifaceName,
 		Constructor: ctorName,
 		StructName:  structName,
@@ -322,10 +332,11 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 
 // renderMethodIDs binds each chain-routed method's legacy name to its catalog ID.
 func renderMethodIDs(scope, ifaceName, opNamespace string, methods []MethodDef) string {
+	lifecycle := lifecycleExempt(methods)
 	var ids strings.Builder
 	ids.WriteString(".WithMethodIDs(map[string]string{")
 	for _, method := range methods {
-		if !method.SkipObserve {
+		if !method.SkipObserve && !lifecycle[method.Name] {
 			id, legacyName := servicecatalog.MethodIdentity(scope, ifaceName, opNamespace, method.Name)
 			fmt.Fprintf(&ids, "%q:%q,", legacyName, id)
 		}
@@ -457,7 +468,7 @@ func renderObservedBody(m MethodDef, opExpr, argsExpr string) string {
 // wrapped interface's signatures reference (reusing collectImports, the mock
 // generator's resolver), plus "context" (the wrapper bodies always take/lift a
 // context) and the observe library. Deterministic order for stable codegen.
-func observedImports(cf *File, iface InterfaceDef, defaultChain bool) []observedImport {
+func observedImports(cf *File, iface InterfaceDef, lifecycle map[string]bool, defaultChain bool) []observedImport {
 	paths := collectImports(cf, []InterfaceDef{iface})
 
 	set := map[string]bool{}
@@ -469,10 +480,11 @@ func observedImports(cf *File, iface InterfaceDef, defaultChain bool) []observed
 	// / closure param. A method that carries context.Context in its signature
 	// is already covered by collectImports above; the unconditional add here is
 	// for a non-skip method WITHOUT a context param (context.Background()). If
-	// every method is skipped (direct delegation) nothing references
-	// context.Background(), so adding "context" then would be an unused import.
+	// every method is skipped (direct delegation: forge:no-observe, or a
+	// lifecycle method) nothing references context.Background(), so adding
+	// "context" then would be an unused import.
 	for _, m := range iface.Methods {
-		if !m.SkipObserve {
+		if !m.SkipObserve && !lifecycle[m.Name] {
 			set["context"] = true
 			break
 		}

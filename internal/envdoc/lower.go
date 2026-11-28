@@ -551,6 +551,7 @@ var composeRefused = func() map[string]string {
 		"ports":          "the compose file owns the published ports; declare them there",
 		"probes":         "the compose file owns the healthcheck; declare it there",
 		"replicas":       "the compose file owns the scale",
+		"autoscale":      "the compose file owns the scale; compose runs no autoscaler",
 		"command":        "the compose file owns the container's command",
 		"args":           "the compose file owns the container's command",
 		"resources":      "the compose file owns the container's resources",
@@ -567,6 +568,7 @@ var buildOnlyRefused = map[string]string{
 	"ports":      "a build-only workload is never run, so nothing listens",
 	"probes":     "a build-only workload is never run, so there is nothing to probe",
 	"replicas":   "a build-only workload is never run",
+	"autoscale":  "a build-only workload is never run, so there is nothing to scale",
 	"storageGiB": "a build-only workload is never run",
 }
 
@@ -638,6 +640,9 @@ func maskViolations(w, spec map[string]any, rt, kind string) []string {
 		out := slices.Concat(sourceCIDRs, refuse(localRefused))
 		if specSet(w, spec, "replicas") {
 			out = append(out, fmt.Sprintf("workload %q on the host runtime: replicas: a host workload is one local process; forge env up launches it once", name))
+		}
+		if specSet(w, spec, "autoscale") {
+			out = append(out, fmt.Sprintf("workload %q on the host runtime: autoscale: a host workload is one local process; forge env up launches it once, and nothing scales it", name))
 		}
 		r, _ := w["runtime"].(map[string]any)
 		runner, _ := r["runner"].(string)

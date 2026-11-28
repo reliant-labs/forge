@@ -16,6 +16,7 @@
 package lint
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -29,7 +30,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/lint/secrets"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
@@ -82,10 +82,10 @@ func readKCLFiles(projectDir, dir string) []secrets.SourceFile {
 
 // renderSecretsEnv renders one env into the facts the rules judge: the render's
 // declarations, the expanded manifest stream, and the Secrets its workloads read.
-func renderSecretsEnv(projectDir, kclDir, env string) (secrets.Env, error) {
+func renderSecretsEnv(ctx context.Context, projectDir, kclDir, env string) (secrets.Env, error) {
 	mainK := filepath.Join(projectDir, kclDir, env, "main.k")
 	e := secrets.Env{Name: env, File: filepath.ToSlash(filepath.Join(kclDir, env, "main.k"))}
-	raw, err := kclrender.Run(projectDir, mainK, []string{
+	raw, err := lintKCLRun(ctx, projectDir, mainK, []string{
 		"image_tag=" + strconv.Quote("lint"), "namespace=" + strconv.Quote(""), "env=" + strconv.Quote(env),
 	})
 	if err != nil {
@@ -147,7 +147,7 @@ func secretDemands(rawDoc string, doc secrets.Doc, place cluster.RefPlacement) [
 }
 
 // secretsFindings runs the lane over every env of the project.
-func secretsFindings(projectDir string, cfg *config.ProjectConfig) (secretsLaneResult, error) {
+func secretsFindings(ctx context.Context, projectDir string, cfg *config.ProjectConfig) (secretsLaneResult, error) {
 	kclDir := deployKCLDirFor(cfg)
 	files := readKCLFiles(projectDir, kclDir)
 	var res secretsLaneResult
@@ -169,7 +169,7 @@ func secretsFindings(projectDir string, cfg *config.ProjectConfig) (secretsLaneR
 		if _, err := os.Stat(filepath.Join(projectDir, kclDir, ent.Name(), "main.k")); err != nil {
 			continue
 		}
-		env, err := renderSecretsEnv(projectDir, kclDir, ent.Name())
+		env, err := renderSecretsEnv(ctx, projectDir, kclDir, ent.Name())
 		if err != nil {
 			all = append(all, finding.Finding{
 				Rule: ruleSecretsNotRendered, Severity: finding.SeverityWarning, File: env.File, Line: 1,
@@ -210,7 +210,7 @@ func firstLine(err error) string {
 
 // collectSecretsJSON is the JSON arm. Error findings gate.
 func collectSecretsJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-	res, err := secretsFindings(rc.cwd, rc.cfg)
+	res, err := secretsFindings(rc.ctx, rc.cwd, rc.cfg)
 	if err != nil {
 		return nil, false, err
 	}

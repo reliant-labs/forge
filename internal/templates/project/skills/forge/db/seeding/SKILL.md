@@ -46,8 +46,25 @@ invisible until you look at the UI:
 ```
 forge db seed apply    # introspect db/migrations, INSERT deterministic rows (dev only)
 forge db seed status   # per-table seeded-row counts vs the seed model
-forge db seed reset    # wipe seeded tables and re-seed (dev only)
+forge db seed reset    # TRUNCATE the plan's tables and dependents, then re-seed (dev only)
+forge db seed clear --confirm  # delete matching seed keys without re-seeding (dev only)
 ```
+
+**Clear vs. reset.** `clear` uses the current manual seed plan's deterministic
+primary keys, not row provenance. **A matching application row is deleted too**
+(for example, if it uses a small integer key the seeder plans to use). PostgreSQL's
+`ON DELETE` actions still apply to rows referencing a match; a restrictive foreign
+key or append-only trigger can block the operation, rolling it back. Tables with
+no seedable primary key are skipped. No tables are truncated and no custom SQL
+is replayed. `reset`, by contrast, truncates entire plan tables with `CASCADE`,
+including application rows, then re-seeds.
+
+To clean up a table seeded by an older auto-seed that no longer belongs to
+its CRUD scope, run `forge db seed clear --table assignments --confirm`.
+`--table` narrows deletion, not key generation: the manual plan still includes
+non-CRUD tables. Clear before changing the seed model or opting a table out;
+rows not matched by the current plan will not be found. On the next
+`forge env up`, use `--no-seed` if you want to keep the database empty.
 
 `-C` from anywhere, a throwaway postgres (any loopback `--dsn`), or a
 `seeded nothing` error: load `db/seeding/targets`.
@@ -59,17 +76,41 @@ evaluated `deploy/kcl/<env>/config.k` sets the runtime MODE field (the one annot
 `role: CONFIG_FIELD_ROLE_MODE`, else a field named `environment`, nested in a block
 or not) to `development` or `dev`; a refusal names the file and value it read.
 
-**What auto-seed writes to.** Only the tables behind your CRUD entities (a service
-with `Create<X>`/`List<Xs>`/… RPCs over a matching table), plus any table those
-reach through a NOT NULL foreign key. Every other table is plain schema your own
-code owns — a ledger, an idempotency log, a payments table — and synthesized rows
-there are fabricated facts, not demo data. An explicit `forge db seed apply`
-seeds every table.
+**What auto-seed writes to.** Only the tables behind your CRUD entities — the
+tables `forge generate` gives CRUD wiring and list/detail pages (a service with
+`Create<X>`/`List<Xs>`/… RPCs and an `X` message over a matching table with a
+one-column key, not marked `forge:no-entity`) — plus any table those reach
+through a NOT NULL foreign key, in the parent direction only. A table that
+merely REFERENCES a seeded one is not pulled in, and a CRUD-named rpc alone
+(`GetAssignment` over a `forge:no-entity` table) makes nothing a root. Every
+other table is plain schema your own code owns — a ledger, an idempotency log, a
+payments table — and synthesized rows there are fabricated facts, not demo data.
+An explicit `forge db seed apply` seeds every table.
 
 **There is no seed configuration in `forge.yaml`**: 20 rows per table, auto-seed on
 for a fresh dev database, scoped as above. Skip it for one run with
 `forge env up --no-seed`; for different rows, write the dataset under
 `db/seeds/custom/` and `db/seeds/vocab.yaml`.
+
+**Keep a table out of the dataset for good: `forge:no-seed`.** A table whose rows
+only your app writes correctly — a lease, a serialized protobuf payload, a ledger
+— declares it in a migration, and no seed (auto-seed, `seed apply`, `seed reset`,
+`db reset`) synthesizes rows into it again:
+
+```sql
+COMMENT ON TABLE job_leases IS 'forge:no-seed — the control plane writes leases';
+```
+
+Text after the marker is free (say why), and it shares the comment with other
+markers (`'forge:no-entity forge:no-seed'`). A table with a NOT NULL foreign key
+into a `forge:no-seed` table cannot hold a row without one, so it is left out too
+and the seed warns, naming it; a nullable reference into it is written NULL. The
+table keeps its store, test factory and frontend mocks — the marker is about rows
+in a database, and is independent of `forge:no-entity`. `forge db seed reset`
+empties only the planned tables with `TRUNCATE … RESTRICT`. If another table
+references them (including a `forge:no-seed` table), reset refuses without
+emptying any table. Resolve those references before resetting; reset never
+cascades into tables outside the plan.
 
 Keep seed data out of migrations: migrations define schema, seeds populate it.
 Mixing them makes both harder to reason about.

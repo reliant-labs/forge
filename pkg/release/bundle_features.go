@@ -3,6 +3,7 @@ package release
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -209,6 +210,15 @@ const (
 	// it the whole shape. So it is sent the policy without them, and judges
 	// them as the default does: warn.
 	BundleFeatureReleaseHealthChangedOps = "shape-release-health-changed-ops"
+	// BundleFeatureReleaseHealthSiteAudit is the site-audit finding codes
+	// (HealthSEORegressed, HealthA11yRegressed) in ShapeReleaseHealth.FailOn,
+	// and their thresholds, ShapeReleaseHealth.SEOMaxScoreDrop and
+	// A11yMaxScoreDrop (forge.ReleaseHealth.seo_max_score_drop,
+	// a11y_max_score_drop). A control plane that predates it refuses a
+	// fail_on naming a code it does not know, and strict-decodes the
+	// thresholds, so it is sent the policy without them; it judges no site
+	// audit.
+	BundleFeatureReleaseHealthSiteAudit = "shape-release-health-site-audit"
 	// BundleFeatureChanges is Shape.Changes: the Forge Changes the release
 	// declares (changes.yaml). A control plane that predates it serves no
 	// change for the env, so the app evaluates every key as unknown and
@@ -238,7 +248,43 @@ const (
 	// stripped. A shape with one identity carries Shape.Identity alone, as it
 	// always did, and needs nothing of the reader.
 	BundleFeatureIdentities = "shape-identities"
+	// BundleFeatureVulnScopedExemptions is ShapeVulnGate.ScopedExemptions:
+	// the env's vulnerability exemptions that cover their advisory only in
+	// the packages, artifacts or paths they name (forge.VulnExemption's
+	// packages, artifacts and locations). Decoding is not evaluation: producers
+	// also require CapabilityEvaluatesScopedVulnExemptions before sending a
+	// scoped policy to a control plane (CheckScopedVulnExemptions). Scoped
+	// exemptions are never broadened into entries of Exemptions.
+	BundleFeatureVulnScopedExemptions = "shape-vuln-scoped-exemptions"
+
+	// BundleFeatureStatusPage is Shape.StatusPage: the env's declared status
+	// page (forge.StatusPage). A control plane that predates it builds no
+	// page for the env, so a shape carrying it is written only to one that
+	// names the feature. The page names uptime checks, so it is also left
+	// out for a reader that does not decode those. A project that declares
+	// none carries no key, so it needs nothing of the reader.
+	BundleFeatureStatusPage = "shape-status-page"
+
+	// BundleFeatureReleaseURLs is Shape.HostedFrontends: what an env declares
+	// about each hosted static frontend beyond its StaticSite, today
+	// forge.Frontend.release_urls (the opt-out from per-release URLs). A
+	// control plane that predates it is sent the shape without the key; one
+	// that serves release URLs without decoding it is refused the opt-out
+	// instead ([BundleReader.CheckReleaseURLs]), so the opt-out is never
+	// dropped where it would matter. A shape whose frontends all keep the
+	// default carries no key, so it needs nothing of the reader.
+	BundleFeatureReleaseURLs = "shape-release-urls"
 )
+
+// CapabilityServesReleaseURLs is advertised beside the bundle features by a
+// control plane that SERVES per-release URLs for hosted static frontends: each
+// release it still retains at a URL of its own on the preview domain. Like
+// [CapabilityEnforcesPromotionChecks] it is deliberately not in
+// [BundleDocFeatures]: decoding Shape.HostedFrontends is a matter of the forge
+// a control plane pins, serving the URLs is not. A control plane adds it by
+// hand, in the change that serves them. Forge reads it only to refuse an
+// opt-out such a control plane could not read ([BundleReader.CheckReleaseURLs]).
+const CapabilityServesReleaseURLs = "serves-release-urls"
 
 // CapabilityConvergesSeveralIdentities is advertised beside the bundle
 // features by a control plane that converges EVERY entry of
@@ -312,12 +358,26 @@ const CapabilityCollectsTelemetry = "collects-telemetry"
 // /_api/@<name> calls 404.
 const CapabilityServesNamedSiteAPIs = "serves-named-site-apis"
 
+// CapabilityAutoscalesWorkloads is advertised beside the bundle features by a
+// control plane that APPLIES a hosted workload's autoscale
+// (WorkloadSpec.Autoscale): its operator renders the HorizontalPodAutoscaler,
+// hands spec.replicas over to it, and admits the workload at its maximum.
+//
+// Decoding the field is a matter of the forge a control plane pins, which it
+// would gain on any pin bump, and a control plane that predates it ignores
+// the unknown field, so the workload would run at one replica with nothing
+// saying so. Like [CapabilityEnforcesPromotionChecks] it is deliberately not
+// in [BundleDocFeatures]: a control plane adds it by hand, in the change that
+// applies HPAs. Until it does, forge refuses to deploy an autoscaled hosted
+// workload there ([BundleReader.CheckAutoscaledWorkloads]).
+const CapabilityAutoscalesWorkloads = "autoscales-workloads"
+
 // BundleDocFeatures is every optional bundle feature this version's
 // [DecodeBundleDoc] and [ValidateManifestsLayer] accept. A control plane
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities, BundleFeatureStatusPage, BundleFeatureVulnScopedExemptions, BundleFeatureReleaseURLs, BundleFeatureReleaseHealthSiteAudit}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -433,6 +493,14 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		if changedOp := func(c string) bool { return slices.Contains(ChangedOpFindings, c) }; !r.Supports(BundleFeatureReleaseHealthChangedOps) && slices.ContainsFunc(h.FailOn, changedOp) {
 			h.FailOn, limited = slices.DeleteFunc(slices.Clone(h.FailOn), changedOp), true
 		}
+		if !r.Supports(BundleFeatureReleaseHealthSiteAudit) {
+			if siteAudit := func(c string) bool { return slices.Contains(SiteAuditFindings, c) }; slices.ContainsFunc(h.FailOn, siteAudit) {
+				h.FailOn, limited = slices.DeleteFunc(slices.Clone(h.FailOn), siteAudit), true
+			}
+			if h.SEOMaxScoreDrop != nil || h.A11yMaxScoreDrop != nil {
+				h.SEOMaxScoreDrop, h.A11yMaxScoreDrop, limited = nil, nil, true
+			}
+		}
 		switch {
 		case !limited:
 		case h.IsDefault():
@@ -504,11 +572,25 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		pol.HealthGate = nil
 		s.DeliveryPolicy = &pol
 	}
+	if !r.Supports(BundleFeatureVulnScopedExemptions) && s.DeliveryPolicy != nil && len(s.DeliveryPolicy.VulnGate.ScopedExemptions) > 0 {
+		pol := *s.DeliveryPolicy
+		pol.VulnGate.ScopedExemptions = nil
+		s.DeliveryPolicy = &pol
+		if pol.IsDefault() {
+			s.DeliveryPolicy = nil // all that differed from the default was what the reader cannot decode
+		}
+	}
 	if !r.Supports(BundleFeaturePreview) {
 		s.Preview = nil
 	}
 	if !r.Supports(BundleFeatureChanges) {
 		s.Changes = nil
+	}
+	if !r.Supports(BundleFeatureStatusPage) || !r.Supports(BundleFeatureUptimeChecks) {
+		s.StatusPage = nil
+	}
+	if !r.Supports(BundleFeatureReleaseURLs) {
+		s.HostedFrontends = nil
 	}
 	if !r.Supports(BundleFeaturePromotionChecks) && s.DeliveryPolicy != nil &&
 		(s.DeliveryPolicy.RequiredGates != nil || s.DeliveryPolicy.ApprovalHook != nil) {
@@ -555,6 +637,25 @@ func (r *BundleReader) limitIdentity(id ShapeIdentity) ShapeIdentity {
 	return id
 }
 
+// CapabilityEvaluatesScopedVulnExemptions is advertised explicitly by a control
+// plane only once promotion and vulnerability reads evaluate exemptions against
+// occurrence data. It is deliberately NOT in BundleDocFeatures: decoding the
+// scoped field alone does not mean the server honours it.
+const CapabilityEvaluatesScopedVulnExemptions = "evaluates-scoped-vuln-exemptions"
+
+// CheckScopedVulnExemptions refuses a scoped policy unless the reader both
+// decodes and evaluates it. Call before declaration or recording, before LimitShape
+// can strip unsupported fields. The nil reader is this forge's local evaluator.
+func (r *BundleReader) CheckScopedVulnExemptions(s Shape) error {
+	if s.DeliveryPolicy == nil || len(s.DeliveryPolicy.VulnGate.ScopedExemptions) == 0 {
+		return nil
+	}
+	if r.Supports(BundleFeatureVulnScopedExemptions) && r.Supports(CapabilityEvaluatesScopedVulnExemptions) {
+		return nil
+	}
+	return fmt.Errorf("this env declares scoped vulnerability exemptions, but this control plane does not advertise %q and %q; upgrade the control plane to occurrence-aware scoped evaluation before using this policy", BundleFeatureVulnScopedExemptions, CapabilityEvaluatesScopedVulnExemptions)
+}
+
 // CheckIdentities refuses a shape with several identities to a reader that
 // does not converge them: one that does not advertise
 // [CapabilityConvergesSeveralIdentities] would record the shape and converge
@@ -589,6 +690,24 @@ func (r *BundleReader) CheckNamedSiteAPIs(sites []string) error {
 		"does not serve them (it does not advertise %q), so every call to one would 404. Upgrade the control plane, or call those "+
 		"backends by URL (a literal in runtime_config) until it is",
 		strings.Join(sites, ", "), CapabilityServesNamedSiteAPIs)
+}
+
+// CheckAutoscaledWorkloads refuses hosted workloads that declare autoscale
+// (workloads names them) to a reader that does not apply it: one that does
+// not advertise [CapabilityAutoscalesWorkloads] would run each at one replica
+// and never scale it. One error per workload, joined. No such workload, and
+// the nil reader (this forge's own machine ledger), always pass. Callers run
+// it before anything is written.
+func (r *BundleReader) CheckAutoscaledWorkloads(workloads []string) error {
+	if len(workloads) == 0 || r.Supports(CapabilityAutoscalesWorkloads) {
+		return nil
+	}
+	errs := make([]error, 0, len(workloads))
+	for _, name := range workloads {
+		errs = append(errs, fmt.Errorf("workload %q declares autoscale, but this control plane does not apply HorizontalPodAutoscalers yet "+
+			"(it does not advertise %q); set replicas instead until it is upgraded", name, CapabilityAutoscalesWorkloads))
+	}
+	return errors.Join(errs...)
 }
 
 // identityOutputLoginPolicy is the identity output the sign-in feature added.

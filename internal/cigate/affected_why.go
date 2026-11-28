@@ -220,6 +220,19 @@ type DocumentAffected struct {
 	LockfileChecks []string            `json:"lockfile_checks"`
 	ClosureHits    map[string][]string `json:"closure_hits,omitempty"`
 	ClosureErrors  map[string]string   `json:"closure_errors,omitempty"`
+	// Modules are the nested replaced modules' tests
+	// (ci.gate.affected_modules); always a list.
+	Modules []ModuleTests `json:"modules"`
+	// Checks are the path-gated rows (`paths`, `paths_go_closure`) and
+	// whether these changes run each; only `forge ci gate --plan` sets it.
+	Checks []PlanCheck `json:"checks,omitempty"`
+}
+
+// PlanCheck is one path-gated row's decision in a plan.
+type PlanCheck struct {
+	Name string `json:"name"`
+	Runs bool   `json:"runs"`
+	Note string `json:"note,omitempty"`
 }
 
 // Document renders a for the --json document; nil for a nil a.
@@ -237,7 +250,10 @@ func (a *Affected) Document() *DocumentAffected {
 		Changed: nonNil(a.Changed), Packages: nonNil(a.Packages), Build: nonNil(a.Build), Frontends: nonNil(a.Frontends),
 		Why: a.Why, Files: a.Files, Selections: nonNil(a.Selections), Line: a.Line(),
 		Reach: a.Reach, TransitiveCap: a.TransitiveCap, Deferred: nonNil(a.Deferred), FullGateRequired: len(a.Deferred) > 0,
-		LockfileChecks: nonNil(a.LockfileChecks), ClosureHits: a.ClosureHits, ClosureErrors: a.ClosureErrs}
+		LockfileChecks: nonNil(a.LockfileChecks), ClosureHits: a.ClosureHits, ClosureErrors: a.ClosureErrs, Modules: a.Modules}
+	if d.Modules == nil {
+		d.Modules = []ModuleTests{}
+	}
 	if d.Why == nil {
 		d.Why = []PackageWhy{}
 	}

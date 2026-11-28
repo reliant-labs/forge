@@ -52,6 +52,7 @@ import (
 	"go/token"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -428,6 +429,7 @@ func attachSignatures(spec *LibrariesSpec, selectors string) error {
 			}
 		}
 		spec.Packages[i].Symbols = syms
+		spec.Packages[i].Subpackages = subpackagesOf(spec.Packages[i].Name, spec.Packages)
 	}
 	spec.SignatureSelectors = normalizeSelectorList(selectors)
 	return nil
@@ -469,14 +471,15 @@ func parseSignatureSelectors(list string, pkgs []LibrarySpec) (map[string]map[st
 		// being pedantic about a spelling it emitted itself.
 		item = strings.TrimPrefix(item, forgePkgModule+"/")
 		pkg, symbol, _ := strings.Cut(item, ".")
-		if !known[pkg] {
+		pkg, ok := resolveLibraryName(pkg, pkgs, known)
+		if !ok {
 			// Named without a flag prefix: the selector now arrives
 			// positionally far more often than through --signatures, and an
 			// error that quotes a flag the caller never typed reads as a bug
 			// in forge rather than a typo in the argument.
 			return nil, fmt.Errorf(
-				"%s is not a forge/pkg package\nAvailable: %s\nUse `all` for every package, or `<pkg>.<Symbol>` for one declaration",
-				pkg, strings.Join(names, ", "))
+				"%s is not a forge/pkg package\n%sAvailable: %s\nUse `all` for every package, or `<pkg>.<Symbol>` for one declaration",
+				pkg, closestLibraryHint(pkg, pkgs), strings.Join(names, ", "))
 		}
 		if _, seen := out[pkg]; !seen {
 			out[pkg] = map[string]bool{}
@@ -490,6 +493,145 @@ func parseSignatureSelectors(list string, pkgs []LibrarySpec) (map[string]map[st
 		}
 	}
 	return out, nil
+}
+
+// libraryPathPrefixes are the partial import paths a caller writes in front
+// of a package name — `pkg/observe/metrics` (the path in forge's repo),
+// `forge/pkg/observe/metrics` (how the docs say "forge/pkg") — each of which
+// names exactly the package the bare `observe/metrics` does. The full
+// import path is trimmed before this, by the caller.
+var libraryPathPrefixes = []string{"reliant-labs/forge/pkg/", "forge/pkg/", "pkg/"}
+
+// resolveLibraryName maps a selector's package part onto an inventory name,
+// reporting false (with the cleaned name, for the error) when nothing — or
+// more than one package — matches.
+//
+// Every spelling that names one real package resolves: the inventory name
+// itself, that name behind any of libraryPathPrefixes, and the bare last
+// element when exactly one package ends in it — `metrics` is what a reader
+// of `metrics.NewRegistry(...)` in their own code types, and the Go package
+// name is the only name the call site shows. An exact inventory name always
+// wins, so the top-level `components` is never shadowed by a nested one. A
+// last element shared by several packages is refused rather than guessed,
+// and the error lists each, so a selector that becomes ambiguous when
+// forge/pkg grows fails loudly instead of silently switching packages.
+//
+// This used to accept only the inventory name and the full import path: an
+// agent who typed `pkg/observe/metrics` or `metrics` (Ranger, friction #39)
+// got "not a forge/pkg package" with a hundred-name list to scan, and went
+// to read the module cache instead.
+func resolveLibraryName(name string, pkgs []LibrarySpec, known map[string]bool) (string, bool) {
+	name = strings.Trim(name, "/")
+	if known[name] {
+		return name, true
+	}
+	for _, prefix := range libraryPathPrefixes {
+		if trimmed, ok := strings.CutPrefix(name, prefix); ok && known[trimmed] {
+			return trimmed, true
+		}
+	}
+	if strings.Contains(name, "/") {
+		return name, false
+	}
+	match := ""
+	for _, p := range pkgs {
+		if path.Base(p.Name) != name {
+			continue
+		}
+		if match != "" {
+			return name, false
+		}
+		match = p.Name
+	}
+	if match == "" {
+		return name, false
+	}
+	return match, true
+}
+
+// closestLibraryHint renders the lines an unknown-package error leads with:
+// the subpackages of a name that is a directory of packages (`observe/` of a
+// grouping dir), then the inventory names nearest to it. Empty when nothing
+// is close, so the error degrades to the full list it always printed.
+//
+// The full list stays below it, unchanged — scripts read it — but a hundred
+// names is a list to scan, not an answer: the closest few go first.
+func closestLibraryHint(name string, pkgs []LibrarySpec) string {
+	const maxSuggestions = 5
+	var children []string
+	type scored struct {
+		name string
+		dist int
+	}
+	var near []scored
+	stripped := name
+	for _, prefix := range libraryPathPrefixes {
+		stripped = strings.TrimPrefix(stripped, prefix)
+	}
+	for _, p := range pkgs {
+		if strings.HasPrefix(p.Name, stripped+"/") {
+			children = append(children, p.Name)
+			continue
+		}
+		// Score against both the whole name and its last element, so
+		// `metric` finds `observe/metrics` and `obsreve/metrics` finds it too.
+		dist := min(libraryEditDistance(stripped, p.Name), libraryEditDistance(stripped, path.Base(p.Name)))
+		cutoff := max(len(stripped)/3, 1)
+		contains := len(stripped) >= 3 && strings.Contains(p.Name, stripped)
+		if dist <= cutoff || contains {
+			if contains && dist > cutoff {
+				dist = cutoff + 1
+			}
+			near = append(near, scored{p.Name, dist})
+		}
+	}
+	sort.SliceStable(near, func(i, j int) bool { return near[i].dist < near[j].dist })
+	var b strings.Builder
+	if len(children) > 0 {
+		fmt.Fprintf(&b, "%s holds these packages — name one: %s\n", stripped, strings.Join(children, ", "))
+	}
+	if len(near) > 0 {
+		names := make([]string, 0, maxSuggestions)
+		for i := 0; i < len(near) && i < maxSuggestions; i++ {
+			names = append(names, near[i].name)
+		}
+		fmt.Fprintf(&b, "Did you mean: %s\n", strings.Join(names, ", "))
+	}
+	return b.String()
+}
+
+// libraryEditDistance is the two-row Levenshtein distance between two
+// package names.
+func libraryEditDistance(a, b string) int {
+	ar, br := []rune(a), []rune(b)
+	prev := make([]int, len(br)+1)
+	curr := make([]int, len(br)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ar); i++ {
+		curr[0] = i
+		for j := 1; j <= len(br); j++ {
+			cost := 1
+			if ar[i-1] == br[j-1] {
+				cost = 0
+			}
+			curr[j] = min(curr[j-1]+1, prev[j]+1, prev[j-1]+cost)
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(br)]
+}
+
+// subpackagesOf lists the inventory packages nested under name, at any depth.
+func subpackagesOf(name string, pkgs []LibrarySpec) []string {
+	var out []string
+	for _, p := range pkgs {
+		if strings.HasPrefix(p.Name, name+"/") {
+			out = append(out, p.Name)
+		}
+	}
+	return out
 }
 
 // filterSymbols keeps the named symbols and, for a named type, the methods
@@ -553,6 +695,10 @@ func writeSignatures(w io.Writer, spec LibrariesSpec) error {
 		spec.SignatureSelectors); err != nil {
 		return err
 	}
+	printed := map[string]bool{}
+	for _, p := range spec.Packages {
+		printed[p.Name] = len(p.Symbols) > 0
+	}
 	for _, p := range spec.Packages {
 		if len(p.Symbols) == 0 {
 			continue
@@ -562,6 +708,23 @@ func writeSignatures(w io.Writer, spec LibrariesSpec) error {
 		}
 		for _, s := range p.Symbols {
 			if _, err := fmt.Fprintln(w, s.Decl); err != nil {
+				return err
+			}
+		}
+		// A package's API stops at its own directory: `observe` above
+		// says nothing of observe/metrics, so name what was left out
+		// rather than let the block read as the whole tree. One that was
+		// selected too is printed in its own block, so it is not repeated.
+		var unprinted []string
+		for _, sub := range p.Subpackages {
+			if !printed[sub] {
+				unprinted = append(unprinted, sub)
+			}
+		}
+		if len(unprinted) > 0 {
+			if _, err := fmt.Fprintf(w,
+				"\nSubpackages of %s, each its own package (not printed here — name one to print it):\n  %s\n",
+				p.Name, strings.Join(unprinted, ", ")); err != nil {
 				return err
 			}
 		}

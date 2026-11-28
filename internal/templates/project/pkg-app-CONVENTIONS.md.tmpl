@@ -1,56 +1,59 @@
 # pkg/app conventions
 
-`pkg/app` is a thin substrate: a test harness and migration support. The LIVE
-runtime dependency-injection composition lives in **`internal/app`**, which the
-generated `cmd/<bin>/cmd/serve.go` drives:
+`pkg/app` holds no code any more: this file is all that is left in it. The
+LIVE composition root is **`internal/app`**, the composition graph, which every
+process command in `cmd/<bin>/cmd/` runs:
 
 ```
-OpenInfra    (internal/app/providers.go — yours, opens DB/NATS/clients)
-  → NewComponents (internal/app/compose.go — yours, EXPLICIT inline wiring)
-  → mount/supervise via internal/app/mounts_services_gen.go + lifecycle.go
-  → serverkit.Run
+internal/app/providers.go   yours: provider funcs New<X>(<X>Deps) (T, error) — the DB pool, the ORM,
+                            clients, the auth chain, listeners
+internal/app/compose.go     yours, reconciled: one g.new<X>() constructor method per node, holding
+                            the value expression for every field of that node's Deps
+internal/app/roots.go       yours (optional): //forge:root structs — what each process builds
+internal/app/graph_gen.go   generated: memoized accessors g.<X>(), Build<Root>/Run<Root>,
+                            the default Server root
+internal/app/routes_gen.go  generated: <Audience>Routes route sets and per-service MountOptions
+cmd/<bin>/cmd/roots_gen.go  generated: one command per root, handed to runRoot in the owned serve.go
 ```
 
-Construction is EXPLICIT: `compose.go` builds every handler/worker/operator as
-a local value with its `Deps` wired inline off the owned `*Infra`, resolved by
-field type — no string-keyed name match, no hidden construction order.
+Every part of a process is a node built from its `Deps`: a handler, a
+package, a worker, an operator, and every provider. **Every `Deps` field
+resolves by type**, at generate time, never by name: give a provider's value
+its own type (`type DB struct{ *sql.DB }`) and any `Deps` field of that type is
+filled from it. Accessors are memoized, so `g.Users()` builds once, and a root
+builds only the nodes its fields reach. A value with `Run`, `Drain`, `Close` or
+`Ready` methods is supervised: started in construction order, stopped in
+reverse.
 
 `compose.go` is YOURS. Forge writes it once, then reconciles only the
-projection: a newly discovered component gets its import, `Components` field
-and `New(Deps{…})` call injected, a component that gained a `Deps` field gets
-that key filled, and a key naming a field its `Deps` struct no longer has is
-dropped. The EXPRESSION beside a key that still exists, your construction
-order, and any carved cross-edge are never touched. `forge project disown
+projection: a node with no `new<X>` method gets one, a `Deps` field a node
+gained gets its key, and a key naming a field its `Deps` struct no longer has
+is dropped. The EXPRESSION beside a key that still exists is never touched, so
+changing what fills a field is an edit there. A field two nodes could fill is
+a generate error until you write its key yourself. `forge project disown
 internal/app/compose.go` stops reconciliation altogether.
 
-## What lives under pkg/app
+To add a collaborator (a client, an adapter), add a provider in
+`providers.go`; generate wires it wherever a `Deps` field has its type. The
+architecture skill has the rest: roots and commands, per-root config reach,
+and `forge lint --graph` (`forge skill load architecture`).
 
-- `migrate.go` (generated) — embedded-migration support (`AutoMigrate`).
-- `CONVENTIONS.md` (this file).
-
-Note there is no `testing.go` here any more. It was a non-test `.go` file that
-imported `testing`, and `cmd/<proj>` imports `pkg/app` — so every project
-linked package `testing` (and the flags it registers in `init()`) into its
-production binary. The harness now lives beside each component as a
-`_test.go` file; see "Test wiring" below.
-
-To change WHAT fills a component's `Deps` field, edit
-`internal/app/providers.go` (the owned `Infra` + `OpenInfra`). A
-collaborator `NewComponents` reports as "no provider" becomes a new field on
-`Infra`, constructed in `OpenInfra`. To customize the composition by hand
-(a carved cross-edge, a late-bound setter), `forge project disown
-internal/app/compose.go` and own the bytes.
+A project from before the graph (an owned `Infra` + `OpenInfra` +
+`NewComponents`) keeps that composition until `forge fix composition-graph`
+moves it. The migration support that used to live here is the generated
+`db/embed_gen.go` (`db.Source()`), applied by `migratekit.AutoMigrate` from the
+owned `cmd/<bin>/cmd/serve.go`.
 
 ## Where do per-RPC nil checks belong? (Spoiler: nowhere.)
 
-Forge generates `New(Deps) (Service, error)` and a `validateDeps()`
+Forge generates `New(Deps) (*Service, error)` and a `validateDeps()`
 helper. Add your required fields to that single method:
 
 ```go
 func (d Deps) validateDeps() error {
-    if d.Logger == nil   { return fmt.Errorf("foo: Deps.Logger required") }
-    if d.Config == nil   { return fmt.Errorf("foo: Deps.Config required") }
-    if d.Repo == nil     { return fmt.Errorf("foo: Deps.Repo required") }
+    if d.Logger == nil   { return fmt.Errorf("foo: Deps.Logger is required") }
+    if d.Config == nil   { return fmt.Errorf("foo: Deps.Config is required") }
+    if d.Repo == nil     { return fmt.Errorf("foo: Deps.Repo is required") }
     return nil
 }
 ```
@@ -69,18 +72,20 @@ needs it (mark it `// forge:optional-dep` on the Deps field).
 Scalar Deps fields (`MaxPerTick int`, `Interval time.Duration`, ...) are
 configuration, not collaborators. Declare a config block in
 `proto/<project>/config/v1/config.proto` and take it as one typed field
-(`Cfg *config.<Block>Config`, which compose.go fills from the loaded
-config by type) instead of threading naked scalars through `Deps`. `forge lint --config-deps` flags naked-scalar Deps fields.
+(`Cfg *config.<Block>Config`, which the graph fills from the loaded config by
+type) instead of threading naked scalars through `Deps`. A config block also
+narrows what the root that reaches the component needs at startup.
+`forge lint --config-deps` flags naked-scalar Deps fields.
 
 ## Test wiring
 
-Each component gets its own generated `helpers_gen_test.go`, in that
-component's directory and package — e.g.
-`internal/handlers/order/helpers_gen_test.go`, `package order`. It emits
-`NewTest<Svc>(t, ...opts)`. Tests construct `Deps` directly (filling in only
-the fields they care about; defaults flow in for the bare-Deps trio) and call
-`New` — the production DI graph is bypassed in tests so each test stays
-self-contained. Use `With<Svc>Deps(deps)` to override the rich deps.
+Tests bypass the graph: each test constructs only what it needs. Each
+component gets its own generated `helpers_gen_test.go`, in that component's
+directory and package — e.g. `internal/handlers/order/helpers_gen_test.go`,
+`package order`. It emits `NewTest<Svc>(t, ...opts)` (and, for a handler,
+`NewTest<Svc>Server`, which serves it over a real Connect client). Defaults
+flow in for the bare-Deps trio, every interface-typed field gets its mock, and
+`With<Svc>Deps(deps)` overrides the rich deps.
 
 Two properties of that placement are load-bearing:
 

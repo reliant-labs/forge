@@ -1,6 +1,6 @@
 ---
 name: storage/blobstore
-description: File uploads and downloads (images, documents, attachments) — declare a forge.Bucket per env, hand a workload its connection with forge.bucket_env, presign an upload in a handler with forge/pkg/blobstore, PUT it straight from the browser, confirm it with Stat. Dev runs MinIO; Reliant hosting provisions the bucket (forge.OnHosted); anywhere else use any S3-compatible bucket (S3, R2, GCS).
+description: File uploads and downloads (images, documents, attachments) — declare a forge.Bucket per env, hand a workload its connection with forge.bucket_env, presign an upload in a handler with forge/pkg/blobstore, PUT it straight from the browser, confirm it with Stat. Dev runs MinIO (a host process, or a compose service); Reliant hosting provisions the bucket (forge.OnHosted); anywhere else use any S3-compatible bucket (S3, R2, GCS).
 ---
 
 # File uploads: forge.Bucket + forge/pkg/blobstore
@@ -40,6 +40,71 @@ reports it healthy only once they exist. The data persists in the
 service: copy it, and its `minio_data` volume, from a fresh
 `forge project new` scaffold's docker-compose.yml.
 
+### No docker: MinIO as a host process
+
+A dev env that runs its infra as host processes (`forge.HostInfra`, no
+container runtime) runs MinIO the same way. Declare the server in
+`Bundle.infra` and point the buckets at it by name:
+
+```kcl
+_buckets: [forge.Bucket] = [
+    forge.Bucket {name = "uploads", runtime = forge.BucketOnMinIO {infra = "minio"}}
+]
+_bundle = forge.Bundle {
+    ...
+    buckets = _buckets
+    infra = [
+        forge.HostInfra {name = "postgres", port = _postgres_port}
+        forge.HostInfra {
+            name = "minio"
+            engine = "minio"
+            port = plugin.resolve_port("acme-dev-minio", 9000)
+            # minio_console_port = plugin.resolve_port("acme-dev-minio-console", 9001)
+        }
+    ]
+    secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}
+}
+```
+
+`forge env up dev` fetches a pinned, checksum-verified MinIO binary once
+(cached under the user cache dir, ~110 MB), starts it on 127.0.0.1 with its
+objects in the HostInfra's data directory (`data_dir`, gitignored, kept across
+runs like the dev postgres's), creates every bucket that names
+it, reconciles each one's anonymous access (download for `public_read`, none
+otherwise) and applies the buckets' `cors_origins` (any origin when none is
+declared). `forge env down dev` stops it; the objects stay.
+
+The root credentials are never in KCL. forge generates them into the env's
+secret file on the first `forge env up` (`MINIO_ROOT_USER` and
+`MINIO_ROOT_PASSWORD`, named for the HostInfra: `blobs` would be
+`BLOBS_ROOT_USER`), and the workload's `forge.bucket_env` reads them from the
+store as `forge.ManagedSecret`s. So the env must use `forge.FileSecrets`.
+`port`, `console_port`, `access_key` and `secret_key` stay unset on a
+`BucketOnMinIO {infra}`: the HostInfra owns them.
+
+It binds loopback, so only a `forge.OnHost` workload can read its buckets; a
+pod or a compose container is refused at render (use the compose MinIO for
+those). A running MinIO cannot change its CORS origins, region or console
+port: change one and `forge env up` says so, with the restart that applies it
+(`forge env down`, then `forge env up`). The same holds for rotating the root
+credentials with `forge secret set`.
+
+The pinned binary is MinIO RELEASE.2025-09-07T16-13-09Z, the last release
+upstream published binaries for; later releases are source only. It predates
+the RELEASE.2025-10-15T17-29-55Z fix for CVE-2025-62506 (a restricted service
+account or STS session escaping its session policy), which cannot reach this
+server: its only identity is the generated root user, it binds loopback, and
+it holds dev files. The pin can never take a later fix, so a host MinIO is for
+dev data only; anything shared or long-lived belongs on `forge.BucketOnS3` or
+`forge.OnHosted`.
+
+A host MinIO can sit beside the compose `forge.minio_workload` (the host one
+serving host processes, the compose one pods and containers) unless the
+HostInfra is named `minio`: its keys would then be `MINIO_ROOT_USER` /
+`MINIO_ROOT_PASSWORD`, the names the compose MinIO reads too, so render
+refuses that pair. Name it something else (`blobs` gives `BLOBS_ROOT_*`), or
+pick one MinIO per env.
+
 `forge.Bucket` fields:
 
 | field | meaning |
@@ -52,9 +117,12 @@ service: copy it, and its `minio_data` volume, from a fresh
 
 Runtimes:
 
-- **`forge.BucketOnMinIO {port}`**: the env's MinIO (dev, e2e). Credentials
-  are the dev MinIO's own (`minioadmin`), committed on purpose like the dev
-  postgres password: it binds loopback.
+- **`forge.BucketOnMinIO {infra}`**: the env's MinIO as a host process (dev),
+  a `forge.HostInfra {engine = "minio"}`. Credentials are generated into the
+  env's secret store. See "No docker" above.
+- **`forge.BucketOnMinIO {port}`**: the env's MinIO as a compose service (dev,
+  e2e). Credentials are the dev MinIO's own (`minioadmin`), committed on
+  purpose like the dev postgres password: it binds loopback.
 - **`forge.BucketOnS3 {...}`**: a bucket you operate or buy. forge renders
   the connection and never creates, configures or deletes the bucket.
 
@@ -168,8 +236,11 @@ env = forge.bucket_env("UPLOADS", "uploads")
 That is seven `forge.BucketRef`s: `UPLOADS_ENDPOINT`, `UPLOADS_PUBLIC_ENDPOINT`,
 `UPLOADS_REGION`, `UPLOADS_BUCKET`, `UPLOADS_ACCESS_KEY_ID`,
 `UPLOADS_SECRET_ACCESS_KEY`, `UPLOADS_PATH_STYLE`, which are the fields of
-`blobstore.S3Config`. Each lowers per env and per runtime. For a dev MinIO
-bucket they are literals, and the endpoint is `localhost` for a host process,
+`blobstore.S3Config`. Each lowers per env and per runtime. For a host MinIO
+bucket (`BucketOnMinIO {infra}`) the endpoint is `localhost` on the
+HostInfra's port and the two credentials are `managedSecret` references to the
+generated store keys, which a host process is handed at launch. For a compose
+MinIO bucket they are literals, and the endpoint is `localhost` for a host process,
 the cluster's host gateway for a k3d pod, and `http://minio:9000` (the compose
 service, on the compose network) for a container in the MinIO's own compose
 file, whose compose process env carries them for the file to pass through
@@ -220,7 +291,9 @@ every request to the storage service is a traced client span. A missing object
 (`ErrNotFound`) is logged as an expected outcome, not as an error.
 
 The consumer depends on the 5-method interface `blobstore.Store`, or on a
-narrower one it declares itself, and never on `*blobstore.S3`.
+narrower one it declares itself, and never on `*blobstore.S3`. The
+server-side byte calls (section 6) are package functions over that same
+`Store`: `blobstore.Open` and `blobstore.PutObject`.
 
 ## 4. Presign the upload in the handler
 
@@ -293,23 +366,108 @@ case obj.Size != pending.Size || obj.ContentType != pending.ContentType:
 // mark the row complete
 ```
 
+The type the browser declared is only a claim. When it matters (anything you
+will preview inline, anything you index by content), read the bytes on the
+server: `blobstore.Open` streams the object, or one range of it.
+
+```go
+r, obj, err := blobstore.Open(ctx, store, key, blobstore.OpenOptions{Length: 512})
+if err != nil {
+    return err // ErrNotFound when nothing is there
+}
+head, err := io.ReadAll(r)
+r.Close()
+if err != nil {
+    return err
+}
+sniffed := http.DetectContentType(head) // obj.Size is the whole object's size
+
+// A content hash needs every byte: stream the whole object once.
+r, _, err = blobstore.Open(ctx, store, key, blobstore.OpenOptions{})
+if err != nil {
+    return err
+}
+defer r.Close()
+h := sha256.New()
+if _, err := io.Copy(h, r); err != nil {
+    return err
+}
+```
+
+`OpenOptions{Offset, Length}`: zero values read everything; a range past the
+end stops there, and an offset past the end is `ErrInvalidOptions`. The
+stream outlives the `Open` call (its trace span covers only opening it), so
+keep `ctx` live until you have read it, and don't give a custom `Chain` a
+timeout middleware: it would cancel the stream once `Open` returns. Stat,
+List and Open report no `Object.SHA256`: the services do not all keep one, so
+hash it yourself as above.
+
 Downloads: `store.PresignGet(ctx, key, blobstore.GetOptions{TTL: 5 * time.Minute, DownloadName: row.FileName})`.
 `DownloadName` makes it an attachment saved under that name. `List(ctx,
 prefix, ListOptions{After, Limit})` pages a prefix in key order (1000 max per
 page), and `Delete` is idempotent. Clean up pending rows whose upload never
 completed with a worker: list or delete their keys.
 
+**Inline previews.** A plain `PresignGet` serves the object with the type it
+was stored with, which the uploader chose. To show an image or a video in the
+page, force the type you sniffed:
+
+```go
+if !blobstore.InlineSafe(sniffed) {
+    // anything else is served as a download (PresignDownload), never inline
+}
+req, err := store.PresignGet(ctx, key, blobstore.GetOptions{
+    TTL:                 5 * time.Minute,
+    Inline:              true,      // Content-Disposition: inline
+    ResponseContentType: sniffed,   // forced on the response, whatever was stored
+})
+```
+
+Only `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `video/mp4` and
+`video/webm` are accepted (`blobstore.InlineSafe`); any other type, and
+`Inline` without a type, is `ErrInvalidOptions`. So a stored HTML or SVG file
+can never render on the bucket's origin through this URL. For "save this
+file", use `blobstore.PresignDownload`, which always forces
+`application/octet-stream` and an attachment.
+
+**Writing from the server.** Bytes that have no browser behind them (a job
+that copies an attachment it already holds, a generated image) go in with
+`blobstore.PutObject`:
+
+```go
+obj, err := blobstore.PutObject(ctx, store, "generated/"+uuid.NewString(), body, blobstore.PutObjectOptions{
+    ContentType:   "image/png",
+    ContentLength: n,         // exact size when you know it; 0 reads to the end
+    MaxBytes:      25 << 20,  // ErrTooLarge past it
+})
+// obj.SHA256 is the hex SHA-256 of what was stored, hashed as it streamed
+```
+
+The body is held to `ContentLength` and `MaxBytes` while it streams. One that
+breaks either fails the call before the service commits anything, so no
+partial object is ever stored and an object already at that key is left as it
+was. A body past 16 MiB goes up as an S3 multipart upload; when it fails, the
+upload is aborted on a best-effort basis, so its parts can be left behind
+(invisible, but billed). On a `forge.BucketOnS3` bucket, add a lifecycle rule
+that aborts incomplete multipart uploads after a day
+(`AbortIncompleteMultipartUpload`).
+
 ## 7. Test without a bucket
 
 `blobstore.NewMemory()` is a `Store` with the S3 backend's key and option
 validation. Its presigned URLs are `memory://` URLs nothing fetches. Play the
 browser with `mem.Put(key, data, contentType)` and assert with `Stat`, `List`
-or `mem.Get`. forge's own S3 backend is tested against a real MinIO; your
+or `mem.Get`. `blobstore.Open` and `blobstore.PutObject` work on it as on the
+real stores. forge's own S3 backend is tested against a real MinIO; your
 service tests need only the fake.
 
 ## Rules
 
-- The API never proxies upload bytes. Presign and confirm.
+- The API never proxies a browser's upload. Presign and confirm. Read on the
+  server (`Open`) to check what landed; write on the server (`PutObject`)
+  only bytes the server itself holds.
+- Preview inline only with a forced, sniffed type (`Inline` +
+  `ResponseContentType`); download everything else with `PresignDownload`.
 - Keys are server-generated and tenant-scoped (`Scoped`). A user's file name
   goes in your row, and in `DownloadName`, never in the key.
 - Always `Stat` before you trust an upload, and compare it with what you

@@ -227,6 +227,8 @@ const (
 	// MinIdentityCodeLifetime and MaxIdentityCodeLifetime bound a declared
 	// one: the code works like a password.
 	MinIdentityCodeLifetime = 5 * time.Minute
+	// MaxIdentityCodeLifetime is the longest lifetime a declaration may give a
+	// password-set code.
 	MaxIdentityCodeLifetime = 7 * 24 * time.Hour
 )
 

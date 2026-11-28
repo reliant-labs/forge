@@ -933,8 +933,13 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	projectDir := projectDirForKCL()
 	timingsRun.projectDir = projectDir
 	// Host runners and frontend dependency installs can build even with
-	// --no-build. Check physical headroom before rendering or starting work.
-	if err := checkBuildStorageFn(projectDir); err != nil {
+	// --no-build. Check physical headroom before rendering or starting work —
+	// under the HOST lane: what env up itself builds is host binaries and
+	// node_modules. An image build checks the full reserve when it starts
+	// (prepareDockerBuildStorage, buildGoTarget), so holding the whole run to
+	// that reserve here only refused a host-process dev loop with 50 GiB free
+	// (Ranger friction #1).
+	if err := checkHostBuildStorageFn(projectDir); err != nil {
 		return err
 	}
 	// Stable identity of THIS project, stamped onto every child and required to
@@ -2435,11 +2440,31 @@ func renderUpSummary(w io.Writer, env string, rows []upServiceRow, notReadyLabel
 	fmt.Fprintf(w, "%s Logs   %s/   — tail -f / grep the per-service *.log here\n", bar, upLogDir(env))
 	fmt.Fprintf(w, "%s Cluster routes:  forge cluster urls\n", bar)
 	fmt.Fprintf(w, "%s Live status:     forge env status %s\n", bar, env)
+	// env exec runs a one-off command (a migration, a CLI subcommand, a
+	// psql) with exactly the config a host or Compose process got —
+	// DATABASE_URL included. It was the answer to "how do I run my CLI
+	// against this stack" and nobody found it (Ranger friction #7), so it is
+	// named where the stack's other next steps are, whenever there is a
+	// workload it can serve.
+	if hasExecRow(rows) {
+		fmt.Fprintf(w, "%s Run a command:   %s env exec %s -- <cmd>   (the api's config — DATABASE_URL, …; --workload <name> for another)\n", bar, Name(), env)
+	}
 	for _, t := range trailers {
 		fmt.Fprintf(w, "%s %s\n", bar, t)
 	}
 	fmt.Fprintln(w, "╰─────────────────────────────────────────────────────────")
 	fmt.Fprintln(w)
+}
+
+// hasExecRow reports whether rows hold a workload `env exec` can borrow the
+// configuration of: OnHost and OnCompose ones (env_exec.go).
+func hasExecRow(rows []upServiceRow) bool {
+	for _, r := range rows {
+		if r.Kind == "host" || r.Kind == "compose" {
+			return true
+		}
+	}
+	return false
 }
 
 // summaryNoPort is the URL cell for a service that declares no listen port
@@ -3266,7 +3291,7 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 		if !inTargetSet(targets, w.Name) {
 			continue
 		}
-		if err := checkBuildStorageFn(projectDirForKCL()); err != nil {
+		if err := checkHostBuildStorageFn(projectDirForKCL()); err != nil {
 			fmt.Printf("[up] host %s: %v\n", w.Name, err)
 			failures++
 			continue
@@ -3324,6 +3349,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	if err := withHostCover(ctx, &spec, w, env); err != nil {
 		return nil, "", err
 	}
+	excludeUnbuiltAirDirs(ctx, &spec, w.Name)
 	cmd, err := hostlaunch.BuildCmd(ctx, w.Name, spec)
 	if err != nil {
 		return nil, "", err

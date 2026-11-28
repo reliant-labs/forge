@@ -4,12 +4,13 @@ package cli
 // what the env's vuln_gate makes of it.
 //
 //	forge vuln scan [<dir> | --image <ref@digest> | --release <v> | --deployed <env>] [--json]
+//	forge vuln gate [<name>=]<path>... [--sbom <file>] [--db <dir>] [--out <dir>] [--policy <file> | --env <env>] [--json]
 //	forge vuln list <env> [--release v] [--severity s] [--fixable] [--kev] [--include-exempt] [--json]
 //	forge vuln show <env> <advisory-id | package> [--json]
 //	forge vuln sbom <env> [--release v] [--artifact name] [--format cyclonedx|spdx]
 //	forge vuln sbom --file <path> [--artifact name] [--release v] [--format cyclonedx|spdx]
 //	forge vuln db status|pull|import <file>
-//	forge vuln exempt <env> <advisory-id> --reason "<why>" --expires YYYY-MM-DD
+//	forge vuln exempt <env> <advisory-id> --reason "<why>" --expires YYYY-MM-DD [--package p] [--artifact a] [--location /path]
 //
 // The scanning, the shared grype database and the gate rule are
 // internal/vulnscan; this file and its vuln_*.go siblings are flags, the
@@ -144,6 +145,7 @@ control plane's (it scans the SBOMs each cut uploads, and rescans deployed
 releases daily), which needs the vuln:read scope (exit 4 without it).`,
 	}
 	cmd.AddCommand(newVulnScanCmd(deps))
+	cmd.AddCommand(newVulnGateCmd(deps))
 	cmd.AddCommand(newVulnListCmd(deps))
 	cmd.AddCommand(newVulnShowCmd(deps))
 	cmd.AddCommand(newVulnSBOMCmd(deps))
@@ -300,7 +302,15 @@ func writeVulnDocument(w io.Writer, doc vulnscan.Document, now time.Time, label 
 			db += " STALE"
 		}
 	}
-	_, _ = fmt.Fprintf(w, "%s · %d of %d artifacts scanned · %s\n", subject, doc.Coverage.Scanned, doc.Coverage.Artifacts, db)
+	scanned := fmt.Sprintf("%d of %d artifacts scanned", doc.Coverage.Scanned, doc.Coverage.Artifacts)
+	if na := doc.Coverage.NotApplicable; len(na) > 0 {
+		reasons := make([]string, len(na))
+		for i, a := range na {
+			reasons[i] = a.Reason
+		}
+		scanned = fmt.Sprintf("%d of %d applicable artifacts scanned; %s", doc.Coverage.Scanned, doc.Coverage.Artifacts, notApplicableSummary(reasons))
+	}
+	_, _ = fmt.Fprintf(w, "%s · %s · %s\n", subject, scanned, db)
 	gate := strings.ToUpper(string(doc.Gate.Verdict))
 	if len(doc.Gate.Blocking) > 0 {
 		gate += ": " + strings.Join(doc.Gate.Blocking, ", ")

@@ -171,16 +171,20 @@ func TestReconcile_DoesNotRewriteBackCorrectName(t *testing.T) {
 		t.Fatalf("mkdir handler: %v", err)
 	}
 	// The scaffold test as the helpers generator's factory name implies it.
-	scaffold := `package deploy
+	writeReconcileFixture(t, filepath.Join(projectDir, "go.mod"), "module example.com/demo\n")
+	scaffold := `package deploy_test
 
-// FORGE_SCAFFOLD: deploy
-import "testing"
+import (
+	"testing"
+
+	"example.com/demo/internal/handlers/deploy"
+)
 
 func TestDeployScaffold(t *testing.T) {
-	_ = NewTestDeploy(t)
+	_ = deploy.NewTestDeploy(t)
 }
 `
-	testPath := filepath.Join(handlerDir, "service_scaffold_test.go")
+	testPath := filepath.Join(handlerDir, "handlers_scaffold_deploy_test.go")
 	if err := os.WriteFile(testPath, []byte(scaffold), 0o644); err != nil {
 		t.Fatalf("write scaffold test: %v", err)
 	}

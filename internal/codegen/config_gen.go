@@ -1261,7 +1261,6 @@ func DefaultConfigMessages() []ConfigMessage {
 					GoType:    "string",
 					ProtoType: "string",
 					EnvVar:    "DATABASE_URL",
-					Flag:      "database-url",
 					Required:  true,
 					// Mirrors the scaffolded proto (config.proto.tmpl): the DSN
 					// embeds the database password, so it is projected as a Secret
@@ -1277,7 +1276,6 @@ func DefaultConfigMessages() []ConfigMessage {
 					GoType:    "string",
 					ProtoType: "string",
 					EnvVar:    "IDP_BROKER_TOKEN",
-					Flag:      "idp-broker-token",
 					// Mirrors the scaffolded proto too, for the same reason as
 					// database_url: the dev env with a frontend names it in the
 					// API's config_secrets (the login broker's token, which `forge env up`

@@ -47,7 +47,8 @@ What that annotation buys, in every environment:
   **nothing** for it. There is no slot to accidentally paste a password
   into.
 - `pkg/config` registers **no CLI flag** for it (a secret must not land
-  in shell history) and never echoes it.
+  in shell history), even if it declares `flag:` (generate warns), and never
+  echoes it: there is no `--database-url`.
 
 Point it at a different Secret by writing the override in `config.k`:
 

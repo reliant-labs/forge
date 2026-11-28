@@ -98,6 +98,15 @@ func goldenCases() []goldenCase {
 			NamespacedRBAC: []v1alpha1.PolicyRule{{APIGroups: []string{"example.com"}, Resources: []string{"widgets"}, Verbs: []string{"list", "watch"}}},
 		})}},
 		{name: "cron", ws: []v1alpha1.Workload{gw("nightly", cronSpec)}},
+		// The schedule fields render exactly as declared; "cron" above pins
+		// that, unset, forge adds none of its own.
+		{name: "cron_schedule", ws: []v1alpha1.Workload{func() v1alpha1.Workload {
+			s := cronSpec
+			s.ConcurrencyPolicy = v1alpha1.CronConcurrencyForbid
+			s.StartingDeadlineSeconds = new(int64(300))
+			s.TimeZone = "Europe/Berlin"
+			return gw("nightly", s)
+		}()}},
 		{name: "operator", ws: []v1alpha1.Workload{gw("manager", v1alpha1.WorkloadSpec{
 			Kind: v1alpha1.KindOperator, Group: "example.com", Version: "v1", CRDs: []string{"Widget"},
 			Ports:                     []v1alpha1.Port{{Name: "metrics", Port: 8080}},
@@ -112,6 +121,13 @@ func goldenCases() []goldenCase {
 			w := scaffoldAPI()
 			w.Spec.Replicas = 3
 			w.Spec.Env = []v1alpha1.EnvVar{{Name: "PRE_STOP_DELAY", Value: "10s"}, {Name: "SHUTDOWN_TIMEOUT", Value: "1m"}}
+			return w
+		}()}},
+		// forge.Autoscale: the Deployment states no replicas, the HPA follows
+		// it, and the spread and the PDB key on maxReplicas.
+		{name: "autoscale", ws: []v1alpha1.Workload{func() v1alpha1.Workload {
+			w := scaffoldAPI()
+			w.Spec.Autoscale = &v1alpha1.Autoscale{MinReplicas: 2, MaxReplicas: 6}
 			return w
 		}()}},
 		{name: "restricted", profile: v1alpha1.ProfileRestricted, ws: restrictedSet()},

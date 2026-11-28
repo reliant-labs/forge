@@ -42,6 +42,11 @@ Gateway, CNPG): installed by `forge env deploy <env> --target <name>`, kept OUT
 of the bundle because a reconciler's prune would delete its CRDs and orphan
 their data. A bundled chart may not set `crds`.
 
+A `forge.Install` in a `forge.MLStack` (`Bundle.ml_stacks`, kcl/ml.k) lowers
+to one of these on the stack's cluster, by its chart's `delivery`, with every
+object labelled `forge.dev/component-owner = <project>.<env>`; a bundle
+Install also gets its Namespace rendered unless the env declares it.
+
 ## 3. Anything that prints YAML: `forge.Generated`
 
 ```kcl

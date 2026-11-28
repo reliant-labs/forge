@@ -17,12 +17,13 @@ const maxQueryText = 2048
 type Dialect int
 
 const (
-	// Postgres: a backslash escapes only inside E'…'; "…" quotes an
-	// identifier; $tag$…$tag$ is a literal and $1 a placeholder.
+	// Postgres is PostgreSQL's dialect: a backslash escapes only inside E'…';
+	// "…" quotes an identifier; $tag$…$tag$ is a literal and $1 a placeholder.
 	Postgres Dialect = iota
-	// ClickHouse: a backslash escapes inside every quoted string and
-	// identifier; `…` and “…” also quote an identifier and ‘…’ is a literal;
-	// //, "# " and #! also start a line comment; $tag$…$tag$ is a heredoc.
+	// ClickHouse is ClickHouse's dialect: a backslash escapes inside every
+	// quoted string and identifier; `…` and “…” also quote an identifier and
+	// ‘…’ is a literal; //, "# " and #! also start a line comment; $tag$…$tag$
+	// is a heredoc.
 	ClickHouse
 )
 

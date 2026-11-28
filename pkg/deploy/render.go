@@ -839,8 +839,10 @@ func stripCreationTimestamps(v any) {
 // stampEnv ports kcl/lib/labels.k stamp_env_all: forge.dev/env on every
 // object's metadata.labels, and on the pod template of the kinds whose
 // spec.template IS one (labels.k:97 _POD_TEMPLATE_KINDS) or a CronJob's
-// spec.jobTemplate.spec.template. Never a selector (labels.k:64-74). A key
-// already present is left as written (labels.k:112-123).
+// spec.jobTemplate.spec.template. A CronJob's spec.jobTemplate.metadata gets
+// it too, so each Job the CronJob spawns says which env it belongs to. Never a
+// selector (labels.k:64-74). A key already present is left as written
+// (labels.k:112-123).
 func stampEnv(objs []*unstructured.Unstructured, env string) {
 	if env == "" {
 		return
@@ -882,6 +884,7 @@ func stampEnv(objs []*unstructured.Unstructured, env string) {
 			}
 		case "CronJob":
 			if jt, ok := spec["jobTemplate"].(map[string]any); ok {
+				jobTemplateMeta(jt, add)
 				if js, ok := jt["spec"].(map[string]any); ok {
 					templateMeta(js)
 				}
@@ -891,7 +894,8 @@ func stampEnv(objs []*unstructured.Unstructured, env string) {
 }
 
 // stampKind writes forge.dev/kind (the workload's forge role) on every object
-// one workload renders, and on the pod template of its Deployment or CronJob,
+// one workload renders, and on the pod template of its Deployment or CronJob
+// (and on a CronJob's jobTemplate, so each Job it spawns says cron),
 // so a node agent reading pod labels can tell a service from a worker. Never a
 // selector: selectors are immutable on a Deployment, and the kind is not part
 // of a pod's identity. Never a standalone Job's pod template either: it is
@@ -940,12 +944,25 @@ func stampKind(objs []*unstructured.Unstructured, kind v1alpha1.WorkloadKind) {
 			}
 		case "CronJob":
 			if jt, ok := spec["jobTemplate"].(map[string]any); ok {
+				jobTemplateMeta(jt, add)
 				if js, ok := jt["spec"].(map[string]any); ok {
 					templateMeta(js)
 				}
 			}
 		}
 	}
+}
+
+// jobTemplateMeta applies add to a CronJob's spec.jobTemplate.metadata, the
+// metadata of every Job the CronJob controller creates. Labels there are
+// mutable and reach only Jobs created after the change.
+func jobTemplateMeta(jt map[string]any, add func(map[string]any)) {
+	md, _ := jt["metadata"].(map[string]any)
+	if md == nil {
+		md = map[string]any{}
+		jt["metadata"] = md
+	}
+	add(md)
 }
 
 // stampVersion writes app.kubernetes.io/version (the release) on the pod

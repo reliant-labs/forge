@@ -46,7 +46,6 @@ func TestProofLocker_AnUnavailableLockerStillRefuses(t *testing.T) {
 	h.z.mu.Lock()
 	u.emailCode, u.inviteCode = "ev-1", "inv-1"
 	h.z.mu.Unlock()
-	before := h.z.snapshot(u.id)
 
 	status, body := h.browser().post("/auth/verify", map[string]any{"userID": u.id, "code": "ev-1"})
 	if status != http.StatusBadGateway {
@@ -58,7 +57,7 @@ func TestProofLocker_AnUnavailableLockerStillRefuses(t *testing.T) {
 	}
 	b := h.browser()
 	b.post("/auth/magic/request", map[string]any{"email": "pending@acme.com"})
-	before = h.z.snapshot(u.id) // the request mailed a fresh code
+	before := h.z.snapshot(u.id) // the request mailed a fresh code
 	if status, body := b.post("/auth/magic/consume", map[string]any{"code": h.z.lastMail(t).code}); status != http.StatusBadGateway {
 		t.Fatalf("magic-link proof without the lock: %d %v, want 502", status, body)
 	}

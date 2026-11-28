@@ -24,6 +24,7 @@ For local-dev-against-a-cluster workflows. For local-go-only (no k8s) see the
 | `forge env up <env> --target <workload> [--background]` | Single-workload runner: scopes the WHOLE run — build, deploy, host and frontend phases — to the named workload. A workload bound to `forge.OnHost` launches as a host process, dispatching on its `runner` (`go-run` / `air` / `binary` / `delve`). |
 | `forge env options <env> [--json]` | List the `-D` render options that env's KCL declares (see below). |
 | `forge env config <env> [--json] [--workload <name>]` | Print the resolved configuration `deploy/kcl/<env>/` hands each workload — the values `forge env up` passes to each process (see below). |
+| `forge env exec <env> [--workload <name>] -- <command> [args...]` | Run a one-off command on this host with a workload's resolved configuration (default workload `api`): `DATABASE_URL` and every other value `forge env up` hands it. The way to run your binary's CLI subcommands, a script or `psql` against the running stack (see below). |
 | `forge env down <env> [--all]` | Stop this project's stack for that env, tracked or orphaned. `--all`: all of them, machine-wide. Never stops the process running it or any ancestor — safe to run from a shell a forge-started server spawned (see below). |
 | `forge env ps` | Every stack running here: project dir, env, process count. |
 | `forge env up <env> [--no-build] [--no-deploy] [--target <name>] [-D name=value] [--background]` | The whole-loop orchestrator: build (host-bound workloads need no image) → cluster apply → host launch → frontend dev-serve. Reads each workload's runtime from `deploy/kcl/<env>/`. The cluster steps run only when something the env runs is bound to a cluster (a workload, route, chart, placed Secret or raw manifest); a `cluster_target` that only places the env's Namespace and Gateway needs no cluster, so the scaffolded dev env comes up with none and the run says which cluster it left alone. `--target` narrows WHICH entities each phase acts on; it never turns phases off. |
@@ -60,6 +61,16 @@ github.com/air-verse/air@latest`, or `runner = "go-run"` to give up the
 reload). Anything else runs `go run`, its argv DERIVED from the workload's
 `build` + `args`. `_on_k3d` binds `forge.OnCluster {target = _k3d}`: the image
 `forge build dev` pushes, with the same `args`.
+
+air rebuilds only for edits that can change the binary. At launch `forge env
+up` runs `go list -deps` on the workload's `build.cmd` and adds every top-level
+directory holding Go packages the binary does not import (`examples/`,
+`benchmarks/`, a `tools/` module) to air's `exclude_dir` for that run, after
+the config's own entries; it prints `air ignores examples/, … (no package
+./cmd/<bin> imports)`. `.air.toml` is never edited, and directories without Go
+code stay watched. An air config that sets `[build] include_dir` chooses its
+watch set itself and gets nothing added, as does one whose build command does
+not name the package (`make build`).
 
 Rebinding is editing one line: `_on_k3d(_api)` runs the API as a pod. To run
 ONE service alone (to debug it), bind `_on_host(wl.item)` and give it a root
@@ -195,6 +206,11 @@ host = forge.HostOverrides {
 `forge env config <env>` prints what each workload is actually configured
 with — the same values `forge env up` hands the processes it launches, with
 launch-resolved ports reported as launched rather than as rendered.
+Each workload's heading names where it runs and, for a long-running host
+process, the port it listens on (`api (service) — on host, listens on
+localhost:8087`; `listen_ports` in `--json`). Read the port there, not from a
+`PORT` variable: a job or a worker is handed the project's `PORT` default
+(8080) whether or not it binds anything.
 
 ```bash
 forge env config dev                      # every workload, grouped
@@ -222,6 +238,24 @@ psql "$(forge env config dev --json | jq -r '.workloads[].env.DATABASE_URL // em
 export DATABASE_URL="$(forge env config dev --json | jq -r '.workloads[].env.DATABASE_URL // empty' | head -1)"
 forge db seed status
 ```
+
+## Running a command with an environment's configuration
+
+To run something ONCE against the stack — your binary's CLI subcommand, a
+script, `psql` — use `forge env exec`. It runs the command on this host with
+the exact environment `forge env up` gives the workload (default `api`;
+`--workload <name>` for another OnHost or OnCompose workload), so nothing has
+to be exported by hand and nothing drifts from what the server sees:
+
+```bash
+forge env exec dev -- go run ./cmd/<bin> <subcommand>
+forge env exec dev -- ./tmp/<bin> <subcommand>   # the binary air last built
+forge env exec dev -- sh -c 'psql "$DATABASE_URL"'   # shell syntax only inside an explicit shell
+```
+
+Arguments after `--` go to the child literally (no shell), its exit code passes
+through, and no deploy or startup runs. The `forge env up` summary box names it
+too.
 
 ## Logs & the `forge env up` summary
 
@@ -252,49 +286,8 @@ them with `forge cluster urls`.
 
 ## Where `forge env up` spent its time
 
-Every `up`, green or red, ends with a timings table on stderr (just above
-the summary box) and appends one JSON line to
-`.forge/logs/<env>/up-timings.jsonl`. Measure a dev-loop change with it
-before claiming a speedup. Each row is a phase: its start offset from the
-run's start (`@`) and its duration, nested phases indented under their
-parent. Offsets, not a sum, because phases overlap: `infra` runs beside
-`build`.
-
-| Phase | What it times |
-|---|---|
-| `render`, `secrets` | the env's KCL render; secret pull, generation and validation |
-| `clusters/<name>`, `kubeconfigs` | each declared cluster's ensure, one after another; the cross-cluster kubeconfig mint |
-| `preflight/…` | `go-mod-tidy`, `air`, `host-runners`, `frontend-deps` |
-| `infra` | the infra pre-warm (host infra, compose), concurrent with `build` |
-| `build/…` | `generate`, `render`, then stages `go` (Go binaries, frontends, the project image), `images` (DockerBuild), `variants`, `shell` (ShellBuild); one child per image or binary |
-| `deploy` | the apply and its rollout waits |
-| `replace-stack` | stopping this project's previous host processes for the env |
-| `host/…` | `infra` (when the pre-warm did not converge), `database`, `identity`, `jobs`, `launch` |
-| `frontends` | dependency install and dev-server start |
-| `readiness/<workload>` | time-to-ready: from that workload's launch to its port bound by this run (so it can start before `readiness` does); `skipped` when this run never launched it |
-| `seed`, `cluster-health` | the first-boot seed; the one look at cluster workloads |
-
-A status column appears only when a row is not `ok`: `failed`, `skipped`, or
-`incomplete` (still running when the run ended; on a failed run, usually
-the phase that failed). `FORGE_UP_TIMINGS=0` hides the table; the record is
-always written.
-
-The record (`"schema": "forge.env.up.timings/v1"`; fields are only ever
-added) is one object per run: `run_id`, `started_at`, `env`,
-`forge_version`, `targets`, `flags` (the `--no-*`, `--background` and
-`--watch` booleans, and `options`: the `-D` names, never their values),
-`status` (`ok`/`failed`), `error`, `total_ms` (to ready: the summary box,
-storage maintenance and the foreground hold are not counted), and `phases[]`
-of `{name, parent, start_ms, duration_ms, status, error}`, in start order.
-`name` is the full path (`build/go/api (docker)`), `parent` its enclosing
-phase.
-
-```bash
-# the slowest phases of the last run
-tail -1 .forge/logs/dev/up-timings.jsonl | jq -r '.phases | sort_by(-.duration_ms)[:5][] | "\(.duration_ms)ms \(.name)"'
-# total over the last ten runs
-tail -10 .forge/logs/dev/up-timings.jsonl | jq -r '"\(.started_at) \(.status) \(.total_ms)ms"'
-```
+Every `up` prints phase timings and records `.forge/logs/<env>/up-timings.jsonl`.
+For the phase reference, record schema and comparison commands, load `dev/timings`.
 
 ## Composing with Taskfile (cloud-dev pattern)
 

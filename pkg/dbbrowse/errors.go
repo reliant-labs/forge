@@ -12,12 +12,12 @@ import (
 var ErrInvalidRequest = errors.New("invalid browse request")
 
 var (
-	// ErrUnknownTable: the request named a table the role cannot read, or
+	// ErrUnknownTable means the request named a table the role cannot read, or
 	// that does not exist. The two are deliberately indistinguishable.
 	ErrUnknownTable = fmt.Errorf("%w: unknown table", ErrInvalidRequest)
-	// ErrUnknownColumn: a column, filter or sort named a column the table
+	// ErrUnknownColumn means a column, filter or sort named a column the table
 	// does not have or the role cannot read.
 	ErrUnknownColumn = fmt.Errorf("%w: unknown column", ErrInvalidRequest)
-	// ErrUnknownOp: a filter's operator is not one of the [Op] constants.
+	// ErrUnknownOp means a filter's operator is not one of the [Op] constants.
 	ErrUnknownOp = fmt.Errorf("%w: unknown filter operator", ErrInvalidRequest)
 )

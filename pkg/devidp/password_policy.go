@@ -53,11 +53,16 @@ var ErrPasswordPolicyUnavailable = errors.New("the identity provider does not se
 type PasswordRule string
 
 const (
+	// RuleMinLength requires at least MinLength characters.
 	RuleMinLength PasswordRule = "min_length"
+	// RuleUppercase requires a letter A-Z.
 	RuleUppercase PasswordRule = "uppercase"
+	// RuleLowercase requires a letter a-z.
 	RuleLowercase PasswordRule = "lowercase"
-	RuleNumber    PasswordRule = "number"
-	RuleSymbol    PasswordRule = "symbol"
+	// RuleNumber requires a digit 0-9.
+	RuleNumber PasswordRule = "number"
+	// RuleSymbol requires a character outside A-Z, a-z and 0-9.
+	RuleSymbol PasswordRule = "symbol"
 )
 
 // PasswordPolicy is the issuer's password-complexity policy. The JSON tags are

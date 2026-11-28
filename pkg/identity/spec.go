@@ -65,6 +65,7 @@ const (
 	// MinCodeLifetime and MaxCodeLifetime bound a declared lifetime. The
 	// code works like a password; a week is the most it may live.
 	MinCodeLifetime = 5 * time.Minute
+	// MaxCodeLifetime is the longest lifetime a declaration may give a code.
 	MaxCodeLifetime = 7 * 24 * time.Hour
 )
 
@@ -78,7 +79,9 @@ type HTTPEmail struct {
 type IdPType string
 
 const (
+	// IdPGoogle is sign-in with Google.
 	IdPGoogle IdPType = "google"
+	// IdPGitHub is sign-in with GitHub.
 	IdPGitHub IdPType = "github"
 )
 
@@ -142,11 +145,11 @@ const (
 type SignupMode string
 
 const (
-	// SignupInvite: only owners, declared members and invitations.
+	// SignupInvite admits only owners, declared members and invitations.
 	SignupInvite SignupMode = "invite"
-	// SignupOpen: anyone, once their address is verified.
+	// SignupOpen admits anyone, once their address is verified.
 	SignupOpen SignupMode = "open"
-	// SignupDomain: anyone whose VERIFIED address is in SignupDomains.
+	// SignupDomain admits anyone whose VERIFIED address is in SignupDomains.
 	SignupDomain SignupMode = "domain"
 )
 
@@ -154,8 +157,11 @@ const (
 type Method string
 
 const (
-	MethodPassword  Method = "password"
-	MethodPasskey   Method = "passkey"
+	// MethodPassword is a username or address and a password.
+	MethodPassword Method = "password"
+	// MethodPasskey is a WebAuthn passkey.
+	MethodPasskey Method = "passkey"
+	// MethodMagicLink is a one-time link or code sent by email.
 	MethodMagicLink Method = "magic_link"
 )
 
@@ -362,6 +368,7 @@ const (
 	// code generator settings when OTPEmail is on: digits only, so the code
 	// a magic-link mail shows can be typed on another device.
 	OTPEmailCodeLength = 8
+	// OTPEmailCodeExpiry is how long an OTP-email code stays valid.
 	OTPEmailCodeExpiry = 10 * time.Minute
 )
 

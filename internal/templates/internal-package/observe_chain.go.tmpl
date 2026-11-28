@@ -44,7 +44,7 @@ import (
 // sampled per method instead: the first, then at most one per window with
 // suppressed=<n>. Any call over 1s is always written, with slow=true.
 //
-// To opt the package OUT, put `// forge:no-observe` on the package clause (or
+// To opt the package OUT, put a forge:no-observe marker on the package clause (or
 // on a single Service method — its doc comment — to skip just that one).
 //
 // This file is OPTIONAL. Without it the decorator builds

@@ -115,7 +115,7 @@ func TestPlanReleaseSBOMTargets_EachArtifactKindHasItsSource(t *testing.T) {
 	}
 	in := sbomCut{ProjectDir: dir, OutputDir: "dist", Entities: e, Version: "v1.0.0",
 		Built: map[string]bool{"ghcr.io/acme/api": true, "ghcr.io/acme/old": true, webKey: true}}
-	targets, refused := planReleaseSBOMTargets(in, artifacts)
+	targets, refused := planReleaseSBOMTargets(context.Background(), in, artifacts)
 
 	got := map[string]sbom.Target{}
 	for _, p := range targets {
@@ -159,13 +159,14 @@ func TestPlanReleaseSBOMTargets_EachArtifactKindHasItsSource(t *testing.T) {
 			t.Errorf("%s: refused %+v, want unavailable saying %q", name, r, says)
 		}
 	}
-	// Not shipped code: neither a target nor a refusal.
+	// Not shipped code: neither a target nor a refusal (the caller records
+	// them not applicable).
 	for _, name := range []string{"docs", "web.sourcemaps"} {
 		if _, ok := got[name]; ok {
 			t.Errorf("%s: an SBOM target for something that ships no code", name)
 		}
 		if _, ok := refused[name]; ok {
-			t.Errorf("%s: recorded unavailable; it should record no SBOM at all", name)
+			t.Errorf("%s: recorded unavailable; it is not applicable", name)
 		}
 	}
 }
@@ -202,7 +203,7 @@ func TestGenerateReleaseSBOMs_RecordsAndStoresEachSBOM(t *testing.T) {
 	if err := (release.Release{Version: "v1.0.0", Artifacts: artifacts}).Validate(); err != nil {
 		t.Errorf("the recorded artifacts no longer validate: %v", err)
 	}
-	if !strings.Contains(warn.String(), "SBOMs: 2 recorded (0 from cache), 0 unavailable") {
+	if !strings.Contains(warn.String(), "[build] SBOMs: 2 of 2 applicable artifacts recorded (0 from cache)\n") {
 		t.Errorf("summary: %s", warn.String())
 	}
 
@@ -216,7 +217,7 @@ func TestGenerateReleaseSBOMs_RecordsAndStoresEachSBOM(t *testing.T) {
 		t.Errorf("a cached SBOM ran syft %d more time(s)", n)
 	}
 	if again["ghcr.io/acme/api"].SBOM.Digest != artifacts["ghcr.io/acme/api"].SBOM.Digest ||
-		!strings.Contains(warn.String(), "1 recorded (1 from cache)") {
+		!strings.Contains(warn.String(), "SBOMs: 1 of 1 applicable artifacts recorded (1 from cache)\n") {
 		t.Errorf("cache hit: %+v / %s", again["ghcr.io/acme/api"].SBOM, warn.String())
 	}
 }
@@ -312,8 +313,8 @@ func TestGenerateReleaseSBOMs_NoSBOMAndPolicyOff(t *testing.T) {
 	if ref := artifacts["ghcr.io/acme/api"].SBOM; ref == nil || ref.Status != release.SBOMStatusUnavailable || ref.Reason != "skipped: --no-sbom" {
 		t.Errorf("--no-sbom: SBOM %+v", ref)
 	}
-	if artifacts["docs.sourcemaps"].SBOM != nil {
-		t.Error("--no-sbom marked source maps, which never get an SBOM")
+	if ref := artifacts["docs.sourcemaps"].SBOM; !ref.NotApplicable() || ref.Reason != release.SBOMNotApplicableSourcemaps {
+		t.Errorf("--no-sbom: source maps SBOM %+v, want not applicable (they never get one)", ref)
 	}
 	if !strings.Contains(warn.String(), "--no-sbom") {
 		t.Errorf("--no-sbom did not warn: %q", warn.String())

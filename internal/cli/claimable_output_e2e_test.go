@@ -74,8 +74,21 @@ func TestClaimableDeploy_OutputIsQuietAndLeavesDockerConfigAlone(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, ".docker")); !os.IsNotExist(err) {
 		t.Errorf("the deploy wrote the user's ~/.docker (stat err: %v)", err)
 	}
+	// The first build intentionally explains why origin-dependent SEO tags are
+	// absent until the site has a hostname (fd260e468). Require that note, and
+	// budget it separately so the rest of the deploy retains its original cap.
+	const originNote = "[build] web: SITE_URL is empty: env prod has never been deployed, so frontend web has no hostname yet. The build leaves out what needs the site's origin (canonical link, og:url, the sitemap); deploy env prod, then build the next release to carry it.\n"
+	if strings.Count(all, originNote) != 1 {
+		t.Errorf("want exactly one first-deploy origin note:\n%s", all)
+	}
+	remaining := strings.Replace(all, originNote, "", 1)
+	// This process-once render diagnostic may already have been emitted by
+	// another test. Account for its exact text without making the budget
+	// depend on test order (a focused run prints it; CI's shard may not).
+	const portNote = "[devstack] env \"prod\" declares no local cluster or host process: allocate_port resolves to its base port and no port block is claimed\n"
+	remaining = strings.Replace(remaining, portNote, "", 1)
 	// 8.5 KB was the output before; it must not creep back.
-	if len(all) > 4500 {
-		t.Errorf("the output is %d bytes, over the 4500-byte budget:\n%s", len(all), all)
+	if len(remaining) > 4500 {
+		t.Errorf("the output excluding the origin note is %d bytes, over the 4500-byte budget:\n%s", len(remaining), all)
 	}
 }

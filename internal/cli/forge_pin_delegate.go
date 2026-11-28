@@ -37,7 +37,8 @@ package cli
 // FORGE_VERSION_DELEGATED, which stops the pinned forge handing off again —
 // that forge alone: it is addressed to the exec'd pid and consumed at start-up,
 // so nothing the delegate starts inherits it; see forgedelegate.MarkerEnv),
-// stdio and exit status. One line on stderr says it happened.
+// stdio and exit status. One line on stderr says it happened, once a day per
+// project, pin and forge, and never under --quiet (forge_pin_notice.go).
 //
 // It is skipped when --allow-version-skew or FORGE_ALLOW_VERSION_SKEW is set
 // (the explicit "run THIS forge"; the skew warning and refusals then apply),
@@ -67,6 +68,8 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/forgedelegate"
+	"github.com/reliant-labs/forge/internal/forgepinhook"
+	"github.com/reliant-labs/forge/pkg/forgepin"
 )
 
 // handOffExempt are the commands that run as THIS forge in any project: they
@@ -89,6 +92,9 @@ import (
 //     forge's rules. A pinned forge older than the 2h floor and the
 //     live-build lease (#1231, #1243, #1245) would trim the Go build cache
 //     down to now-20m, under running builds.
+//   - cache: this machine's shared Go build cache. `cache prog` runs once
+//     per go command (GOCACHEPROG); a project pinning a forge that lacks it
+//     would fail every go build in the checkout if it were handed over.
 //   - mcp: a long-lived server whose every tool call names its own project
 //     (each may pin a different forge), run in-process. Handing the server
 //     to the forge its STARTING directory pins would make every later
@@ -110,7 +116,7 @@ import (
 // project, stays here (machineWideFlags).
 var handOffExempt = []string{
 	"", "version", "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd,
-	"project upgrade", "project new", "report-bug", "telemetry", "storage", "slot", "mcp",
+	"project upgrade", "project new", "report-bug", "telemetry", "storage", "slot", "cache", "mcp",
 	"env ps", "env devstack", "test begin", "test capture",
 }
 
@@ -317,7 +323,7 @@ func HandOffToPinned(ctx context.Context, args []string, stderr io.Writer) (hand
 		// The tree reports a bad -C itself, with its own message.
 		return false, nil
 	}
-	return handOff(ctx, stderr, inv.rel, inv.machineWide, inv.implicitTarget, inv.allow, root, args)
+	return handOff(ctx, stderr, inv, root, args)
 }
 
 // skewFlagBeforeCommand refuses --allow-version-skew written before the
@@ -372,6 +378,9 @@ type invocation struct {
 	implicitTarget bool
 	// projectDir is -C / --project-dir.
 	projectDir string
+	// quiet is the command's --quiet (quietRun): the run asked for its
+	// failures only, so the hand-off notice is not printed.
+	quiet bool
 }
 
 // parseInvocation resolves args against a throwaway copy of this forge's
@@ -384,7 +393,7 @@ func parseInvocation(args []string) invocation {
 	if err != nil || cmd == nil {
 		// An unknown top-level command: this forge cannot run it, the
 		// pinned one may.
-		return invocation{rel: firstCommandWord(root, args), projectDir: scanProjectDir(args)}
+		return invocation{rel: firstCommandWord(root, args), projectDir: scanProjectDir(args), quiet: quietRun(nil, args)}
 	}
 	cmd.FParseErrWhitelist.UnknownFlags = true
 	// This parse is a dry run: a deprecated flag's notice is printed by the
@@ -398,6 +407,7 @@ func parseInvocation(args []string) invocation {
 	inv.machineWide = machineWideRun(inv.rel, cmd.Flags())
 	inv.implicitTarget = implicitTargetRun(inv.rel, cmd.Flags())
 	inv.projectDir, _ = cmd.Flags().GetString("project-dir")
+	inv.quiet = quietRun(cmd.Flags(), rest)
 	if cmd.HasSubCommands() {
 		// `forge project <a subcommand this forge lacks>`.
 		if w := firstWord(cmd.Flags().Args()); w != "" {
@@ -531,17 +541,17 @@ func projectRootFrom(dir string) (string, error) {
 	}
 }
 
-// handOff is the decision both entry points share: hand the command at rel to
-// the forge projectRoot wants, run this forge, or fail. args are the forge
-// arguments of this invocation; machineWide, whether the run spans every
-// project on the machine (machineWideRun); implicitTarget, whether it moves
-// the pin to this forge (implicitTargetRun).
-func handOff(ctx context.Context, w io.Writer, rel string, machineWide, implicitTarget, allow bool, projectRoot string, args []string) (handed bool, err error) {
-	mode := handOffModeOf(rel, machineWide, implicitTarget)
+// handOff is the decision both entry points share: hand the command inv names
+// to the forge projectRoot wants, run this forge, or fail. args are the forge
+// arguments of this invocation (inv.projectDir is not read: projectRoot is
+// its answer).
+func handOff(ctx context.Context, w io.Writer, inv invocation, projectRoot string, args []string) (handed bool, err error) {
+	rel, implicitTarget := inv.rel, inv.implicitTarget
+	mode := handOffModeOf(rel, inv.machineWide, implicitTarget)
 	if mode == runHere {
 		return false, nil
 	}
-	t, ok, unpinned := pinTargetOf(rel, implicitTarget, allow, projectRoot)
+	t, ok, unpinned := pinTargetOf(rel, implicitTarget, inv.allow, projectRoot)
 	// An upgrade with no pin to compare has nothing to hand off and never
 	// printed the notice; it reports the unpinned project itself.
 	if unpinned != "" && !implicitTarget {
@@ -573,7 +583,31 @@ func handOff(ctx context.Context, w io.Writer, rel string, machineWide, implicit
 	// The pinned forge may predate the 14 nouns: it is given the spelling
 	// every forge has (legacyArgs), and told not to warn about it.
 	args, rewritten := legacyArgs(args)
-	return true, execPinned(w, t, res, args, rewritten)
+	if pinNoticeDue("handoff", projectRoot, t.String(), t.binary, inv.quiet) {
+		_, _ = fmt.Fprint(w, handOffNotice(t, res))
+	}
+	return true, execPinned(t, res, args, rewritten)
+}
+
+// handOffNotice is the one line that says a command was handed to the
+// project's forge. It leads with what runs — the command did run, under the
+// forge the project asked for — and ends with how to run this one instead.
+// pinNoticeDue decides whether it prints.
+func handOffNotice(t delegateTarget, res forgedelegate.Result) string {
+	tail := fmt.Sprintf("this forge is %s; --%s, or %s=1, runs it instead", t.binary, allowVersionSkewFlag, allowVersionSkewEnv)
+	if t.checkout != "" {
+		return fmt.Sprintf("forge: running %s, which this project is linked to (%s)\n", res.Source, tail)
+	}
+	from := res.Source
+	switch res.Kind {
+	case forgedelegate.KindTools:
+		from = "the project's .tools/bin/forge"
+	case forgedelegate.KindCache:
+		from = "the cached build"
+	case forgedelegate.KindBuilt:
+		from = "just built"
+	}
+	return fmt.Sprintf("forge: running forge_version %s, which forge.yaml pins (%s — %s)\n", t.pin, from, tail)
 }
 
 // pinTarget is the forge the command at rel must run under in projectRoot,
@@ -622,30 +656,20 @@ func (t delegateTarget) pinIsNewer() bool {
 	return pk != "" && bk != "" && semver.Compare(bk, pk) < 0
 }
 
-// PinnedForge is the forge a project pins, resolved and ready to run.
-type PinnedForge struct {
-	// Path is the executable.
-	Path string
-	// Key identifies exactly which forge it is, for a cache of what it
-	// prints: the pinned version ("pin:", a module version that never
-	// changes), a linked checkout and its contents, or for a +dirty pin the
-	// binary file that reports it and that file's size and mtime.
-	Key string
-	// Want says which forge the project wants, for a message.
-	Want string
-	// Source says where Path came from: PinnedSourceSelf (this forge is the
-	// project's), or forgedelegate's KindTools, KindCache or KindBuilt.
-	Source string
-	// Args are the arguments that come before forge's own when running Path:
-	// ["forge"] when Path is this forge's executable and forge is embedded
-	// in it (`reliant forge`), else none. Set by ResolvePinnedForgePath.
-	Args []string
-	// Version is the version Path reports. Set by ResolvePinnedForgePath.
-	Version string
-	// Pin is forge.yaml's forge_version, and Checkout the local forge
-	// checkout the project is linked to, when it is. Set by
-	// ResolvePinnedForgePath.
-	Pin, Checkout string
+// PinnedForge is the forge a project pins, resolved and ready to run. It is
+// pkg/forgepin's Forge, the leaf type a host passes around without linking
+// this package. Source is PinnedSourceSelf, or forgedelegate's KindTools,
+// KindCache or KindBuilt.
+type PinnedForge = forgepin.Forge
+
+// init answers pkg/forgepin.Resolve with ResolvePinnedForge whenever the CLI
+// is linked: pkg/forgepin cannot import this package, whose closure is the
+// whole CLI.
+func init() {
+	forgepinhook.Resolve = func(ctx context.Context, projectRoot, command string, log io.Writer) (forgepinhook.Result, bool, error) {
+		pf, ok, err := ResolvePinnedForge(ctx, projectRoot, command, log)
+		return forgepinhook.Result(pf), ok, err
+	}
 }
 
 // ResolvePinnedForge is the hand-off's decision and resolution without the
@@ -666,7 +690,10 @@ func ResolvePinnedForge(ctx context.Context, projectRoot, command string, log io
 	if err != nil {
 		return PinnedForge{}, false, handOffFailure(projectRoot, t, command, err)
 	}
-	return PinnedForge{Path: res.Path, Key: t.resultKey(res.Path), Want: t.String(), Source: res.Kind}, true, nil
+	return PinnedForge{
+		Path: res.Path, Key: t.resultKey(res.Path), Want: t.String(),
+		Source: res.Kind, Pin: t.pin, Checkout: t.checkout,
+	}, true, nil
 }
 
 // noteUnpinned says which forge runs when no project pin decides it. Only an
@@ -780,9 +807,7 @@ func delegateTargetFor(projectRoot string) (t delegateTarget, ok bool) {
 // delegate's exit status IS this process's, and it returns only when exec(2)
 // itself failed; on Windows it relays the delegate's exit status; a test seam
 // returns the delegate's error. Callers propagate that error unchanged.
-func execPinned(w io.Writer, t delegateTarget, res forgedelegate.Result, args []string, respelled bool) error {
-	_, _ = fmt.Fprintf(w, "forge: this forge is %s, but the project wants %s — running %s instead (%s, or %s=1, to run this one)\n",
-		t.binary, t, res.Source, "--"+allowVersionSkewFlag, allowVersionSkewEnv)
+func execPinned(t delegateTarget, res forgedelegate.Result, args []string, respelled bool) error {
 	env := forgedelegate.Env(t.String())
 	if respelled {
 		env = append(env, noDeprecationWarningsEnv+"=1")

@@ -6,6 +6,17 @@ import (
 	"testing"
 )
 
+// Keep retirement checks with the marker tests: removalguard permits these
+// historical names here because they verify rejection, not active grants.
+func TestRetiredMarker(t *testing.T) {
+	if !RetiredMarker("forge:dashboard") || !RetiredMarker("forge:no-dashboard") {
+		t.Error("the markers retired in v1.0.14 are not reported retired")
+	}
+	if RetiredMarker("forge:immutable") || RetiredMarker("forge:made-up") {
+		t.Error("a live or unknown marker reported retired")
+	}
+}
+
 func softDeleteTable(deletedAtComment string) Table {
 	return Table{
 		Name:   "worktrees",

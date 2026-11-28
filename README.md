@@ -1,5 +1,7 @@
 # Forge
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/reliant-labs/forge.svg)](https://pkg.go.dev/github.com/reliant-labs/forge) [![CI](https://github.com/reliant-labs/forge/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/reliant-labs/forge/actions/workflows/ci.yml?query=branch%3Amain+event%3Apush) [![codecov](https://codecov.io/gh/reliant-labs/forge/branch/main/graph/badge.svg)](https://codecov.io/gh/reliant-labs/forge) [![Go Report Card](https://goreportcard.com/badge/github.com/reliant-labs/forge)](https://goreportcard.com/report/github.com/reliant-labs/forge) [![Release](https://img.shields.io/github/v/release/reliant-labs/forge?sort=semver)](https://github.com/reliant-labs/forge/releases/latest) [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE) [![Go version](https://img.shields.io/github/go-mod/go-version/reliant-labs/forge)](go.mod) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/reliant-labs/forge/badge)](https://scorecard.dev/viewer/?uri=github.com/reliant-labs/forge)
+
 **Reliant Forge: deploy what your coding agent built, and let it prove the release works.**
 
 One command deploys a Vite site, a statically exported Next.js site, or any app
@@ -303,7 +305,10 @@ gemini extensions install https://github.com/reliant-labs/forge
 `deploy_claimable` puts a Vite app or a Next.js static export live with no
 account and returns its URL plus a claim link that is good for 72 hours. The
 other tools introspect the project, read the skill catalog, and run `lint` and
-`generate`. Every tool, and the config for Codex: [docs/mcp.md](docs/mcp.md).
+`generate`. By default the server lists only its core tools, to keep each
+model call small; `forge_tools` enables the rest mid-session, and
+`forge mcp --tools all` lists every tool up front. Every tool, and the config
+for Codex: [docs/mcp.md](docs/mcp.md).
 
 ### The reliant-forge plugin
 

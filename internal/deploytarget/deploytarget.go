@@ -50,6 +50,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/hostinfra"
 	"github.com/reliant-labs/forge/pkg/deploy"
 )
 
@@ -333,6 +334,16 @@ type HostInfraSpec struct {
 	TemporalNamespaces  []string
 	TemporalUIPort      int
 	TemporalMetricsPort int
+
+	// engine = "minio" only. MinIORootUser / MinIORootPassword are VALUES,
+	// resolved from the env's secret store by the dispatcher (the rendered
+	// declaration names only their store keys).
+	MinIOConsolePort     int
+	MinIORegion          string
+	MinIOBuckets         []hostinfra.MinIOBucket
+	MinIOCORSAllowOrigin string
+	MinIORootUser        string
+	MinIORootPassword    string
 }
 
 // ErrProviderNotImplemented is the sentinel future providers (Lambda,

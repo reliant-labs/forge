@@ -116,6 +116,9 @@ type Options struct {
 	Drainer selfupdate.Drainer
 	// Managed is the app's own "something else runs me" predicate.
 	Managed func() (owner string, managed bool)
+	// Container replaces selfupdate's container probe
+	// (selfupdate.DetectOptions.Container); nil keeps the default.
+	Container func() (owner, hint, reason string, ok bool)
 	// HTTPClient downloads; default selfupdate's.
 	HTTPClient *http.Client
 	// TUFCachePath caches the Sigstore trusted root's TUF metadata.
@@ -177,7 +180,7 @@ func New(opts Options) (*Updater, error) {
 		swapped:  p.Swapped,
 		confirm:  p.Confirm,
 		detect: func() (selfupdate.Install, error) {
-			return selfupdate.Detect(selfupdate.DetectOptions{Managed: opts.Managed})
+			return selfupdate.Detect(selfupdate.DetectOptions{Managed: opts.Managed, Container: opts.Container})
 		},
 		after:  time.After,
 		jitter: jitterTenth,
@@ -233,6 +236,7 @@ func (o Options) config() (built, error) {
 		StateDir:              o.StateDir,
 		HTTPClient:            o.HTTPClient,
 		Managed:               o.Managed,
+		Container:             o.Container,
 		Logger:                o.Logger,
 	}
 	if cfg.Policy == nil {

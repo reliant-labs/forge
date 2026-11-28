@@ -33,6 +33,8 @@ type CapacityDemand struct {
 
 // DemandOf sums the admitted hosted items. REQUESTS, not limits, are what a
 // workload reserves, and a workload with a volume runs exactly one replica.
+// An autoscaled workload is charged at its maxReplicas: every replica its
+// HorizontalPodAutoscaler may ask for must fit (docs/proposals/autoscaling.md).
 // builds is how many images forge would build for this deploy (0 for a deploy
 // of an already-cut release).
 func DemandOf(items []HostedPreflightItem, builds int) CapacityDemand {
@@ -42,7 +44,7 @@ func DemandOf(items []HostedPreflightItem, builds int) CapacityDemand {
 		case it.Workload != nil:
 			spec := it.Workload
 			res := spec.Resources.WithDefaults()
-			replicas := int64(spec.Replicas)
+			replicas := int64(spec.EffectiveMaxReplicas())
 			if replicas < 1 || spec.StorageGiB > 0 {
 				replicas = 1
 			}

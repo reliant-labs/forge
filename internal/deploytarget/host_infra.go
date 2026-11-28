@@ -165,5 +165,12 @@ func specOf(env, name string, spec *HostInfraSpec) hostinfra.Spec {
 		TemporalNamespaces:  spec.TemporalNamespaces,
 		TemporalUIPort:      spec.TemporalUIPort,
 		TemporalMetricsPort: spec.TemporalMetricsPort,
+
+		MinIOConsolePort:     spec.MinIOConsolePort,
+		MinIORegion:          spec.MinIORegion,
+		MinIOBuckets:         spec.MinIOBuckets,
+		MinIOCORSAllowOrigin: spec.MinIOCORSAllowOrigin,
+		MinIORootUser:        spec.MinIORootUser,
+		MinIORootPassword:    spec.MinIORootPassword,
 	}
 }

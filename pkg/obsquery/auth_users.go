@@ -180,11 +180,11 @@ func newUsersPerUser(table, to, scope, evidence string) string {
 type NewUsersRule string
 
 const (
-	// NewUsersSignups: the users with an auth_signed_up in the range.
+	// NewUsersSignups counts the users with an auth_signed_up in the range.
 	NewUsersSignups NewUsersRule = "signups"
-	// NewUsersFirstSeen: the environment reports no sign-ups, so the users
-	// first seen in the range (within NewUsersWindowDays before its end) and
-	// after its NewDecidedFrom.
+	// NewUsersFirstSeen means the environment reports no sign-ups, so the
+	// users first seen in the range (within NewUsersWindowDays before its end)
+	// and after its NewDecidedFrom are counted.
 	NewUsersFirstSeen NewUsersRule = "first_seen"
 )
 
@@ -240,14 +240,14 @@ type EnvUserActivity struct {
 type NewDecision string
 
 const (
-	// NewDecidedAll: every user of the window is told new or returning.
+	// NewDecidedAll means every user of the window is told new or returning.
 	NewDecidedAll NewDecision = "all"
-	// NewDecidedPart: the window starts before its decided-from moment, so
-	// a user first seen before that moment is counted returning though they
+	// NewDecidedPart means the window starts before its decided-from moment,
+	// so a user first seen before that moment is counted returning though they
 	// may be new. New is a lower bound and Returning an upper one.
 	NewDecidedPart NewDecision = "part"
-	// NewDecidedNone: the window ends at or before its decided-from moment.
-	// New (0) and Returning (= Active) say nothing; show neither.
+	// NewDecidedNone means the window ends at or before its decided-from
+	// moment. New (0) and Returning (= Active) say nothing; show neither.
 	NewDecidedNone NewDecision = "none"
 )
 

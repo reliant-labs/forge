@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/hostlaunch"
 )
 
 // airPinnedVersion is the air release forge provisions when `forge env up`
@@ -125,6 +127,35 @@ func prepareAirDirs(w WorkloadEntity) {
 	if err := spec.PrepareAirDirs(); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		fmt.Printf("[up] host %s: could not prepare the directories its air config writes into: %v\n", w.Name, err)
 	}
+}
+
+// airDepsLister lists what a binary is built from. Swappable so a test
+// needs no `go list`.
+var airDepsLister hostlaunch.DepsLister = hostlaunch.GoListDeps
+
+// excludeUnbuiltAirDirs keeps air from rebuilding and restarting an
+// air-run workload for edits that cannot change its binary: the top-level
+// directories holding Go packages the binary does not import
+// (hostlaunch.RunnerSpec.AirUnwatchedDirs) go on air's exclude_dir for this
+// launch, beside the config's own entries. The config file is not edited.
+// Hot reload is a convenience, so a failure to derive the list launches air
+// unchanged, with one line saying so.
+func excludeUnbuiltAirDirs(ctx context.Context, spec *hostlaunch.RunnerSpec, name string) {
+	dirs, err := spec.AirUnwatchedDirs(ctx, airDepsLister)
+	if err != nil {
+		fmt.Printf("[up] host %s: air watches every directory: could not list the packages %s imports (%s)\n", name, spec.GoPkg, firstLine(err.Error()))
+		return
+	}
+	if len(dirs) == 0 {
+		return
+	}
+	spec.AirExcludeDirs = dirs
+	shown := make([]string, len(dirs))
+	for i, d := range dirs {
+		shown[i] = d + "/"
+	}
+	fmt.Printf("[up] host %s: air ignores %s (no package %s imports; a [build] include_dir in its air config chooses the watch set instead)\n",
+		name, strings.Join(shown, ", "), spec.GoPkg)
 }
 
 // hostToolDirs are forge-managed tool directories host launches resolve

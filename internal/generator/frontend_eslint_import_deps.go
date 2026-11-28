@@ -27,6 +27,7 @@ import (
 	"sync"
 
 	"github.com/evanw/esbuild/pkg/api"
+
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"

@@ -1402,6 +1402,10 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 	changed := checksums.ChangedJournalPaths(absPath)
 	journaled := checksums.JournaledPaths()
 	born := checksums.ScaffoldsCreatedThisRun()
+	// The run's output, read before the revert puts it back: the report
+	// compiles against it to tell a rollback artifact from an error that
+	// was there all along (generate_rollback_attribution.go).
+	postRun := capturePostRunGoInputs(absPath, changed)
 	res := checksums.RestoreRollbackDetailed(absPath)
 	restored, failed, spared, unverified := res.Restored, res.Failed, res.Spared, res.Unverified
 	// A spared or unverified path is not back to its pre-run state either:
@@ -1447,12 +1451,21 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 	if goBuildInputsTouched(changed, residue) {
 		consistency = restoredTreeCompileCheck(absPath)
 	}
+	var attribution *postRollbackAttribution
+	if consistency.Checked && !consistency.Builds && strings.TrimSpace(consistency.Output) != "" {
+		if residue.Clean() {
+			attribution = attributePostRollbackErrors(absPath, postRun, restored, consistency.Output)
+		} else {
+			attribution = &postRollbackAttribution{reason: "the pre-run tree could not be verified"}
+		}
+	}
 
 	writeRollbackReport(os.Stderr, rollbackReport{
 		Restored:    restored,
 		Preserved:   preserved,
 		StepErr:     stepErr,
 		Consistency: consistency,
+		Attribution: attribution,
 		Residue:     residue,
 		Unborn:      unborn,
 		Spared:      spared,

@@ -93,6 +93,7 @@ var mergeCases = map[string]mergeCase{
 	"snapshot Tier-1 exports":                    noOutput("in-memory snapshot"),
 	"reconcile forge_version with go.mod":        perInput("one forge.yaml line, a function of the pin: two branches agree or genuinely conflict over the pin"),
 	"announce project":                           noOutput("prints"),
+	adviseTemplateFixesStep:                      noOutput("prints which owned files a template fix has not reached"),
 	"sync forge KCL module vendor":               noOutput("vendors into .forge-kcl/, ignored"),
 	"read declared databases":                    noOutput("reads the env declaration's databases into the loaded config"),
 	"detect proto directories":                   noOutput("in-memory"),

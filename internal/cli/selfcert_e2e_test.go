@@ -517,8 +517,9 @@ func synthesizeLegacyManifest(t *testing.T, projectDir string) {
 // Construction: scaffold + generate clean + commit (green HEAD). Then
 // introduce a compile error in a USER-owned file (not regenerated) and
 // independently drift a Tier-1 file so a `--force` run actually rewrites
-// it. The run rewrites the Tier-1 file, runs go build, and fails on the
-// user file. The rollback must restore the Tier-1 file's pre-run bytes,
+// it. With --strict, the run rewrites the Tier-1 file, runs go build, and
+// fails even on a pre-existing user error in an untouched package (the default
+// keeps generated output in that case). Rollback must restore the pre-run bytes,
 // so `git status` is clean except for the deliberate user-file edit.
 func TestE2EGenerateRollbackOnValidateFailure(t *testing.T) {
 	t.Parallel()
@@ -553,9 +554,9 @@ func TestE2EGenerateRollbackOnValidateFailure(t *testing.T) {
 	gitE2E(t, projectDir, "add", "-A")
 	gitE2E(t, projectDir, "commit", "-q", "--no-verify", "-m", "deliberate drift + broken user file")
 
-	// 3. Run generate --force: it rewrites the drifted Tier-1 file, then
-	//    fails go build on the broken user file.
-	out, genErr := runGenerate(t, projectDir, forgeBin, "--force")
+	// 3. Strict validation rejects even this pre-existing error in a
+	//    package generate did not write, restoring the drifted Tier-1 file.
+	out, genErr := runGenerate(t, projectDir, forgeBin, "--force", "--strict")
 	if genErr == nil {
 		t.Fatalf("generate should have failed its validate step on the broken user file; it succeeded:\n%s", out)
 	}

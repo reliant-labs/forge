@@ -90,7 +90,9 @@ func TestE2EGenerateKeepsOpForShimMovedToSiblingFile(t *testing.T) {
 	if err := os.WriteFile(brokenPath, []byte(broken), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(forgeBin, "generate")
+	// Strict mode must reject a pre-existing hand-written error even if
+	// this otherwise-idempotent run writes nothing in the widget package.
+	cmd := exec.Command(forgeBin, "generate", "--strict")
 	cmd.Dir = projectDir
 	outBytes, err := cmd.CombinedOutput()
 	out := string(outBytes)

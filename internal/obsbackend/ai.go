@@ -93,6 +93,14 @@ func aiCalls(ctx context.Context, req AIRequest, run panelRun) (AIResult, error)
 	if err != nil || req.Explain {
 		return res, err
 	}
+	// A full table may have been truncated by either backend. Without a
+	// completeness signal, even exactly the cap cannot be safely judged.
+	if len(rows) >= obsquery.MaxTableRows {
+		return res, Undetermined("ai calls reached the table row limit (%d); incomplete AI counts cannot be evaluated", obsquery.MaxTableRows)
+	}
+	if len(latencies) >= obsquery.MaxTableRows {
+		return res, Undetermined("ai model latency reached the table row limit (%d); incomplete AI latency cannot be evaluated", obsquery.MaxTableRows)
+	}
 	for _, r := range rows {
 		if len(r.group) < 3 || len(r.values) < 3 {
 			continue

@@ -2003,6 +2003,54 @@ _Enforced · Forge, on any infrastructure_
 | `forge-frontend-lock-drift`                | A `package.json` range the lockfile does not record: the state `npm ci` and `pnpm --frozen-lockfile` refuse                                                                                                                                             | bare `forge lint`   |
 | `forge-frontend-no-install`                | A linter that installs dependencies mutates the checkout it judges and hides a pipeline that never prepared its frontends                                                                                                                               | bare `forge lint`   |
 
+<a id="lint-rules-seo"></a>
+
+### Static-site SEO rules
+
+`forge lint --seo` runs site insights' raw-HTML rules over each static site's built pages, or the head its source declares, and names a missing title, a canonical to another host or a stray noindex with its fix.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- command `forge lint --seo`
+- source [`internal/linter/seo`](../internal/linter/seo)
+
+| Rule                          | Bug class it prevents                                                                                                         | Lane    |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `seo-title-missing`           | A page with no <title>, which search results and browser tabs show as its bare URL                                            | `--seo` |
+| `seo-title-multiple`          | Several <title> tags in one head, of which crawlers keep only the first                                                       | `--seo` |
+| `seo-title-length`            | A title too short to say what the page is, or too long for search results to show whole                                       | `--seo` |
+| `seo-title-duplicate`         | Pages sharing one title, which search engines read as duplicates of each other                                                | `--seo` |
+| `seo-title-placeholder`       | A starter title ("Vite + React", "Create Next App") still shipping as the page's name                                         | `--seo` |
+| `seo-description-missing`     | A page with no meta description, so search results show whatever text the engine picks                                        | `--seo` |
+| `seo-description-length`      | A description too short to summarise the page, or too long for search results to show                                         | `--seo` |
+| `seo-description-duplicate`   | Pages sharing one meta description                                                                                            | `--seo` |
+| `seo-description-placeholder` | The scaffolded "Replace this description" text shipping as the site's description                                             | `--seo` |
+| `seo-canonical-missing`       | A page with no canonical link, so its duplicate URLs compete with it in search                                                | `--seo` |
+| `seo-canonical-conflicting`   | Several disagreeing canonical links, all of which search engines then ignore                                                  | `--seo` |
+| `seo-canonical-relative`      | A relative canonical URL, which crawlers may resolve against the wrong host                                                   | `--seo` |
+| `seo-canonical-invalid`       | A canonical that is not a valid absolute http(s) URL                                                                          | `--seo` |
+| `seo-canonical-foreign-host`  | A canonical naming another host, which hands the page's ranking to that site                                                  | `--seo` |
+| `seo-canonical-to-root`       | Every page canonicalised to the home page, so search engines drop the rest as duplicates                                      | `--seo` |
+| `seo-og-tag-missing`          | A missing Open Graph tag in the served HTML, so link previews in Slack, X, LinkedIn and Facebook show no title, image or link | `--seo` |
+| `seo-twitter-card-missing`    | No twitter:card tag, so X shows a small preview or none                                                                       | `--seo` |
+| `seo-og-image-relative`       | A relative og:image, which link-preview scrapers do not resolve                                                               | `--seo` |
+| `seo-indexing-mismatch`       | A noindex (meta robots) on a site meant to be in search results, which keeps it out of every index                            | `--seo` |
+| `seo-hreflang-invalid`        | An hreflang alternate with an invalid language code or a relative href, which search engines ignore                           | `--seo` |
+| `seo-hreflang-not-reciprocal` | An hreflang alternate that does not link back, so search engines ignore the pair                                              | `--seo` |
+| `seo-hreflang-no-x-default`   | Language alternates with no x-default for visitors no language matches                                                        | `--seo` |
+| `seo-hreflang-missing-self`   | A page missing from its own hreflang alternates                                                                               | `--seo` |
+| `seo-jsonld-invalid`          | A JSON-LD block that is not valid JSON, so its structured data is ignored                                                     | `--seo` |
+| `seo-jsonld-no-context`       | A JSON-LD block with no @context, so its types mean nothing to search engines                                                 | `--seo` |
+| `seo-jsonld-missing-property` | A JSON-LD type missing a property its rich result requires                                                                    | `--seo` |
+| `seo-link-not-crawlable`      | A link with a javascript: href or only a click handler, which crawlers cannot follow                                          | `--seo` |
+| `seo-link-text-generic`       | Link text like "click here" or "read more", which tells search engines and screen readers nothing about the target            | `--seo` |
+| `seo-link-text-empty`         | A link with no text or accessible name                                                                                        | `--seo` |
+| `seo-image-alt-missing`       | An image with no alt attribute, unnamed for screen readers and image search                                                   | `--seo` |
+| `seo-lang-missing`            | An <html> element with no lang attribute, so screen readers and search engines guess the language                             | `--seo` |
+| `seo-viewport-missing`        | No viewport meta tag, so phones render the page at desktop width                                                              | `--seo` |
+
 <a id="lint-rules-deploy-secrets"></a>
 
 ### Deploy and secrets rules

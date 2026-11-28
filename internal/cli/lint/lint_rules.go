@@ -54,6 +54,7 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/callerpath"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
+	"github.com/reliant-labs/forge/internal/linter/seo"
 	"github.com/reliant-labs/forge/internal/linter/slowtest"
 	"github.com/reliant-labs/forge/internal/linter/staticexport"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
@@ -172,6 +173,7 @@ func gradableRules() []string {
 	// forge db analyze (graded here, reported by its own command)
 	rules = append(rules, dbanalyze.RuleIDs()...)
 	rules = append(rules, staticexport.RuleIDs()...)
+	rules = append(rules, seo.RuleIDs()...)
 	return rules
 }
 

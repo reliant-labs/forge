@@ -2511,6 +2511,116 @@ benefits:
           A linter that installs dependencies mutates the checkout it judges and
           hides a pipeline that never prepared its frontends
 
+  - id: lint-rules-seo
+    category: guardrails
+    title: Static-site SEO rules
+    claim: >-
+      `forge lint --seo` runs site insights' raw-HTML rules over each static
+      site's built pages, or the head its source declares, and names a
+      missing title, a canonical to another host or a stray noindex with its
+      fix.
+    availability: forge
+    evidence:
+      - command: lint --seo
+      - path: internal/linter/seo
+    rules:
+      - id: seo-title-missing
+        lane: --seo
+        bug_class: "A page with no <title>, which search results and browser tabs show as its bare URL"
+      - id: seo-title-multiple
+        lane: --seo
+        bug_class: "Several <title> tags in one head, of which crawlers keep only the first"
+      - id: seo-title-length
+        lane: --seo
+        bug_class: "A title too short to say what the page is, or too long for search results to show whole"
+      - id: seo-title-duplicate
+        lane: --seo
+        bug_class: "Pages sharing one title, which search engines read as duplicates of each other"
+      - id: seo-title-placeholder
+        lane: --seo
+        bug_class: 'A starter title ("Vite + React", "Create Next App") still shipping as the page''s name'
+      - id: seo-description-missing
+        lane: --seo
+        bug_class: "A page with no meta description, so search results show whatever text the engine picks"
+      - id: seo-description-length
+        lane: --seo
+        bug_class: "A description too short to summarise the page, or too long for search results to show"
+      - id: seo-description-duplicate
+        lane: --seo
+        bug_class: "Pages sharing one meta description"
+      - id: seo-description-placeholder
+        lane: --seo
+        bug_class: 'The scaffolded "Replace this description" text shipping as the site''s description'
+      - id: seo-canonical-missing
+        lane: --seo
+        bug_class: "A page with no canonical link, so its duplicate URLs compete with it in search"
+      - id: seo-canonical-conflicting
+        lane: --seo
+        bug_class: "Several disagreeing canonical links, all of which search engines then ignore"
+      - id: seo-canonical-relative
+        lane: --seo
+        bug_class: "A relative canonical URL, which crawlers may resolve against the wrong host"
+      - id: seo-canonical-invalid
+        lane: --seo
+        bug_class: "A canonical that is not a valid absolute http(s) URL"
+      - id: seo-canonical-foreign-host
+        lane: --seo
+        bug_class: "A canonical naming another host, which hands the page's ranking to that site"
+      - id: seo-canonical-to-root
+        lane: --seo
+        bug_class: "Every page canonicalised to the home page, so search engines drop the rest as duplicates"
+      - id: seo-og-tag-missing
+        lane: --seo
+        bug_class: "A missing Open Graph tag in the served HTML, so link previews in Slack, X, LinkedIn and Facebook show no title, image or link"
+      - id: seo-twitter-card-missing
+        lane: --seo
+        bug_class: "No twitter:card tag, so X shows a small preview or none"
+      - id: seo-og-image-relative
+        lane: --seo
+        bug_class: "A relative og:image, which link-preview scrapers do not resolve"
+      - id: seo-indexing-mismatch
+        lane: --seo
+        bug_class: "A noindex (meta robots) on a site meant to be in search results, which keeps it out of every index"
+      - id: seo-hreflang-invalid
+        lane: --seo
+        bug_class: "An hreflang alternate with an invalid language code or a relative href, which search engines ignore"
+      - id: seo-hreflang-not-reciprocal
+        lane: --seo
+        bug_class: "An hreflang alternate that does not link back, so search engines ignore the pair"
+      - id: seo-hreflang-no-x-default
+        lane: --seo
+        bug_class: "Language alternates with no x-default for visitors no language matches"
+      - id: seo-hreflang-missing-self
+        lane: --seo
+        bug_class: "A page missing from its own hreflang alternates"
+      - id: seo-jsonld-invalid
+        lane: --seo
+        bug_class: "A JSON-LD block that is not valid JSON, so its structured data is ignored"
+      - id: seo-jsonld-no-context
+        lane: --seo
+        bug_class: "A JSON-LD block with no @context, so its types mean nothing to search engines"
+      - id: seo-jsonld-missing-property
+        lane: --seo
+        bug_class: "A JSON-LD type missing a property its rich result requires"
+      - id: seo-link-not-crawlable
+        lane: --seo
+        bug_class: "A link with a javascript: href or only a click handler, which crawlers cannot follow"
+      - id: seo-link-text-generic
+        lane: --seo
+        bug_class: 'Link text like "click here" or "read more", which tells search engines and screen readers nothing about the target'
+      - id: seo-link-text-empty
+        lane: --seo
+        bug_class: "A link with no text or accessible name"
+      - id: seo-image-alt-missing
+        lane: --seo
+        bug_class: "An image with no alt attribute, unnamed for screen readers and image search"
+      - id: seo-lang-missing
+        lane: --seo
+        bug_class: "An <html> element with no lang attribute, so screen readers and search engines guess the language"
+      - id: seo-viewport-missing
+        lane: --seo
+        bug_class: "No viewport meta tag, so phones render the page at desktop width"
+
   - id: lint-rules-deploy-secrets
     category: guardrails
     title: Deploy and secrets rules

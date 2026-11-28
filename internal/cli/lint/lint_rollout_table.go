@@ -33,6 +33,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/linter/callerpath"
+	"github.com/reliant-labs/forge/internal/linter/seo"
 	"github.com/reliant-labs/forge/internal/linter/staticexport"
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
@@ -327,6 +328,15 @@ var newRules = []rolloutGroup{
 		IntroducedIn: "v1.10.0",
 		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "A Next.js frontend that turns on cacheComponents (create-next-app's default) needs time to drop it before the lane gates"},
 		Rules:        []string{staticexport.RulePartialPrerender},
+	},
+	// forge lint --seo (Site insights F3): site insights' raw-HTML rules
+	// over a static site's pages. Only the error findings (a missing title,
+	// a canonical to another host, noindex where indexing is expected) would
+	// gate, and every existing site meets them for the first time here.
+	{
+		IntroducedIn: "v1.12.0",
+		Grace:        &rolloutGrace{Until: "v1.13.0", Reason: "Every existing static site meets the SEO rules for the first time; its missing titles, foreign canonicals and stray noindex warn for a release before they gate"},
+		Rules:        seo.RuleIDs(),
 	},
 	{
 		IntroducedIn: "v1.10.0",

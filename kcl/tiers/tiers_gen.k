@@ -165,9 +165,11 @@ schema StaticSite:
     bucket?: str
     cdn?: StaticSiteCDN
     domains?: [str]
+    edgeLogs?: bool
     entrypoints?: [str]
     keepReleases?: int
     liveDigest?: str
+    markdownNegotiation?: bool
     previousDigest?: str
     releaseRepository?: str
     retainedDigests?: [str]
@@ -193,9 +195,11 @@ static_site_json = lambda v: StaticSite -> {str:} {
         "bucket": v.bucket
         "cdn": static_site_cdn_json(v.cdn) if v.cdn else Undefined
         "domains": v.domains
+        "edgeLogs": v.edgeLogs
         "entrypoints": v.entrypoints
         "keepReleases": v.keepReleases
         "liveDigest": v.liveDigest
+        "markdownNegotiation": v.markdownNegotiation
         "previousDigest": v.previousDigest
         "releaseRepository": v.releaseRepository
         "retainedDigests": v.retainedDigests

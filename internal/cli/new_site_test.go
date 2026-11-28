@@ -659,18 +659,3 @@ func TestRunNewSiteDryRunWritesNothing(t *testing.T) {
 		}
 	}
 }
-
-// --dry-run is accepted for --kind site, and still refused for kinds it
-// cannot preview.
-func TestProjectNewDryRunKinds(t *testing.T) {
-	root := t.TempDir()
-	cmd := newNewCmd()
-	cmd.SetArgs([]string{"landing", "--kind", "cli", "--dry-run", "--path", root})
-	cmd.SilenceUsage, cmd.SilenceErrors = true, true
-	if err := cmd.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), "--kind app or --kind site") {
-		t.Errorf("--kind cli --dry-run: want a refusal naming app and site, got %v", err)
-	}
-	if entries, _ := os.ReadDir(root); len(entries) != 0 {
-		t.Errorf("wrote %d entries before refusing", len(entries))
-	}
-}

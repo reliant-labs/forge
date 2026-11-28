@@ -236,17 +236,17 @@ this binary ships, which is authoritative over any copy on disk.
 
 | Load | When |
 |---|---|
-| ` + "`forge`" + ` | the entry skill: the two paths, the surface commands, the pre-flight checklist, the rules |
-| ` + "`greenfield`" + ` | evolving the schema, running the stack, shipping it |
-| ` + "`proto`" + ` | the full proto ruleset: field numbering, ` + "`optional`" + ` on list filters, one service per file |
-| ` + "`db`" + ` | migrations, evolving a schema, queries the generated CRUD cannot express |
-| ` + "`db/seeding`" + ` | FK diamonds in depth, and ` + "`forge db seed`" + ` |
-| ` + "`api`" + ` | writing a custom rpc's body on the handler ` + "`*Service`" + ` |
-| ` + "`services`" + ` | adding a service after ` + "`project new`" + `, and the other scaffold nouns |
-| ` + "`architecture`" + ` | where logic goes, and the composition root |
-| ` + "`frontend/design`" + ` | before showing any scaffolded UI to a user — it asks for a brief first |
-| ` + "`testing`" + ` | the test harness and the generated per-rpc test rows |
-| ` + "`forge-libraries`" + ` | before writing any utility — adopt from ` + "`forge/pkg`" + ` rather than port |
+| ` + "`forge`" + ` | entry paths, commands, pre-flight checklist, rules |
+| ` + "`greenfield`" + ` | evolve the schema, run the stack, ship |
+| ` + "`proto`" + ` | field numbering, ` + "`optional`" + ` list filters, one service per file |
+| ` + "`db`" + ` | migrations, schema evolution, queries beyond generated CRUD |
+| ` + "`db/seeding`" + ` | FK diamonds and ` + "`forge db seed`" + ` |
+| ` + "`api`" + ` | custom rpc bodies on the handler ` + "`*Service`" + ` |
+| ` + "`services`" + ` | add services after ` + "`project new`" + `; other scaffold nouns |
+| ` + "`architecture`" + ` | logic placement and composition root |
+| ` + "`frontend/design`" + ` | before showing UI to a user; asks for a brief first |
+| ` + "`testing`" + ` | test harness and generated per-rpc test rows |
+| ` + "`forge-libraries`" + ` | before writing utilities: adopt from ` + "`forge/pkg`" + `, don't port |
 
 Three dumps answer "what does forge already do?" without prose:
 

@@ -72,8 +72,7 @@ func newNewCmd() *cobra.Command { //nolint:funlen // one cobra command: its flag
 		// authMode is --auth-mode: the sign-in system a service project
 		// with a frontend is scaffolded with (native, the default, or none).
 		authMode string
-		// dryRun prints what --kind app or --kind site would write, and
-		// writes nothing.
+		// dryRun prints what the project would write, and writes nothing.
 		dryRun bool
 		// connectFlag is --connect: the connect-go major a new service
 		// project's Go code targets (v1, the default, or v2).
@@ -172,6 +171,7 @@ Example:
   cd my-django-app && forge project new --in-place --kind app --name shop     # adopt an app in any language
   forge project new --in-place --mod github.com/example/my-project
   forge project new --in-place --name my-project --mod github.com/example/my-project
+  forge project new --in-place --name my-project --service orders --dry-run   # list what it would write, keep and run
 
 With --in-place and no name, the project is named after the DIRECTORY. That
 name becomes cmd/<name>/, the binary, the image and the deploy manifests, so
@@ -228,18 +228,14 @@ checkout stop being the same source; drop the bridge with
 				return err
 			}
 			defer func() { newAuthMode = "" }()
-			if k := strings.ToLower(strings.TrimSpace(kindFlag)); dryRun && k != projectKindApp && k != projectKindSite {
-				return cliutil.UserErr("forge project new", "--dry-run prints what --kind app or --kind site would write, and needs one of them", "",
-					"add --kind app --in-place (an app with a Dockerfile) or --kind site (a Vite or Next.js app, or a new site), or drop --dry-run")
-			}
 			newConnectMajor, err = resolveNewConnectMajor(cmd.Flags().Changed("connect"), connectFlag, kindFlag)
 			if err != nil {
 				return err
 			}
 			defer func() { newConnectMajor = 0 }()
-			newAppDryRun = dryRun
+			newDryRun = dryRun
 			newHarnessExplicit = cmd.Flags().Changed("harness")
-			defer func() { newAppDryRun, newHarnessExplicit = false, false }()
+			defer func() { newDryRun, newHarnessExplicit = false, false }()
 			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge), verbose, verify, newFrontendOptions{output: frontendOutput, routes: frontendRoutes, kind: strings.ToLower(strings.TrimSpace(frontendKind))})
 		},
 	}
@@ -247,7 +243,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVarP(&projectPath, "path", "p", ".", "Path where to create the project")
 	cmd.Flags().StringVar(&modulePath, "mod", "", "Go module path (e.g., github.com/example/my-project). Defaults to example.com/<name>, so a first project needs no flag; set it to the path you will publish under")
 	cmd.Flags().StringVar(&kindFlag, "kind", "", "Project kind: service (default), cli, library, site (a static site with no backend: a new starter app, or with --in-place the Vite/Next.js app already here), app (with --in-place: the app already here, in any language, deployed from its own Dockerfile — forge.yaml and deploy/kcl only)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "With --kind app or --kind site: print what was detected and every file it would write, and write nothing")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the plan and write nothing. --kind app and --kind site print what was detected and every file with its content; a service, cli or library project lists every file it would write, keep or (--force) replace, and the steps a real run takes after")
 	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (repeatable or comma-separated). Name services after domain entities (item, order), not the binary. Omit to scaffold zero services and add them later via 'forge scaffold service <entity>'")
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated). With --kind site: the one name the site's frontend is declared under (default web)")
 	cmd.Flags().StringVar(&frontendKind, "frontend-kind", "", "With --kind site: the starter a new site gets — nextjs (default; a static export, one HTML file per route) or vite-spa (a single-page app)")
@@ -469,7 +465,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 			force:       force,
 			harness:     harness,
 			claimable:   newClaimable,
-			dryRun:      newAppDryRun,
+			dryRun:      newDryRun,
 		})
 	}
 	if kindNormalized == projectKindSite {
@@ -490,7 +486,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 			frontendName: frontendName,
 			frontendKind: frontend.kind,
 			verbose:      verbose,
-			dryRun:       newAppDryRun,
+			dryRun:       newDryRun,
 		})
 	}
 	targetPath, projectName, err := resolveNewTargetPath(projectName, projectPath, inPlace, force)
@@ -560,6 +556,36 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		existingApps = append(existingApps, detectRootFrontendApp(targetPath, frontendNames)...)
 	}
 
+	files := scaffoldFilesInput{
+		gen: newGeneratorConfig{
+			projectName:        projectName,
+			targetPath:         targetPath,
+			modulePath:         modulePath,
+			kind:               kindNormalized,
+			binary:             binaryNormalized,
+			serviceNames:       serviceNames,
+			frontendNames:      frontendNames,
+			frontendOutput:     frontend.output,
+			frontendRoutes:     frontend.routes,
+			goVersion:          goVersion,
+			frontendWorkspaces: frontendWorkspaces,
+			harness:            harness,
+			disableFeatures:    disableFeatures,
+			forgePin:           forgePin,
+			genInRootModule:    genInRootModule,
+			adopting:           adopting,
+		},
+		bufPlugins: bufPluginsNormalized,
+		inPlace:    inPlace,
+		force:      force,
+	}
+	if newDryRun {
+		return previewNewProject(ctx, os.Stdout, files, newProjectPlanSteps{
+			skipTools: skipTools,
+			linkForge: linkForge,
+		})
+	}
+
 	announceNewProject(projectName, targetPath, serviceNames, frontendNames)
 	if kindNormalized == config.ProjectKindService {
 		fmt.Println(newAuthSummary(newAuthMode, len(frontendNames) > 0))
@@ -585,29 +611,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		Title: "project files",
 		Run: func() error {
 			var werr error
-			merged, werr = writeScaffoldFiles(scaffoldFilesInput{
-				gen: newGeneratorConfig{
-					projectName:        projectName,
-					targetPath:         targetPath,
-					modulePath:         modulePath,
-					kind:               kindNormalized,
-					binary:             binaryNormalized,
-					serviceNames:       serviceNames,
-					frontendNames:      frontendNames,
-					frontendOutput:     frontend.output,
-					frontendRoutes:     frontend.routes,
-					goVersion:          goVersion,
-					frontendWorkspaces: frontendWorkspaces,
-					harness:            harness,
-					disableFeatures:    disableFeatures,
-					forgePin:           forgePin,
-					genInRootModule:    genInRootModule,
-					adopting:           adopting,
-				},
-				bufPlugins: bufPluginsNormalized,
-				inPlace:    inPlace,
-				force:      force,
-			})
+			merged, werr = writeScaffoldFiles(files)
 			return werr
 		},
 	})
@@ -838,6 +842,9 @@ type scaffoldFilesInput struct {
 	bufPlugins string
 	inPlace    bool
 	force      bool
+	// dryRun renders into staging and previews the merge without updating
+	// the target, including for projects not scaffolded in place.
+	dryRun bool
 }
 
 // writeScaffoldFiles renders every scaffold file — the project generator,
@@ -865,7 +872,7 @@ func writeScaffoldFiles(in scaffoldFilesInput) (inPlaceMergeResult, error) {
 		return inPlaceMergeResult{}, err
 	}
 	cfg.connectMajor = major
-	if in.inPlace {
+	if in.inPlace || in.dryRun {
 		staging, err := os.MkdirTemp("", "forge-inplace-*")
 		if err != nil {
 			return inPlaceMergeResult{}, fmt.Errorf("failed to create scaffold staging directory: %w", err)
@@ -900,6 +907,9 @@ func writeScaffoldFiles(in scaffoldFilesInput) (inPlaceMergeResult, error) {
 		applyRemoteBufPlugins(root, cfg.frontendNames, gen.ConnectMajor)
 	}
 
+	if in.dryRun {
+		return reconcileScaffoldMerge(root, targetPath, in.force, true)
+	}
 	if !in.inPlace {
 		return inPlaceMergeResult{}, nil
 	}

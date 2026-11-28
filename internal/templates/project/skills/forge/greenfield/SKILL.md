@@ -16,6 +16,7 @@ over generated Connect RPC hooks. A frontend-only site follows
 ```bash
 forge project new my-app --mod github.com/acme/my-app \
   --service customers --service jobs --service estimates --frontend web
+  # (add --dry-run to list every file it would write, and the steps after)
 cd my-app
 # author each service proto: entity messages + custom rpcs (rules: `authoring`)
 forge scaffold --dry-run     # print the plan

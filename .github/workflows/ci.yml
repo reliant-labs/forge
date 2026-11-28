@@ -48,8 +48,8 @@ env:
 # Owner, 2026-11-26: "The cicd machine is supposed to be exactly for this." A
 # merge group's jobs waited for a GitHub-hosted runner far longer than they
 # ran, under the org's ~20-job cap. On a `merge_group` event, test-short,
-# checks, golangci and CI gate run on the runners labelled `self-hosted, cicd`
-# (windows-changed stays on windows-latest); every other event, pull requests
+# checks, golangci and CI gate run on the runners labelled `self-hosted, cicd`;
+# every other event, pull requests
 # above all, keeps `ubuntu-latest`, because this repository is public and a
 # fork's pull request must never reach a self-hosted runner. The runners are
 # also locked down on their own side: unprivileged users with no sudo, no
@@ -81,7 +81,7 @@ env:
 #
 # A pull request labelled `ci:run` also gets the merge tier on every push
 # (read at push time; see `pull_request:` above for why not on `labeled`),
-# `ci:windows` the merge queue's Windows job (windows-changed), read the same
+# `ci:windows` the changed-packages Windows job (windows-changed), read the same
 # way, and `ci:e2e` / `ci:canary` still start their own workflows.
 #
 # A required check that never runs on the PULL REQUEST cannot hold a pull
@@ -105,9 +105,12 @@ env:
 #   golangci          golangci-lint over the packages the entry changed, findings
 #                     in the files it changed (owner, 2026-11-08; #1947), a job
 #                     of its own so it runs beside the two above, not after them
-#   windows-changed   native Windows -short tests of the packages the entry
-#                     changed plus their direct importers (owner, 2026-11-13);
-#                     5-15 minutes, over this tier's budget on purpose
+#
+# windows-changed (native Windows -short tests of the packages the entry
+# changed) was the fourth, from 2026-11-13 to 2026-11-28, and left the queue:
+# its 10-20 minutes made it the tier's critical path, and it failed 136 merge
+# groups in 72 hours. Native Windows runs on main (`windows`), and on a pull
+# request labelled `ci:windows` (windows-changed).
 #
 # THE RULE FOR THIS TIER: a check that cannot finish inside that budget is not
 # on it. A slow test skips under -short and runs on main; a slow job runs on
@@ -143,13 +146,11 @@ env:
 #   all but an unlabelled pull request (checks, which also saves main's tools cache):
 #                 (github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/heads/reliant-queue/')) || contains(github.event.pull_request.labels.*.name, 'ci:run')
 #   pull request only (pr-checks): github.event_name == 'pull_request'
-#   merge queue + `ci:windows` (windows-changed):
-#                 github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:windows'))
+#   `ci:windows` pull request only (windows-changed):
+#                 github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:windows')
 #
-# windows-changed is the one merge-tier job outside the five-minute budget
-# (owner, 2026-11-13): native Windows -short tests of the packages the entry
-# changed and their direct importers, because four Windows-only reds reached
-# main in one day. Its own header says what it costs.
+# windows-changed is not in the merge queue (2026-11-28): its own header says
+# why, and what it costs.
 #
 # A PUSH TO MAIN (and workflow_dispatch) gets `checks`, plus the slow tier
 # (test-short-warm stands in for test-short there):
@@ -175,9 +176,8 @@ env:
 # and `CI gate` queues again behind the last of them, so every job a pull
 # request runs is another place to wait. It ran 8 (13 before the pre-commit,
 # license-gate and Library Lint workflows were folded in, 9 once the guards
-# joined it); in the merge queue it runs 5, gate included: test-short (one
-# entry, the flake gate inside it), checks, golangci, windows-changed and the
-# gate. Of the
+# joined it); in the merge queue it runs 4, gate included: test-short (one
+# entry, the flake gate inside it), checks, golangci and the gate. Of the
 # guards, removalguard's full scan (~10s) and scripts/ci-guard-tests.sh
 # (about a minute: deadcodeguard, vacuousguard and three whole-repo scans)
 # extend test-short; tierguard, fmtguard, modguard and mockheaderguard stay
@@ -528,8 +528,7 @@ jobs:
       # (#2683 and the fixes after it) from a template change only they could
       # see. A step here, not a job: the -short tier above compiled the same
       # packages, so it costs the tests' run, ~2 minutes on the ~2% of entries
-      # that trigger it, and nothing on the rest; windows-changed, beside this
-      # job, stays the tier's critical path.
+      # that trigger it, and nothing on the rest.
       - name: KCL render tests (full mode, when a KCL template changed)
         if: ${{ !cancelled() }}
         run: scripts/ci-render-tests.sh HEAD^1
@@ -1056,14 +1055,24 @@ jobs:
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: ./.github/actions/embedded-postgres-cache-save
 
-  # ── Windows in the merge queue: the -short tests of what the entry changed ──
+  # ── Windows on request: the -short tests of what the pull request changed ──
   #
-  # MERGE QUEUE ONLY, and a pull request labelled `ci:windows` (read on the
-  # next push, like ci:run). Never on an unlabelled pull request (REVIEW
-  # FIRST), and not with ci:run: a Windows runner is the dearest slot under
-  # the org's 20-job cap, so it is asked for by name.
+  # A PULL REQUEST LABELLED `ci:windows` ONLY (read on the next push, like
+  # ci:run). Never on an unlabelled pull request (REVIEW FIRST), and not with
+  # ci:run: a Windows runner is the dearest slot under the org's 20-job cap,
+  # so it is asked for by name. A red run here turns that pull request's
+  # `CI gate` red, which is what the label asks for.
   #
-  # WHY IN THE QUEUE (owner, 2026-11-13). main's `windows` job went red four
+  # NOT IN THE MERGE QUEUE (2026-11-28). It ran in every merge group from
+  # 2026-11-13, and in the 72 hours to 2026-11-28 it failed 136 of them: at
+  # 10-20 minutes on a GitHub-hosted Windows runner it was the merge tier's
+  # critical path, two to four times the tier's five-minute budget, and each
+  # failure dequeued the group behind it. main's `windows` job runs every
+  # package natively after the merge, and a Windows-only red is bisected and
+  # fixed from there, as it was before 2026-11-13. Label a pull request that
+  # touches paths, file modes, HOME or open handles with `ci:windows`.
+  #
+  # WHY IT EXISTS (owner, 2026-11-13). main's `windows` job went red four
   # times that day, each on a Windows-only fault in code one pull request had
   # just changed: chmod, HOME and symlink assumptions in internal/cli's tests
   # (#2192, #2196, #2199); an open file handle that blocked TempDir cleanup
@@ -1073,8 +1082,8 @@ jobs:
   # after the merge, then bisected and fixed from main. Every one was in a
   # package its pull request changed, or a direct importer of one.
   #
-  # WHAT RUNS. scripts/ci-changed-packages.sh HEAD^1: the packages the entry
-  # changed plus their direct importers (one level), minus the guards, as the
+  # WHAT RUNS. scripts/ci-changed-packages.sh HEAD^1: the packages the pull
+  # request changed plus their direct importers (one level), minus the guards, as the
   # Windows host's `go list` sees them; a go.mod or go.sum change runs every
   # package. -short, no -race, no -count: main's `windows` job's flags. A diff
   # that reaches no package (docs, workflows) stops after `go list`, before
@@ -1086,18 +1095,16 @@ jobs:
   # cross-compile and the smoke test, so a small diff under pkg/ runs in about
   # five minutes; a diff that reaches internal/cli or internal/generator (most
   # of them: both import much of the module) runs them too, ~10-15 minutes.
-  # That is merge latency the five-minute merge-tier budget does not cover,
-  # accepted on purpose (owner, 2026-11-13): a red main costs a bisection, a
-  # fix-forward pull request and a blocked release. Capped at 20 minutes; the
+  # That is why it left the merge queue (above). Capped at 20 minutes; the
   # test timeout is below it so a hang dumps its goroutines instead of being
   # killed silently.
   #
   # CACHE. Restores main's `windows` build cache (go-build-windows, saved once
-  # a UTC day) and saves nothing: a merge-group ref's cache is visible to no
+  # a UTC day) and saves nothing: a pull request's cache is visible to no
   # other run ("Build-cache note" at the top of this file).
   windows-changed:
     name: Windows (changed packages, -short)
-    if: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:windows')) }}
+    if: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:windows') }}
     runs-on: windows-latest
     timeout-minutes: 20
     defaults:
@@ -1106,8 +1113,8 @@ jobs:
     env:
       CGO_ENABLED: "0"
     steps:
-      # Depth 2: HEAD^1 is the base the diff is read from (the entry ahead in
-      # the merge queue; the merge commit's first parent on a pull request).
+      # Depth 2: HEAD^1 is the base the diff is read from (the pull request
+      # merge commit's first parent, main).
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -1802,7 +1809,7 @@ jobs:
           # job that skipped there (a broken `if:`) is a gate that judged
           # nothing, never a pass.
           if [ "$GITHUB_EVENT_NAME" = merge_group ]; then
-            unrun=$(jq -r 'to_entries[] | select(.key == "test-short" or .key == "checks" or .key == "golangci" or .key == "windows-changed") | select(.value.result == "skipped") | "\(.key): skipped in the merge queue"' <<<"$RESULTS")
+            unrun=$(jq -r 'to_entries[] | select(.key == "test-short" or .key == "checks" or .key == "golangci") | select(.value.result == "skipped") | "\(.key): skipped in the merge queue"' <<<"$RESULTS")
             if [ -n "$unrun" ]; then
               echo "::error::the merge tier did not run:"
               echo "$unrun"

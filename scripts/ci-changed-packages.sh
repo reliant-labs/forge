@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # The Go packages a change reaches: the packages BASE..HEAD changed, plus
 # their direct importers. ci.yml's `windows-changed` job runs their -short
-# tests on a native Windows runner in the merge queue (and on a pull request
-# labelled ci:windows).
+# tests on a native Windows runner on a pull request labelled ci:windows.
 #
 #   scripts/ci-changed-packages.sh [BASE]
 #       BASE defaults to $CI_BASE, else the merge base of HEAD and origin/main.

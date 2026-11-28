@@ -207,9 +207,10 @@ const (
 	notReviewFirst = "${{ (github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/heads/reliant-queue/')) || contains(github.event.pull_request.labels.*.name, 'ci:run') }}"
 	// The checks that read the pull request itself.
 	prOnly = "${{ github.event_name == 'pull_request' }}"
-	// The merge queue's Windows job: the merge queue, and a pull request
-	// labelled ci:windows (not ci:run: a Windows runner is asked for by name).
-	windowsQueueTier = "${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:windows')) }}"
+	// The changed-packages Windows job: a pull request labelled ci:windows
+	// alone (not ci:run: a Windows runner is asked for by name), never the
+	// merge queue (2026-11-28: it failed 136 merge groups in 72 hours).
+	windowsLabelTier = "${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:windows') }}"
 )
 
 // The jobs an unlabelled pull request runs before its review (REVIEW FIRST).
@@ -250,7 +251,7 @@ func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 			}
 		}
 	}
-	allowed := []string{queueTier, mainTier, windowsTier, notReviewFirst, prOnly, windowsQueueTier}
+	allowed := []string{queueTier, mainTier, windowsTier, notReviewFirst, prOnly, windowsLabelTier}
 	for name, j := range wf.Jobs {
 		cond := strings.TrimSpace(j.If)
 		if name == "gate" {
@@ -273,8 +274,8 @@ func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 			t.Errorf("job %q has if: %q; the merge tier must run in the merge queue (%q)", name, cond, queueTier)
 		}
 	}
-	if cond := strings.TrimSpace(wf.Jobs["windows-changed"].If); cond != windowsQueueTier {
-		t.Errorf("job %q has if: %q; it must run in the merge queue and on ci:windows (%q)", "windows-changed", cond, windowsQueueTier)
+	if cond := strings.TrimSpace(wf.Jobs["windows-changed"].If); cond != windowsLabelTier {
+		t.Errorf("job %q has if: %q; it must run on a ci:windows pull request alone, never in the merge queue (%q)", "windows-changed", cond, windowsLabelTier)
 	}
 }
 

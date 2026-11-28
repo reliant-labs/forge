@@ -53,7 +53,7 @@ needed; a CI or agent token must carry the scope):
 	cmd.AddCommand(newObsAlertsCmd())
 	cmd.AddCommand(newObsLogsCmd(), newObsTracesCmd(), newObsTraceCmd(), newObsEndpointsCmd(), newObsOpsCmd(), newObsBlastRadiusCmd(), newObsQueryCmd())
 	cmd.AddCommand(newObsIssuesCmd(), newObsIssueCmd())
-	cmd.AddCommand(newObsSessionsCmd(), newObsSessionCmd(), newObsUsersCmd())
+	cmd.AddCommand(newObsSessionsCmd(), newObsSessionCmd(), newObsUsersCmd(), newObsTrafficCmd())
 	cmd.AddCommand(newObsCheckCmd(), newObsChangesCmd())
 	cmd.AddCommand(newObsStatusCmd(), newObsWorkloadsCmd(), newObsTelemetryCmd())
 	cmd.AddCommand(newObsMetricsGroupCmd())

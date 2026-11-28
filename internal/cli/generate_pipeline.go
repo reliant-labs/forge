@@ -2858,6 +2858,7 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		if served, services := frontendIdentities(ctx.Cfg.Name, renderedFrontendEntities(ctx.renderedFrontends())); len(served) > 0 {
 			in.Frontends, in.FrontendServices = served, services
 		}
+		in.HostedStaticFrontends = hostedStaticFrontends(ctx.renderedFrontends())
 		in.Deployed, err = deployedIdentities(ctx, ctx.renderedEnvs().workloads)
 		if err != nil {
 			return fmt.Errorf("deriving the deployed processes from deploy/kcl: %w", err)
@@ -2872,6 +2873,21 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		fmt.Printf("  ✅ Generated %d observability file(s) under deploy/observability/\n", len(written))
 		return nil
 	}())
+}
+
+// hostedStaticFrontends are the frontends some environment binds to Reliant
+// hosting, in first-declared order: the CDN in front of each writes the edge
+// request logs the frontend dashboard's Traffic and Bots & agents groups read.
+func hostedStaticFrontends(rendered []renderedEnvFrontend) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, r := range rendered {
+		if r.Frontend.Runtime.Type == FrontendRuntimeHosted && !seen[r.Frontend.Name] {
+			seen[r.Frontend.Name] = true
+			out = append(out, r.Frontend.Name)
+		}
+	}
+	return out
 }
 
 // renderedFrontendEntities flattens rendered per-env frontends.

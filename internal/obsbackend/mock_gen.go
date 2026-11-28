@@ -739,6 +739,53 @@ func (m *MockUserActivityReader) UserActivityCalls() []MockUserActivityReaderUse
 // Compile-time check.
 var _ UserActivityReader = (*MockUserActivityReader)(nil)
 
+// forge:section MockTrafficReader
+// forge:hash=692eb6c41948e95db03bef1286a1db68d992a65be1c1f54bbd53ea0a8b270e30
+
+// MockTrafficReader is a test mock for the TrafficReader interface.
+//
+// The embedded contractkit.Recorder records every call so tests can
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockTrafficReader.<Method>Func not set" error.
+type MockTrafficReader struct {
+	contractkit.Recorder
+	TrafficFunc func(context.Context, TrafficRequest) (TrafficResult, error)
+}
+
+// Traffic records the call and delegates to TrafficFunc when set.
+func (m *MockTrafficReader) Traffic(ctx context.Context, req TrafficRequest) (TrafficResult, error) {
+	m.Recorder.Record("Traffic", ctx, req)
+	if m.TrafficFunc != nil {
+		return m.TrafficFunc(ctx, req)
+	}
+	return TrafficResult{}, contractkit.MockNotSet("MockTrafficReader", "Traffic")
+}
+
+// MockTrafficReaderTrafficCall is one recorded call of MockTrafficReader.Traffic, one
+// field per parameter.
+type MockTrafficReaderTrafficCall struct {
+	Ctx context.Context
+	Req TrafficRequest
+}
+
+// TrafficCalls returns every recorded Traffic call, oldest first, with
+// its arguments typed. It reads the same log as Calls("Traffic").
+func (m *MockTrafficReader) TrafficCalls() []MockTrafficReaderTrafficCall {
+	var out []MockTrafficReaderTrafficCall
+	for _, c := range m.Recorder.Calls("Traffic") {
+		var r MockTrafficReaderTrafficCall
+		r.Ctx, _ = c.Args[0].(context.Context)
+		r.Req, _ = c.Args[1].(TrafficRequest)
+		out = append(out, r)
+	}
+	return out
+}
+
+// Compile-time check.
+var _ TrafficReader = (*MockTrafficReader)(nil)
+
 // forge:section MockTelemetryArrivalReader
 // forge:hash=851843fdc193f3d4cbbcac165e521b83a97c5404c0db50e7006eb6fc78428cea
 

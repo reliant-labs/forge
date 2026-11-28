@@ -77,6 +77,7 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 | `forge obs metrics query [env] <metric>` | A metrics panel, as the console explorer runs it: `--agg`/`--quantile`, `--query NAME=metric[:agg[:q]]`, `--where NAME:key=value`, `--filter`, `--group-by` (repeatable), `--formula`, `--kind line\|number\|table\|bar`, `--top`, `--compare 24h\|prev-release`, `--step`, `--panel-out FILE` |
 | `forge obs metrics exemplars [env] <metric>` | Sampled observations with their traces (`--at T`, `--from/--to`, `--min-value`, `--where`, `--group KEY=VALUE` for one series of a grouped panel); `trace_stored` says whether `forge obs trace` will find the trace |
 | `forge obs metrics declared` | The metrics the project's code declares |
+| `forge obs traffic [env]` | A hosted static site's edge traffic from the CDN's request logs: totals and top pages split into humans, agents and crawlers; `--by page\|status\|agent\|referrer\|country`, `--class` (a UA class or `human`, `agent`, `crawler`, `ai`, `bot`), `--site`. Reliant hosting only (`observability/edge`) |
 | `forge obs query [env] --sql "…"` | Anything else: raw SQL behind the read-only guard (`--sql-file`, `--panel FILE`, `--param name=value`, `--step`) |
 | `forge obs profile`, `forge obs alerts check`, `forge obs dashboards check` | Flamegraphs, alerts-as-code and dashboards (`observability/profiles`, `observability/alerts`, `observability/dashboards`) |
 

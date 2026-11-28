@@ -66,6 +66,18 @@ type UserActivityReader interface {
 	UserActivity(ctx context.Context, req UserActivityRequest) (UserActivityResult, error)
 }
 
+// TrafficReader reads a hosted static site's edge traffic from the CDN's
+// request logs: totals, top pages, and tables by page, status, agent,
+// referrer or country (`forge obs traffic`). Both backends implement it. The
+// edge logs exist only on Reliant hosting, so the local one answers "could not
+// look"; the cloud one runs pkg/obsquery's traffic statements through the
+// control plane's QueryPanel.
+//
+//forge:contract
+type TrafficReader interface {
+	Traffic(ctx context.Context, req TrafficRequest) (TrafficResult, error)
+}
+
 // TelemetryArrivalReader reads whether the systems an env declares
 // forge.Telemetry for are reaching the store: per signal the newest row, per
 // scraped endpoint the newest result (`forge obs telemetry`). Only the local

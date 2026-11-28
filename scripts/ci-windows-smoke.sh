@@ -18,6 +18,8 @@ if ! command -v buf >/dev/null 2>&1; then
   go install github.com/bufbuild/buf/cmd/buf@v1.71.0
 fi
 
+# A -trimpath binary cannot infer its source checkout after we leave it.
+forge_root=$(git rev-parse --show-toplevel)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$work"
@@ -29,7 +31,7 @@ cd "$work"
 # generate rolls back and render dies on `CannotFindModule config_gen`.
 # --service api avoids frontends (no npm). --link-forge: the forge under test
 # is built from this checkout, so the scaffold must compile forge from it.
-forge project new smoke --kind service --mod github.com/e2e/smoke --service api --link-forge
+forge project new smoke --kind service --mod github.com/e2e/smoke --service api --link-forge --forge-root "$forge_root"
 cd smoke
 forge env render dev
 

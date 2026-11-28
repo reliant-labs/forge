@@ -177,7 +177,8 @@ printf '%s\n' '{"Action":"pass","Package":"fixture/package","Test":"TestCheap","
 			log := filepath.Join(root, "forge-log")
 			cmd := exec.Command("bash", "scripts/ci-test-full-shard.sh", lane, "0", "1")
 			cmd.Dir = root
-			cmd.Env = append(os.Environ(), "PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"),
+			// Pin the wrapper mode rather than inheriting the outer CI lane.
+			cmd.Env = append(os.Environ(), "GO_TEST_VET=", "PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"CI_TEST_JSON="+filepath.Join(root, "events.json"), "GITHUB_STEP_SUMMARY="+filepath.Join(root, "summary"),
 				installStubForge(t, root), "FORGE_LOG="+log, "STUB_RUN="+run)
 			if out, err := cmd.CombinedOutput(); err != nil {

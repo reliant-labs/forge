@@ -83,6 +83,9 @@ func TestE2EDebugEnvUpAttachAndStart(t *testing.T) {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, bin, args...)
 		cmd.Dir = dir
+		// This fixture attaches to env up's binary and inspects locals.
+		// Dev builds omit DWARF by default; opt into the supported debug build.
+		cmd.Env = append(os.Environ(), "FORGE_DEV_DWARF=1")
 		// Over budget, SIGQUIT instead of SIGKILL: the Go runtime prints
 		// every goroutine's stack into the output before it exits, so a
 		// forge that stalls says where (a `project new` once sat in

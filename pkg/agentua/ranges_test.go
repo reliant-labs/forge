@@ -74,20 +74,44 @@ func TestVerifier(t *testing.T) {
 		{"", "192.0.2.77", false},
 	}
 	for _, tc := range cases {
-		if got := v.Verified(tc.agent, netip.MustParseAddr(tc.ip)); got != tc.want {
+		if got := v.MatchesPublishedRange(tc.agent, netip.MustParseAddr(tc.ip)); got != tc.want {
 			t.Errorf("Verified(%s, %s) = %v, want %v", tc.agent, tc.ip, got, tc.want)
 		}
 	}
-	if v.Verified("GPTBot", netip.Addr{}) {
+	if v.MatchesPublishedRange("GPTBot", netip.Addr{}) {
 		t.Error("invalid addr verified")
 	}
 	var nilV *Verifier
-	if nilV.Verified("GPTBot", netip.MustParseAddr("192.0.2.1")) {
+	if nilV.MatchesPublishedRange("GPTBot", netip.MustParseAddr("192.0.2.1")) {
 		t.Error("nil verifier verified")
 	}
 	v.Set("GPTBot", []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")})
-	if v.Verified("GPTBot", netip.MustParseAddr("192.0.2.77")) || !v.Verified("GPTBot", netip.MustParseAddr("203.0.113.5")) {
+	if v.MatchesPublishedRange("GPTBot", netip.MustParseAddr("192.0.2.77")) || !v.MatchesPublishedRange("GPTBot", netip.MustParseAddr("203.0.113.5")) {
 		t.Error("Set did not swap the ranges")
+	}
+}
+
+// Range membership cannot distinguish the claimed identity, even when one
+// agent's published range is narrower than another's.
+func TestSharedRangesAreOnlyMembership(t *testing.T) {
+	v := NewVerifier(map[string][]netip.Prefix{
+		"Googlebot":       {netip.MustParsePrefix("192.0.2.0/24")},
+		"Googlebot-Image": {netip.MustParsePrefix("192.0.2.0/24")},
+		"GoogleOther":     {netip.MustParsePrefix("192.0.2.0/25")},
+	})
+	ip := netip.MustParseAddr("192.0.2.1")
+	for _, name := range []string{"Googlebot", "Googlebot-Image", "GoogleOther"} {
+		if !v.MatchesPublishedRange(name, ip) {
+			t.Errorf("%s: shared or overlapping range must match membership", name)
+		}
+		// The legacy API remains a membership-only compatibility alias.
+		if v.Verified(name, ip) != v.MatchesPublishedRange(name, ip) {
+			t.Errorf("%s: legacy membership differs", name)
+		}
+	}
+	// Classification remains the UA's claim, independent of range membership.
+	if got := Classify("Googlebot-Image/1.0"); got.Agent != "Googlebot-Image" {
+		t.Fatalf("claimed agent = %q, want Googlebot-Image", got.Agent)
 	}
 }
 
@@ -99,10 +123,10 @@ func TestVerifierConcurrent(t *testing.T) {
 	for i := 0; i < 8; i++ {
 		wg.Add(2)
 		go func() { defer wg.Done(); v.Set("GPTBot", p) }()
-		go func() { defer wg.Done(); _ = v.Verified("GPTBot", ip) }()
+		go func() { defer wg.Done(); _ = v.MatchesPublishedRange("GPTBot", ip) }()
 	}
 	wg.Wait()
-	if !v.Verified("GPTBot", ip) {
+	if !v.MatchesPublishedRange("GPTBot", ip) {
 		t.Fatal("not verified after concurrent sets")
 	}
 }
@@ -169,14 +193,14 @@ func TestRefresh(t *testing.T) {
 	}
 	ip := netip.MustParseAddr("192.0.2.1")
 	for _, name := range []string{"GPTBot", "Googlebot", "Googlebot-Image", "Applebot", "PerplexityBot"} {
-		if !v.Verified(name, ip) {
+		if !v.MatchesPublishedRange(name, ip) {
 			t.Errorf("%s not verified after Refresh", name)
 		}
 	}
-	if v.Verified("ClaudeBot", ip) {
+	if v.MatchesPublishedRange("ClaudeBot", ip) {
 		t.Error("ClaudeBot has no published ranges but was verified")
 	}
-	if !v.Verified("bingbot", netip.MustParseAddr("157.55.39.5")) {
+	if !v.MatchesPublishedRange("bingbot", netip.MustParseAddr("157.55.39.5")) {
 		t.Error("a failed fetch dropped bingbot's previous ranges")
 	}
 	for u, n := range fetches {

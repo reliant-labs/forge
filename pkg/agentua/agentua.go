@@ -1,6 +1,6 @@
-// Package agentua classifies HTTP User-Agent strings: it names AI agents,
-// crawlers, tools and monitors, and verifies a claimed agent against the IP
-// ranges its operator publishes.
+// Package agentua classifies HTTP User-Agent strings: it names claimed AI
+// agents, crawlers, tools and monitors, and checks IP membership in ranges
+// their operators publish. It does not verify agent identity.
 //
 // The list is agents.yaml, embedded in this package, so it ships with forge
 // releases: a new agent reaches a consumer when it moves its forge pin.
@@ -10,10 +10,12 @@
 // re-running Classify on them.
 //
 // A User-Agent is a claim, not an identity: anyone can send
-// "ClaudeBot/1.0". Classify reports what the string claims; Verifier.Verified
-// reports whether the request came from the operator's published ranges.
-// Show an unverified match as "claims to be". An agent whose operator
-// publishes no ranges (Agent.RangesURL == "") is never verified.
+// "ClaudeBot/1.0". Classify reports what the string claims;
+// Verifier.MatchesPublishedRange reports only membership in the loaded ranges.
+// Operators may share ranges across agents, and clients may share egress, so
+// a range match does not verify the claimed agent or its AI/search class.
+// Always show a classification as "claims to be", even with a range match.
+// An agent with no loaded ranges never matches.
 package agentua
 
 import (

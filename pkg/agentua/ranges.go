@@ -56,8 +56,9 @@ func ParseRanges(r io.Reader) ([]netip.Prefix, error) {
 	return out, nil
 }
 
-// Verifier answers whether an IP is in an agent's published ranges. It is
-// safe for concurrent use; Set and Refresh swap an agent's ranges atomically.
+// Verifier checks IP-range membership, not agent identity. Operators may
+// share ranges between agents. It is safe for concurrent use; Set and Refresh
+// swap an agent's ranges atomically.
 type Verifier struct {
 	mu     sync.RWMutex
 	ranges map[string][]netip.Prefix // agent Name -> prefixes
@@ -81,10 +82,23 @@ func (v *Verifier) Set(agent string, prefixes []netip.Prefix) {
 	v.mu.Unlock()
 }
 
-// Verified reports whether ip is in agent's ranges. It is false for an agent
-// with no ranges loaded, an invalid ip, or a nil Verifier. IPv4-mapped IPv6
-// addresses are compared as IPv4.
+// Verified reports only IP-range membership, not the identity of agent.
+// Shared or overlapping ranges cannot distinguish agents or their classes.
+//
+// Deprecated: use MatchesPublishedRange to make this limitation explicit.
 func (v *Verifier) Verified(agent string, ip netip.Addr) bool {
+	return v.MatchesPublishedRange(agent, ip)
+}
+
+// MatchesPublishedRange reports whether ip belongs to the loaded ranges keyed
+// by agent. With Refresh these are the ranges published by the agent's operator;
+// with Set or NewVerifier the caller is responsible for the source of the ranges.
+// A match is evidence of range membership only: shared egress and overlapping
+// ranges do not prove the claimed agent's identity or its AI/search class. Even
+// a match must be displayed as "claims to be", not as a verified agent.
+// It is false for an agent with no ranges loaded, an invalid ip, or a nil
+// Verifier. IPv4-mapped IPv6 addresses are compared as IPv4.
+func (v *Verifier) MatchesPublishedRange(agent string, ip netip.Addr) bool {
 	if v == nil || agent == "" || !ip.IsValid() {
 		return false
 	}
@@ -138,7 +152,7 @@ func FetchRanges(ctx context.Context, client *http.Client, url string) ([]netip.
 // Refresh fetches the ranges of every listed agent that publishes them and
 // swaps each into v. An agent whose fetch fails keeps its previous ranges; the
 // failures are joined into the returned error, so a caller can log them and
-// retry later without losing verification. Several agents share one URL
+// retry later without losing range membership data. Several agents share one URL
 // (Googlebot's family), which is fetched once.
 func (v *Verifier) Refresh(ctx context.Context, client *http.Client) error {
 	fetched := map[string][]netip.Prefix{}

@@ -781,3 +781,9 @@ volumes:
 networks:
   {{.ProjectName}}-net:
     driver: bridge
+    # Only Forge's private checkout/env invocation opts into empty-network
+    # cleanup. Bare compose and shared stacks never declare exclusivity.
+    labels:
+      io.reliant.forge.network.exclusive: "${FORGE_NETWORK_EXCLUSIVE:-false}"
+      io.reliant.forge.network.checkout: "${FORGE_NETWORK_CHECKOUT:-}"
+      io.reliant.forge.network.env: "${FORGE_NETWORK_ENV:-}"

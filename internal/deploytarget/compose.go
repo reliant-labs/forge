@@ -347,6 +347,11 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	if ferr != nil {
 		return fmt.Errorf("compose %s: env_file: %w", svc.Name, ferr)
 	}
+	networkEnv, err := p.composeNetworkEnv(spec, group.Env)
+	if err != nil {
+		return fmt.Errorf("compose %s: network ownership: %w", svc.Name, err)
+	}
+	envOverlay = mergeComposeEnv(envOverlay, networkEnv)
 
 	// 0. Ownership — refuse to take over containers another checkout is
 	//    running, BEFORE anything can recreate them. See

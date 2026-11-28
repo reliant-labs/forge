@@ -81,8 +81,9 @@ func (f *fakeRunner) lookupErr(joined string) error {
 
 func (f *fakeRunner) lookupOutput(joined string) string {
 	// Quiet compose inventory returns IDs, not the tabular readiness fixture.
+	// Honor an explicit inventory answer before suppressing prefix fallbacks.
 	if strings.Contains(joined, " ps --all --quiet") {
-		return ""
+		return f.outputs[joined]
 	}
 	var best, result string
 	for prefix, out := range f.outputs {

@@ -170,7 +170,9 @@ conflicting on them. The driver lives in the clone's git config
 (merge.forge-generated.*, and routes in info/attributes when the project
 commits none), which every worktree of the clone shares.
 
-install wires this forge into the checkout (even under FORGE_NO_MERGE_DRIVER=1)
+install wires this forge into the checkout (even under FORGE_NO_MERGE_DRIVER=1),
+removes the stale per-worktree driver entries an older forge left in any
+worktree's config.worktree (they shadow the shared command there),
 and fails if the checkout still cannot merge forge's files. Run it once per
 clone, and again after a pin bump if check says so. check reports the same
 without changing anything.

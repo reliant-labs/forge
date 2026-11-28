@@ -585,6 +585,16 @@ func wireGeneratedMergeDriver(w io.Writer, root string, enclosing bool) {
 			// applies now.
 			current = gitTrimmed(root, "config", "--get", key)
 		}
+		// Every OTHER worktree's copy shadows the shared command there
+		// too, and `git worktree add` copies it into each new worktree,
+		// so forge's stale ones go from all of them
+		// (merge_driver_worktrees.go).
+		if common := gitTrimmed(root, "rev-parse", "--path-format=absolute", "--git-common-dir"); common != "" {
+			if cleaned := removeStaleWorktreeDrivers(common); len(cleaned) > 0 {
+				changes = append(changes, staleWorktreeDriversChange(cleaned))
+				current = gitTrimmed(root, "config", "--get", key)
+			}
+		}
 	}
 	// A forge that is not the project's pin never installs itself, and an
 	// unusable command is replaced by whatever forge runs. The pinned forge

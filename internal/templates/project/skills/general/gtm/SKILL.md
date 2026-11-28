@@ -42,6 +42,6 @@ Agents lose context between sessions and people lose it between quarters, so kee
 | Activity but no idea what works | `gtm/measure` |
 | A task you keep repeating by hand | `gtm/automate` |
 
-## When this is not enough
+## When this skill is not enough
 
 These skills structure the thinking and the paper trail; they do not replace talking to customers. If positioning is guesswork, interview five users before anything else. For legal questions on marketing to a given country or sector, ask a lawyer.

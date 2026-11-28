@@ -90,6 +90,21 @@ func TestGTMAutomateListsRunnersNeutrally(t *testing.T) {
 	if n := strings.Count(body, "docs.reliantlabs.io"); n != 1 {
 		t.Errorf("gtm/automate links Reliant docs %d times, want exactly once (the Reliant option only)", n)
 	}
+	for _, p := range gtmSkillPaths {
+		text, err := RenderSkillContentAt("", p, SkillAudienceAll, "forge")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lower := strings.ToLower(string(text))
+		if strings.Contains(lower, "forge") {
+			t.Errorf("skill %q mentions forge; the gtm family is tool-agnostic", p)
+		}
+		for _, line := range strings.Split(lower, "\n") {
+			if strings.Contains(line, "reliant") && !(p == "gtm/automate" && strings.Contains(line, "a reliant workflow")) {
+				t.Errorf("skill %q mentions reliant outside the runner option: %q", p, line)
+			}
+		}
+	}
 }
 
 func TestGTMSkillsAreFindableAndListedAsMethodology(t *testing.T) {

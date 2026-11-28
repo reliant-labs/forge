@@ -48,8 +48,8 @@ No attachments in a first note, no tracking-pixel tricks, no false "Re:" subject
 
 This is a high-level orientation, not legal advice. Rules vary by country and by whether the recipient is a person or a company; ask a lawyer before scaling.
 
-- **CAN-SPAM (US):** commercial email must not use deceptive headers or subject lines, must identify itself as an ad where applicable, must include a valid physical postal address, and must give a clear way to opt out that you honour promptly.
-- **GDPR and ePrivacy (EU and UK):** processing personal data needs a lawful basis; cold business email is treated differently in different countries, and consent is often required for individuals. Tell people where you got their details, why you are writing, and how to object, and honour erasure and objection requests.
+- **CAN-SPAM (US):** commercial email must not use deceptive headers or subject lines, must identify itself as an ad where applicable, must include a valid physical postal address, and must give a clear way to opt out that you honour within 10 business days (and the opt-out must keep working for at least 30 days after sending).
+- **GDPR and ePrivacy (EU), UK GDPR and PECR (UK):** processing personal data needs a lawful basis. The US allows cold email with an opt-out; many European countries do not, cold business email is treated differently from country to country, and consent is often required for individuals. Tell people where you got their details, why you are writing, and how to object, and honour erasure and objection requests.
 - **Other places:** Canada, Australia and many other countries have their own consent rules; some are stricter than the US.
 - **Channels beyond email:** direct messages on social and community platforms are governed by that platform's rules as well as the law; messaging people in communities that forbid promotion gets you banned and hurts your name.
 - **Keep a suppression list:** anyone who opts out or objects goes on it, and the list is checked before every send, including automated ones.

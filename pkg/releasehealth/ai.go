@@ -210,6 +210,8 @@ func aiFindings(hs []AIHealth, l aiLimits, s Subject) ([]Finding, []string) {
 // Each finding's policy follows the report's fail_on, it is attributed as
 // [Attribute] attributes one, and the verdict is recomputed as [Rejudge]
 // recomputes it, so a fail_on that names an AI code can fail the release.
+// A report service absent from hs has no AI evidence in either window and
+// is named in not_evaluated, preventing a healthy report from passing.
 func WithAI(r Report, hs []AIHealth, overrides map[string]string) Report {
 	if hs == nil {
 		hs = r.AI
@@ -226,6 +228,19 @@ func WithAI(r Report, hs []AIHealth, overrides map[string]string) Report {
 	out.NotEvaluated = slices.DeleteFunc(slices.Clone(r.NotEvaluated), func(e string) bool { return strings.HasPrefix(e, NotEvaluatedAI) })
 
 	fs, entries := aiFindings(hs, l, r.Subject)
+	// The panels only return services with observations. Compare that set
+	// with the report's services so empty panels (or an omitted service)
+	// cannot silently count as complete AI evidence.
+	var missing []string
+	for _, service := range r.Services {
+		if !slices.ContainsFunc(hs, func(h AIHealth) bool { return h.Service == service.Service }) {
+			missing = append(missing, service.Service)
+		}
+	}
+	if len(missing) > 0 {
+		names, list := fewNames(missing)
+		entries = append(entries, fmt.Sprintf("%s %d service(s) have no AI calls in either window: %s", NotEvaluatedAI, len(names), list))
+	}
 	failOn := failOnOf(ths)
 	for _, f := range fs {
 		f.Policy = policyOf(f.Code, failOn)

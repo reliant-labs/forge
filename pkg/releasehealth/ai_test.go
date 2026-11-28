@@ -23,7 +23,7 @@ func win(calls, errs int64, p95 float64) AIWindow {
 // judged is a passing report with the AI rule applied to hs.
 func judged(t *testing.T, failOn []string, hs ...AIHealth) Report {
 	t.Helper()
-	in := input(t, true, healthy())
+	in := input(t, true, svc("agent", 1000, 1000, 0, 0, 100, 100))
 	if failOn != nil {
 		in.Thresholds.FailOn = normalizeCodes(failOn)
 	}
@@ -78,7 +78,7 @@ func TestAIRule(t *testing.T) {
 }
 
 func TestWithAIThinSamplesMakeHealthyReportInconclusive(t *testing.T) {
-	base := Evaluate(input(t, true, healthy()))
+	base := Evaluate(input(t, true, svc("agent", 1000, 1000, 0, 0, 100, 100)))
 	if base.Verdict != Pass || !base.AfterComplete {
 		t.Fatalf("expected a complete healthy report, got %+v", base)
 	}
@@ -107,6 +107,25 @@ func TestWithAIThinSamplesMakeHealthyReportInconclusive(t *testing.T) {
 				t.Errorf("adequate AI sample should clear uncertainty: %+v", r)
 			}
 		})
+	}
+}
+
+func TestWithAIMissingServicesAreInconclusive(t *testing.T) {
+	base := Evaluate(input(t, true, healthy()))
+	for _, hs := range [][]AIHealth{nil, {}, {aiSvc(win(100, 0, 800), win(100, 0, 800))}} {
+		r := WithAI(base, hs, nil)
+		want := NotEvaluatedAI + " 1 service(s) have no AI calls in either window: api"
+		if r.Verdict != Inconclusive || len(r.Findings) != 0 || !slices.Contains(r.NotEvaluated, want) {
+			t.Fatalf("missing service AI must be explicit uncertainty: %+v", r)
+		}
+		if again := WithAI(r, nil, nil); !reflect.DeepEqual(again, r) {
+			t.Errorf("not idempotent: %+v", again)
+		}
+		complete := aiSvc(win(100, 0, 800), win(100, 0, 800))
+		complete.Service = "api"
+		if got := WithAI(r, []AIHealth{complete}, nil); got.Verdict != Pass {
+			t.Errorf("complete service evidence should clear uncertainty: %+v", got)
+		}
 	}
 }
 

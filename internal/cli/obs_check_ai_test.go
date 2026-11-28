@@ -23,7 +23,7 @@ func aiRow(svc, op, tool string, calls, errs, p95 float64) string {
 // release whose agent got slower and whose search tool broke still passes
 // under the default policy, and the JSON names both.
 func TestObsCheckHostedJudgesTheAICalls(t *testing.T) {
-	reply := healthReply("RELEASE_VERDICT_PASS", true, "", "")
+	reply := strings.ReplaceAll(healthReply("RELEASE_VERDICT_PASS", true, "", ""), `"service":"api"`, `"service":"agent"`)
 	before := rowsReply(aiRow("agent", genai.OpChat, "", 400, 4, 900), aiRow("agent", genai.OpExecuteTool, "search", 200, 2, 50))
 	after := rowsReply(aiRow("agent", genai.OpChat, "", 400, 4, 2700), aiRow("agent", genai.OpExecuteTool, "search", 200, 80, 50))
 	run := func(t *testing.T, args ...string) (int, map[string]any, *seqCaller) {
@@ -81,21 +81,17 @@ func TestObsCheckHostedJudgesTheAICalls(t *testing.T) {
 	}
 }
 
-// A service with no GenAI calls has nothing to judge and says nothing; a
-// read that fails is named in not_evaluated, never a finding.
+// Empty AI windows and failed reads are explicit uncertainty, never findings.
 func TestObsCheckAIReadsNothingOrFails(t *testing.T) {
 	reply := healthReply("RELEASE_VERDICT_PASS", true, "", "")
-	caller := &seqCaller{replies: map[string][]string{procHealth: {reply}}}
+	caller := &seqCaller{replies: map[string][]string{procHealth: {reply}, procAIPanel: {`{"rows":[]}`}}}
 	out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
 	doc := decode(t, out)
-	if exitCodeForError(err) != 0 || doc["ai"] != nil {
-		t.Errorf("no AI calls: exit %d, ai %v", exitCodeForError(err), doc["ai"])
+	if exitCodeForError(err) != 2 || doc["verdict"] != "INCONCLUSIVE" || doc["ai"] != nil {
+		t.Errorf("no AI calls: exit %d, verdict %v, ai %v", exitCodeForError(err), doc["verdict"], doc["ai"])
 	}
-	ne, _ := doc["not_evaluated"].([]any)
-	for _, e := range ne {
-		if strings.HasPrefix(fmt.Sprint(e), releasehealth.NotEvaluatedAI) {
-			t.Errorf("no AI calls is not a not_evaluated entry: %v", e)
-		}
+	if !strings.Contains(fmt.Sprint(doc["not_evaluated"]), releasehealth.NotEvaluatedAI+" 1 service(s) have no AI calls in either window: api") {
+		t.Errorf("empty windows must name missing AI evidence: %v", doc["not_evaluated"])
 	}
 
 	caller = &seqCaller{replies: map[string][]string{procHealth: {reply}, procAIPanel: {`not json`}}}

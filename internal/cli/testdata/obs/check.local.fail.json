@@ -64,6 +64,33 @@
       "message": "new issue sfp1-deadbeefdeadbeef: boom: \u003cn\u003e (7 events)"
     }
   ],
+  "ai": [
+    {
+      "service": "api",
+      "before": {
+        "model": {
+          "calls": 0,
+          "errors": 0
+        },
+        "tool": {
+          "calls": 100,
+          "errors": 0
+        },
+        "model_p95_ms": 0
+      },
+      "after": {
+        "model": {
+          "calls": 0,
+          "errors": 0
+        },
+        "tool": {
+          "calls": 100,
+          "errors": 0
+        },
+        "model_p95_ms": 0
+      }
+    }
+  ],
   "new_issues": [
     {
       "id": "sfp1-deadbeefdeadbeef",

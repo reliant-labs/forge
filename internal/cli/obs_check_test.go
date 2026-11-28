@@ -82,7 +82,7 @@ func (s *seqCaller) Call(ctx context.Context, procedure string, req, out any) er
 	// otherwise: obs check reads the alert state on every cloud check, and
 	// the history when an alert_firing finding could fail.
 	fc := &fakeCloudCaller{replies: map[string]string{procListAlertsCheck: `{"alerts":[]}`, procListAlertHistoryCheck: `{"events":[]}`}, errs: s.errs}
-	// No GenAI calls, unless the test says otherwise: obs check reads the
+	// Adequate healthy GenAI calls, unless the test says otherwise: obs check reads the
 	// AI panel (obsbackend.AIPanelID) on every check, and its calls are kept
 	// apart so a test counting another panel's reads is not moved by it
 	// (obs_check_ai_test.go tests them).
@@ -96,7 +96,19 @@ func (s *seqCaller) Call(ctx context.Context, procedure string, req, out any) er
 		return fc.Call(ctx, procedure, req, out)
 	}
 	if b, _ := json.Marshal(req); procedure == procPanel && strings.Contains(string(b), `"id":"`+obsbackend.AIPanelID+`"`) {
-		fc.replies[procedure] = `{"rows":[]}`
+		var health struct {
+			Services []struct {
+				Service string `json:"service"`
+			} `json:"services"`
+		}
+		if rs := s.replies[procHealth]; len(rs) > 0 {
+			_ = json.Unmarshal([]byte(rs[min(max(s.n[procHealth]-1, 0), len(rs)-1)]), &health)
+		}
+		var rows []string
+		for _, service := range health.Services {
+			rows = append(rows, aiRow(service.Service, "execute_tool", "", 100, 0, 0))
+		}
+		fc.replies[procedure] = rowsReply(rows...)
 		if rs := s.replies[procAIPanel]; len(rs) > 0 {
 			fc.replies[procedure] = rs[min(s.n[procAIPanel], len(rs)-1)]
 			s.n[procAIPanel]++
@@ -477,6 +489,15 @@ type healthRunner struct {
 func (h *healthRunner) Run(_ context.Context, st obsquery.Stmt, _ obsbackend.Limits) (obsbackend.Result, error) {
 	h.ran = append(h.ran, st)
 	switch {
+	case strings.Contains(st.SQL, "gen_ai.operation.name"):
+		if strings.Contains(st.SQL, "gen_ai.tool.name") {
+			var rows [][]any
+			for _, service := range h.before.Rows {
+				rows = append(rows, []any{[]any{service[0], "execute_tool", ""}, jn("100"), jn("0"), jn("0")})
+			}
+			return obsbackend.Result{Rows: rows}, nil
+		}
+		return obsbackend.Result{}, nil
 	case strings.Contains(st.SQL, "first_seen"):
 		return h.issues, nil
 	case strings.Contains(st.SQL, "GROUP BY ServiceName, endpoint"):

@@ -282,6 +282,12 @@ func resolveSiteAuditTarget(ctx context.Context, target string, o siteAuditOptio
 		if err != nil || u.Host == "" {
 			return siteAuditTarget{}, siteAuditUnrunnable("%q is not a URL", target)
 		}
+		if u.User != nil {
+			// Never sent, and never trusted: https://trusted.example@127.0.0.1/
+			// is a request to 127.0.0.1.
+			return siteAuditTarget{}, siteAuditUnrunnable("the URL carries credentials (user@%s): an audit sends none, so give the site's URL without them", u.Hostname())
+		}
+		u.Fragment, u.RawFragment = "", ""
 		if err := sitecrawl.RefusedHost(u); err != nil {
 			return siteAuditTarget{}, siteAuditUnrunnable("%v. A local server's build is audited from its directory: %s site audit <dir>", err, Name())
 		}

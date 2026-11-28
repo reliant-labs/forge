@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -88,7 +89,10 @@ func Crawl(ctx context.Context, o Options) (Result, error) {
 	if err != nil || (site.Scheme != "http" && site.Scheme != "https") || site.Host == "" {
 		return Result{}, fmt.Errorf("site %q is not an absolute http(s) URL", o.Site)
 	}
-	site.Fragment, site.RawQuery = "", ""
+	if site.User != nil {
+		return Result{}, errors.New("the site URL carries credentials (user@host): an audit sends none")
+	}
+	site.Fragment, site.RawFragment, site.RawQuery = "", "", ""
 	if !strings.HasSuffix(site.Path, "/") {
 		site.Path += "/"
 	}
@@ -139,7 +143,11 @@ type crawler struct {
 	checked map[string]bool // targets fetched as pages or queued for a check
 }
 
+// fetch is the one way the crawl requests anything. A URL a page named with
+// credentials in it (https://user:pass@host/) is requested without them:
+// the audit never sends what a page planted.
 func (c *crawler) fetch(ctx context.Context, method, u string, max int64) Response {
+	u = WithoutUserinfo(u)
 	if c.limit != nil {
 		if err := c.limit.Wait(ctx); err != nil {
 			return Response{Err: err.Error()}
@@ -200,6 +208,7 @@ func routeOf(u *url.URL) string {
 // norm is a URL without its fragment, host lower-cased, an empty path "/".
 func norm(u *url.URL) string {
 	v := *u
+	v.User = nil
 	v.Fragment, v.RawFragment = "", ""
 	v.Host = strings.ToLower(v.Host)
 	v.Scheme = strings.ToLower(v.Scheme)

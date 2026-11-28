@@ -481,3 +481,49 @@ func TestHandlerFetchOfAHugeFileStaysBounded(t *testing.T) {
 		t.Errorf("a page under the limit: truncated %v body %q", small.Truncated, small.Body)
 	}
 }
+
+// A link a page names with credentials in it is requested without them, and
+// no request carries an Authorization header.
+func TestCrawlNeverSendsUserinfo(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var seen []string
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.URL.Path+" auth="+r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/html")
+		if r.URL.Path == "/" {
+			host := strings.TrimPrefix(srv.URL, "http://")
+			_, _ = w.Write([]byte(page("Home", `<a href="http://admin:hunter2@`+host+`/private">p</a>`)))
+			return
+		}
+		_, _ = w.Write([]byte(page("Page", "")))
+	}))
+	t.Cleanup(srv.Close)
+	res, err := Crawl(context.Background(), Options{Site: srv.URL, Fetcher: HTTPFetcher{Client: http.DefaultClient}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	reached := false
+	for _, s := range seen {
+		if !strings.HasSuffix(s, " auth=") {
+			t.Errorf("a request carried credentials: %s", s)
+		}
+		reached = reached || strings.HasPrefix(s, "/private ")
+	}
+	if !reached {
+		t.Errorf("the discovered link was not crawled (requests: %v)", seen)
+	}
+	for _, p := range res.Input.Pages {
+		if strings.Contains(p.URL, "hunter2") {
+			t.Errorf("a page URL kept the credentials: %s", p.URL)
+		}
+	}
+	if _, err := Crawl(context.Background(), Options{Site: "https://user:pass@public.example/", Fetcher: HTTPFetcher{Client: http.DefaultClient}}); err == nil {
+		t.Error("Crawl accepted a site URL with credentials")
+	}
+}

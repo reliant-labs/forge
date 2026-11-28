@@ -17,6 +17,17 @@ import (
 	"github.com/reliant-labs/forge/pkg/netguard"
 )
 
+// WithoutUserinfo is rawURL with any user:password@ removed (and rawURL as
+// is when it does not parse).
+func WithoutUserinfo(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.User == nil {
+		return rawURL
+	}
+	u.User = nil
+	return u.String()
+}
+
 // UserAgentToken is the product token the crawler sends and obeys robots.txt
 // for.
 const UserAgentToken = "ForgeSiteAudit"
@@ -125,6 +136,9 @@ func (f HTTPFetcher) Fetch(ctx context.Context, method, rawURL string, maxBody i
 	if err != nil {
 		return Response{Err: err.Error()}
 	}
+	// net/http turns URL userinfo into an Authorization header: never send
+	// credentials a URL carries.
+	req.URL.User = nil
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	resp, err := f.Client.Do(req)

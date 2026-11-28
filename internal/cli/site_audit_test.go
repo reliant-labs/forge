@@ -177,3 +177,14 @@ func TestSiteAuditIsInTheCommandTree(t *testing.T) {
 		}
 	}
 }
+
+func TestSiteAuditRefusesAURLWithCredentials(t *testing.T) {
+	t.Parallel()
+	for _, target := range []string{"https://trusted.example@127.0.0.1/", "https://user:pass@public.example/"} {
+		var out bytes.Buffer
+		err := runSiteAudit(context.Background(), &out, target, siteAuditOptions{maxPages: 10})
+		if got := siteAuditExit(err); got != exitUndetermined || !strings.Contains(err.Error(), "credentials") {
+			t.Errorf("%s: exit %d (%v), want 2 naming the credentials", target, got, err)
+		}
+	}
+}

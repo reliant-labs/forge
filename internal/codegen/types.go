@@ -172,6 +172,37 @@ type Method struct {
 	// exactly what the interceptor will do. Nil on descriptors written
 	// before forge recorded it; the lint asks for a regenerate then.
 	Activity *MethodActivity `json:",omitempty"`
+	// Description is the rpc's leading proto comment, comment markers and
+	// `forge:` marker lines removed: the MCP tool description. Empty on
+	// descriptors written before forge recorded it.
+	Description string `json:",omitempty"`
+	// MCP is the rpc's MCP declaration, `(forge.v1.method).mcp` /
+	// `mcp_mutating` folded with `(forge.v1.service).mcp`. Nil when neither
+	// the rpc nor its service declares anything, which is every rpc of a
+	// project that serves no MCP tools (and every descriptor written before
+	// the fields existed). MCPTools decides the served set from it.
+	MCP *MethodMCP `json:",omitempty"`
+}
+
+// MethodMCP is one rpc's MCP declaration as the descriptor records it. It
+// carries every input MCPTools judges, so the decision needs no descriptor.
+type MethodMCP struct {
+	// OptIn is the effective opt-in: `(forge.v1.method).mcp` when set, else
+	// `(forge.v1.service).mcp`.
+	OptIn bool `json:",omitempty"`
+	// Explicit: OptIn came from `(forge.v1.method).mcp` itself, not the
+	// service default. Only an explicit mcp: true on a streaming rpc is
+	// refused; the service default covers unary rpcs only.
+	Explicit bool `json:",omitempty"`
+	// MutatingAck is `(forge.v1.method).mcp_mutating`.
+	MutatingAck bool `json:",omitempty"`
+	// Mutating is activity.IsMutating: the rpc is not read-named and does
+	// not declare idempotency_level = NO_SIDE_EFFECTS. The same verdict
+	// forgeconv-activity-declared judges.
+	Mutating bool `json:",omitempty"`
+	// Idempotent is `(forge.v1.method).idempotent` or idempotency_level =
+	// IDEMPOTENT.
+	Idempotent bool `json:",omitempty"`
 }
 
 // MethodActivity is one rpc's resolved activity declaration

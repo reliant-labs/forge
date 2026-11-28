@@ -1,0 +1,4 @@
+syntax = "proto3";
+package shared.v1;
+// Page info.
+message Page { string next = 1; }

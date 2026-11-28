@@ -997,10 +997,12 @@ func Evaluate(in Input) Report {
 }
 
 // unproven reports whether something outside the findings keeps a PASS from
-// being proven: a standing critical alert, alert state that was not read, or
-// an after window that is not the live release's or that it barely served.
+// being proven: a standing critical alert, alert state that was not read,
+// unevaluated AI calls, or an after window that is not the live release's or
+// that it barely served.
 func (r Report) unproven() bool {
-	return len(r.StandingCritical) > 0 || r.AlertStateUnread != "" || r.WindowNotLive != "" || r.RolloutIncomplete != ""
+	return len(r.StandingCritical) > 0 || r.AlertStateUnread != "" || r.WindowNotLive != "" || r.RolloutIncomplete != "" ||
+		slices.ContainsFunc(r.NotEvaluated, func(e string) bool { return strings.HasPrefix(e, NotEvaluatedAI) })
 }
 
 // WithStandingAlerts applies the critical-alert rule to a judged report from

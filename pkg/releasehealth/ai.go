@@ -237,7 +237,7 @@ func WithAI(r Report, hs []AIHealth, overrides map[string]string) Report {
 		out.NotEvaluated = nil
 	}
 	sortFindings(out.Findings)
-	if slices.Equal(out.Findings, r.Findings) && out.RolloutIncomplete == r.RolloutIncomplete {
+	if slices.Equal(out.Findings, r.Findings) && slices.Equal(out.NotEvaluated, r.NotEvaluated) && out.RolloutIncomplete == r.RolloutIncomplete {
 		return out // nothing the verdict rests on changed: the verdict as judged
 	}
 	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, gaugeOf(out.Thresholds), out.unproven())

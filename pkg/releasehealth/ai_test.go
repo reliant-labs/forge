@@ -60,14 +60,51 @@ func TestAIRule(t *testing.T) {
 					t.Errorf("%s: policy %s, want warn by default", f.Code, f.Policy)
 				}
 			}
-			if r.Verdict != Pass {
-				t.Errorf("verdict %s: an AI finding never fails a release by default", r.Verdict)
+			wantVerdict := Pass
+			if tc.thin {
+				wantVerdict = Inconclusive
+			}
+			if r.Verdict != wantVerdict {
+				t.Errorf("verdict %s, want %s", r.Verdict, wantVerdict)
 			}
 			if got := slices.Contains(r.NotEvaluated, thinEntry); got != tc.thin {
 				t.Errorf("not_evaluated %v, thin %v", r.NotEvaluated, tc.thin)
 			}
 			if !reflect.DeepEqual(r.AI, []AIHealth{tc.h}) {
 				t.Errorf("ai = %+v", r.AI)
+			}
+		})
+	}
+}
+
+func TestWithAIThinSamplesMakeHealthyReportInconclusive(t *testing.T) {
+	base := Evaluate(input(t, true, healthy()))
+	if base.Verdict != Pass || !base.AfterComplete {
+		t.Fatalf("expected a complete healthy report, got %+v", base)
+	}
+	for _, tc := range []struct {
+		name string
+		h    AIHealth
+	}{
+		{"service", aiSvc(win(10, 0, 800), win(100, 0, 800))},
+		{"tool", aiSvc(win(100, 0, 800), win(100, 0, 800),
+			AITool{Tool: "rare", Before: AICalls{Calls: 3}, After: AICalls{Calls: 3}})},
+		{"unscoped version", AIHealth{Service: "agent", Before: win(100, 0, 800), After: win(100, 0, 800)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := WithAI(base, []AIHealth{tc.h}, nil)
+			if r.Verdict != Inconclusive || len(r.Findings) != 0 {
+				t.Fatalf("unevaluated AI must not pass or produce findings: %+v", r)
+			}
+			if !slices.ContainsFunc(r.NotEvaluated, func(e string) bool { return strings.HasPrefix(e, NotEvaluatedAI) }) {
+				t.Fatalf("missing AI uncertainty: %v", r.NotEvaluated)
+			}
+			if again := WithAI(r, nil, nil); !reflect.DeepEqual(again, r) {
+				t.Errorf("not idempotent: %+v", again)
+			}
+			r = WithAI(r, []AIHealth{aiSvc(win(100, 0, 800), win(100, 0, 800))}, nil)
+			if r.Verdict != Pass {
+				t.Errorf("adequate AI sample should clear uncertainty: %+v", r)
 			}
 		})
 	}

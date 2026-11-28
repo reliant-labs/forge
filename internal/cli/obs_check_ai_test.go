@@ -101,8 +101,8 @@ func TestObsCheckAIReadsNothingOrFails(t *testing.T) {
 	caller = &seqCaller{replies: map[string][]string{procHealth: {reply}, procAIPanel: {`not json`}}}
 	out, _, err = newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
 	doc = decode(t, out)
-	if exitCodeForError(err) != 0 || !strings.Contains(fmt.Sprint(doc["not_evaluated"]), releasehealth.NotEvaluatedAI+" the AI calls could not be read") {
-		t.Errorf("a failed read: exit %d, not_evaluated %v", exitCodeForError(err), doc["not_evaluated"])
+	if exitCodeForError(err) != 2 || doc["verdict"] != "INCONCLUSIVE" || !strings.Contains(fmt.Sprint(doc["not_evaluated"]), releasehealth.NotEvaluatedAI+" the AI calls could not be read") {
+		t.Errorf("a failed read: exit %d, verdict %v, not_evaluated %v", exitCodeForError(err), doc["verdict"], doc["not_evaluated"])
 	}
 }
 

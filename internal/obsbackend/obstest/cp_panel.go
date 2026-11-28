@@ -79,7 +79,9 @@ func CPPanelResponse(kind string, res obsquery.MetricPanelResult) string {
 				r.values[cols[s.Label]] = *s.Reduced
 			}
 		}
-		out["columns"] = columns
+		if len(columns) > 0 {
+			out["columns"] = columns
+		}
 		var wrows []map[string]any
 		for _, r := range rows {
 			w := map[string]any{"values": r.values}
@@ -88,7 +90,9 @@ func CPPanelResponse(kind string, res obsquery.MetricPanelResult) string {
 			}
 			wrows = append(wrows, w)
 		}
-		out["rows"] = wrows
+		if len(wrows) > 0 {
+			out["rows"] = wrows
+		}
 	default:
 		var ss []map[string]any
 		for _, s := range res.Series {
@@ -104,7 +108,9 @@ func CPPanelResponse(kind string, res obsquery.MetricPanelResult) string {
 			}
 			ss = append(ss, e)
 		}
-		out["series"] = ss
+		if len(ss) > 0 {
+			out["series"] = ss
+		}
 	}
 	b, err := json.Marshal(out)
 	if err != nil {

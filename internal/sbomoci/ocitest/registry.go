@@ -349,7 +349,7 @@ func (f *Registry) serveReferrers(w http.ResponseWriter, r *http.Request, repo, 
 		return
 	}
 	filter := r.URL.Query().Get("artifactType")
-	var list []ocispec.Descriptor
+	list := []ocispec.Descriptor{}
 	f.mu.Lock()
 	for d, m := range f.manifests[repo] {
 		var parsed ocispec.Manifest

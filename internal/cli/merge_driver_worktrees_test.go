@@ -22,17 +22,18 @@ func TestStaleWorktreeDriverEntry(t *testing.T) {
 	}
 	key := "merge.forge-generated.driver"
 	reg := "forge-merge-driver.61efb1e2ce8c.command"
+	gone := shellQuote(filepath.Join(t.TempDir(), "merge-driver", "f1e8f2ebdbb6", "forge"))
 	for _, tc := range []struct {
 		name, key, value string
 		want             bool
 	}{
-		{"bare command naming a gone forge", key, "'/gone/merge-driver/f1e8f2ebdbb6/forge' merge-generated %O %A %B %L %P", true},
-		{"bare command from before %P", key, "'/gone/merge-driver/f1e8f2ebdbb6/forge' merge-generated %O %A %B %L", true},
+		{"bare command naming a gone forge", key, gone + " merge-generated %O %A %B %L %P", true},
+		{"bare command from before %P", key, gone + " merge-generated %O %A %B %L", true},
 		{"custom live command with forge-shaped argv", key, shellQuote(custom) + " merge-generated %O %A %B %L %P", false},
 		{"custom live command from before %P", key, shellQuote(custom) + " merge-generated %O %A %B %L", false},
 		{"unknown binary outside forge's copy layout", key, "'/gone/forge' merge-generated %O %A %B %L %P", false},
 		{"bare command naming a live forge (predates the hand-off)", key, shellQuote(live) + " merge-generated %O %A %B %L %P", true},
-		{"guarded command naming a gone forge", key, "[ -x '/gone/merge-driver/f1e8f2ebdbb6/forge' ] && exec '/gone/merge-driver/f1e8f2ebdbb6/forge' merge-generated %O %A %B %L %P", true},
+		{"guarded command naming a gone forge", key, "[ -x " + gone + " ] && exec " + gone + " merge-generated %O %A %B %L %P", true},
 		{"guarded command naming a live forge", key, driverCommandLine(live, "forge"), false},
 		{"a driver forge never writes", key, "my-merge-tool %O %A %B", false},
 		{"registration naming a gone forge", reg, "'/gone/forge' merge-generated %O %A %B %L %P", true},

@@ -39,6 +39,12 @@
 // Options.Lane, else FORGE_SLOT_LANE (EnvLane) in Options.Env, picks the
 // lane.
 //
+// CPU share. A slot bounds how many heavy jobs run, not how wide each runs,
+// so a holder also runs its children on a share of the machine: Slot.CPUEnv
+// exports GOMAXPROCS (DefaultShare for the holders running when the slot was
+// taken; ShareEnv, FORGE_<CLASS>_SHARE, fixes it or switches it off) to
+// every child whose environment does not set its own.
+//
 // Re-entrancy. A process that already runs inside a slot must not take
 // another: a gate step holding a slot that runs `forge generate`, which wants
 // a slot of its own, would otherwise deadlock as soon as every slot is held by
@@ -138,6 +144,10 @@ type Slot struct {
 	reentrant string // why Acquire took nothing, when it took nothing
 	parent    string // the FORGE_SLOT_HELD this process inherited
 	waited    time.Duration
+	// share is the CPUs this holder's children run on, and shareSource
+	// why (share.go).
+	share       int
+	shareSource string
 
 	mu       sync.Mutex
 	released bool
@@ -165,7 +175,7 @@ func Acquire(ctx context.Context, class string, opt Options) (*Slot, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Slot{class: class, capacity: capy, lane: lane, index: -1, parent: lookupEnv(opt.Env, EnvHeld)}
+	s := &Slot{class: class, capacity: capy, lane: lane, index: -1, parent: lookupEnv(opt.Env, EnvHeld), shareSource: capy.ShareSource}
 	if capy.Unlimited {
 		return s, nil
 	}
@@ -175,6 +185,7 @@ func Acquire(ctx context.Context, class string, opt Options) (*Slot, error) {
 	}
 	if why, ok := reentrant(dir, class, s.parent); ok {
 		s.reentrant = why
+		s.setShare(dir)
 		return s, nil
 	}
 
@@ -224,6 +235,7 @@ func Acquire(ctx context.Context, class string, opt Options) (*Slot, error) {
 			return nil, err
 		}
 		if ok {
+			s.setShare(dir)
 			return s, nil
 		}
 		holders = h
@@ -255,6 +267,7 @@ func Acquire(ctx context.Context, class string, opt Options) (*Slot, error) {
 			}
 			if ok {
 				s.waited = time.Since(start)
+				s.setShare(dir)
 				return s, nil
 			}
 			holders = h
@@ -515,6 +528,9 @@ func (o Options) capacity(class string) (Capacity, error) {
 	if o.Slots > 0 {
 		c.Slots, c.Unlimited, c.Source = o.Slots, false, fmt.Sprintf("requested %d", o.Slots)
 		if err := c.resolveExpress(o.Env); err != nil {
+			return Capacity{}, err
+		}
+		if err := c.resolveShare(o.Env); err != nil {
 			return Capacity{}, err
 		}
 	}

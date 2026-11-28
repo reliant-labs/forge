@@ -1229,6 +1229,11 @@ func generateCacheEnvRelevant(name string) bool {
 	if strings.HasPrefix(name, "FORGE_") && strings.HasSuffix(name, "_SLOTS") {
 		return false
 	}
+	// FORGE_<CLASS>_SHARE sizes how wide a slot holder runs (the
+	// GOMAXPROCS it exports, itself ignored above), never what it writes.
+	if strings.HasPrefix(name, "FORGE_") && strings.HasSuffix(name, "_SHARE") {
+		return false
+	}
 	switch name {
 	case "CI", "GITHUB_ACTIONS", // buildinfo.IsCI changes what a dev build writes
 		"HOME", "XDG_CONFIG_HOME", "RELIANT_USER_CONFIG_DIR", // where user config is read from

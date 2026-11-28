@@ -526,6 +526,13 @@ type HeldSlot interface {
 	Release() error
 }
 
+// cpuSharer is a HeldSlot that also gives its holder a CPU share
+// (*hostslot.Slot is one): what to append to a check's environment so its
+// commands run on that share.
+type cpuSharer interface {
+	CPUEnv(env []string) []string
+}
+
 // Verdicts is the verdict cache as the scheduler sees it.
 type Verdicts interface {
 	// Lookup reports a recorded PASS for c on the tree being judged, and the
@@ -888,6 +895,7 @@ func (s *scheduler) runCheck(i int) (Result, bool) {
 	// waits for a slot, while the slot's holder waits for that token.
 	ready := s.now()
 	var slotEnv []string
+	var cpuEnv func(env []string) []string
 	if c.Heavy && s.heavy.enabled() {
 		slot, err := s.heavy.take(s.pos[i], "ci gate: "+c.Name)
 		if err != nil {
@@ -895,6 +903,9 @@ func (s *scheduler) runCheck(i int) (Result, bool) {
 		}
 		defer func() { _ = slot.Release() }()
 		slotEnv = slot.Env()
+		if sh, ok := slot.(cpuSharer); ok {
+			cpuEnv = sh.CPUEnv
+		}
 	} else {
 		select {
 		case s.jobs <- struct{}{}:
@@ -905,7 +916,7 @@ func (s *scheduler) runCheck(i int) (Result, bool) {
 	}
 
 	queued := s.now().Sub(ready)
-	res, ran := s.execute(c, slotEnv)
+	res, ran := s.execute(c, slotEnv, cpuEnv)
 	res.Queued = queued
 	// Only a PASS the command itself earned is worth remembering: a Done
 	// short-circuit says nothing about this tree.
@@ -917,7 +928,7 @@ func (s *scheduler) runCheck(i int) (Result, bool) {
 
 // execute runs one check that is cleared to start. ran reports whether its
 // command ran (as opposed to a Done short-circuit or a skip).
-func (s *scheduler) execute(c Check, slotEnv []string) (res Result, ran bool) {
+func (s *scheduler) execute(c Check, slotEnv []string, cpuEnv func(env []string) []string) (res Result, ran bool) {
 	res = Result{Name: c.Name, Lane: c.Lane}
 	if c.Done != nil {
 		if note := c.Done(); note != "" {
@@ -956,6 +967,11 @@ func (s *scheduler) execute(c Check, slotEnv []string) (res Result, ran bool) {
 	}
 	env = withPathPrefix(env, append(append([]string(nil), s.opt.Path...), dirs...))
 	env = append(append(append([]string(nil), env...), c.Env...), slotEnv...)
+	if cpuEnv != nil {
+		// A heavy check runs on its slot's CPU share, unless the gate's
+		// environment or the check's own sets GOMAXPROCS.
+		env = append(env, cpuEnv(env)...)
+	}
 	dir := s.checkDir(c)
 	env, reason := s.runEnv(c, dir, env)
 	if reason != "" {

@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/reliant-labs/forge/pkg/hostslot"
@@ -32,6 +35,10 @@ var ownSlots atomic.Int32
 // (a plugin whose pin hand-off must build forge) waits for the one its parent
 // holds while the parent waits for it: on a host with one bulk slot, a
 // deadlock (`forge generate` hung for 6h in E2E Scaffold, forge#948).
+//
+// And while a slot of its own is held, the command runs on the slot's CPU
+// share (shareProcess): its own GOMAXPROCS, and its children's, unless
+// whoever ran it set GOMAXPROCS.
 func HoldHeavySlot(ctx context.Context, stderr io.Writer) (release func(), err error) {
 	return HoldHeavySlotInLane(ctx, stderr, "")
 }
@@ -57,10 +64,11 @@ func HoldHeavySlotInLane(ctx context.Context, stderr io.Writer, lane string) (re
 		return func() {}, nil
 	}
 	own := s.Index() >= 0
-	unexport := func() {}
+	unexport, unshare := func() {}, func() {}
 	if own {
 		ownSlots.Add(1)
 		unexport = exportSlotEnv(s.Env())
+		unshare = shareProcess(s)
 	}
 	var once atomic.Bool
 	return func() {
@@ -70,9 +78,82 @@ func HoldHeavySlotInLane(ctx context.Context, stderr io.Writer, lane string) (re
 		if own {
 			ownSlots.Add(-1)
 		}
+		unshare()
 		unexport()
 		_ = s.Release()
 	}, nil
+}
+
+// procShare is the CPU share this process runs on while it holds heavy
+// slots of its own: the first holder's, until the last one releases. Only
+// the first holder reads the share (Slot.CPUEnv of the environment as it was
+// before any share): a later one would find the GOMAXPROCS the first
+// exported, and so nothing to export, so it only counts itself. A hold that
+// HoldHeavySlot takes while this process already holds a slot is re-entrant
+// (the exported FORGE_SLOT_HELD names that slot), owns no slot and never
+// gets here. TestShareProcess_ComposesAcrossHolders and
+// TestHoldHeavySlot_ConcurrentAndNested pin both.
+var procShare struct {
+	sync.Mutex
+	holders  int
+	unexport func()
+	prior    int // the runtime's GOMAXPROCS before the share lowered it; 0 when it did not
+}
+
+// shareProcess runs this process on s's CPU share (hostslot.Slot.CPUEnv)
+// until the returned func is called: GOMAXPROCS lowered in the runtime, for
+// the heavy work the command does in its own process, and exported to its
+// environment, for every child it starts with it — go, buf, golangci-lint.
+// Nothing changes when there is no share to export, and in particular when
+// whoever ran forge set GOMAXPROCS: their choice stands.
+func shareProcess(s *hostslot.Slot) (restore func()) {
+	procShare.Lock()
+	defer procShare.Unlock()
+	if procShare.holders == 0 {
+		cpu := s.CPUEnv(os.Environ())
+		if len(cpu) == 0 {
+			return func() {}
+		}
+		procShare.unexport = exportSlotEnv(cpu)
+		procShare.prior = 0
+		for _, kv := range cpu {
+			if v, ok := strings.CutPrefix(kv, "GOMAXPROCS="); ok {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					procShare.prior = runtime.GOMAXPROCS(n)
+				}
+			}
+		}
+	}
+	procShare.holders++
+	var once atomic.Bool
+	return func() {
+		if !once.CompareAndSwap(false, true) {
+			return
+		}
+		procShare.Lock()
+		defer procShare.Unlock()
+		if procShare.holders--; procShare.holders > 0 {
+			return
+		}
+		procShare.unexport()
+		if procShare.prior > 0 {
+			restoreGOMAXPROCS(procShare.prior)
+			procShare.prior = 0
+		}
+	}
+}
+
+// restoreGOMAXPROCS puts the runtime's GOMAXPROCS back to prior. Lowering it
+// with runtime.GOMAXPROCS also turned off the runtime's own tracking of the
+// CPU limit (since Go 1.25 the default follows a container's quota as it
+// changes), and setting prior back would leave that off. So the default is
+// restored first, tracking included, and prior is pinned again only when it
+// was not the default: a value somebody had set (a test's -cpu) stays set.
+func restoreGOMAXPROCS(prior int) {
+	runtime.SetDefaultGOMAXPROCS()
+	if runtime.GOMAXPROCS(0) != prior {
+		runtime.GOMAXPROCS(prior)
+	}
 }
 
 // exportSlotEnv sets the KEY=VALUE entries of a slot's Env in this process's

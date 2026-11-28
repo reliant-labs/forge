@@ -97,6 +97,9 @@ schema EnvVar:
     # `valueFrom.fieldRef.fieldPath`. Empty => not a fieldRef var. This is
     # the k8s-adapter target of the agnostic `EnvSource.from_field`.
     field_ref: str = ""
+    # The public URL of a frontend of this environment, resolved for a
+    # BUILD (see FrontendURL). Only a frontend's `env_vars` honour it.
+    frontend_url?: FrontendURL
     # secret_optional marks a `secret_ref` whose value is allowed to be
     # ABSENT from the environment's secret store.
     #
@@ -124,16 +127,16 @@ schema EnvVar:
         name, "EnvVar.name is required"
         not secret_optional or secret_ref, \
             "EnvVar.secret_optional is only meaningful with secret_ref — it exempts a DECLARED secret from the store pre-flight, and there is nothing to exempt without one"
-        value != Undefined or secret_ref or config_map_ref or field_ref, \
-            "EnvVar must set value (empty string is OK), secret_ref, config_map_ref, or field_ref"
+        value != Undefined or secret_ref or config_map_ref or field_ref or frontend_url, \
+            "EnvVar must set value (empty string is OK), secret_ref, config_map_ref, field_ref, or frontend_url"
         # EXACTLY one channel. k8s rejects an env entry carrying both
         # `value` and `valueFrom` ("may not be specified when `value` is
         # not empty") — and it rejects it only SERVER-side, so
         # `kubectl apply --dry-run=client` passes and the deploy dies
         # against the real cluster. Caught here, at the point the
         # ambiguity is written.
-        len([c for c in [1 if value != Undefined else 0, 1 if secret_ref else 0, 1 if config_map_ref else 0, 1 if field_ref else 0] if c == 1]) == 1, \
-            "EnvVar '${name}' sets more than one source — pick exactly one of value / secret_ref / config_map_ref / field_ref (k8s rejects an env entry with both value and valueFrom)"
+        len([c for c in [1 if value != Undefined else 0, 1 if secret_ref else 0, 1 if config_map_ref else 0, 1 if field_ref else 0, 1 if frontend_url else 0] if c == 1]) == 1, \
+            "EnvVar '${name}' sets more than one source — pick exactly one of value / secret_ref / config_map_ref / field_ref / frontend_url (k8s rejects an env entry with both value and valueFrom)"
 
 # Author-facing helpers that PRODUCE fw.Resources' neutral values (CPU in
 # millicores, memory in BYTES), so nobody writes raw numbers:
@@ -1461,13 +1464,19 @@ schema Bucket:
 
     `cors_origins` are the browser origins that upload and download directly.
     The dev MinIO applies them server-wide (empty = any origin, which is what
-    a dev loop on a moving localhost port wants). On forge.BucketOnS3 forge
+    a dev loop on a moving localhost port wants), the union of every bucket's
+    on that MinIO. On forge.BucketOnS3 forge
     does not manage the bucket, so they are a statement of what the bucket's
     own CORS configuration must allow, set where the bucket lives.
 
     WHERE IT LIVES is its `runtime`, and there is no default:
 
-      * `forge.BucketOnMinIO {port}` — the env's MinIO, a docker-compose
+      * `forge.BucketOnMinIO {infra = "minio"}` — the env's MinIO as a HOST
+        PROCESS: a `forge.HostInfra {engine = "minio"}` forge fetches and
+        supervises, with no container runtime. It creates the bucket at
+        `forge env up`, and the root credentials are generated into the
+        env's secret store, never committed.
+      * `forge.BucketOnMinIO {port}` — the env's MinIO as a docker-compose
         service forge's dev env runs (`forge.minio_workload`). It creates the
         bucket at `forge env up`, and the credentials are the dev MinIO's own.
       * `forge.BucketOnS3 {endpoint, ...}` — an S3-compatible bucket you
@@ -1506,26 +1515,47 @@ schema Bucket:
         len(_duplicates(cors_origins)) == 0, "Bucket '${name}'.cors_origins lists ${_duplicates(cors_origins)} more than once"
 
 schema BucketOnMinIO:
-    """A bucket on the env's MinIO: the docker-compose service `service`
-    (default "minio") that `forge.minio_workload` binds, publishing the S3
-    API on `port` on loopback. Dev and e2e only: a hosted workload cannot
-    reach it, and a reference from one is refused.
+    """A bucket on the env's MinIO. Dev and e2e only: a hosted workload
+    cannot reach it, and a reference from one is refused. Two shapes:
 
-    `access_key` / `secret_key` are the MinIO root credentials, committed on
-    purpose like the dev postgres password: this server binds loopback and
-    holds only local test files. `console_port`, when set, publishes MinIO's
-    web console.
+    ON THE HOST (`infra` set): the `forge.HostInfra {engine = "minio"}` of
+    that name, a MinIO server forge fetches and supervises as a host process,
+    with no container runtime, so a container-free dev env has buckets too.
+
+        infra = [forge.HostInfra {name = "minio", engine = "minio", port = ports.minio}]
+        buckets = [forge.Bucket {name = "uploads", runtime = forge.BucketOnMinIO {infra = "minio"}}]
+
+    Its port, console and region are the HostInfra's, so `port`,
+    `console_port`, `access_key` and `secret_key` stay unset here. Its root
+    credentials are generated into the env's secret store (forge.FileSecrets),
+    under the keys `<INFRA>_ROOT_USER` / `<INFRA>_ROOT_PASSWORD`, and reach a
+    workload as forge.ManagedSecret references, never as committed literals.
+    It binds 127.0.0.1, so only a host process (forge.OnHost) reaches it.
+
+    IN DOCKER COMPOSE (`infra` empty): the compose service `service`
+    (default "minio") that `forge.minio_workload` binds, publishing the S3
+    API on `port` on loopback. `access_key` / `secret_key` are its root
+    credentials, committed on purpose like the dev postgres password: this
+    server binds loopback and holds only local test files. `console_port`,
+    when set, publishes MinIO's web console.
     """
     type: "minio" = "minio"
+    infra: str = ""
     service: str = "minio"
-    port: int
+    port?: int
     console_port?: int
     region: str = "us-east-1"
     access_key: str = "minioadmin"
     secret_key: str = "minioadmin"
 
     check:
-        port > 0 and port < 65536, "BucketOnMinIO.port must be 1..65535"
+        infra or port, "BucketOnMinIO.port is required for the compose MinIO (forge.minio_workload), or set `infra` to bind a forge.HostInfra {engine = \"minio\"}"
+        not infra or (not port and not console_port), \
+            "BucketOnMinIO {infra = \"${infra}\"} takes no port or console_port: a host MinIO's ports are its forge.HostInfra's (port, minio_console_port). Remove them here"
+        not infra or (access_key == "minioadmin" and secret_key == "minioadmin"), \
+            "BucketOnMinIO {infra = \"${infra}\"} takes no access_key or secret_key: a host MinIO's root credentials are generated into the env's secret store, never committed. Remove them"
+        not infra or regex.match(infra, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "BucketOnMinIO.infra '${infra}' must name a forge.HostInfra (an RFC-1123 label)"
+        not port or (port > 0 and port < 65536), "BucketOnMinIO.port must be 1..65535"
         not console_port or (console_port > 0 and console_port < 65536 and console_port != port), \
             "BucketOnMinIO.console_port must be 1..65535 and differ from port"
         len(secret_key) >= 8, "BucketOnMinIO.secret_key must be at least 8 characters: MinIO refuses to start with a shorter root password"
@@ -1576,6 +1606,53 @@ _bucket_minio_values = lambda b: Bucket, endpoint: str -> {str:} {
         "bucket" = b.name
         "access_key_id" = b.runtime.access_key
         "secret_access_key" = b.runtime.secret_key
+        "path_style" = "true"
+    }
+}
+
+# The secret-store keys a host MinIO's root credentials live under: its
+# HostInfra name in upper snake case, then _ROOT_USER / _ROOT_PASSWORD. The
+# env's forge.FileSecrets mints them (render adds them to `generate`).
+_minio_root_secrets = lambda infra: str -> {str:str} {
+    _n = infra.upper().replace("-", "_")
+    {"user" = "${_n}_ROOT_USER", "password" = "${_n}_ROOT_PASSWORD"}
+}
+
+# The minio HostInfra a host-MinIO bucket names ([] when the env declares none).
+_bucket_host_minios = lambda b: Bucket, infra: [any] -> [any] {
+    [i for i in infra if i.engine == "minio" and i.name == b.runtime.infra]
+}
+
+# A host MinIO's region: the declared one, else BucketOnMinIO's default.
+_host_minio_region = lambda i: any -> str {
+    i.minio_region or "us-east-1"
+}
+
+# What of the compose MinIO an env declares: each forge.minio_workload (a
+# compose workload whose process env carries the MinIO root user) and each
+# bucket bound to one (a BucketOnMinIO with no `infra`).
+_compose_minio_names = lambda workloads: [any], buckets: [Bucket] -> [str] {
+    [w.name for w in workloads if w.runtime and w.runtime.type == "compose" and w.runtime.env and "MINIO_ROOT_USER" in w.runtime.env] \
+        + ["bucket ${b.name}" for b in buckets if b.runtime.type == "minio" and not b.runtime.infra]
+}
+
+# The buckets on a host MinIO whose region is not that MinIO's.
+_host_minio_region_mismatches = lambda buckets: [Bucket], infra: [any] -> [str] {
+    [b.name for b in buckets if b.runtime.type == "minio" and b.runtime.infra for i in infra if i.engine == "minio" and i.name == b.runtime.infra and _host_minio_region(i) != b.runtime.region]
+}
+
+# Every BucketRef key of a bucket on a host MinIO `i` (a forge.HostInfra
+# {engine = "minio"}), for a host-process referrer: the credentials are the
+# env's secret-store keys forge generated them under, as ManagedSecrets.
+_bucket_host_minio_values = lambda b: Bucket, i: any -> {str:} {
+    _s = _minio_root_secrets(i.name)
+    {
+        "endpoint" = "http://localhost:${i.port}"
+        "public_endpoint" = "http://localhost:${i.port}"
+        "region" = _host_minio_region(i)
+        "bucket" = b.name
+        "access_key_id" = ManagedSecret {name = _s.user}
+        "secret_access_key" = ManagedSecret {name = _s.password}
         "path_style" = "true"
     }
 }
@@ -1933,7 +2010,8 @@ minio_workload = lambda minio: BucketOnMinIO, buckets: [Bucket] -> Workload {
         _buckets = [forge.Bucket {name = "uploads", runtime = _minio}]
         workloads = _workloads + [forge.minio_workload(_minio, _buckets)]
     """
-    _mine = [b for b in buckets if b.runtime.type == "minio" and b.runtime.service == minio.service]
+    assert not minio.infra, "forge.minio_workload binds the compose MinIO, but this forge.BucketOnMinIO names infra '${minio.infra}', a host MinIO forge runs itself: drop the minio_workload (the forge.HostInfra {engine = \"minio\"} runs it), or unset infra"
+    _mine = [b for b in buckets if b.runtime.type == "minio" and not b.runtime.infra and b.runtime.service == minio.service]
     _origins = sorted({o: 0 for b in _mine for o in b.cors_origins})
     Workload {
         name = minio.service
@@ -2014,6 +2092,18 @@ schema HostInfra:
     a real inbox. A `forge.IdentityOnHost` identity delivers to it (see
     `IdentityOnHost.mail`).
 
+    `minio` runs a MinIO server (pinned, checksum-verified) on loopback, the
+    S3 API forge/pkg/blobstore speaks, on `port`, with its objects under
+    `data_dir`. It serves the env's buckets on `forge.BucketOnMinIO {infra =
+    <name>}`: each is created at `forge env up` (never deleted), its
+    anonymous access reconciled (download for public_read, none otherwise),
+    and the buckets' `cors_origins` applied server-wide (any origin when none
+    is declared). `minio_console_port` adds the web console; unset means
+    none. `minio_region` is the region it answers as (default "us-east-1").
+    Its root credentials are generated into the env's forge.FileSecrets
+    store, under `<NAME>_ROOT_USER` / `<NAME>_ROOT_PASSWORD`, so the env
+    must declare that secret provider; `user`/`password` are ignored.
+
     A zitadel instance's `port` should come from `allocate_port`, not
     `resolve_port`. Zitadel derives the `iss` claim of every token from the
     origin it is reached on, and routes by Host header, so a port that
@@ -2080,6 +2170,13 @@ schema HostInfra:
     # The HTTP monitoring port (/healthz, /varz, /jsz). Unset => none.
     nats_monitor_port?: int
 
+    # ── engine = "minio" only ────────────────────────────────────────────
+    # The web console's port. Unset => no console.
+    minio_console_port?: int
+    # The region the server answers as, the one clients sign for. Unset =>
+    # "us-east-1", BucketOnMinIO's default.
+    minio_region?: str
+
     # ── engine = "temporal" only ─────────────────────────────────────────
     # Namespaces created at launch; readiness waits for each. Unset => only
     # Temporal's own "default".
@@ -2105,8 +2202,14 @@ schema HostInfra:
         not temporal_metrics_port or (temporal_metrics_port > 0 and temporal_metrics_port < 65536 and temporal_metrics_port != port and temporal_metrics_port != temporal_ui_port), \
             "HostInfra.temporal_metrics_port must be 1..65535 and differ from port and temporal_ui_port"
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "HostInfra.name '${name}' must be an RFC-1123 label"
-        engine in ["postgres", "zitadel", "nats", "temporal", "mailpit"], \
-            "HostInfra.engine must be 'postgres', 'zitadel', 'nats', 'temporal' or 'mailpit' (the engines forge supervises natively)"
+        engine in ["postgres", "zitadel", "nats", "temporal", "mailpit", "minio"], \
+            "HostInfra.engine must be 'postgres', 'zitadel', 'nats', 'temporal', 'mailpit' or 'minio' (the engines forge supervises natively)"
+        engine == "minio" or (not minio_console_port and not minio_region), \
+            "HostInfra.minio_console_port / minio_region are for engine 'minio' only ('${name}' is '${engine}')"
+        not minio_console_port or (minio_console_port > 0 and minio_console_port < 65536 and minio_console_port != port), \
+            "HostInfra.minio_console_port must be 1..65535 and differ from port"
+        not minio_region or regex.match(minio_region, r"^[a-z0-9][a-z0-9-]*[a-z0-9]$"), \
+            "HostInfra.minio_region '${minio_region}' must be a region name like us-east-1"
         engine == "nats" or not nats_monitor_port, \
             "HostInfra.nats_monitor_port is for engine 'nats' only ('${name}' is '${engine}')"
         not nats_monitor_port or (nats_monitor_port > 0 and nats_monitor_port < 65536 and nats_monitor_port != port), \
@@ -3599,11 +3702,13 @@ schema GoBuild(Build):
     on launch — go-run's `go run`, and air's `go build` through
     $FORGE_GO_BUILD_FLAGS, which the scaffolded .air.toml expands (a flag
     containing whitespace cannot pass through that variable and is named
-    instead). A scaffolded GoBuild declares `flags = ["-trimpath"]`, so
-    every worktree shares one Go build cache instead of compiling its own
-    path-keyed copy. A debug build (forge build --debug, the delve runner)
-    adds -trimpath=false after them, so source paths stay absolute for the
-    debugger. To opt out, drop -trimpath or add "-trimpath=false" after it."""
+    instead). Those host runners also link without DWARF (-ldflags=-w,
+    unless FORGE_DEV_DWARF=1 or an -ldflags already decides it); `ldflags`
+    reach only `forge build`. A scaffolded GoBuild declares
+    `flags = ["-trimpath"]`, so every worktree shares one Go build cache
+    instead of compiling its own path-keyed copy. A debug build (forge
+    build --debug, the delve runner) adds -trimpath=false after them, so
+    source paths stay absolute for the debugger. To opt out, drop -trimpath or add "-trimpath=false" after it."""
     type: str = "go"
     cmd: str
     goos: str = ""
@@ -4540,6 +4645,48 @@ schema WorkloadURL(tiers.WorkloadURLRef):
     check:
         name == workload, "WorkloadURL: set `workload` only; `name` is derived from it"
 
+schema FrontendURL:
+    """The public URL of a frontend of this environment, by NAME, as a
+    BUILD-time value: the origin a static build writes into the HTML it
+    emits (a canonical link, og:url, robots.txt's Sitemap: line).
+
+        env_vars = [forge.EnvVar {
+            name = "SITE_URL"
+            frontend_url = forge.FrontendURL {frontend = "web"}
+        }]
+
+    The twin of WorkloadURL, for the one place a reference cannot wait for
+    the control plane: a build. Crawlers read the HTML as served, so the
+    origin must be IN the built files, and `runtime_config` (which reaches
+    only JavaScript) cannot carry it.
+
+    Who resolves it depends on where the TARGET runs:
+
+      * forge.OnHosted: forge, whenever it builds the REFERRER (a hosted
+        release, or a bucket / Firebase / BuildOnly deploy), from the
+        environment's live status: the target's first live custom domain,
+        else its platform hostname. A dev server (forge.OnHost) referrer is
+        refused: forge does not build it, so nothing would resolve it.
+        A release is built once and promoted by
+        digest, so every env that serves it carries the origin of the env it
+        was BUILT for; build in the env whose URL search engines should
+        index (prod). An env that has never been deployed has no hostname
+        yet: the value is empty, forge says so, and the next release
+        carries it.
+      * forge.OnHost: the render, to the dev server's URL
+        (http://localhost:<port><base_path>).
+      * anything else (your bucket, Firebase, BuildOnly) is refused: forge
+        does not know the hostname your CDN or Firebase site answers on, so
+        set the variable to a literal `value` instead.
+
+    Only a frontend's `env_vars` may carry one. An unknown name is refused
+    at render.
+    """
+    frontend: str
+
+    check:
+        frontend, "FrontendURL.frontend is required: the name of a frontend of this environment"
+
 # A funnel or activation window ("30m", "7d") in seconds. Only call it on a
 # value that matched _WINDOW_RE.
 _WINDOW_RE = r"^[1-9][0-9]{0,3}[smhd]$"
@@ -5286,6 +5433,32 @@ schema Frontend:
     # env's Bundle declares. A backend elsewhere is a literal URL in
     # runtime_config, which the browser calls cross-origin.
     apis: {str:str | WorkloadURL} = {}
+
+    # Per-release URLs, on forge.OnHosted: the platform serves every release
+    # this env still retains at a URL of its own, on the preview domain
+    # (https://<unguessable>--<site>.<preview domain>), so a past release can
+    # be opened and compared without promoting it. Each URL sends noindex,
+    # serves this env's CURRENT config.js with the release's own files,
+    # _headers and _redirects, and stops answering once the release is
+    # collected. The platform's console links them from each deploy.
+    #
+    # Unset means on. False turns them off for this frontend in this env:
+    # an old release may still hold what a newer one removed, and this is how
+    # an env says none of its releases may be reachable but the live one.
+    # On every other runtime nothing serves release URLs, so False holds
+    # there by construction and is accepted; declare it once on a frontend
+    # bound per env.
+    release_urls?: bool
+
+    # Markdown content negotiation, on forge.OnHosted: a request whose Accept
+    # header prefers text/markdown gets the page's Markdown twin (the build's
+    # `<route>.md`, or `<dir>/index.md`), every other request the HTML page,
+    # both with `Vary: Accept` and a `Link: <twin>; rel="alternate"`. Which
+    # pages have twins is read from the build; a page without one is served
+    # as HTML, and a missing `.md` URL is a 404. Opt-in, and refused on every
+    # other runtime: a bucket, Firebase or a dev server serves one file per
+    # URL and cannot vary on a header.
+    markdown_negotiation: bool = False
 
     check:
         name, "Frontend.name is required"
@@ -6955,16 +7128,50 @@ schema Signing:
         not oidc_issuer or oidc_issuer.startswith("https://"), \
             "Signing.oidc_issuer must be an https:// URL"
 
+# _vuln_exemption_identity is what makes two exemptions the same declaration:
+# the advisory and the scope, each list sorted (release.ShapeVulnScopedExempt.Identity).
+_vuln_exemption_identity = lambda e -> str {
+    "|".join([e.id, ",".join(sorted(e.packages)), ",".join(sorted(e.artifacts)), ",".join(sorted(e.locations))])
+}
+
+# _vuln_scope_entry_ok is one packages / artifacts / locations entry: not
+# empty, not padded with spaces, one line.
+_vuln_scope_entry_ok = lambda v: str -> bool {
+    v != "" and v == v.strip() and "\n" not in v and "\r" not in v and "\t" not in v
+}
+
 schema VulnExemption:
     """One accepted advisory. Every exemption carries its reason and an
     expiry, the same vocabulary as forge's own govulncheck exemptions
     (`ci.vuln.exemptions`): an exemption past `expires` stops applying.
 
         forge.VulnExemption {id = "CVE-2026-0001", reason = "unreachable: we never call the parser", expires = "2026-12-31"}
+
+    `packages`, `artifacts` and `locations` scope it. Unset, it covers the
+    advisory in every package of every artifact of the env. Each one set
+    narrows it, and a finding is exempt only where every set field names it:
+
+        forge.VulnExemption {id = "GO-2026-6859", reason = "grype never parses untrusted archives",
+            expires = "2026-12-31", artifacts = ["api"], locations = ["/usr/local/bin/grype"]}
+
+    - `packages`: a package name ("stdlib") or a purl prefix
+      ("pkg:golang/stdlib", "pkg:npm/lodash@4.17.20").
+    - `artifacts`: release artifact names.
+    - `locations`: absolute paths inside the artifact, exact, or every path
+      under one that ends in "/". This is what tells two Go binaries' stdlib
+      findings apart: their package is "stdlib" either way.
+
+    A finding found in several places (artifacts, or binaries of one image)
+    is exempt only when every place is covered; anywhere else it still
+    counts. A control plane that predates scopes ignores a scoped exemption
+    (the finding stays in its gate) rather than widening it.
     """
     id: str
     reason: str
     expires: str
+    packages: [str] = []
+    artifacts: [str] = []
+    locations: [str] = []
 
     check:
         regex.match(id, _DELIVERY_ID_RE), \
@@ -6972,6 +7179,12 @@ schema VulnExemption:
         reason.strip() != "", "VulnExemption '${id}' needs a reason: the claim a reviewer can check"
         regex.match(expires, _DELIVERY_DATE_RE), \
             "VulnExemption '${id}'.expires '${expires}' must be a YYYY-MM-DD date: an exemption is time-boxed, it cannot be open-ended"
+        all v in [*packages, *artifacts, *locations] { _vuln_scope_entry_ok(v) }, \
+            "VulnExemption '${id}' has an empty, space-padded or multi-line packages / artifacts / locations entry"
+        all l in locations { l.startswith("/") }, \
+            "VulnExemption '${id}'.locations ${[l for l in locations if not l.startswith('/')]} must be absolute paths inside the artifact (/usr/local/bin/grype)"
+        len(packages) == len({v: 1 for v in packages}) and len(artifacts) == len({v: 1 for v in artifacts}) and len(locations) == len({v: 1 for v in locations}), \
+            "VulnExemption '${id}' names the same package, artifact or location twice"
 
 schema VulnPolicy:
     """The vulnerability gate, checked against the release's SBOM at record
@@ -6998,8 +7211,8 @@ schema VulnPolicy:
             "VulnPolicy.warn_severity \"${warn_severity}\" is stricter than block_severity \"${block_severity}\": a finding is warned about only below the blocking line, so lower warn_severity or raise block_severity"
         mode == "off" or block_kev or block_severity != "none", \
             "VulnPolicy mode = \"${mode}\" with block_kev = False and block_severity = \"none\" blocks nothing: re-enable one, or set mode = \"off\""
-        len(exemptions) == len({e.id: 1 for e in exemptions}), \
-            "VulnPolicy.exemptions names an advisory twice: ${[e.id for e in exemptions if len([x for x in exemptions if x.id == e.id]) > 1]}"
+        len(exemptions) == len({_vuln_exemption_identity(e): 1 for e in exemptions}), \
+            "VulnPolicy.exemptions names an advisory twice with the same scope (packages, artifacts, locations): ${[e.id for e in exemptions if len([x for x in exemptions if _vuln_exemption_identity(x) == _vuln_exemption_identity(e)]) > 1]}"
 
 schema BundleKinds:
     """Narrow what a bundle may contain, beyond the baseline.
@@ -7316,7 +7529,7 @@ _render_data_access = lambda data_access: DataAccess, lifecycle: str -> {str:str
 }
 
 # The release-health finding codes (pkg/release Health*).
-_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency", "changed_op_errors", "changed_op_latency"]
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency", "changed_op_errors", "changed_op_latency", "seo_regressed", "a11y_regressed"]
 
 # A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
 _release_health_seconds = lambda w: str -> int {
@@ -7391,7 +7604,17 @@ schema ReleaseHealth:
     changed_op_min_errors, 5, errors after the promotion) and
     changed_op_latency (its p95 grew by more than changed_op_max_p95_ratio,
     2); each names the newest commit that changed the op, and both warn
-    unless listed in `fail_on`.
+    unless listed in `fail_on`. For a hosted static frontend the control
+    plane audits after each promotion (Site insights), each compared with
+    the same env's audit of the previous release: seo_regressed (the site's
+    or a route's SEO score dropped by more than `seo_max_score_drop` points,
+    or a new error-severity SEO finding appeared: the env became noindex,
+    robots.txt disallows /, a canonical names another host, an internal
+    link answers 404) and a11y_regressed (the accessibility score dropped
+    by more than `a11y_max_score_drop` points, or a new critical axe
+    violation appeared). Both warn unless listed in `fail_on`; a release
+    with no previous audit has none, and one whose audit has not finished
+    lists site_audit in `not_evaluated`.
 
     Recorded in the release shape (`release_health`) when any value differs
     from the default, so every reader judges by this one declaration.
@@ -7405,6 +7628,8 @@ schema ReleaseHealth:
     error_rate_min_errors: int = 10
     baseline_window: str = "24h"
     alert_baseline_min_firings: int = 1
+    seo_max_score_drop: int = 10
+    a11y_max_score_drop: int = 10
     fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed", "browser_errors", "browser_failed_requests", "browser_page_load"]
     warn_on: [str] = []
     require_baseline: str = "any"
@@ -7425,6 +7650,10 @@ schema ReleaseHealth:
             "ReleaseHealth.baseline_window \"${baseline_window}\": use a number and s, m or h (\"24h\"), from the window (${window}) to 168h"
         alert_baseline_min_firings >= 0, \
             "ReleaseHealth.alert_baseline_min_firings ${alert_baseline_min_firings} must be at least 0 (0 counts every alert opened after the promotion)"
+        0 <= seo_max_score_drop <= 100, \
+            "ReleaseHealth.seo_max_score_drop ${seo_max_score_drop} must be 0 to 100 score points (0 fires on any drop)"
+        0 <= a11y_max_score_drop <= 100, \
+            "ReleaseHealth.a11y_max_score_drop ${a11y_max_score_drop} must be 0 to 100 score points (0 fires on any drop)"
         all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
             "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"
@@ -7742,6 +7971,14 @@ schema ObservabilitySignals:
     # `False` renders FORGE_PRODUCT_EVENTS=off on every workload. Events the
     # app emits itself (observe.Track) are not affected.
     product_events: bool = True
+    # The edge (CDN) request log of every hosted static site (forge.OnHosted
+    # frontends): one row per request, cache hits included, kept as the env's
+    # observability data and billed as ingest. `False` renders
+    # `edgeLogs: false` into each hosted site's StaticSite spec and the
+    # platform drops the env's edge rows before they leave it.
+    # `Observability {enabled = False}` turns it off too. Reliant hosting only:
+    # no other runtime has an edge forge can read.
+    edge: bool = True
     # The env's default for which process and host resource metrics every Go
     # workload reports (forge/pkg/observe, FORGE_OBSERVE_RESOURCE_METRICS):
     # "auto", "all", "process", "host" or "off" (Workload.resource_metrics
@@ -7826,6 +8063,10 @@ schema ObservabilityRetention:
     replay_days: int = 14
     errors_days: int = 30
     product_events_days: int = 90
+    # Raw edge request rows (ObservabilitySignals.edge) on the hosted
+    # platform, in days. Unset: the env's info-log retention. Its daily rollup
+    # follows product_events_days.
+    edge_days?: int
 
     check:
         traces_days >= 0 and metrics_days >= 0 and logs_days >= 0 and browser_days >= 0, "ObservabilityRetention days must be >= 0"
@@ -7834,6 +8075,7 @@ schema ObservabilityRetention:
         replay_days >= 1 and replay_days <= 30, "ObservabilityRetention.replay_days must be 1..30 (session replay is retained at most 30 days)"
         errors_days >= 1 and errors_days <= 365, "ObservabilityRetention.errors_days must be 1..365"
         product_events_days >= 1 and product_events_days <= 400, "ObservabilityRetention.product_events_days must be 1..400"
+        edge_days == Undefined or edge_days == None or (edge_days >= 1 and edge_days <= 400), "ObservabilityRetention.edge_days must be 1..400 (omit it for the env's info-log retention)"
 
 schema ObservabilityAgent:
     """The per-node collector forge renders on cluster runtimes (a
@@ -7842,10 +8084,64 @@ schema ObservabilityAgent:
     namespace: str = "forge-observability"
     image: str = OTEL_COLLECTOR_IMAGE
     memory_limit_mib: int = 256
+    # Opt-in: each agent cluster's Kubernetes inventory and events (see
+    # KubernetesInventory). Unset, the default, renders none.
+    kubernetes_inventory?: KubernetesInventory
 
     check:
         regex.match(namespace, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "ObservabilityAgent.namespace must be an RFC-1123 label"
         memory_limit_mib >= 64, "ObservabilityAgent.memory_limit_mib must be >= 64"
+
+schema KubernetesInventory:
+    """Opt-in: a cluster's own Kubernetes objects, shipped beside the node
+    agent's telemetry. Declare it to deploy it; unset renders nothing.
+
+        observability = forge.Observability {
+            destination = forge.ObservabilityDestination {endpoint = "https://otlp.example.com"}
+            agent = forge.ObservabilityAgent {
+                kubernetes_inventory = forge.KubernetesInventory {}
+            }
+        }
+
+    On every cluster forge's node agent runs on (a cluster the env deploys
+    to or scrapes, with an observability destination), it renders:
+
+      * the cluster collector: one single-replica Deployment
+        `cluster-collector` (with its ConfigMap and ServiceAccount) in the
+        agent's namespace, exporting to the same destination with the same
+        credential. Its OTel `k8sobjects` receiver lists Nodes every
+        `node_interval` and apps DaemonSets and Deployments every
+        `workload_interval`, and watches events.k8s.io Events (unless
+        `events = False`). Each object is one log record whose body is the
+        object projected onto an allowlist of inventory fields (names,
+        uids, labels naming the component, container names and images,
+        replica and node counts, capacity, condition types and reasons,
+        Event reasons; never env values, args, commands, annotations,
+        messages or an Event's note), an Event inside its watch envelope
+        `{type, object}`, with k8sobjects' `k8s.resource.name` attribute
+        ("nodes", "daemonsets", "deployments", "events") and the resource
+        attribute `k8s.cluster.name` (the cluster's kube context). A config
+        change rolls the collector (its pod template carries the config's
+        SHA-256). Its ClusterRole `<namespace>-cluster-collector` is
+        read-only: get/list/watch nodes, apps daemonsets/deployments and,
+        with `events`, events.k8s.io events; never Secrets;
+      * on the node agent's scrapes (each `forge.Telemetry` metrics
+        target it pulls), the resource attributes `k8s.cluster.name` and
+        `k8s.node.name` (the agent's own node: it pulls only its node's
+        pods), so scraped rows join the inventory's Nodes.
+
+    The rows are logs, so the env's `signals.logs` must be on.
+    """
+    # How often Nodes are listed, and DaemonSets and Deployments are.
+    node_interval: str = "60s"
+    workload_interval: str = "300s"
+    # Watch events.k8s.io Events (node conditions and the like surfaced as
+    # Events).
+    events: bool = True
+
+    check:
+        regex.match(node_interval, r"^[0-9]+(ms|s|m|h)$"), "KubernetesInventory.node_interval '${node_interval}' must be a duration like 60s"
+        regex.match(workload_interval, r"^[0-9]+(ms|s|m|h)$"), "KubernetesInventory.workload_interval '${workload_interval}' must be a duration like 300s"
 
 # Alert durations are one or more <int><unit> groups, unit in s m h ("90s", "5m",
 # "1h30m"): exactly what Go's time.ParseDuration reads, so the evaluator and
@@ -8188,6 +8484,8 @@ schema Observability:
     telemetry_collector?: TelemetryCollector
 
     check:
+        not agent.kubernetes_inventory or signals.logs, \
+            "Observability.agent.kubernetes_inventory ships the cluster's objects as logs, and signals.logs = False drops every log. Turn logs on or drop kubernetes_inventory"
         enabled or len(telemetry) == 0, \
             "Observability.telemetry is declared with enabled = False: there is no pipeline to collect it into. Drop it or set enabled = True"
         all t in telemetry { t.service_name }, \
@@ -9461,6 +9759,13 @@ schema Bundle:
     # `source` needs one on the cluster it lands on; it may be declared by
     # another env's bundle, in which case the deploy preflight checks it.
     external_secrets_operators: [ExternalSecretsOperator] = []
+    # The ML components each cluster declares (forge.MLStack, kcl/ml.k),
+    # any subset of them, one stack per cluster: each declared component is
+    # adopted (read where it runs) or installed (a pinned chart forge labels
+    # as its own), and only what a stack declares renders. `forge ml
+    # discover` proposes it. Empty renders nothing.
+    ml_stacks: [MLStack] = []
+    _agent_workloads = _obs_workloads(workloads, ml_stacks, observability)
     # Where the values the secret store needs BEFORE it can serve a read live
     # (its unseal key, its database password, its recovery escrow): outside
     # the store, because they cannot live in what they bootstrap. UNSET =
@@ -9542,9 +9847,28 @@ schema Bundle:
         # A forge.BucketRef names a bucket, so the name is unique.
         len(_duplicates([b.name for b in buckets])) == 0, \
             "Bundle.buckets: a bucket name is declared twice: ${_duplicates([b.name for b in buckets])}. forge.BucketRef names one"
-        # A bucket on a MinIO needs the MinIO: a workload of that name.
-        all b in buckets { b.runtime.type != "minio" or b.runtime.service in [w.name for w in workloads] }, \
-            "Bundle.buckets ${[b.name for b in buckets if b.runtime.type == 'minio' and b.runtime.service not in [w.name for w in workloads]]} are on a forge.BucketOnMinIO that no workload runs: add `forge.minio_workload(<the BucketOnMinIO>, <buckets>)` to Bundle.workloads (it binds docker-compose.yml's `minio` service)"
+        # A bucket on a compose MinIO needs the MinIO: a workload of that name.
+        all b in buckets { b.runtime.type != "minio" or b.runtime.infra or b.runtime.service in [w.name for w in workloads] }, \
+            "Bundle.buckets ${[b.name for b in buckets if b.runtime.type == 'minio' and not b.runtime.infra and b.runtime.service not in [w.name for w in workloads]]} are on a forge.BucketOnMinIO that no workload runs: add `forge.minio_workload(<the BucketOnMinIO>, <buckets>)` to Bundle.workloads (it binds docker-compose.yml's `minio` service), or run MinIO as a host process: `forge.HostInfra {name = \"minio\", engine = \"minio\", port = ...}` in Bundle.infra and `infra = \"minio\"` on the BucketOnMinIO"
+        # A bucket on a host MinIO needs the MinIO: the HostInfra it names.
+        all b in buckets { b.runtime.type != "minio" or not b.runtime.infra or len(_bucket_host_minios(b, infra)) == 1 }, \
+            "Bundle.buckets ${[b.name for b in buckets if b.runtime.type == 'minio' and b.runtime.infra and len(_bucket_host_minios(b, infra)) != 1]} are on a forge.BucketOnMinIO whose `infra` names no forge.HostInfra with engine 'minio' in Bundle.infra. Declared minio infra: ${[i.name for i in infra if i.engine == 'minio']}"
+        # One host MinIO answers as one region, and a bucket's clients sign
+        # for the bucket's: the two must agree.
+        len(_host_minio_region_mismatches(buckets, infra)) == 0, \
+            "Bundle.buckets ${_host_minio_region_mismatches(buckets, infra)}: a BucketOnMinIO's region must be its host MinIO's (HostInfra.minio_region, default \"us-east-1\"), which is the region clients sign for"
+        # The compose MinIO reads its root user from MINIO_ROOT_USER, the
+        # very store key a host MinIO named `minio` is generated under, so
+        # beside each other one's credentials silently become the other's.
+        # Any other host MinIO name has keys of its own (`blobs` ->
+        # BLOBS_ROOT_*) and may sit beside the compose MinIO: the host one
+        # serves host processes, the compose one pods and containers.
+        not any i in infra { i.engine == "minio" and _minio_root_secrets(i.name).user == "MINIO_ROOT_USER" } or len(_compose_minio_names(workloads, buckets)) == 0, \
+            "Bundle runs MinIO both on the host (HostInfra 'minio') and in docker compose (${_compose_minio_names(workloads, buckets)}), and their root-credential keys collide: a host MinIO named `minio` is generated under MINIO_ROOT_USER / MINIO_ROOT_PASSWORD, which the compose MinIO reads too. Rename the HostInfra (e.g. \"blobs\") so its keys are BLOBS_ROOT_*, or pick one MinIO per env"
+        # A host MinIO's root credentials are generated into the env's
+        # secret file, never committed: the env needs one.
+        not any i in infra { i.engine == "minio" } or (secret_provider and secret_provider.type == "file"), \
+            "Bundle.infra ${[i.name for i in infra if i.engine == 'minio']} run MinIO on the host, whose root credentials forge generates into the env's secret file (${[_minio_root_secrets(i.name).user for i in infra if i.engine == 'minio']} and their _ROOT_PASSWORD), never into a committed one. Declare `secret_provider = forge.FileSecrets {path = \"secrets/<env>.yaml\"}` on the Bundle"
         # A forge.EmailRef names an Email, so the name is unique.
         len(_duplicates([e.name for e in emails])) == 0, \
             "Bundle.emails: an email name is declared twice: ${_duplicates([e.name for e in emails])}. forge.EmailRef names one"
@@ -9655,16 +9979,16 @@ schema Bundle:
             "Bundle.flux_delivery configures the in-cluster Flux of an `applier = \"flux\"` env, and this env declares applier = ${applier}. Declare applier = \"flux\", or drop flux_delivery"
         applier != "flux" or not control_plane, \
             "Bundle sets applier = \"flux\" and control_plane: an env with a control plane is delivered by its hub (`hub_converges`), never by a second Flux forge installs. applier = \"flux\" is for an env with no control plane"
-        applier != "flux" or len(_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets)) == 1, \
-            "Bundle sets applier = \"flux\", which needs exactly ONE cluster: the Flux forge installs applies in the cluster it runs in. This env targets ${_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets) or 'none'}"
+        applier != "flux" or len(_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks, observability)) == 1, \
+            "Bundle sets applier = \"flux\", which needs exactly ONE cluster: the Flux forge installs applies in the cluster it runs in. This env targets ${_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks, observability) or 'none'}"
         applier != "flux" or not env or (regex.match(_flux_delivery_ns(flux_delivery, project, env), r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(_flux_delivery_ns(flux_delivery, project, env)) <= 63), \
             "Bundle sets applier = \"flux\" and its delivery namespace '${_flux_delivery_ns(flux_delivery, project, env)}' (forge-delivery-<project>-<env>) is not a namespace name of at most 63 characters. Name one: flux_delivery = forge.FluxDelivery {namespace = \"...\"}"
         applier != "flux" or len([h.name for h in helm_charts if h.oci == _FLUX_CHART_OCI]) == 0, \
             "Bundle sets applier = \"flux\" and also declares the Flux chart (${[h.name for h in helm_charts if h.oci == _FLUX_CHART_OCI]}): applier = \"flux\" installs Flux itself (target flux-delivery), and two Flux installs in one cluster fight over the same CRDs. Drop the helm_charts entry; tune the install through flux_delivery"
         not lifecycle or len(_unmanaged_contexts(clusters, workloads, databases, \
                 cluster_target, gateways, http_routes, grpc_routes, helm_charts, \
-                manifests, generated, rendered_secrets)) == 0, \
-            "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets))} is not one"
+                manifests, generated, rendered_secrets, ml_stacks, observability)) == 0, \
+            "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks, observability))} is not one"
         # SEVERAL IDENTITIES (Bundle.identities): which instances exist is
         # judged before anything derived from them (their Secrets, below).
         not (identity and len(identities) > 0), \
@@ -9679,20 +10003,24 @@ schema Bundle:
         # CONNECTED CLUSTER TO DELIVER IT TO. Both are declared facts, so both
         # are refused here, while the author is looking at the KCL, rather than
         # as a deploy that is accepted and never delivers.
-        len(_cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0 or control_plane, \
-            "Bundle.control_plane_secrets ${[s.name for s in _cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))]} need control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what mints, delivers and renews them"
-        len(_cps_unbound(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)) == 0, \
-            _cps_unbound_msg(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)
-        not (observability and observability.enabled and observability.destination and observability.destination.token_from_control_plane) or len(_cluster_targets(workloads)) > 0, \
+        len(_cps_all(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0 or control_plane, \
+            "Bundle.control_plane_secrets ${[s.name for s in _cps_all(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))]} need control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what mints, delivers and renews them"
+        len(_cps_unbound(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)) == 0, \
+            _cps_unbound_msg(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)
+        not (observability and observability.enabled and observability.destination and observability.destination.token_from_control_plane) or len(_cluster_targets(_agent_workloads)) > 0, \
             "Bundle.observability.destination.token_from_control_plane = True needs a cluster workload: the credential is delivered to the node agent, which forge renders only on a cluster the env deploys to"
-        len(_cps_duplicates(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_duplicates(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} declared twice for the same cluster and namespace — the control plane would write one Secret from two declarations"
-        len(_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} — a cluster and namespace has at most one telemetry_token (a workload reads exactly one OTLP credential)"
-        len(_cps_also_provided(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_also_provided(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
+        len(_cps_duplicates(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_duplicates(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} declared twice for the same cluster and namespace — the control plane would write one Secret from two declarations"
+        len(_cps_second_telemetry_token(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_second_telemetry_token(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} — a cluster and namespace has at most one telemetry_token (a workload reads exactly one OTLP credential)"
+        len(_cps_also_provided(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_also_provided(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
         # SECRETS (forge.OpenBao, forge.ExternalSecretsOperator, StoreSource).
         # The structural rules live on the schemas; these need the Bundle.
+        len(_duplicates([s.cluster.cluster for s in ml_stacks])) == 0, \
+            "Bundle.ml_stacks declares two stacks on cluster ${_duplicates([s.cluster.cluster for s in ml_stacks])}: one forge.MLStack per cluster context. Merge them into one"
+        len(_duplicates([x.svc for x in _ml_scrapes(ml_stacks)])) == 0, \
+            "Bundle.ml_stacks scrapes two components as service ${_duplicates([x.svc for x in _ml_scrapes(ml_stacks)])}: a scrape's service.name is unique in the env. Set service_name on one of them (forge.Adopt or forge.Install)"
         len(_duplicates([_eso_context(e) for e in external_secrets_operators])) == 0, \
             "Bundle.external_secrets_operators installs ESO twice on ${_duplicates([_eso_context(e) for e in external_secrets_operators])}: one cluster has one External Secrets Operator (several fight over the cluster-scoped CRDs and webhook configurations). Remove the duplicate; configure the one with `values`"
         len(_openbao_sources(required_secrets)) == 0 or openbao, \
@@ -9726,7 +10054,7 @@ schema Bundle:
         # checked live by the deploy preflight) or a rendered_secrets entry.
         # A local env without cluster workloads uses the secret store instead,
         # which `forge env up` checks before it starts anything.
-        _headers_secret_supplied(workloads, observability, required_secrets, rendered_secrets, _cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))), \
+        _headers_secret_supplied(_agent_workloads, observability, required_secrets, rendered_secrets, _cps_all(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))), \
             _headers_secret_msg(observability)
         # ONE LOG SHIPPING PATH. The node agent (cluster) and the local
         # collector (host) already ship container/process logs; a workload that

@@ -223,11 +223,11 @@ func TestTemporalArgs(t *testing.T) {
 }
 
 func TestTemporalDriftNamesAnUnservedMetricsPort(t *testing.T) {
-	if msg := temporalDrift(Spec{}); msg != "" {
+	if msg := temporalDrift(Spec{}, ""); msg != "" {
 		t.Errorf("no declared metrics port is no drift, got %q", msg)
 	}
 	port := freeTCPPort(t)
-	if msg := temporalDrift(Spec{TemporalMetricsPort: port}); !strings.Contains(msg, strconv.Itoa(port)) {
+	if msg := temporalDrift(Spec{TemporalMetricsPort: port}, ""); !strings.Contains(msg, strconv.Itoa(port)) {
 		t.Errorf("an unserved declared metrics port should be named, got %q", msg)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
@@ -235,7 +235,7 @@ func TestTemporalDriftNamesAnUnservedMetricsPort(t *testing.T) {
 		t.Skipf("cannot listen on the freed port: %v", err)
 	}
 	defer func() { _ = ln.Close() }()
-	if msg := temporalDrift(Spec{TemporalMetricsPort: port}); msg != "" {
+	if msg := temporalDrift(Spec{TemporalMetricsPort: port}, ""); msg != "" {
 		t.Errorf("a served metrics port is no drift, got %q", msg)
 	}
 }

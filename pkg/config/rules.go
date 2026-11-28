@@ -102,7 +102,7 @@ func ruleViolation(root protoreflect.MessageDescriptor, v *protovalidate.Violati
 	if env := envSourcesPhrase(opt); env != "" {
 		sources = append(sources, "env: "+env)
 	}
-	if flag := opt.GetFlag(); flag != "" {
+	if flag := opt.GetFlag(); flag != "" && !opt.GetSensitive() { // a sensitive field has no flag
 		sources = append(sources, "flag: --"+flag)
 	}
 	if len(sources) > 0 {

@@ -363,6 +363,42 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j WorkloadEnt
 	defer cancel()
 
 	jobSpec := hostRunnerSpec(j)
+	// Same env composition host services get: projectConfig → secrets →
+	// the job's own env_vars → os.Environ() wins last. A job that
+	// provisions the thing a service dials must see the same coordinates
+	// that service will.
+	var projectConfigEnv map[string]string
+	if cfg != nil && env != "" {
+		projectConfigEnv = loadProjectConfigEnv(cfg, env)
+	}
+	// Same dev-run defaults host services get (development runtime,
+	// AUTO_MIGRATE on a dev env). A provisioning job that dials the
+	// database must see the same DSN the service will.
+	dev, _ := seedTargetIsDev(env)
+	projectConfigEnv = withDevRunDefaults(projectConfigEnv, dev)
+	// A job's OWN KCL env_vars are the last of the three map layers, so a
+	// value the environment DECLARES for this job beats project config and
+	// secrets alike. That is how an env hands a job coordinates composed from a port it
+	// declares once, rather than a literal baked in at generation time.
+	// Secrets are scoped to what this job DECLARES, exactly as a host
+	// service's are. Handing a job the whole store was the same wholesale
+	// injection the dotenv provider was removed for — and it did real
+	// damage here: the scaffolded store ships every declared slot present
+	// and BLANK, so an untouched project injected `DATABASE_URL=""` into a
+	// layer that outranks project config, and the migrate job failed with
+	// `required config field database_url is not set` while both the KCL
+	// and `forge env config` plainly showed the DSN.
+	jobSecrets := scopeSecretsToEnvVars(secretsLayer, j.EnvVars())
+	for k, v := range scopeManagedSecretsToService(secretsLayer, &j) {
+		if jobSecrets == nil {
+			jobSecrets = map[string]string{}
+		}
+		jobSecrets[k] = v
+	}
+	jobEnv := hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, jobSecrets, j.HostEnv())
+	// The same dev-loop -ldflags a host service's `go run` gets, so the job
+	// and the service share one cached executable when they run one package.
+	jobSpec = withDevLinkFlags(jobSpec, jobEnv)
 	cmd, err := hostlaunch.BuildCmd(runCtx, j.Name, jobSpec)
 	if err != nil {
 		return fmt.Errorf("job %s: %w", j.Name, err)
@@ -400,39 +436,7 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j WorkloadEnt
 		}
 	}
 
-	// Same env composition host services get: projectConfig → secrets →
-	// the job's own env_vars → os.Environ() wins last. A job that
-	// provisions the thing a service dials must see the same coordinates
-	// that service will.
-	var projectConfigEnv map[string]string
-	if cfg != nil && env != "" {
-		projectConfigEnv = loadProjectConfigEnv(cfg, env)
-	}
-	// Same dev-run defaults host services get (development runtime,
-	// AUTO_MIGRATE on a dev env). A provisioning job that dials the
-	// database must see the same DSN the service will.
-	dev, _ := seedTargetIsDev(env)
-	projectConfigEnv = withDevRunDefaults(projectConfigEnv, dev)
-	// A job's OWN KCL env_vars are the last of the three map layers, so a
-	// value the environment DECLARES for this job beats project config and
-	// secrets alike. That is how an env hands a job coordinates composed from a port it
-	// declares once, rather than a literal baked in at generation time.
-	// Secrets are scoped to what this job DECLARES, exactly as a host
-	// service's are. Handing a job the whole store was the same wholesale
-	// injection the dotenv provider was removed for — and it did real
-	// damage here: the scaffolded store ships every declared slot present
-	// and BLANK, so an untouched project injected `DATABASE_URL=""` into a
-	// layer that outranks project config, and the migrate job failed with
-	// `required config field database_url is not set` while both the KCL
-	// and `forge env config` plainly showed the DSN.
-	jobSecrets := scopeSecretsToEnvVars(secretsLayer, j.EnvVars())
-	for k, v := range scopeManagedSecretsToService(secretsLayer, &j) {
-		if jobSecrets == nil {
-			jobSecrets = map[string]string{}
-		}
-		jobSecrets[k] = v
-	}
-	cmd.Env = hostlaunch.WithPGO(jobSpec, hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, jobSecrets, j.HostEnv()))
+	cmd.Env = hostlaunch.WithPGO(jobSpec, jobEnv)
 	cmd.Env = withForgeShimOnPath(cmd.Env, j.Name)
 
 	// What this job gates, for the human reading the log. The raw

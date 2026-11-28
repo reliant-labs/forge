@@ -100,8 +100,16 @@ func TestServiceTaskfileRunsUnderTask(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The pinned forge reports two frontends, one at a KCL-declared path.
-	fake("pinned-forge", `[ "$1 $2" = "project frontends" ] && printf 'npm:frontends/admin\nnpm:web\n'`)
+	// The pinned forge reports two frontends, one at a KCL-declared path, and
+	// answers `test begin` (test:frontend opens a recorded run with it) with a
+	// run directory.
+	runDir := t.TempDir()
+	fake("pinned-forge", `case "$1 $2" in
+"project frontends") printf 'npm:frontends/admin\nnpm:web\n' ;;
+"test begin") echo `+runDir+` ;;
+*) exit 1 ;;
+esac
+`)
 	fake("npm", `echo "$(basename "$PWD") $*" >> `+marks+"\n")
 	for _, fe := range []string{"frontends/admin", "web"} {
 		if err := os.MkdirAll(filepath.Join(dir, fe), 0o755); err != nil {

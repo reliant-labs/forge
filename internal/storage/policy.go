@@ -13,10 +13,13 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/gocache"
 )
 
 // GiB is one gibibyte in bytes.
@@ -31,14 +34,24 @@ type Policy struct {
 	BuildCacheGiB    uint64   `json:"build_cache_gib"`
 	BuildCacheUnused string   `json:"build_cache_unused"`
 	ImageUnused      string   `json:"image_unused"`
-	// GoCacheUnused is how long a shared Go build cache entry (and the
-	// golangci-lint cache) may sit unused before it is trimmed. Minimum 2h:
-	// Go refreshes an entry's mtime on use once it is an hour stale, so that
-	// floor is what keeps the trim safe under running builds.
+	// GoCacheUnused is how long a Go build cache entry (in every Go-format
+	// cache the trim reaches) may sit unused before it is trimmed. The
+	// default is forge/pkg/gocache's DefaultUnused. The age rule never reaches
+	// inside gocache.Floor (2h): Go refreshes an entry's mtime on use once it
+	// is an hour stale, so that floor is what keeps the trim safe under
+	// running builds.
 	GoCacheUnused string `json:"go_cache_unused"`
-	// GoCacheGiB is the size the shared Go caches are trimmed down to,
-	// oldest first, when age alone leaves them larger.
+	// GoCacheGiB is the size each Go build cache is trimmed down to, oldest
+	// first, when age alone leaves it larger: the shared GOCACHE and every
+	// cache in go_caches, each on its own.
 	GoCacheGiB uint64 `json:"go_cache_gib"`
+	// GoCaches are Go build caches the trim reaches beyond the shared `go env
+	// GOCACHE`: caches other processes on the machine build into (a CI
+	// runner's per-repository cache, a container's mounted cache). Absolute
+	// paths. Each is trimmed like the shared cache, under the same age rule
+	// and its own go_cache_gib budget; a path that is absent or not a Go cache
+	// (no toolchain README) is skipped.
+	GoCaches []string `json:"go_caches,omitempty"`
 	// GoCacheVolumePercent caps that budget at this share of the volume the
 	// cache lives on, so the default works on a 40 GiB build volume as well as
 	// on a 1 TB laptop: the budget is the smaller of go_cache_gib and this
@@ -134,9 +147,20 @@ type Registry struct {
 	Contexts     []string `json:"contexts"`
 }
 
-// DefaultPolicy returns conservative local development budgets.
+// defaultGoCacheUnused is gocache.DefaultUnused as the policy writes it.
+var defaultGoCacheUnused = strconv.Itoa(int(gocache.DefaultUnused/time.Hour)) + "h"
+
+// legacyGoCacheUnused is go_cache_unused's default before it was lowered to a
+// day. Save writes every field, so every machine policy an older forge saved
+// carries it whether or not anyone chose it; Load reads it as the current
+// default, or the lower default would never reach those machines. To keep
+// two days on purpose, write it another way ("48h0m0s").
+const legacyGoCacheUnused = "48h"
+
+// DefaultPolicy returns conservative local development budgets. The Go build
+// cache rules are forge/pkg/gocache's, the one copy the Reliant daemon reads too.
 func DefaultPolicy() Policy {
-	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", GoCacheUnused: "48h", GoCacheGiB: 60, GolangciCacheGiB: 4, ImageUnused: "168h", SourceCacheUnused: "168h", SourceCacheKeep: 2, SourceCacheGiB: 6, SourceCacheSlimAfter: "24h", RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"},
+	return Policy{LogBudgetGiB: 1, HostReserveGiB: 20, BuildCacheGiB: 20, BuildCacheUnused: "168h", GoCacheUnused: defaultGoCacheUnused, GoCacheGiB: gocache.DefaultBudgetGiB, GolangciCacheGiB: gocache.DefaultGolangciBudgetGiB, ImageUnused: "168h", SourceCacheUnused: "168h", SourceCacheKeep: 2, SourceCacheGiB: 6, SourceCacheSlimAfter: "24h", RegistryDays: 14, RegistryKeep: 5, Builders: []string{"default"},
 		MaxDeletesPerPass: defaultMaxDeletesPerPass, DeleteRatePerSec: defaultDeleteRatePerSec,
 		AnonymousVolumeUnused: "336h", MaxDockerRemovalsPerPass: defaultMaxDockerRemovalsPerPass}
 }
@@ -165,6 +189,9 @@ func Load(path string) (Policy, error) {
 	}
 	if err := json.Unmarshal(b, &p); err != nil {
 		return p, fmt.Errorf("storage policy: %w", err)
+	}
+	if p.GoCacheUnused == legacyGoCacheUnused {
+		p.GoCacheUnused = defaultGoCacheUnused
 	}
 	warnUnknownPolicyKeys(path, b)
 	return p, p.Validate()
@@ -224,6 +251,11 @@ func (p Policy) Validate() error {
 	}
 	if p.SourceCacheKeep < 1 {
 		return fmt.Errorf("storage: source_cache_keep must retain at least one clone per repository, got %d", p.SourceCacheKeep)
+	}
+	for _, c := range p.GoCaches {
+		if !filepath.IsAbs(c) {
+			return fmt.Errorf("storage: go_caches entries must be absolute paths, got %q", c)
+		}
 	}
 	if p.GoCacheVolumePercent < 0 || p.GoCacheVolumePercent > 100 {
 		return fmt.Errorf("storage: go_cache_volume_percent must be 1-100 (0 means the default %d), got %d", defaultGoCacheVolumePercent, p.GoCacheVolumePercent)
@@ -403,7 +435,51 @@ type ReserveError struct {
 }
 
 func (e *ReserveError) Error() string {
-	return fmt.Sprintf("host disk %s has %.1f GiB free, below the %d GiB reserve; run 'forge storage status' and 'forge storage gc --apply' before building (persistent volumes are never automatically deleted)", e.Path, float64(e.Available)/float64(GiB), e.ReserveGiB)
+	return fmt.Sprintf("host disk %s has %.1f GiB free, below the %d GiB reserve; run 'forge storage status' and 'forge storage gc --apply' before building (persistent volumes are never automatically deleted), or set %s=<GiB> to build under a smaller reserve for this run only", e.Path, float64(e.Available)/float64(GiB), e.ReserveGiB, ReserveOverrideEnv)
+}
+
+// ReserveOverrideEnv overrides the host reserve for ONE run: every admission
+// check in the process (and in the processes it starts — air's rebuild runs
+// `forge storage check`) refuses below this many GiB instead of below the
+// policy's reserve, whatever the build. The policy is machine-wide and often
+// set by whoever administers a shared box; a developer whose build needs
+// megabytes on a disk with 40 GiB free had no way to proceed short of
+// rewriting that file for everyone (Ranger friction #1). The override is never
+// persisted: storage.json is untouched.
+const ReserveOverrideEnv = "FORGE_STORAGE_RESERVE_GIB"
+
+// ReserveOverride reads ReserveOverrideEnv through getenv: the reserve in GiB
+// and true when it is set, an error when it is set to anything but a positive
+// whole number of GiB. A zero reserve is refused on purpose: the check exists
+// so a build never starts on a disk it would fill.
+func ReserveOverride(getenv func(string) string) (uint64, bool, error) {
+	v := strings.TrimSpace(getenv(ReserveOverrideEnv))
+	if v == "" {
+		return 0, false, nil
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil || n == 0 {
+		return 0, false, fmt.Errorf("%s=%q: want a positive whole number of GiB (the free space a build may not start below)", ReserveOverrideEnv, v)
+	}
+	return n, true, nil
+}
+
+// HostBuildReserveGiB caps the host reserve for a HOST build: the go build of
+// one binary for a process `forge env up` runs on the developer's machine, and
+// air's rebuild of it. The binary is tens of megabytes and an incremental build
+// adds little to the Go build cache, so holding it to a reserve sized for image
+// builds and cluster nodes refused a ~30 MB rebuild with 39 GiB free (Ranger
+// friction #1). Between this floor and the policy's reserve the build proceeds
+// with a warning, so the shortfall stays visible.
+const HostBuildReserveGiB = 10
+
+// HostBuild is the policy a host build is admitted under: HostReserveGiB
+// lowered to HostBuildReserveGiB when it is larger, everything else as is.
+func (p Policy) HostBuild() Policy {
+	if p.HostReserveGiB > HostBuildReserveGiB {
+		p.HostReserveGiB = HostBuildReserveGiB
+	}
+	return p
 }
 
 // LightBuildReserveGiB caps the host reserve for a LIGHT build: one that runs

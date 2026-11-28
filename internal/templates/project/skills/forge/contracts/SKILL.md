@@ -56,7 +56,7 @@ Three categories of internal package, three answers:
 | **Multi-impl with strategy pattern** (pluggable backends — local vs S3 storage, JWT vs Clerk auth) | Hand-written `contract.go` | The interface IS the abstraction; multiple implementations satisfy it, so it cannot be derived from one of them. Adapter, client and eventbus scaffolds still write `contract.go`. |
 | **Pure utility** (string formatters, math helpers, no I/O / time / state) | Optional — see "Pure-utility packages" below | Nothing meaningful to mock. |
 
-The contract linter enforces this. Every package in the module's root `internal/` tree with exported methods needs a contract: a `contract.go` or a `//forge:contract` type (`requirecontract`). Everything below that says "`contract.go`" about lint behaviour applies equally to a marked type.
+The lane needs no strictness settings. `requirecontract` requires a `contract.go` or `//forge:contract` type in root `internal/` packages with exported struct methods, subject to the exemptions below; exported free functions alone do not trigger it. `contracts.exclude` is still supported. Below, "`contract.go`" lint behaviour also applies to marked types.
 
 It judges a package's API, which is its non-test, hand-written source. Methods
 and vars in `_test.go` files are never flagged, so a test fake that satisfies a
@@ -239,47 +239,7 @@ observability is Connect interceptors at the handler boundary
 
 ## Using mocks in tests
 
-Mocks come from `mock_gen.go` — one per interface in the contract, so a dep interface has one too. They are drop-in for the real thing:
-
-```go
-// internal/user/service_test.go
-package user
-
-import (
-    "context"
-    "testing"
-
-    "github.com/example/myproject/internal/email"
-)
-
-func TestCreateUser_SendsWelcomeEmail(t *testing.T) {
-    // Set the func-field for the method you fake; unset methods
-    // return "MockService.XxxFunc not set".
-    mockEmail := &email.MockService{
-        SendFunc: func(ctx context.Context, to, subject, body string) error {
-            return nil
-        },
-    }
-
-    svc := New(Deps{Email: mockEmail})
-    _, err := svc.CreateUser(context.Background(), &usersv1.CreateUserRequest{
-        Email: "alice@example.com",
-    })
-
-    assert.NoError(t, err)
-
-    // The mock embeds contractkit.Recorder — assert call patterns:
-    if mockEmail.CallCount("Send") != 1 {
-        t.Errorf("expected 1 Send call, got %d", mockEmail.CallCount("Send"))
-    }
-    calls := mockEmail.Calls("Send")
-    if calls[0].Args[1] != "alice@example.com" {
-        t.Errorf("Send to = %v, want alice@example.com", calls[0].Args[1])
-    }
-}
-```
-
-For integration tests that need the real implementation, use the generated harness in that service's own `helpers_gen_test.go` (`internal/handlers/<svc>/`, `package <svc>`): `<pkg>.NewMigratedTestDB(t)` for a database with your migrations applied, then `<pkg>.NewTest<Svc>(t, <pkg>.WithDB(db))` for the real service wired to it (`<pkg>.With<Svc>Deps(...)` swaps one `Deps` field, `<pkg>.AuthedContext(t)` supplies claims). Typed factories live beside that same handler, in `internal/handlers/<svc>/factories_gen_test.go` (`package <svc>`), regenerated from the applied schema: a test in that directory calls `New<Entity>(t, db)` (a minimal valid row) or `New<CreateRequest>(t, db, 0)` (a create request with its FK parents seeded) unqualified.
+Use the generated `Mock<Iface>` func-fields to stub dependencies, `<Method>Calls()` for typed argument assertions, and `CallCount("<Method>")` for counts. Load `contracts/mocks` for the worked example, call-record naming and collision rules, generic call history, and integration harnesses.
 
 ## Pure-utility packages — three options
 
@@ -311,12 +271,12 @@ Keep free functions for ergonomics AND expose a `Service` interface whose method
 
 A helper package that is private to a public SDK (`pkg/<sdk>/internal/<x>`) is outside `requirecontract`'s scope and needs none of these.
 
-## Greenfield: `forge package new`
+## Greenfield: `forge scaffold package`
 
 For new packages in an existing forge project:
 
 ```bash
-forge package new <name>
+forge scaffold package <name>
 ```
 
 Scaffolds `internal/<name>/`:
@@ -340,7 +300,7 @@ If any of those three fail, the phase isn't done. Catching a contract gap at int
 - Never hand-edit `mock_gen.go` or `contract_gen.go`. Edit `contract.go` (or the marked type's exported methods) and re-run `forge generate`. (Pre-1.7 projects also had `middleware_gen.go` / `tracing_gen.go` / `metrics_gen.go`; those are removed by the next `forge generate`.)
 - Naming: `Service` for single-impl, `<Name>er` for multi-impl pluggable backends.
 - Pure utilities: pick (A), (B), or (C) explicitly. Don't leave the package half-mocked.
-- `contracts.strict: true` from day one. Backfilling later is the most expensive option.
+- Run the contract lane from day one. Fix findings before porting the next package.
 
 ## When this skill is not enough
 

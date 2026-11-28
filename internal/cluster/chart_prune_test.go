@@ -940,6 +940,42 @@ func TestRenderHelmChart_NamespaceCarriesDeclaredAndForgeLabels(t *testing.T) {
 	}
 }
 
+// A bootstrap chart an MLStack Install lowers to carries labels: every object
+// it renders, the Namespace forge synthesizes included, gets them beside
+// forge's own stamps. A chart without labels renders byte for byte as before.
+func TestRenderHelmChart_StampsDeclaredLabels(t *testing.T) {
+	setRelease := fakeHelmReleases(t)
+	setRelease(docDeployment)
+	spec := fluxLikeSpec()
+	plain, err := RenderHelmChart(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("RenderHelmChart: %v", err)
+	}
+	spec.Labels = map[string]string{"forge.dev/component-owner": "acme.prod", "forge.dev/component": "ml-kueue"}
+	out, err := RenderHelmChart(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("RenderHelmChart: %v", err)
+	}
+	docs := splitDocs(out)
+	if len(docs) != len(splitDocs(plain)) {
+		t.Fatalf("labels changed the object count:\n%s", out)
+	}
+	for _, doc := range docs {
+		m, ok := parseDoc(doc)
+		if !ok {
+			t.Fatalf("unparseable doc:\n%s", doc)
+		}
+		for k, want := range map[string]string{"forge.dev/component-owner": "acme.prod", "forge.dev/component": "ml-kueue", WorkloadLabel: "flux", ChartOwnerLabel: chartOwnerFixture} {
+			if got := m.Metadata.Labels[k]; got != want {
+				t.Errorf("%s %s: label %s = %q, want %q", m.Kind, m.Metadata.Name, k, got, want)
+			}
+		}
+	}
+	if got := stampExtraLabels(plain, nil); got != plain {
+		t.Error("no labels must leave the stream byte for byte")
+	}
+}
+
 // ChartOwner shares CRDOwner's spelling and, like it, is empty when either half
 // is unknown so the stamp and the prune switch off together.
 func TestChartOwner(t *testing.T) {

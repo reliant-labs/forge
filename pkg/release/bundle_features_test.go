@@ -45,7 +45,9 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeaturePreview:              {"shape.preview"},
 	BundleFeatureChanges:              {"shape.changes"},
 	BundleFeatureStatusPage:           {"shape.status_page"},
+	BundleFeatureReleaseURLs:          {"shape.hosted_frontends"},
 	BundleFeatureTelemetry:            {"shape.telemetry"},
+	BundleFeatureVulnScopedExemptions: {"shape.delivery_policy.vuln_gate.scoped_exemptions"},
 	// A layer feature: it adds BundleServiceCatalogPath to the manifests
 	// layer and no document key.
 	BundleFeatureServiceCatalog: {},
@@ -55,6 +57,9 @@ var bundleFeatureKeys = map[string][]string{
 	// A value feature: it adds the changed_op_* codes to
 	// shape.release_health.fail_on and no key.
 	BundleFeatureReleaseHealthChangedOps: {},
+	// Also a value feature: it adds the seo_regressed and a11y_regressed
+	// codes to shape.release_health.fail_on, beside their two thresholds.
+	BundleFeatureReleaseHealthSiteAudit: {"shape.release_health.seo_max_score_drop", "shape.release_health.a11y_max_score_drop"},
 }
 
 // snapshotKeys are not features: a snapshot bundle is its own schema, gated
@@ -174,6 +179,7 @@ func fullBundleDoc() BundleDoc {
 			Preview:                  &ShapePreview{Of: "preview", ExpiresAt: "2026-12-01T00:00:00Z", Source: "pr-12"},
 			Changes:                  map[string]ShapeChange{"new-checkout": checkoutChange()},
 			StatusPage:               statusPage(),
+			HostedFrontends:          []ShapeHostedFrontend{{Frontend: "web", ReleaseURLs: new(bool)}},
 			Telemetry:                ShapeTelemetryOf([]telemetry.Target{hostedTarget("api")}),
 		},
 		Objects: []ObjectSummary{{Key: api.Key(), Summary: "2 replicas · containers api"}},
@@ -216,6 +222,9 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	}
 	if !strayRoots["shape.status_page"] {
 		t.Fatalf("the full document does not stray at shape.status_page (strays %v): the fixture no longer exercises it", strays)
+	}
+	if !strayRoots["shape.hosted_frontends"] {
+		t.Fatalf("the full document does not stray at shape.hosted_frontends (strays %v): the fixture no longer exercises it", strays)
 	}
 	if !strayRoots["shape.buckets"] {
 		t.Fatalf("the full document does not stray at shape.buckets (strays %v): the fixture no longer exercises it", strays)
@@ -263,6 +272,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape.Preview = nil
 	wantShape.Changes = nil
 	wantShape.StatusPage = nil
+	wantShape.HostedFrontends = nil
 	wantShape.Telemetry = nil
 	gateless := *full.Shape.DeliveryPolicy
 	gateless.HealthGate, gateless.RequiredGates, gateless.ApprovalHook = nil, nil, nil

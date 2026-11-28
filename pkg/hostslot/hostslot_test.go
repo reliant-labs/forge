@@ -467,6 +467,103 @@ func TestReadCgroupV2(t *testing.T) {
 	}
 }
 
+// The pool is sized from the machine every caller sharing the slot directory
+// sees, not from the per-command cgroup one caller runs in; the per-process
+// reading (DetectMachine's) still counts that cgroup's cap.
+func TestReadCgroupV2Pool(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, data string) {
+		t.Helper()
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marked := map[string]bool{}
+	delegated := func(dir string) bool {
+		rel, err := filepath.Rel(root, dir)
+		return err == nil && marked[filepath.ToSlash(rel)]
+	}
+	const g = 1 << 30
+	host := Machine{CPUs: 48, CPUSource: "nproc", MemBytes: 134_969_000_000, MemSource: "/proc/meminfo"}
+
+	// A Reliant daemon on a systemd host (Delegate=yes): a heavy command
+	// runs in a cgroup the daemon capped at its 4-CPU share, two levels
+	// below the delegated unit.
+	const svc = "system.slice/reliant-daemon.service"
+	const leaf = svc + "/commands/cmd-1-2/heavy-9-command"
+	write("system.slice/cpu.max", "max 100000\n")
+	write(svc+"/cpu.max", "max 100000\n")
+	write(svc+"/commands/cpu.max", "max 100000\n")
+	write(leaf+"/cpu.max", "400000 100000\n")
+	write("self", "0::/"+leaf+"\n")
+	marked[svc] = true
+	self := filepath.Join(root, "self")
+
+	perProcess, ok := readCgroupV2(root, self)
+	if !ok || perProcess.cpus != 4 {
+		t.Fatalf("per-process limits %+v ok=%v, want the command's 4-CPU cap", perProcess, ok)
+	}
+	if got := DefaultSlots(perProcess.apply(host)); got != 2 {
+		t.Fatalf("per-process machine gives %d slots, want 2 (unchanged)", got)
+	}
+	pool, ok := readCgroupV2Pool(root, self, delegated)
+	if ok || pool.cpus != 0 {
+		t.Fatalf("pool limits %+v ok=%v, want none: the cap is the daemon's, below its delegation boundary", pool, ok)
+	}
+	inCommand := DefaultSlots(pool.apply(host))
+	if inCommand != 16 {
+		t.Fatalf("pool from inside the capped command: %d slots, want 16 (min(48/2, 125.7/8 rounded))", inCommand)
+	}
+
+	// The same pool from the daemon's own cgroup and from an uncapped
+	// command: every caller agrees.
+	for _, own := range []string{svc + "/self", svc + "/commands/cmd-1-3", ""} {
+		write("self", "0::/"+own+"\n")
+		if own != "" {
+			write(own+"/cpu.max", "max 100000\n")
+		}
+		pool, _ := readCgroupV2Pool(root, self, delegated)
+		if got := DefaultSlots(pool.apply(host)); got != inCommand {
+			t.Errorf("pool from %q: %d slots, want %d as from inside the capped command", own, got, inCommand)
+		}
+	}
+
+	// The machine manager's limits — on the delegated unit itself and above
+	// it — still bound the pool.
+	write("self", "0::/"+leaf+"\n")
+	write(svc+"/memory.max", "34359738368\n")
+	write("system.slice/cpu.max", "1600000 100000\n")
+	pool, ok = readCgroupV2Pool(root, self, delegated)
+	if !ok || pool.cpus != 16 || pool.mem != 32*g {
+		t.Fatalf("pool limits %+v ok=%v, want 16 CPUs from the slice and 32 GiB from the delegated unit", pool, ok)
+	}
+
+	// Nested delegation (a delegated unit inside a delegated user manager):
+	// the outermost boundary decides, so the inner unit's limit is the
+	// delegatee's too.
+	marked["system.slice"] = true
+	pool, _ = readCgroupV2Pool(root, self, delegated)
+	if pool.cpus != 16 || pool.mem != 0 {
+		t.Fatalf("nested delegation: %+v, want only the outermost boundary's 16 CPUs", pool)
+	}
+	delete(marked, "system.slice")
+
+	// No delegation on the path — a CI runner service whose MemoryMax bounds
+	// everything sharing its slot directory — reads exactly as before.
+	marked = map[string]bool{}
+	write("gha.slice/runner.service/memory.max", "25769803776\n")
+	write("self", "0::/gha.slice/runner.service\n")
+	pool, ok = readCgroupV2Pool(root, self, delegated)
+	perProcess, _ = readCgroupV2(root, self)
+	if !ok || pool != perProcess || pool.mem != 24*g {
+		t.Fatalf("undelegated: pool %+v, per-process %+v, want both 24 GiB from the runner unit", pool, perProcess)
+	}
+}
+
 func TestMeminfoTotal(t *testing.T) {
 	got := meminfoTotal([]byte("MemFree:  1 kB\nMemTotal:       35521440 kB\n"))
 	if got != 35521440*1024 {

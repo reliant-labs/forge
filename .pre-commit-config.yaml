@@ -1,6 +1,11 @@
 # See https://pre-commit.com for full docs. Run locally with:
 #     pip install pre-commit && pre-commit install
 # CI runs the same set via .github/workflows/pre-commit.yml.
+#
+# minimum_pre_commit_version is forge's pre-commit pin: pre-commit refuses an
+# older release, and scripts/ci-tools.sh installs exactly this one for the
+# local merge gate (`task ci`), so a host needs no pre-commit of its own.
+minimum_pre_commit_version: "4.7.0"
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
@@ -128,7 +133,11 @@ repos:
         # (internal/schemagen; TestEnvSchemaIsCurrent compares it byte for
         # byte and embeds it as schema.EnvV1). Its encoder owns the layout,
         # as with .forge/ above: a prettier rewrite fails that test.
-        exclude: ^(gen/|\.forge/|.*\.pb\.go$|.*/skills/.*\.md$|pkg/deploy/[^/]+/crds/|schema/[^/]+\.schema\.json$|CHANGELOG\.md$)|(^|/)testdata/
+        #
+        # pkg/llmprice/litellm_prices.json is LiteLLM's price map, written by
+        # pkg/llmprice/internal/refresh one model per line so a refresh diffs
+        # by model; prettier would spread each entry over eight lines.
+        exclude: ^(gen/|\.forge/|.*\.pb\.go$|.*/skills/.*\.md$|pkg/deploy/[^/]+/crds/|schema/[^/]+\.schema\.json$|pkg/llmprice/litellm_prices\.json$|CHANGELOG\.md$)|(^|/)testdata/
 
   # Compiled binaries do not belong in git: they never diff usefully, they are
   # large forever, and a Go binary embeds the build machine's absolute paths.

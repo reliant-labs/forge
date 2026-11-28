@@ -6,3 +6,5 @@ package hostslot
 func totalMemory() (uint64, string) { return 0, "" }
 
 func platformCgroupLimits() (cgroupLimit, bool) { return cgroupLimit{}, false }
+
+func platformPoolCgroupLimits() (cgroupLimit, bool) { return cgroupLimit{}, false }

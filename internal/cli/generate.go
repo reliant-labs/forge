@@ -108,12 +108,12 @@ What it writes, in order:
     workflows, seed data
 then go mod tidy, goimports, and a validating go build of the whole tree.
 A failed build rolls back every file the run wrote; --keep-on-build-failure
-keeps them past a failed build or post generate hook, for a migration that
-ports hand-written code after generating. Compile errors the run did not
-cause — in packages it did not write, failing the same way against the tree
-as it was before the run (another agent's half-edited package) — fail
-nothing: the run keeps its files, names them, and exits 0 (--strict fails on
-them).
+keeps them past a failed build, a go mod tidy that cannot resolve an import,
+or a failed post generate hook, for a migration that ports hand-written code
+after generating. Compile errors the run did not cause — in packages it did
+not write, failing the same way against the tree as it was before the run
+(another agent's half-edited package) — fail nothing: the run keeps its files,
+names them, and exits 0 (--strict fails on them).
 
 Hand-written code is never overwritten. Files that are yours from birth
 (handlers' rpc_<name>.go, internal/app/providers.go, compose.go) are written
@@ -332,7 +332,7 @@ func newGenerateCmd() *cobra.Command {
 	// --skip-validate and --no-revert stay as they were (hidden, unchanged):
 	// the first hides the compile errors a migration is steered by, the
 	// second keeps a tree half-written by ANY failed step, mid-pipeline.
-	cmd.Flags().BoolVar(&keepOnFailure, "keep-on-build-failure", false, "Keep the generated files when the project does not compile yet, instead of rolling the tree back. For a migration whose hand-written code is ported after generating (connect-go v2, say): a failed compile check or post generate hook (forge.yaml generate.hooks) no longer rolls back, every step and hook still runs, each failure's output is printed, and the run exits non-zero and is not recorded as verified, so the next plain 'forge generate' checks the tree again. A failed input hook still rolls back: later steps project from its output.")
+	cmd.Flags().BoolVar(&keepOnFailure, "keep-on-build-failure", false, "Keep the generated files when the project does not compile yet, instead of rolling the tree back. For a migration whose hand-written code is ported after generating (connect-go v2, say): a failed compile check, a go mod tidy that cannot resolve an import, or a failed post generate hook (forge.yaml generate.hooks) no longer rolls back, every step and hook still runs, each failure's output is printed, and the run exits non-zero and is not recorded as verified, so the next plain 'forge generate' checks the tree again. A failed input hook still rolls back: later steps project from its output.")
 	cmd.MarkFlagsMutuallyExclusive("keep-on-build-failure", "strict")
 
 	// User-vs-maintainer surface split: the flags below are fully
@@ -505,7 +505,10 @@ type pipelineFlags struct {
 	// The compile check still runs, but its failure is a failed step the run
 	// goes on past (warnOrFail) rather than one that rolls the tree back: the
 	// writes stand, the compile errors are reported, and the run exits
-	// non-zero and is never recorded as a verified fixed point. A post
+	// non-zero and is never recorded as a verified fixed point. A root
+	// `go mod tidy` that fails on an import nothing resolves is the same
+	// not-yet-compiling tree and is kept the same way (stepGoModTidyRoot);
+	// any other tidy failure still rolls back. A post
 	// generate hook that ran and failed is kept the same way (every later
 	// hook still runs; stepGenerateHooks says why that is safe), an input
 	// hook never is. Unlike NoRevert it covers only failures after every
@@ -771,7 +774,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// produced, let alone checked.
 	cache.record(os.Stdout, ctx, ran, summary)
 	outcome := softFailureOutcome(os.Stdout, ctx.SoftFailures, ctx.softFailureCauses)
-	reportKeptBuildFailure(os.Stderr, append(slices.Clone(ctx.keptHookFailures), ctx.keptBuildFailure)...)
+	reportKeptBuildFailure(os.Stderr, append(append([]error{ctx.keptTidyFailure}, ctx.keptHookFailures...), ctx.keptBuildFailure)...)
 	return outcome
 }
 
@@ -790,6 +793,12 @@ func reportKeptBuildFailure(w io.Writer, failures ...error) {
 		"without the flag: it runs every hook and checks the tree again, and only a run that passes is recorded as verified.\n",
 		len(failures), Name())
 	for _, err := range failures {
+		// A tidy failure carries no compiler output: its cause (the
+		// imports nothing resolves) is the error itself.
+		if tidyErr := (*tidyImportError)(nil); errors.As(err, &tidyErr) {
+			fmt.Fprintf(os.Stderr, "\n❌ go mod tidy could not resolve these imports, repeated so they stay on screen:\n   %s\n", tidyErr.cause)
+			continue
+		}
 		reprintCompilerOutput(err, "")
 	}
 }
@@ -799,9 +808,10 @@ func reportKeptBuildFailure(w io.Writer, failures ...error) {
 // ports hand-written code after generating (connect-go v2) fails exactly
 // here, and the rollback undoes the output it needs; the flag is how to
 // keep it. Only the failures the flag keeps get the hint — a compile
-// failure and a post generate hook that ran and failed (a hook that
-// compiles part of the tree fails first): no other failure leaves complete
-// output worth keeping.
+// failure, a root tidy that cannot resolve an import (tidy trips over the
+// same not-yet-ported import first), and a post generate hook that ran and
+// failed (a hook that compiles part of the tree fails first): no other
+// failure leaves complete output worth keeping.
 func hintKeepOnBuildFailure(w io.Writer, stepErr error) {
 	var interrupted *generateInterruptedError
 	if errors.As(stepErr, &interrupted) {
@@ -809,7 +819,8 @@ func hintKeepOnBuildFailure(w io.Writer, stepErr error) {
 	}
 	var ve *validateBuildError
 	var he *hookFailureError
-	if !errors.As(stepErr, &ve) && !(errors.As(stepErr, &he) && he.Phase == "post") {
+	var te *tidyImportError
+	if !errors.As(stepErr, &ve) && !(errors.As(stepErr, &he) && he.Phase == "post") && !errors.As(stepErr, &te) {
 		return
 	}
 	fmt.Fprintf(w, "   Not expected to compile yet (a migration that ports hand-written code after generating, "+
@@ -1246,8 +1257,11 @@ type runCaveats struct {
 	// buildKept is set when --keep-on-build-failure kept the writes of a
 	// run whose compile check failed.
 	buildKept bool
+	// tidyKept is set when --keep-on-build-failure kept the writes of a
+	// run whose root go mod tidy could not resolve an import.
+	tidyKept bool
 	// failedSteps is how many steps failed soft (ctx.SoftFailures), the
-	// kept compile check among them.
+	// kept compile check and tidy among them.
 	failedSteps int
 }
 
@@ -1255,6 +1269,7 @@ func runCaveatsOf(ctx *pipelineContext) runCaveats {
 	return runCaveats{
 		compile:     ctx.validateCaveats,
 		buildKept:   ctx.keptBuildFailure != nil,
+		tidyKept:    ctx.keptTidyFailure != nil,
 		failedSteps: len(ctx.SoftFailures),
 	}
 }
@@ -1263,10 +1278,13 @@ func runCaveatsOf(ctx *pipelineContext) runCaveats {
 func (c runCaveats) headline() string {
 	var parts []string
 	failed := c.failedSteps
-	if c.buildKept || c.compile.any() {
+	if c.buildKept || c.tidyKept || c.compile.any() {
 		parts = append(parts, "the project does NOT compile")
-		if c.buildKept && failed > 0 {
-			failed-- // the compile check is the failed step just named
+		// The kept compile check and tidy are the failure just named.
+		for _, kept := range []bool{c.buildKept, c.tidyKept} {
+			if kept && failed > 0 {
+				failed--
+			}
 		}
 	}
 	if failed > 0 {
@@ -1299,7 +1317,7 @@ func (c runCaveats) explain(w io.Writer) {
 		fmt.Fprintf(w, "   The project compiles only against an in-tree producer that is not published at the version it pins (above): "+
 			"publish it and move the pin.\n")
 	}
-	if c.buildKept {
+	if c.buildKept || c.tidyKept {
 		fmt.Fprintf(w, "   --keep-on-build-failure kept this run's files; the compile errors are repeated at the end.\n")
 	}
 }
@@ -1667,7 +1685,12 @@ func checkGoBuildScoped(projectDir string, scope *generateWriteScope) (validateC
 			return caveats, err
 		}
 		fmt.Fprint(os.Stderr, rep.Build)
-		return validateCaveats{}, goBuildValidateFailure(projectDir, rep.Build, errors.New("the tree does not compile"))
+		failure := goBuildValidateFailure(projectDir, rep.Build, errors.New("the tree does not compile"))
+		if extra := blockedBuildDiagnostics(projectDir, rep.Blocked); extra != "" {
+			fmt.Fprint(os.Stderr, extra)
+			failure.Output += extra // Keep the compiler's root cause and fix hint.
+		}
+		return validateCaveats{}, failure
 	}
 	return validateTestFiles(projectDir, rep.TestFiles)
 }

@@ -839,6 +839,11 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	for _, w := range codegen.UnprojectedNestedConfigBlocks(messages) {
 		fmt.Fprintf(os.Stderr, "  ⚠️  %s\n", w)
 	}
+	// A flag on a sensitive field is never registered; say so rather than
+	// let code be written against a flag the binary does not have.
+	for _, w := range codegen.SensitiveConfigFlags(messages) {
+		fmt.Fprintf(os.Stderr, "  ⚠️  %s\n", w)
+	}
 
 	// Flatten all proto config fields. Most projects have a single
 	// AppConfig message; multiple are supported but rendered as one set.

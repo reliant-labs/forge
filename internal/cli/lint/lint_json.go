@@ -284,7 +284,7 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 	}
 	// Targeted lanes go through the outcome engine, which knows how each
 	// lane honours --scope, and one report covers every lane named.
-	if outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope, nil); targeted {
+	if outcomes, targeted, err := collectTargetedOutcomes(ctx, flags, paths, cwd, store, cfg, scope, targetedOutcomeOutput{}); targeted {
 		if err != nil {
 			return nil, err
 		}
@@ -1326,7 +1326,7 @@ func collectContractLintJSON(ctx context.Context, paths []string, excludes []str
 			gated = true
 		}
 		if hint == "" {
-			hint = "either declare the exported method in the contract interface, or unexport it (lowercase) if it's helper-only"
+			hint = contract.FixHint
 		}
 		fs = append(fs, lintJSONFinding{
 			File:     d.Pos.Filename,

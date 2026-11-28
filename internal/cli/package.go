@@ -104,7 +104,7 @@ Subcommands:
 
 	packageNewCmd := &cobra.Command{
 		Use:   "new <name>",
-		Short: "Create a new internal package with contract interface",
+		Short: "Create a new internal package with contract interface (same as 'forge scaffold package', the spelling the skills use)",
 		Long: `Create a new internal package under internal/<name>/ with:
   - service.go       — Deps, New, and the unexported service type marked
                        //forge:contract: its exported methods ARE the contract

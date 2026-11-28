@@ -51,13 +51,15 @@ func (s *Service) DoThing(
 
 This delegates to a `Things` domain package; a simpler RPC would query `s.deps.Repo` right here.
 
+This is the connect-go **v1** shape. On v2 (go.mod requires `connectrpc.com/connect/v2`, the `forge project new` default) a handler takes and returns bare messages: load `api/connect-v2` for handlers, streaming, clients and per-service caps.
+
 ## Error mapping — use `svcerr`, do NOT hand-roll a helper
 
 Every forge chain builder (`serverkit.NewChain`, `observe.Chain`, `observe.DefaultMiddlewares`) ends the chain with `svcerr.Interceptor()`, so a bare `return nil, svcerr.PermissionDenied("…")` already reaches the client as `permission_denied`. Calling `svcerr.Wrap` yourself stays correct (it is idempotent). A chain you build without those builders must end with `svcerr.Interceptor()` itself, or the client sees `unknown`.
 
 Every handler uses `svcerr.Wrap(err)` from `github.com/reliant-labs/forge/pkg/svcerr`. The library owns the service-error → connect-error mapping; do **not** re-implement it per service.
 
-> **Need a signature from a `forge/pkg` library?** `forge project libraries svcerr` prints its full exported API — several packages at once, e.g. `forge project libraries svcerr crud orm`. Do **not** grep forge's source tree for it, and do not use bare `go doc <pkg>`: that renders a struct as `struct{ ... }` with no methods, which is why a measured run grepped `pkg/crud/repo.go` fourteen times for one signature.
+> **Need a signature from a `forge/pkg` library?** `forge project libraries svcerr` prints its full exported API — several packages at once, e.g. `forge project libraries svcerr crud orm`. Do **not** grep forge's source tree for it, nor use bare `go doc <pkg>`, which renders a struct with no methods.
 
 It handles three cases:
 
@@ -184,7 +186,7 @@ For a CRUD MVP proto and internal types often look identical, and passing `req.M
 
 A `*Service` method reads and writes its own tables through `s.deps`. Out of the method body:
 
-- **Resolving your own dependencies.** Collaborators arrive in `Deps`, filled once by `NewComponents` — never construct a repo, open a pool, or dial another service.
+- **Resolving your own dependencies.** Collaborators arrive in `Deps`, filled once by the composition graph — never construct a repo, open a pool, or dial another service.
 - **A hand-rolled `mapServiceError` helper** (use `svcerr.Wrap`), and **reaching into another service's storage** (call a peer through its `Deps` interface, never its tables).
 - **Cross-cutting middleware** (auth enforcement, logging, recovery, request IDs) — those live in the interceptor chain; log only on the unknown-error path. **Logic that deserves transport-free tests or reuse** → a standalone package the handler calls via `s.deps`, not a god-method.
 - **A server for an RPC another repo owns.** If you're only a *client*, import the upstream proto and generate a client — never hand-copy it and scaffold a handler. Every method `CodeUnimplemented` with `Deps` carrying only `Logger`/`Config` is the tell. See `proto`.
@@ -193,13 +195,9 @@ A `*Service` method reads and writes its own tables through `s.deps`. Out of the
 
 The scaffold gives you one test file per RPC (`handlers_scaffold_<rpc>_test.go`, yours to rename; forge never re-creates it) built on `tdd.RunRPCCases` (`pkg/tdd`), run against the real `*Service` wired by the test harness (`<pkg>.NewTest<Svc>(t)`, from that service's own `helpers_gen_test.go`) — no mock of the handler itself. Each row declares a request, an expected outcome (`Check` or a `WantErr` code), and an optional setup hook; the scaffold row asserts `CodeUnimplemented` and self-destructs the moment you implement the RPC. When a handler delegates to a domain package, fake that collaborator through its generated `mock_gen.go` (set the `XxxFunc` field), pass it via `<pkg>.With<Svc>Deps(...)`, return a `svcerr.Err*` sentinel to exercise error paths, and assert `svcerr.Code(err)` (not `connect.CodeOf`, which reads a bare kind as `Unknown` when the handler is called without the interceptor). The harness fills each required interface-typed Deps field itself, with ONE double per interface: when forge mocks the interface in a `mock_gen.go` — the declaring package's (`runs.MockPauseController` for `Deps.Pause runs.PauseController`) or the handler's own (a `forge:deps` `deps.go` role, or a Deps-discovered `MockEstimateStore`) — the harness installs that mock; an unset method answers `contractkit.MockNotSet`. Only an interface no `mock_gen.go` covers (third-party, stdlib, or declared in `service.go`) is auto-stubbed as `Stub<Field>` (`StubRepo` for `Deps.Repo`), the same shape. Either way, set `<Method>Func` for each method a row reaches, e.g. `WithXDeps(Deps{Repo: &StubRepo{GetChatFunc: notFound}})`; an unprogrammed method that returns an error never answers `(nil, nil)`. A `// forge:optional-dep` field is left nil by `NewTest<Svc>` (the code's nil path runs); pass its mock or `Stub<Field>` to test the other path. A required Deps field the harness cannot build (a `*sql.DB`, a func with no default) is yours to supply through `With<Svc>Deps`; for rows that never reach it, `WithPlaceholderDeps()` fills it with a never-initialised stand-in, which is what the scaffolded tests pass. One stand-in is not inert: for a generated config message (`*configv1.FooConfig`) `new(T)` is a valid, empty config, and the service runs on it — supply the config a row means through `With<Svc>Deps`. After editing `Deps`, `forge generate --steps harness` rewrites just the harness (`helpers_gen_test.go`) in seconds; a proto or migration change still needs a full `forge generate`. Run `task test`. See `testing/patterns` Pattern 1.
 
-## Extending Repository without breaking fakes
-
-Load the `api/role-interface` skill for the opt-in role-interface pattern — adding a `Repository` method in a parallel-migration round without breaking every sibling fake.
-
 ## Deps: where they come from, and optional fields
 
-The explicit composition (`NewComponents`) fills each `Deps` field as an **interface, resolved by type** — the handler can't tell the real in-process service from a Connect client or a mock (see `architecture` → **The composition root**). Most fields are required — `validateDeps()` rejects nil, so per-RPC `if s.deps.X == nil` checks are dead code (the codemod strips them). A **legitimately optional** field (a NATS publisher used only on the rollback path) is tagged `// forge:optional-dep` directly above the declaration; then `validateDeps()` must NOT check it and its `if s.deps.X != nil { ... }` guards stay. See `service-layer`.
+The composition graph (`internal/app/compose.go`) fills each `Deps` field as an **interface, resolved by type** — the handler can't tell the real in-process service from a Connect client or a mock (see `architecture` → **The composition root**). Most fields are required — `validateDeps()` rejects nil, so per-RPC `if s.deps.X == nil` checks are dead code. A **legitimately optional** field (a NATS publisher used only on the rollback path) is tagged `// forge:optional-dep` directly above the declaration; then `validateDeps()` must NOT check it and its `if s.deps.X != nil { ... }` guards stay. See `service-layer`.
 
 ## Adding or customizing an RPC
 
@@ -208,4 +206,4 @@ The explicit composition (`NewComponents`) fills each `Deps` field as an **inter
 
 ## When this skill is not enough
 
-A transport-agnostic domain/use-case layer behind the handler → `service-layer`, `contracts`, `interactor`. Proto-level concerns (annotations, CRUD naming, pagination) → `proto`. Auth wiring, access control, row scoping → `auth`. Test patterns → `testing/patterns`. Naming conventions across Go / proto / on-disk paths → `architecture` → **Naming conventions**.
+A transport-agnostic domain/use-case layer behind the handler → `service-layer`, `contracts`, `interactor`. Proto-level concerns (annotations, CRUD naming, pagination) → `proto`. Auth wiring, access control, row scoping → `auth`. Test patterns → `testing/patterns`. Adding a `Repository` method without breaking sibling fakes → `api/role-interface`. Naming conventions across Go / proto / on-disk paths → `architecture` → **Naming conventions**.

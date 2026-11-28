@@ -257,6 +257,33 @@ type StaticSiteSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxProperties=16
 	APIs map[string]WorkloadURLRef `json:"apis,omitempty"`
+
+	// MarkdownNegotiation asks the executor to serve a page's Markdown twin
+	// (the build's `<route>.md`, or `<dir>/index.md`) to a request whose
+	// Accept header prefers text/markdown, and the HTML page otherwise, with
+	// `Vary: Accept` and a `Link: <twin>; rel="alternate"` on both. Which
+	// pages have twins is read from the release itself; this field only says
+	// whether to negotiate (forge.Frontend.markdown_negotiation). False, the
+	// default, serves exactly what a spec without the field served.
+	//
+	// An executor that does not negotiate must not accept a spec carrying it:
+	// forge refuses to record one for a control plane that does not
+	// advertise release.CapabilityServesMarkdownNegotiation.
+	// +optional
+	MarkdownNegotiation bool `json:"markdownNegotiation,omitempty"`
+
+	// EdgeLogs says whether the platform keeps the site's edge (CDN) request
+	// log as the env's observability data. Absent or true: on. False: the
+	// env opted out (forge.ObservabilitySignals {edge = False}, or
+	// observability disabled), and the platform drops the site's edge rows
+	// before they leave it. A pointer so that absent stays distinguishable
+	// from false, and every spec written before the field reads as on.
+	//
+	// An executor that cannot honour the opt-out must not accept false:
+	// forge refuses to record one for a control plane that does not
+	// advertise release.CapabilityHonorsEdgeLogOptOut.
+	// +optional
+	EdgeLogs *bool `json:"edgeLogs,omitempty"`
 }
 
 // SiteAPINamePattern is the name rule of a StaticSite's named API: the path

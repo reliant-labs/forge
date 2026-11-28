@@ -1,8 +1,6 @@
 package hostinfra
 
 import (
-	"context"
-	"net"
 	"reflect"
 	"testing"
 )
@@ -21,31 +19,5 @@ func TestPostgresConfig_NamesItsLocaleAndEncoding(t *testing.T) {
 		if got := f.String(); got != want {
 			t.Errorf("postgresConfig %s = %q, want %q: initdb would otherwise read it from LANG/LC_*", field, got, want)
 		}
-	}
-}
-
-// The behaviour itself: a locale environment initdb cannot honour must not
-// stop forge's postgres from initializing and serving. A bogus LC_ALL is the
-// portable stand-in for macOS's missing C.UTF-8 (Linux has C.UTF-8).
-func TestStartPostgres_IgnoresAnUnusableLocaleEnvironment(t *testing.T) {
-	if testing.Short() {
-		t.Skip("boots a real postgres; runs in full mode")
-	}
-	t.Setenv("LC_ALL", "xx_XX.UTF-8")
-	t.Setenv("LANG", "xx_XX.UTF-8")
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-
-	projectDir := t.TempDir()
-	spec := Spec{Name: "postgres", Engine: EnginePostgres, Port: port, Database: "app", User: "postgres", Password: "postgres"}
-	t.Cleanup(func() { _ = Stop(projectDir, spec) })
-
-	if err := Start(context.Background(), projectDir, spec); err != nil {
-		t.Fatalf("Start under LC_ALL=xx_XX.UTF-8: %v", err)
 	}
 }

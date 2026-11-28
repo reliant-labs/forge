@@ -65,8 +65,11 @@ gh secret set FORGE_CONTROL_PLANE_TOKEN
 ```
 
 With no credential at all the step prints one line (`upload skipped: …`) and
-the job stays green. The step never decides the job's result: the test step
-above it is the verdict.
+the job stays green. In GitHub Actions the same reason is also a warning on the
+run's summary, titled `Test results not uploaded` (`Test results only partly
+uploaded` when some parts were left out), whenever an upload that was asked for
+(`--upload`, or the CI default) is skipped or fails. The step never decides the
+job's result: the test step above it is the verdict.
 
 ## Turning it off
 

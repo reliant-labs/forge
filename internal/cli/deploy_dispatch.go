@@ -14,6 +14,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/hostedimage"
+	"github.com/reliant-labs/forge/internal/hostinfra"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -139,6 +140,12 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 		// the SAME declaration. Injecting a secret store's values here
 		// would give forge a second, independent opinion about the
 		// password — which is how the two ever disagree.
+		//
+		// MinIO is the one engine whose declaration states store KEYS
+		// rather than values (its root credentials are generated, never
+		// committed), and its buckets' workloads read the same keys as
+		// managedSecret env. So the store is still the one opinion: it is
+		// looked up here, under the names the render named.
 		raw = append(raw, deploytarget.RawService{
 			Name: hi.Name,
 			HostInfra: &deploytarget.HostInfraSpec{
@@ -159,6 +166,13 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 				TemporalNamespaces:  hi.TemporalNamespaces,
 				TemporalUIPort:      hi.TemporalUIPort,
 				TemporalMetricsPort: hi.TemporalMetricsPort,
+
+				MinIOConsolePort:     hi.MinIOConsolePort,
+				MinIORegion:          hi.MinIORegion,
+				MinIOBuckets:         minioBucketsOf(hi.MinIOBuckets),
+				MinIOCORSAllowOrigin: hi.MinIOCORSAllowOrigin,
+				MinIORootUser:        secretEnv[hi.MinIORootUserSecret],
+				MinIORootPassword:    secretEnv[hi.MinIORootPasswordSecret],
 			},
 		})
 	}
@@ -735,6 +749,7 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 		services = append(services, deploytarget.ResolvedService{
 			Name: f.Name,
 			Hosted: &deploytarget.HostedWorkload{Tier: deploytarget.HostedTierStatic, Static: hostedStaticSpec(f),
+				EdgeLogsOffIfHonoured: edgeLogsOffIfHonoured(entities, f),
 				// The ledger keys a site by the repository it was pushed to,
 				// so the deploy must look it up under the same key — through
 				// the one rule the build pushed by, which resolves a bare
@@ -830,7 +845,26 @@ func hostedStaticSpec(f FrontendEntity) *v1alpha1.StaticSiteSpec {
 			spec.APIs[name] = v1alpha1.WorkloadURLRef{Name: workload}
 		}
 	}
+	// Both written only when they say something: a frontend that declares
+	// neither publishes the spec it published before the fields existed. A
+	// control plane that does not honour one is refused before anything is
+	// recorded (release.CapabilityServesMarkdownNegotiation,
+	// release.CapabilityHonorsEdgeLogOptOut).
+	spec.MarkdownNegotiation = f.MarkdownNegotiation
+	if f.EdgeLogs != nil && !*f.EdgeLogs {
+		off := false
+		spec.EdgeLogs = &off
+	}
 	return spec
+}
+
+// edgeLogsOffIfHonoured reports the IMPLICIT edge-log opt-out: the env
+// disabled observability (`Observability {enabled = False}`) without saying
+// anything about edge logs. Unlike the explicit `edge = False`, which
+// hostedStaticSpec always writes, it is sent only to a control plane that
+// honours it, so an env that deployed before the field is never refused.
+func edgeLogsOffIfHonoured(e *KCLEntities, f FrontendEntity) bool {
+	return e != nil && e.Observability != nil && !e.Observability.Enabled && f.EdgeLogs == nil
 }
 
 // hostedArtifactKey is the ONE rule for which release artifact a hosted
@@ -894,4 +928,17 @@ func sharedEnvRenderWith(render func(context.Context) (string, error)) func(cont
 		once.Do(func() { out, err = render(ctx) })
 		return out, err
 	}
+}
+
+// minioBucketsOf converts a host MinIO's rendered buckets to the
+// supervisor's.
+func minioBucketsOf(in []HostInfraMinIOBucket) []hostinfra.MinIOBucket {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]hostinfra.MinIOBucket, len(in))
+	for i, b := range in {
+		out[i] = hostinfra.MinIOBucket{Name: b.Name, PublicRead: b.PublicRead}
+	}
+	return out
 }

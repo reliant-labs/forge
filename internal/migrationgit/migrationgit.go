@@ -163,7 +163,7 @@ func FilesAt(repoRoot, migrationsDir, rev string) ([]string, bool) {
 }
 
 // ContentAt returns the bytes of the file at path (absolute, or relative to
-// repoRoot) at revision rev, and whether it could be read: false for a
+// the working directory) at revision rev, and whether it could be read: false for a
 // revision not in this clone, a path absent at rev, or no git.
 func ContentAt(repoRoot, path, rev string) ([]byte, bool) {
 	rel, err := repoRelative(repoRoot, path)

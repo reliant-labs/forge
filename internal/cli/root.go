@@ -38,6 +38,9 @@ var (
 // handed to that forge (HandOffToPinned, forge_pin_delegate.go).
 func Execute() error {
 	defer pgtest.Shutdown()
+	if isCacheProgInvocation(os.Args[1:]) {
+		return runCacheProgFast(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+	}
 	if handed, err := HandOffToPinned(context.Background(), os.Args[1:], os.Stderr); err != nil || handed {
 		return err
 	}
@@ -128,7 +131,7 @@ func NewRootCmd() *cobra.Command {
 	// They need the same descriptor-only cache refresh as standalone forge;
 	// otherwise a merged proto edit makes lint demand a full regeneration.
 	if descriptorSelfExecAllowed() {
-		codegen.RegisterDescriptorBuilder(buildDescriptorOnDemand)
+		codegen.RegisterDescriptorPolicyBuilder(buildDescriptorOnDemandWithQuiet)
 	}
 	var projectDir string
 
@@ -310,6 +313,8 @@ path from an empty directory to authored protos, in one call.`,
 	rootCmd.AddCommand(newStorageCmd())
 	// `forge slot`: the host-wide heavy-job semaphore (pkg/hostslot).
 	rootCmd.AddCommand(newSlotCmd())
+	// `forge cache`: this machine's shared Go build cache (cache.go).
+	rootCmd.AddCommand(newCacheCmd())
 	// `forge test` was REMOVED. The suite a project runs is defined in its own
 	// Taskfile.yml (`task test`, `task test:integration`, `task test:e2e`), and
 	// that is what the generated CI workflow and the reliant one-shot gate now

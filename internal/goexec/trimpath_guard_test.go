@@ -29,14 +29,20 @@ var goflagsExempt = map[string]string{
 	"internal/kclprojects/kclprojects_test.go:TestDownloadEnvLeavesTheModuleOut":              "inputs to downloadEnv, asserting it drops -mod; never handed to go",
 	"internal/cli/build_variant_env_test.go:TestVariantBuildEnv_DeclaredEnvWinsInStableOrder": "inputs to variantBuildEnv, asserting where a declared GOFLAGS lands; never handed to go",
 	"internal/vulnpatch/gostdlib_test.go:TestRealToolchainEdit":                               "the env of `go mod edit -toolchain`, which rewrites go.mod and builds nothing",
+	"internal/cli/cache_test.go:TestCacheSeedChildEnv":                                        "inputs to cacheSeedChildEnv, asserting it replaces GOFLAGS with exactly -trimpath; never handed to go",
+	"internal/ciguard/gate_test.go:runGateFixture":                                            "scripts/gate.sh under a stub go on a private PATH: no go toolchain runs under it",
+	// Printed for a person's shell, never handed to go: the line is -trimpath itself.
+	"internal/cli/cache.go:cacheEnvLines":          "prints `forge cache env`'s KEY=value lines (GOFLAGS=-trimpath) for a shell; never handed to go",
+	"internal/cli/cache_test.go:TestCacheEnvLines": "asserts the text cacheEnvLines prints; never handed to go",
 	// Pins, not overrides: the value is what `go env GOFLAGS` reported for this
 	// same environment, so a -trimpath the file layer sets is carried over, and
 	// adding one would change the user's own test run that a retry must repeat.
 	"internal/testretry/run.go:Run": "pins the effective GOFLAGS go itself reported (file layer included), so it drops nothing",
 	// -pgo=off for a go-run / air build whose GoBuild disables PGO; that
 	// build's -trimpath is declared in GoBuild.flags, on its command line.
-	"internal/hostlaunch/hostlaunch.go:WithPGO":   "a dev-loop build trims by its declared GoBuild.flags (command line), not GOFLAGS",
-	"internal/hostlaunch/pgo_test.go:TestWithPGO": "inputs to WithPGO, asserting it merges -pgo=off; never handed to go",
+	"internal/hostlaunch/hostlaunch.go:WithPGO":            "a dev-loop build trims by its declared GoBuild.flags (command line), not GOFLAGS",
+	"internal/hostlaunch/pgo_test.go:TestWithPGO":          "inputs to WithPGO, asserting it merges -pgo=off; never handed to go",
+	"internal/cli/up_test.go:TestWithDevLinkFlags_GOFLAGS": "inputs to withDevLinkFlags, asserting which GOFLAGS -ldflags it defers to; never handed to go",
 }
 
 // TestGOFLAGSOverridesKeepTrimpath pins that a child environment which SETS

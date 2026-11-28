@@ -53,6 +53,8 @@ for _, tt := range tests {
 
 Dependencies are defined as interfaces in your handler contracts. Mock implementations are generated in `mock_gen.go` files — don't hand-write stubs when the contract mock already exists. Inject them during test setup, never construct real clients.
 
+Every mock records its calls. Read a method's arguments back with the generated typed accessor — `m.PublishCalls()[0].Lease.Epoch`, one named, typed field per contract parameter — rather than `m.Calls("Publish")[0].Args[1].(Lease)`, whose position silently shifts when the contract gains a parameter. `m.CallCount("Publish")` counts. The `contracts` skill has the naming rules.
+
 **Mock collaborators, never the subject.** Mock the handler's *dependencies*; the handler itself stays real. A unit test that stubs the thing it claims to test asserts only that your mock returned what you told it to.
 
 For the table-driven scaffolding around these mocks (terse construction, RPC case tables, authed contexts), use the `pkg/tdd` + `pkg/testkit` helpers rather than wiring it by hand — see `testing/patterns`.
@@ -68,6 +70,8 @@ assert.Equal(t, connect.CodeInvalidArgument, svcerr.Code(err))
 ```
 
 Read the code with `svcerr.Code`, not `connect.CodeOf`. A test calls the handler directly, so the svcerr interceptor never runs: a handler returning a bare kind (`return nil, svcerr.PermissionDenied("admin only")`) hands the test no `*connect.Error`, and `connect.CodeOf` reads it as `Unknown`. `svcerr.Code` is the code the client is sent — it reads a `*connect.Error` exactly as `connect.CodeOf` does, and a bare kind as the interceptor will wrap it.
+
+Over the wire (`NewTest<Svc>Server`), an unclassified error reaches the client as `internal: internal server error`. On test failure, the harness prints the server's `rpc failed` log with the `cause` that svcerr withheld. The generated component logger (`testkit.Logger(t)`) also prints its recent records on failure. Both stay quiet on pass, even under `-v`.
 
 ## Rules
 

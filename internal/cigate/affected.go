@@ -281,6 +281,32 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 			sel.changedPkgs[pkg] = true
 		}
 	}
+	// A nested module's Go file is Go source too: rules `on: go-source`
+	// (tree-wide walkers) select their packages for it.
+	inRoot := map[string]bool{}
+	for _, f := range rootChanged {
+		inRoot[f] = true
+	}
+	for _, f := range changed {
+		if inRoot[f] || !strings.HasSuffix(f, ".go") {
+			continue
+		}
+		for i, rule := range in.Rules {
+			if rule.On != config.CIGateOnGoSource {
+				continue
+			}
+			if matched, _ := ruleMatch(f, rule); !matched {
+				continue
+			}
+			if rule.Full {
+				return fullAfterDiff(fmt.Sprintf("%s changed — %s (ci.gate.affected_rules[%d])", f, rule.Reason, i))
+			}
+			sel.hits[i]++
+			for _, pkg := range g.rulePackages(f, rule) {
+				sel.rulePkgs[pkg] = true
+			}
+		}
+	}
 	for _, f := range nested.rootFiles {
 		pkg, ok := g.owner(f)
 		if !ok {
@@ -356,20 +382,29 @@ func selectChanges(changed []string, g *packageGraph, ignore []string, rules []c
 				sel.frontends[fe] = true
 			}
 		}
+		// Explicit rules still apply, but ignored files do not select their
+		// owners or readers and cannot force the unowned-file fallback.
 		if matchGlobs(f, ignore) {
 			continue
 		}
 		pkg, ok := g.owner(f)
+		read := false
+		// A test can read another package's Go source without importing it.
+		// Add those readers for owned files, but do not use reader matches
+		// to narrow the fallback for Go files the graph cannot place.
+		if ok || !strings.HasSuffix(f, ".go") {
+			if readers := g.readers.readersOf(f); len(readers) > 0 {
+				for p := range readers {
+					sel.rulePkgs[p] = true
+				}
+				sel.readerLines = append(sel.readerLines, readerLine(f, readers))
+				read = true
+			}
+		}
 		switch {
 		case ok:
 			sel.changedPkgs[pkg] = true
-		case claimed:
-		case len(g.readers.readersOf(f)) > 0:
-			readers := g.readers.readersOf(f)
-			for p := range readers {
-				sel.rulePkgs[p] = true
-			}
-			sel.readerLines = append(sel.readerLines, readerLine(f, readers))
+		case claimed, read:
 		default:
 			return sel, fmt.Sprintf("%s changed, and it is not Go source, an embedded file or testdata of a package — nothing proves which tests read it (ci.gate.affected_ignore lists files none do; ci.gate.affected_rules says what a path selects)", f)
 		}

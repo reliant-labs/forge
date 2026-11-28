@@ -45,6 +45,12 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
     config_maps, gateways, http_routes, grpc_routes, runtime_classes,
     helm_charts, required_secrets, required_dns, secret_provider,
     rendered_secrets, control_plane
+    bundled_charts[]          HelmCharts delivered in the bundle: delivery =
+                              "bundle", and each MLStack Install (with the
+                              `labels` stamped on its objects), present only
+                              when there is one
+    ml_stacks[]               the declared ML stacks (kcl/ml.k MLStack),
+                              present only when declared
     manifests[]               the applyable stream: RuntimeClasses,
                               Namespaces, ConfigMaps, one `forge.dev/v1alpha1
                               Workload` record per CLUSTER-bound workload
@@ -191,7 +197,8 @@ _cloud_build_without_platform = lambda w: any -> bool {
 # so a helper it calls must be given them.
 _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: any, \
                             gateways: [any], http_routes: [any], grpc_routes: [any], \
-                            helm_charts: [any], manifests: [any], generated: [any], rendered_secrets: [any] -> [str] {
+                            helm_charts: [any], manifests: [any], generated: [any], rendered_secrets: [any], \
+                            ml_stacks: [any], observability: any -> [str] {
     _from_workloads = [w.runtime.target.cluster for w in workloads \
         if w.runtime and w.runtime.type == "cluster" and w.runtime.target]
     _from_databases = [db.runtime.target.cluster for db in databases \
@@ -206,8 +213,14 @@ _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: 
     _from_manifests = [m.cluster for m in manifests if m.cluster]
     _from_generated = [g.cluster for g in generated if g.cluster]
     _from_secrets = [s.cluster for s in rendered_secrets if s.cluster]
+    # Installs apply charts; scraped ML-only clusters also receive an agent
+    # when forge owns collection and has a destination. Use the same placement
+    # helper as agent rendering so lifecycle and Flux validate actual targets.
+    _from_agents = [t.cluster for t in _cluster_targets(_obs_workloads([], ml_stacks, observability))] \
+        if observability and observability.enabled and observability.destination else []
+    _from_ml = _ml_install_contexts(ml_stacks) + _from_agents
     _all = _from_workloads + _from_databases + _from_primary + _from_gateways \
-        + _from_http + _from_grpc + _from_charts + _from_manifests + _from_generated + _from_secrets
+        + _from_http + _from_grpc + _from_charts + _from_manifests + _from_generated + _from_secrets + _from_ml
     sorted([c for c in {x: 0 for x in _all if x}])
 }
 
@@ -240,9 +253,9 @@ _is_forge_managed_context = lambda ctx: str, clusters: [any] -> bool {
 _unmanaged_contexts = lambda clusters: [any], workloads: [any], databases: [any], \
                              cluster_target: any, gateways: [any], http_routes: [any], \
                              grpc_routes: [any], helm_charts: [any], manifests: [any], \
-                             generated: [any], rendered_secrets: [any] -> [str] {
+                             generated: [any], rendered_secrets: [any], ml_stacks: [any], observability: any -> [str] {
     [c for c in _targeted_contexts(workloads, databases, cluster_target, gateways, \
-            http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets) \
+            http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks, observability) \
         if not _is_forge_managed_context(c, clusters)]
 }
 
@@ -379,11 +392,13 @@ _env_var = lambda name: str, v0: any, where: str, rt: any, bundle: Bundle -> any
 }
 
 # A BucketRef as the value its referrer reads: a literal, or (a BucketOnS3
-# credential) the SecretRef / ManagedSecret it declares, which then lowers
-# through its own channel above. A dev MinIO is reached through the
-# cluster's host gateway from a pod, on localhost from a host process and
-# by its compose service from a compose container (_bucket_minio_endpoint);
-# a hosted workload cannot reach it at all. A bucket on forge.OnHosted is the
+# credential, a host MinIO's generated root credential) the SecretRef /
+# ManagedSecret it declares, which then lowers through its own channel
+# above. A compose MinIO is reached through the cluster's host gateway from
+# a pod, on localhost from a host process and by its compose service from a
+# compose container (_bucket_minio_endpoint); a host MinIO (`infra` set)
+# binds 127.0.0.1, so only a host process reaches it; a hosted workload
+# reaches neither. A bucket on forge.OnHosted is the
 # reverse: only the control plane knows its real name and key, so a hosted
 # referrer KEEPS the BucketRef (the wire's bucketRef, read from the Secret
 # the platform writes) and any other referrer is refused.
@@ -395,7 +410,10 @@ _bucket_resolve = lambda v: any, where: str, rt: any, bundle: Bundle -> any {
         "${where}: forge.BucketRef '${v.name}' is on forge.BucketOnMinIO, the env's local MinIO, which a hosted workload cannot reach. Bind the bucket to forge.BucketOnS3 in this env"
     assert not (_b.runtime.type == "hosted" and rt.type != "hosted"), \
         "${where}: forge.BucketRef '${v.name}' is on forge.OnHosted, whose credential only exists in the control plane's namespace, so a workload on the ${rt.type} runtime cannot read it. Run the referrer on forge.OnHosted {}, or bind the bucket to forge.BucketOnS3 in this env"
-    _val = v if _b.runtime.type == "hosted" else (_bucket_minio_values(_b, _bucket_minio_endpoint(_b, v.name, where, rt, bundle)) if _b.runtime.type == "minio" else _bucket_s3_values(_b))[v.key]
+    _host_minio = _b.runtime.infra if _b.runtime.type == "minio" else ""
+    assert not _host_minio or rt.type == "host", \
+        "${where}: forge.BucketRef '${v.name}' is on the host MinIO '${_host_minio}' (forge.HostInfra), which listens on 127.0.0.1 of this machine, so a workload on the ${rt.type} runtime cannot reach it. Run the referrer on forge.OnHost {}, or bind the bucket to the compose MinIO (forge.BucketOnMinIO {port = ...} + forge.minio_workload) in this env"
+    _val = v if _b.runtime.type == "hosted" else (_bucket_host_minio_values(_b, _bucket_host_minios(_b, bundle.infra)[0]) if _host_minio else (_bucket_minio_values(_b, _bucket_minio_endpoint(_b, v.name, where, rt, bundle)) if _b.runtime.type == "minio" else _bucket_s3_values(_b)))[v.key]
     assert not (rt.type == "hosted" and typeof(_val) == "SecretRef"), \
         "${where}: forge.BucketRef '${v.name}' ${v.key} is a forge.SecretRef, a Kubernetes Secret a hosted workload cannot read. Use forge.ManagedSecret {name = ...} on the bucket's forge.BucketOnS3 (the env's secret store: `forge secret set --env <env> <NAME>`)"
     _val
@@ -638,6 +656,17 @@ _obs_disabled = lambda b: Bundle -> [str] {
     ([] if not b.observability else (OBS_CATEGORIES if not b.observability.enabled else [c for c in OBS_CATEGORIES if _obs_category_off(_s, c)]))
 }
 
+# The author EXPLICITLY switched hosted sites' edge request logs off
+# (ObservabilitySignals.edge = False). Rendered as `edge_logs: false` on each
+# hosted frontend only then, so an env that keeps them renders as before.
+# `Observability {enabled = False}` alone is the IMPLICIT opt-out: it renders
+# nothing here, and the Go side sends it only to a control plane that honours
+# it (deploytarget.HostedWorkload.EdgeLogsOffIfHonoured), so an env that
+# deployed before the field never starts being refused.
+_obs_edge_off = lambda b: Bundle -> bool {
+    bool(b.observability) and not b.observability.signals.edge
+}
+
 # Browser telemetry is off: the author disabled it, or everything.
 _obs_browser_off = lambda b: Bundle -> bool {
     bool(b.observability) and (not b.observability.enabled or not b.observability.signals.browser)
@@ -839,8 +868,8 @@ _logs_double_shipped = lambda workloads: [any], o: any -> [str] {
         and typeof(w.env["OTEL_LOGS_EXPORTER"]) == "str" and "otlp" in w.env["OTEL_LOGS_EXPORTER"]]
 }
 
-_cluster_targets = lambda workloads: [any] -> [any] {
-    [w.runtime.target for w in workloads if w.runtime and w.runtime.type == "cluster" and w.kind != "tool"]
+_cluster_targets = lambda target_sources: [any] -> [any] {
+    [w.runtime.target for w in target_sources if w.runtime and w.runtime.type == "cluster" and w.kind != "tool"]
 }
 
 # The destination's credential reference: a bearer token file wins over a
@@ -862,9 +891,9 @@ _obs_token_secret = lambda o: any -> any {
 # The credential Secret must be supplied wherever the agent will read it, or the
 # DaemonSet never starts. Nothing to check without a cluster workload (no
 # agent) or without a credential secret.
-_headers_secret_supplied = lambda workloads: [any], o: any, required: [any], rendered: [any], delivered: [any] -> bool {
+_headers_secret_supplied = lambda credential_sources: [any], o: any, required: [any], rendered: [any], delivered: [any] -> bool {
     _ref = _destination_secret(o)
-    _need = bool(o and o.enabled and _ref and len(_cluster_targets(workloads)) > 0)
+    _need = bool(o and o.enabled and _ref and len(_cluster_targets(credential_sources)) > 0)
     (not _need) or any s in required { s.name == _ref.name and s.namespace == o.agent.namespace and _ref.key in s.keys } \
         or any s in rendered { s.name == _ref.name and s.namespace == o.agent.namespace and _ref.key in s.keys } \
         or any s in delivered { s.name == _ref.name and _cps_ns(s) == o.agent.namespace and _ref.key in CONTROL_PLANE_SECRET_KINDS[s.kind] }
@@ -890,9 +919,9 @@ _cps_ns = lambda s: ControlPlaneSecret -> str {
 
 # One per cluster that runs the node agent when the destination is the control
 # plane's ingest: that is the Secret the agent reads its token from.
-_cps_derived = lambda workloads: [any], o: any -> [ControlPlaneSecret] {
+_cps_derived = lambda derived_sources: [any], o: any -> [ControlPlaneSecret] {
     _on = bool(o and o.enabled and o.destination and o.destination.token_from_control_plane)
-    _targets = {t.cluster: t for t in _cluster_targets(workloads)} if _on else {}
+    _targets = {t.cluster: t for t in _cluster_targets(derived_sources)} if _on else {}
     [ControlPlaneSecret {
         name = OTEL_AGENT_TOKEN_SECRET
         cluster = t
@@ -901,8 +930,8 @@ _cps_derived = lambda workloads: [any], o: any -> [ControlPlaneSecret] {
     } for _, t in _targets]
 }
 
-_cps_all = lambda workloads: [any], o: any, declared: [ControlPlaneSecret] -> [ControlPlaneSecret] {
-    declared + _cps_derived(workloads, o)
+_cps_all = lambda credential_sources: [any], o: any, declared: [ControlPlaneSecret] -> [ControlPlaneSecret] {
+    declared + _cps_derived(credential_sources, o)
 }
 
 _cps_key = lambda s: ControlPlaneSecret -> str {
@@ -952,7 +981,7 @@ _cps_also_provided = lambda workloads: [any], o: any, declared: [ControlPlaneSec
 # cluster and namespace. Empty when none, or when the workload does not run on a
 # cluster.
 _cps_token_for = lambda w: any, rt: any, bundle: Bundle -> [ControlPlaneSecret] {
-    [s for s in _cps_all(bundle.workloads, bundle.observability, bundle.control_plane_secrets) if rt.type == "cluster" and s.kind == "telemetry_token" and s.cluster.cluster == rt.target.cluster and _cps_ns(s) == rt.target.namespace]
+    [s for s in _cps_all(_obs_workloads(bundle.workloads, bundle.ml_stacks, bundle.observability), bundle.observability, bundle.control_plane_secrets) if rt.type == "cluster" and s.kind == "telemetry_token" and s.cluster.cluster == rt.target.cluster and _cps_ns(s) == rt.target.namespace]
 }
 
 # Whether forge wires the credential into w: it does unless the author set the
@@ -2304,12 +2333,20 @@ _stamp_cluster = lambda manifest: any, context: str -> any {
     manifest | {metadata = _meta | {labels = {k: v for k, v in _labels if k != "forge.dev/cluster"} | {"forge.dev/cluster" = context}}}
 }
 
-# One ObservabilityAgent record per cluster that runs a forge workload, when
-# the env declares a destination. Go (pkg/deploy.RenderObservabilityAgent)
+# Include scraped ML clusters in the agent's placement and credential planning,
+# even when they run no forge workloads. An external collector owns those
+# scrapes instead when telemetry_collector is declared.
+_obs_workloads = lambda agent_workloads: [any], agent_stacks: [any], agent_obs: any -> [any] {
+    _scraped = [x.cluster for x in _ml_scrapes(agent_stacks)] if agent_obs and agent_obs.enabled and not agent_obs.telemetry_collector else []
+    agent_workloads + [{kind = "service", runtime = {type = "cluster", target = s.cluster}} for s in agent_stacks if s.cluster.cluster in _scraped]
+}
+
+# One ObservabilityAgent record per workload or scraped ML cluster, when the
+# env declares a destination. Go (pkg/deploy.RenderObservabilityAgent)
 # expands it into the DaemonSet and the node-local Service.
 _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
     _o = b.observability
-    _targets = {t.cluster: t for t in _cluster_targets(b.workloads)} if _obs_on(b) and b.observability.destination else {}
+    _targets = {t.cluster: t for t in _cluster_targets(_obs_workloads(b.workloads, b.ml_stacks, b.observability))} if _obs_on(b) and b.observability.destination else {}
     [{
         apiVersion = "forge.dev/v1alpha1"
         kind = "ObservabilityAgent"
@@ -2337,8 +2374,21 @@ _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
             }
             "image": _o.agent.image
             "memoryLimitMiB": _o.agent.memory_limit_mib
-        } | _tel_agent_spec(b, t.cluster)
+        } | _tel_agent_spec(b, t.cluster) | _k8s_inventory_spec(_o.agent, t.cluster)
     } for _, t in _targets]
+}
+
+# The `kubernetesInventory` key of a cluster's agent record (kcl/schema.k
+# KubernetesInventory; pkg/deploy.KubernetesInventory): absent unless the env
+# opts in.
+_k8s_inventory_spec = lambda agent: ObservabilityAgent, cluster: str -> {str:} {
+    _k = agent.kubernetes_inventory
+    {"kubernetesInventory": {
+        "cluster": cluster
+        "nodeInterval": _k.node_interval
+        "workloadInterval": _k.workload_interval
+        "events": _k.events
+    }} if _k else {}
 }
 
 # ---------------------------------------------------------------------------
@@ -2366,7 +2416,7 @@ _tel_agent_spec = lambda b: Bundle, cluster: str -> {str:} {
 # Every credential (a bearer token, a CA) a target on forge's node agent
 # reads: {cluster, service, ref}, ref as _tel_secret renders it.
 _tel_agent_secret_refs = lambda b: Bundle -> [any] {
-    _clusters = {t.cluster: t for t in _cluster_targets(b.workloads)} if _obs_on(b) and b.observability.destination else {}
+    _clusters = {t.cluster: t for t in _cluster_targets(_obs_workloads(b.workloads, b.ml_stacks, b.observability))} if _obs_on(b) and b.observability.destination else {}
     [{"service": x["service_name"], "ref": r} for c, _ in _clusters for x in _tel_agent_targets(b, c) \
         for r in [m["bearer_token"] for m in x["metrics"] + x["profiles"]] + [m["tls"]["ca"] for m in x["metrics"] + x["profiles"] if m["tls"]] if r]
 }
@@ -2380,7 +2430,7 @@ _tel_agent_secret_refs = lambda b: Bundle -> [any] {
 _check_agent_telemetry = lambda b: Bundle -> bool {
     _refs = _tel_agent_secret_refs(b)
     _ns = b.observability.agent.namespace if _refs else ""
-    _delivered = _cps_all(b.workloads, b.observability, _cps_decl(b.workloads, _idns(b), b.env, b.project, b.control_plane_secrets)) if _refs else []
+    _delivered = _cps_all(_obs_workloads(b.workloads, b.ml_stacks, b.observability), b.observability, _cps_decl(b.workloads, _idns(b), b.env, b.project, b.control_plane_secrets)) if _refs else []
     _missing = [d for d in _refs if not (any s in b.required_secrets { s.name == d.ref.secret and s.namespace == _ns and d.ref.key in s.keys } \
         or any s in b.rendered_secrets { s.name == d.ref.secret and s.namespace == _ns and d.ref.key in s.keys } \
         or any s in _delivered { s.name == d.ref.secret and _cps_ns(s) == _ns and d.ref.key in CONTROL_PLANE_SECRET_KINDS[s.kind] })]
@@ -2394,7 +2444,20 @@ _check_agent_telemetry = lambda b: Bundle -> bool {
 # `delivery_policy`; lists are sorted so the shape does not depend on the order
 # the author typed them in.
 _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
-    _ex = {e.id: {"id": e.id, "reason": e.reason, "expires": e.expires} for e in p.vuln_gate.exemptions}
+    _ex = {e.id: {"id": e.id, "reason": e.reason, "expires": e.expires} for e in p.vuln_gate.exemptions if not (e.packages or e.artifacts or e.locations)}
+    # A scoped exemption is recorded in a list of its own, which a reader
+    # predating scopes never reads as covering the advisory everywhere.
+    _scoped = {_vuln_exemption_identity(e): {
+        "id": e.id
+        "reason": e.reason
+        "expires": e.expires
+        if e.packages:
+            "packages": sorted(e.packages)
+        if e.artifacts:
+            "artifacts": sorted(e.artifacts)
+        if e.locations:
+            "locations": sorted(e.locations)
+    } for e in p.vuln_gate.exemptions if e.packages or e.artifacts or e.locations}
     {
         "trusted_builder": {"mode": p.trusted_builder.mode, "builders": sorted(p.trusted_builder.builders)}
         # Unset signing / flux_verify resolve for where the env delivers:
@@ -2417,6 +2480,8 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
             "block_kev": p.vuln_gate.block_kev
             "fixable_only": p.vuln_gate.fixable_only
             "exemptions": [_ex[i] for i in sorted(_ex)]
+            if _scoped:
+                "scoped_exemptions": [_scoped[i] for i in sorted(_scoped)]
         }
         "bundle_kinds": {"mode": p.bundle_kinds.mode, "allow": sorted(p.bundle_kinds.allow), "deny": sorted(p.bundle_kinds.deny)}
         "approvals": {"mode": p.approvals.mode, "required": p.approvals.required, "approvers": sorted(p.approvals.approvers)}
@@ -2442,8 +2507,9 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
 # regressed_issue_min_events only when it is set and differs from
 # new_issue_min_events (which it follows unset), and error_rate_min_errors
 # and baseline_window_seconds only when they are not the defaults (10, 24h),
-# and alert_baseline_min_firings only when it is not the default (1), so a
-# render that keeps them records the shape it always did.
+# and alert_baseline_min_firings only when it is not the default (1), and
+# seo_max_score_drop and a11y_max_score_drop only when they are not the
+# default (10), so a render that keeps them records the shape it always did.
 _render_release_health = lambda h: ReleaseHealth -> any {
     {
         "window_seconds": _release_health_seconds(h.window)
@@ -2462,6 +2528,10 @@ _render_release_health = lambda h: ReleaseHealth -> any {
             "baseline_window_seconds": _release_health_seconds(h.baseline_window)
         if h.alert_baseline_min_firings != 1:
             "alert_baseline_min_firings": h.alert_baseline_min_firings
+        if h.seo_max_score_drop != 10:
+            "seo_max_score_drop": h.seo_max_score_drop
+        if h.a11y_max_score_drop != 10:
+            "a11y_max_score_drop": h.a11y_max_score_drop
     }
 }
 
@@ -2653,7 +2723,7 @@ _render_observability = lambda b: Bundle -> any {
             "replay_days": _o.retention.replay_days
             "errors_days": _o.retention.errors_days
             "product_events_days": _o.retention.product_events_days
-        }
+        } | ({"edge_days": _o.retention.edge_days} if _o.retention.edge_days else {})
         "agent": {
             "namespace": _o.agent.namespace
             "image": _o.agent.image
@@ -2951,11 +3021,31 @@ _tel_managed_database = lambda db: any, t: Telemetry, b: Bundle -> any {
 # {t, svc}, in render order. A ManagedDatabase's default counts: it is the
 # database's Telemetry until replaced.
 _tel_declared = lambda b: Bundle -> [any] {
+    _own = _tel_declared_own(b)
+    _own + [{"t": t, "svc": t.service_name} for t in _ml_telemetry_of(b, [d.svc for d in _own])]
+}
+
+# The env's Telemetry before the ML stacks' derived scrapes: what replaces
+# one of those by declaring its service name.
+_tel_declared_own = lambda b: Bundle -> [any] {
     [{"t": w.telemetry, "svc": _tel_service_name(w)} for w in b.workloads if w.telemetry] \
         + [{"t": d.telemetry, "svc": d.telemetry.service_name or d.name} for d in b.infra if d.telemetry] \
         + [{"t": t, "svc": t.service_name or g.name} for g in b.manifests for t in g.telemetry] \
         + ([{"t": t, "svc": t.service_name} for t in b.observability.telemetry] if b.observability else []) \
         + [{"t": d.t, "svc": d.t.service_name or managed_database_service_name(d.db.name)} for d in _db_telemetries(b)]
+}
+
+# The Telemetry an env's ML stacks lower to (kcl/ml.k _ml_telemetry): one
+# scrape per adopted component with a port, only when observability is on.
+# `taken` are the service names the env declares itself.
+_ml_telemetry_of = lambda b: Bundle, taken: [str] -> [Telemetry] {
+    _ml_telemetry(b.ml_stacks, _obs_on(b), taken) if b.ml_stacks else []
+}
+
+# An ML stack's scrape, attached as Observability.telemetry is.
+_tel_ml = lambda t: Telemetry, b: Bundle -> any {
+    _tel_target(t, t.service_name, "ml-stack:" + t.cluster, "observability", "cluster", \
+        t.cluster, t.namespaces or [], t.selector or {}, "", {}, b)
 }
 
 # The CloudNativePG operator's default targets: one per cluster holding a
@@ -2980,6 +3070,7 @@ _render_telemetry = lambda b: Bundle -> [any] {
         + [_tel_host_infra(d, b) for d in b.infra if d.telemetry] \
         + [_tel_manifests(g, t, _pt, b) for g in b.manifests for t in g.telemetry] \
         + ([_tel_observability(t, b) for t in b.observability.telemetry] if b.observability else []) \
+        + [_tel_ml(t, b) for t in _ml_telemetry_of(b, [d.svc for d in _tel_declared_own(b)])] \
         + [_tel_managed_database(d.db, d.t, b) for d in _db_telemetries(b)] \
         + _tel_cnpg_operators(b)
 }
@@ -3226,6 +3317,16 @@ _openbao = lambda b: Bundle -> any {
     }) if b.openbao else Undefined
 }
 
+# The Namespaces the env's bundle Installs need (kcl/ml.k _ml_namespaces),
+# less those the env renders itself (_namespaces) or declares in a
+# forge.Manifests group, on the same cluster.
+_ml_namespaces_of = lambda b: Bundle, entities: [any] -> [any] {
+    _pt = _primary_target(b)
+    _forge = ["${n.metadata.labels['forge.dev/cluster']}/${n.metadata.name}" for n in _namespaces(b, entities)]
+    _declared = ["${g.cluster or (_pt.cluster if _pt else '')}/${m.metadata.name}" for g in b.manifests for m in g.objects if m.kind == "Namespace" and m.metadata and m.metadata.name]
+    _ml_namespaces(b.ml_stacks, eso_lib.eso_owner(b.project, b.env), _forge + _declared) if b.ml_stacks else []
+}
+
 _manifests = lambda b: Bundle, entities: [any] -> [any] {
     _pt = _primary_target(b)
     _ns = _pt.namespace if _pt else ""
@@ -3234,6 +3335,7 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
     labels_lib.stamp_env_all(
         [_render_runtime_class_manifest(rc, _ns, _project) for rc in b.runtime_classes] \
         + _namespaces(b, entities) \
+        + _ml_namespaces_of(b, entities) \
         + [_place_on_primary(_render_config_map_manifest(cm, _ns, _project), _pt) for cm in b.config_maps] \
         + [_workload_record(e, _project, b.release) for e in entities if e.runtime.type == "cluster" and e.kind != "tool"] \
         + _obs_agent_records(b, _project) \
@@ -3304,7 +3406,7 @@ render = lambda bundle: Bundle -> any {
             "egress_ports": bundle.network_policy.egress_ports
             # The node agent is the env's collector: the telemetry allow
             # follows it unless the author named another.
-            "telemetry_namespace": bundle.network_policy.telemetry_namespace or (bundle.observability.agent.namespace if _obs_on(bundle) and bundle.observability.destination and len(_cluster_targets(bundle.workloads)) > 0 else "")
+            "telemetry_namespace": bundle.network_policy.telemetry_namespace or (bundle.observability.agent.namespace if _obs_on(bundle) and bundle.observability.destination and len(_cluster_targets(_obs_workloads(bundle.workloads, bundle.ml_stacks, bundle.observability))) > 0 else "")
             "ingress_namespace": bundle.network_policy.ingress_namespace
         } if bundle.network_policy else None
         "workloads": _entities
@@ -3330,6 +3432,11 @@ render = lambda bundle: Bundle -> any {
         # before.
         if _render_telemetry(bundle):
             "telemetry": _render_telemetry(bundle)
+        # The declared ML stacks (kcl/ml.k MLStack documents the shape), for
+        # tools that read the stack and its decisions without parsing KCL.
+        # Absent when none is declared, so an env without renders as before.
+        if bundle.ml_stacks:
+            "ml_stacks": _ml_render(bundle.ml_stacks, _obs_on(bundle))
         # The env's own collector, which pulls its cluster targets instead of
         # forge's node agent: the peer the targets' NetworkPolicy rules admit
         # (internal/cluster/telemetry.go). Only beside declared telemetry.
@@ -3373,7 +3480,7 @@ render = lambda bundle: Bundle -> any {
             "identity": _render_identity(bundle, _idns(bundle)[0])
         if len(_idns(bundle)) > 1:
             "identities": [_render_identity(bundle, id) for id in _idns(bundle)]
-        "infra": [_render_host_infra(i) for i in bundle.infra]
+        "infra": [_render_host_infra(i, bundle) for i in bundle.infra]
         "frontends": [_render_frontend(f, bundle) for f in bundle.frontends]
         "databases": [_render_database(db, bundle) for db in bundle.databases]
         # The env's buckets forge manages, as the ManagedBucket the hosted
@@ -3412,12 +3519,14 @@ render = lambda bundle: Bundle -> any {
         # Platform deps (helm-as-a-RENDERER): the CLI expands each via `helm
         # template --skip-crds` and folds the result into the apply stream,
         # selected by `--target <name>`. Not in `manifests`.
-        "helm_charts": [_render_helm_chart(h) for h in _all_helm_charts(bundle) if h.delivery != "bundle"]
+        "helm_charts": [_render_helm_chart(h) for h in _all_helm_charts(bundle) if h.delivery != "bundle"] \
+            + [_render_helm_chart(x.chart) | {"labels": _ml_chart_labels(x, bundle)} for x in _ml_install_charts(bundle.ml_stacks) if x.chart.delivery != "bundle"]
         # Bring-your-own YAML, rendered Go-side at extract time and shipped in
         # the bundle (internal/cluster/byo_yaml.go). Keys appear only when
         # declared, so an env with neither renders exactly as before.
-        if [h for h in bundle.helm_charts if h.delivery == "bundle"]:
-            "bundled_charts": [_render_helm_chart(h) for h in bundle.helm_charts if h.delivery == "bundle"]
+        if [h for h in bundle.helm_charts if h.delivery == "bundle"] or [x for x in _ml_install_charts(bundle.ml_stacks) if x.chart.delivery == "bundle"]:
+            "bundled_charts": [_render_helm_chart(h) for h in bundle.helm_charts if h.delivery == "bundle"] \
+                + [_render_ml_chart(x, bundle) for x in _ml_install_charts(bundle.ml_stacks) if x.chart.delivery == "bundle"]
         if bundle.generated:
             "generated": [{
                 "name": g.name
@@ -3440,11 +3549,11 @@ render = lambda bundle: Bundle -> any {
         # logs in. A declaration only; no value.
         if bundle.openbao:
             "openbao": _openbao(bundle).block
-        "control_plane_secrets": [_render_control_plane_secret(s, bundle) for s in _cps_all(bundle.workloads, bundle.observability, _cps_decl(bundle.workloads, _idns(bundle), bundle.env, bundle.project, bundle.control_plane_secrets))]
+        "control_plane_secrets": [_render_control_plane_secret(s, bundle) for s in _cps_all(_obs_workloads(bundle.workloads, bundle.ml_stacks, bundle.observability), bundle.observability, _cps_decl(bundle.workloads, _idns(bundle), bundle.env, bundle.project, bundle.control_plane_secrets))]
         # WHERE secret values come from. A declaration only: no secret VALUE
         # ever enters this output.
         if bundle.secret_provider:
-            "secret_provider": bundle.secret_provider
+            "secret_provider": _render_secret_provider(bundle)
         # Explicitly-placed Secrets, placement RESOLVED here (own
         # cluster/namespace, else the primary target's) so the CLI applies
         # each exactly where it says. A `from = "file"` key carries only the
@@ -3488,7 +3597,36 @@ render = lambda bundle: Bundle -> any {
 # returns a fully-populated dict so the Go consumer sees stable keys.
 # ---------------------------------------------------------------------------
 
-_render_host_infra = lambda d: HostInfra -> any {
+# A host MinIO's buckets: those the env declares on it (BucketOnMinIO
+# {infra = <its name>}).
+_host_minio_buckets = lambda d: HostInfra, bundle: Bundle -> [Bucket] {
+    [b for b in bundle.buckets if b.runtime.type == "minio" and b.runtime.infra == d.name]
+}
+
+# The browser origins a host MinIO allows: the union of its buckets'
+# cors_origins, any origin when none declares one — forge.minio_workload's
+# rule, so a bucket behaves the same on either MinIO.
+_host_minio_cors = lambda d: HostInfra, bundle: Bundle -> str {
+    _origins = sorted({o: 0 for b in _host_minio_buckets(d, bundle) for o in b.cors_origins})
+    "*" if not _origins or "*" in _origins else ",".join(_origins)
+}
+
+# The env's secret provider as rendered. A forge.FileSecrets beside a host
+# MinIO also `generate`s that MinIO's root credentials, under the keys
+# _minio_root_secrets names: hex, because an access key travels inside the
+# SigV4 Credential header, where a base64 '/' would split it. A spec the
+# author declared for the same key wins. Each added spec is the env
+# document's GenerateSpec shape (bytes, encoding) and nothing more. The
+# declared provider is merged into, not rebuilt: every field it carries
+# renders as declared, and only `generate` gains entries.
+_render_secret_provider = lambda bundle: Bundle -> any {
+    _sp = bundle.secret_provider
+    _keys = [k for i in bundle.infra if i.engine == "minio" for k in [_minio_root_secrets(i.name).user, _minio_root_secrets(i.name).password]] if _sp.type == "file" else []
+    _minio_gen = {k: {"bytes": 16 if k.endswith("_ROOT_USER") else 32, "encoding": "hex"} for k in _keys if k not in (_sp.generate or {})}
+    _sp if not _minio_gen else {k: v for k, v in _sp if k != "generate"} | {"generate": _minio_gen | (_sp.generate or {})}
+}
+
+_render_host_infra = lambda d: HostInfra, bundle: Bundle -> any {
     {
         "name": d.name
         "engine": d.engine
@@ -3514,6 +3652,16 @@ _render_host_infra = lambda d: HostInfra -> any {
         # Only when declared, so an env without it renders as before.
         if d.temporal_metrics_port:
             "temporal_metrics_port": d.temporal_metrics_port
+        # engine = "minio" only, and only then, so every other engine renders
+        # as before. The buckets come from Bundle.buckets; the credentials are
+        # the secret-store KEYS forge generates them under, never values.
+        if d.engine == "minio":
+            "minio_console_port": d.minio_console_port if d.minio_console_port else None
+            "minio_region": _host_minio_region(d)
+            "minio_buckets": [{"name": b.name, "public_read": b.public_read} for b in _host_minio_buckets(d, bundle)]
+            "minio_cors_allow_origin": _host_minio_cors(d, bundle)
+            "minio_root_user_secret": _minio_root_secrets(d.name).user
+            "minio_root_password_secret": _minio_root_secrets(d.name).password
     }
 }
 
@@ -3632,6 +3780,8 @@ _frontend_violations = lambda f: Frontend -> [str] {
             if f.image and _t != "hosted" else []) \
         + (["image is REQUIRED on forge.OnHosted: the site release is pushed to a registry, and the registry is part of the reference (e.g. image = \"ghcr.io/<owner>/${f.name}\"). forge appends the platform's own static.v1 layout to it. There is no env-level registry"] \
             if _t == "hosted" and not f.image else []) \
+        + (["markdown_negotiation: only the Reliant hosting origin (forge.OnHosted) varies a page on the Accept header; ${'a bucket serves one object per URL' if _t == 'bucket' else ('Firebase serves one file per URL' if _t == 'firebase' else ('the dev server serves the HTML page' if _host else 'the build is not served here'))}. Bind '${f.name}' to forge.OnHosted in this env, or drop markdown_negotiation (the .md twins are still files at their own URLs)"] \
+            if f.markdown_negotiation and _t != "hosted" else []) \
         + _not_static_export(f) \
         # A BARE image is accepted on forge.OnHosted, exactly as it is on a
         # hosted workload (ADR-0003 F1, _check_image_names_registry): forge
@@ -3876,7 +4026,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         "dev_runner": f.dev_runner
         "port": f.port
         "env_file": f.env_file if f.env_file else None
-        "env_vars": [_render_env_var(e) for e in f.env_vars if not (_obs_browser_off(bundle) and e.name == _otel_endpoint_var(f))] \
+        "env_vars": [_render_frontend_env_var(e, f, bundle) for e in f.env_vars if not (_obs_browser_off(bundle) and e.name == _otel_endpoint_var(f))] \
             + ([_render_env_var(EnvVar {name = _otel_endpoint_var(f), value = "off"})] if _obs_browser_off(bundle) else [])
         "config": _render_frontend_config(f.config) if f.config else None
         "runtime": _render_frontend_runtime(f.runtime)
@@ -3900,8 +4050,11 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
     } | ({"apis": _apis, "api_urls": _api_urls} if f.apis else {}) \
       | ({"routes": f.routes} if f.routes else {}) \
       | ({"changes_from_source": False} if f.changes_from_source == False else {}) \
+      | ({"release_urls": False} if f.release_urls == False else {}) \
       | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {}) \
-      | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {})
+      | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {}) \
+      | ({"markdown_negotiation": True} if f.markdown_negotiation else {}) \
+      | ({"edge_logs": False} if f.runtime.type == "hosted" and _obs_edge_off(bundle) else {})
 }
 
 # Render an EnvVar to its stable dict form. Unset / empty-string
@@ -3909,6 +4062,44 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
 # `value`, which preserves an explicitly-set empty string (rendered as
 # `""`, not `null`). Empty-string `value` is a legal disable sentinel
 # downstream (e.g. RUNTIME_CLASS_NAME="" to skip runtimeClassName).
+#
+# A frontend's env var lowers a forge.FrontendURL by where its TARGET runs
+# (kcl/schema.k FrontendURL): a dev server's URL is known now, so it becomes
+# the value; a hosted frontend's hostname is the control plane's, so the
+# reference is kept for the build to resolve (`frontend_url`, value null);
+# every other runtime has no hostname forge knows, and is refused. Every
+# var that carries no FrontendURL renders exactly as _render_env_var does.
+_render_frontend_env_var = lambda ev: EnvVar, f: Frontend, bundle: Bundle -> any {
+    _r = _render_env_var(ev)
+    (_r | _frontend_url_lowered(ev.name, ev.frontend_url, f, bundle)) if ev.frontend_url else _r
+}
+
+_frontend_url_lowered = lambda name: str, ref: FrontendURL, f: Frontend, bundle: Bundle -> any {
+    _where = "frontend '${f.name}' env_vars ${name}"
+    _targets = [t for t in bundle.frontends if t.name == ref.frontend]
+    assert _targets, \
+        "${_where}: forge.FrontendURL names frontend '${ref.frontend}', which this environment does not declare. " \
+        + "Declared frontends: " + ", ".join([t.name for t in bundle.frontends]) + "."
+    _t = _targets[0]
+    _type = _t.runtime.type if _t.runtime else ""
+    assert _type in ["host", "hosted"], \
+        "${_where}: forge.FrontendURL '${ref.frontend}' runs on the ${_type} runtime, whose public hostname forge does not know " \
+        + "(it is your CDN's or your Firebase site's). Set ${name} to the site's URL as a literal: forge.EnvVar {name = \"${name}\", value = \"https://example.com\"}."
+    # A dev server's URL baked into a published build would ship localhost
+    # as the site's canonical origin.
+    assert not (_type == "host" and f.runtime and f.runtime.type != "host"), \
+        "${_where}: forge.FrontendURL '${ref.frontend}' is a dev server (forge.OnHost), and frontend '${f.name}' publishes a build on the ${f.runtime.type} runtime: " \
+        + "the build would carry http://localhost as its origin. Name a hosted frontend, or set ${name} to a literal value."
+    # A hosted target's hostname is resolved only by a build forge runs (a
+    # hosted release, a bucket/Firebase/BuildOnly deploy). A dev server is
+    # not one, so it would see the variable empty.
+    assert not (_type == "hosted" and f.runtime and f.runtime.type == "host"), \
+        "${_where}: forge.FrontendURL '${ref.frontend}' is a hosted site, and frontend '${f.name}' is a dev server (forge.OnHost), which forge does not build: " \
+        + "nothing would resolve the hosted hostname. Name a dev-served frontend of this env, or set ${name} to a literal value."
+    {"value": "http://localhost:" + str(_t.port) + (_t.base_path if _t.base_path else "")} if _type == "host" \
+        else {"frontend_url": {"frontend": ref.frontend}}
+}
+
 _render_env_var = lambda ev: EnvVar -> any {
     {
         "name": ev.name
@@ -4439,7 +4630,7 @@ _render_flux_delivery = lambda b: Bundle -> {str: any} {
     _p = b.delivery_policy or DeliveryPolicy {}
     _sign = _delivery_signing_mode(_p, bool(b.control_plane))
     _verify = _delivery_flux_verify_mode(_p, bool(b.control_plane))
-    _ctx = _targeted_contexts(b.workloads, b.databases, b.cluster_target, b.gateways, b.http_routes, b.grpc_routes, b.helm_charts, b.manifests, b.generated, b.rendered_secrets)
+    _ctx = _targeted_contexts(b.workloads, b.databases, b.cluster_target, b.gateways, b.http_routes, b.grpc_routes, b.helm_charts, b.manifests, b.generated, b.rendered_secrets, b.ml_stacks, b.observability)
     {
         "chart": flux_delivery_lib.FLUX_DELIVERY_CHART_NAME
         "env": b.env
@@ -4467,6 +4658,34 @@ _render_flux_delivery = lambda b: Bundle -> {str: any} {
 # existing FilterManifestsByApp axis. `values` passes through verbatim.
 # NEVER appears in render_manifests — the expansion is a Go-side shell-out
 # (helm), not a KCL render.
+# The labels forge stamps on every object an MLStack Install's chart renders,
+# on either delivery: the component-owner stamp (the spelling lib/eso.k gives
+# it) and the component.
+_ml_chart_labels = lambda x: any, b: Bundle -> {str:str} {
+    {
+        "${eso_lib.ESO_COMPONENT_OWNER_LABEL}" = eso_lib.eso_owner(b.project, b.env)
+        "${eso_lib.ESO_COMPONENT_LABEL}" = ML_COMPONENT_PREFIX + x.kind
+    }
+}
+
+# An MLStack bundle Install's chart, as a `bundled_charts` entry: exactly the
+# keys internal/cluster reads for a bundle chart (BundledChartOutput), plus
+# its labels.
+_render_ml_chart = lambda x: any, b: Bundle -> any {
+    _h = x.chart
+    {
+        "name": _h.name
+        "chart": _h.chart if _h.chart else None
+        "repo": _h.repo if _h.repo else None
+        "oci": _h.oci if _h.oci else None
+        "version": _h.version
+        "namespace": _h.namespace
+        "values": _h.values
+        "cluster": _eso_context(_h)
+        "labels": _ml_chart_labels(x, b)
+    }
+}
+
 _render_helm_chart = lambda h: HelmChart -> any {
     {
         "name": h.name

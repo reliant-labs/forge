@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -264,7 +265,10 @@ Examples:
                                  # packages; whole-project linters (frontend
                                  # lint, graph, component-drift, config-reach) are
                                  # skipped and named in the verdict, so run an
-                                 # unscoped 'forge lint' before merging
+                                 # unscoped 'forge lint' before merging.
+                                 # A handler dir also reports its service's
+                                 # proto findings (and back), and the verdict
+                                 # counts errors left outside the scope
 
 The advisory rules above are warnings by default — they fail the build only
 when lint.rules sets them to error.
@@ -398,7 +402,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.columnMarkers, "column-markers", false, "Fail on a COMMENT ON TABLE/VIEW/COLUMN/CONSTRAINT carrying a forge: marker that object does not read")
 	cmd.Flags().BoolVar(&flags.closedSets, "closed-sets", false, "Fail when a CHECK declared forge:closed-set <set> does not list exactly that Go set, and print the migration that fixes it")
 	cmd.Flags().BoolVar(&flags.dbGrants, "db-grants", false, "Fail on a credential-shaped column (token, password, key, ciphertext, hash…) that carries neither forge:secret nor forge:readable <reason>: the read-only forge_ro role is refused it until someone decides")
-	cmd.Flags().BoolVar(&flags.crudOwnership, "crud-ownership", false, "Flag a table served by forge-generated CRUD on an authenticated rpc that declares no owner — no COMMENT ON TABLE forge:owner=<column>, no forge:owner column, no forge:public or forge:unscoped with a reason — so every signed-in caller can read and write every row (warns first; gates from the release after the one that ships it)")
+	cmd.Flags().BoolVar(&flags.crudOwnership, "crud-ownership", false, "Flag a table served by forge-generated CRUD on an authenticated rpc that declares no owner — no COMMENT ON TABLE forge:owner=<column>, no forge:owner column, no forge:public or forge:unscoped with a reason — so every signed-in caller can read and write every row (warns first; gates from the release after the one that ships it). A table still exactly as forge scaffolded it warns \"pending: choose an owner\" until it is edited")
 	cmd.Flags().BoolVar(&flags.idempotency, "idempotency", false, "Flag an rpc whose idempotency_level contradicts its name: a read (Get, List, Search, Find, Check, Has, Is, Count, Exists, Watch, Query, Describe, BatchGet) that does not declare option idempotency_level = NO_SIDE_EFFECTS, which read-only fixture and demo transports require, and a write (Create, Update, Delete, Set, Add, Remove, Upsert, Insert, Patch, Replace, Cancel, Send, Grant, Revoke, Archive, Restore, Purge, Move, Rename) or a forge:mutation rpc that declares it, which makes it a cacheable GET. A unary read whose response carries a secret or a per-call value (a token, password, credential, nonce, challenge, one-time code, oauth_state, api_key, a presigned, upload, download, export, checkout, authorize, reset, invite or claim URL, or a debug_redact field; not a page_token or cursor) must not declare it either: a GET can be cached and replayed to the next caller. A read that really writes, or mints a value on each call, says so with a // forge:mutation: <why> comment above it. Runs in every forge lint (warns first; gates from the release after the one that ships it)")
 	cmd.Flags().BoolVar(&flags.fixtureDrift, "fixture-drift", false, "Execute every literal fixture statement in a scaffolded handlers_crud_test.go against the current schema — migrations applied to a shadow postgres, each statement run in a rolled-back transaction — and report postgres's own error for each one it rejects: a GENERATED column, a UNIQUE collision, a dangling foreign key, a CHECK a later migration added (warnings only)")
 	// --crud-fixtures checked one failure class (a dangling foreign key) by
@@ -437,7 +441,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Same as --check: write nothing, print the diff each fix would apply, and fail if any is pending")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
 	cmd.Flags().BoolVarP(&flags.quiet, "quiet", "q", false, "Print only what failed: a one-line summary per failing linter, its error findings, and the verdict as the LAST line (a clean run is one line). With --fix, fixes are applied silently; combines with the targeted flags and --scope")
-	cmd.Flags().StringSliceVar(&flags.scope, "scope", nil, "Report only findings in files under `PATH` (repeatable or comma-separated, project-relative). Go linters run on PATH's packages only; file-anchored linters report only findings under PATH; whole-project linters (frontend lint, graph, component-drift, config-reach) cannot be scoped, are skipped, and are named in the verdict. With --fix, only files under PATH are rewritten")
+	cmd.Flags().StringSliceVar(&flags.scope, "scope", nil, "Report only findings in files under `PATH` (repeatable or comma-separated, project-relative). Go linters run on PATH's packages only; file-anchored linters report only findings under PATH; whole-project linters (frontend lint, graph, component-drift, config-reach) cannot be scoped, are skipped, and are named in the verdict. A path in one half of a service (internal/handlers/<svc>, proto/services/<svc>) also reports the findings in its other half, and the verdict counts the errors left outside the scope. With --fix, only files under PATH are rewritten")
 	// No backticks: cobra would render the first quoted span as the flag's
 	// argument placeholder (see --optional-deps-guard).
 	cmd.Flags().BoolVar(&flags.showSuppressed, "show-suppressed", false, "List every suppression the project declares, with file:line, what it covers and the stated reason: forge.yaml lint.rules (off/warn) and contracts.exclude, //forge:exclude-contract markers, forge:lint-disable* and nolint directives, and the migration and optional-dep pragmas. Read-only: runs no linter and exits 0; combines with --json and --scope")
@@ -1035,8 +1039,16 @@ type lintVerdict struct {
 	off []string
 	// scope is the --scope value, "" for a whole-project run.
 	scope string
-	// hiddenWarnings counts findings --quiet did not print.
+	// outside counts the error findings a scoped run did not report because
+	// their files lie outside the scope, and outsideLanes names the lanes
+	// that found them. A scoped pass must not read as "an unscoped run
+	// passes too" when the lanes already know it will not.
+	outside      int
+	outsideLanes []string
+	// hiddenWarnings counts findings --quiet did not print, and hiddenRules
+	// counts them by rule, so the verdict can say what they are.
 	hiddenWarnings int
+	hiddenRules    map[string]int
 	// graced are the findings that warn only because the project's pin has
 	// not been through a release with their rule (lint_rollout.go).
 	graced []gracedRule
@@ -1159,10 +1171,76 @@ func (v lintVerdict) suffix() string {
 				strings.Join(v.unscoped, ", "))
 		}
 	}
+	if v.outside > 0 {
+		fmt.Fprintf(&b, "; %s outside the scope not shown (%s) — an unscoped `forge lint` reports them",
+			plural(v.outside, "error"), strings.Join(v.outsideLanes, ", "))
+	}
 	if v.hiddenWarnings > 0 {
-		fmt.Fprintf(&b, "; %s not shown (--quiet)", plural(v.hiddenWarnings, "advisory finding"))
+		fmt.Fprintf(&b, "; %s not shown (--quiet", plural(v.hiddenWarnings, "advisory finding"))
+		if rules := describeHiddenRules(v.hiddenRules); rules != "" {
+			fmt.Fprintf(&b, ": %s", rules)
+		}
+		b.WriteString("; run without --quiet to see them)")
 	}
 	return b.String()
+}
+
+// hide records findings --quiet does not print: counted as issueCount
+// counts them, and by rule.
+func (v *lintVerdict) hide(fs []lintJSONFinding) {
+	n := issueCount(fs)
+	if n == 0 {
+		return
+	}
+	v.hiddenWarnings += n
+	if v.hiddenRules == nil {
+		v.hiddenRules = map[string]int{}
+	}
+	anchored := 0
+	for _, f := range fs {
+		if f.File != "" || f.Rule != "external" {
+			v.hiddenRules[f.Rule]++
+			anchored++
+		}
+	}
+	if anchored == 0 {
+		v.hiddenRules["external"] += n
+	}
+}
+
+// hiddenRulesShown is how many rules the --quiet note names.
+const hiddenRulesShown = 3
+
+// describeHiddenRules names the rules --quiet hid, most findings first:
+// "forge-idempotency-read-undeclared ×3, forge-config-deps".
+//
+// The note used to say only "3 advisory findings not shown (--quiet)", so an
+// agent gating with --quiet learned that something was hidden, but not what,
+// and not how to see it (Ranger build, friction #10).
+func describeHiddenRules(byRule map[string]int) string {
+	rules := make([]string, 0, len(byRule))
+	for r := range byRule {
+		rules = append(rules, r)
+	}
+	sort.Slice(rules, func(i, j int) bool {
+		if byRule[rules[i]] != byRule[rules[j]] {
+			return byRule[rules[i]] > byRule[rules[j]]
+		}
+		return rules[i] < rules[j]
+	})
+	parts := make([]string, 0, hiddenRulesShown+1)
+	for i, r := range rules {
+		if i == hiddenRulesShown {
+			parts = append(parts, fmt.Sprintf("and %d more", len(rules)-hiddenRulesShown))
+			break
+		}
+		if n := byRule[r]; n > 1 {
+			parts = append(parts, fmt.Sprintf("%s ×%d", r, n))
+		} else {
+			parts = append(parts, r)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // golangciRunArgs is the ONE place a `golangci-lint run` argv is assembled,

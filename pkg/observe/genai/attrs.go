@@ -186,6 +186,13 @@ const (
 	// AttrCostUSDReliant is the name Reliant reported AttrCostUSD under
 	// before forge named it. Read, never emitted by forge.
 	AttrCostUSDReliant = "reliant.cost_usd"
+
+	// AttrConvention names the span convention an AI span arrived in
+	// ("genai", "openinference", "openllmetry"), stamped at ingest by the
+	// normalisation in pkg/observe/genai/conventions. Never emitted by an
+	// SDK helper: it says where the canonical keys came from, so a reader
+	// can show the source and a mapping bug can be found.
+	AttrConvention = "forge.ai.convention"
 )
 
 // Who a span is for: the same keys pkg/observe stamps on product events

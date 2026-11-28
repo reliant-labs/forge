@@ -3,9 +3,11 @@
 `forge mcp` serves forge over the [Model Context Protocol](https://modelcontextprotocol.io)
 on stdio, so any MCP-capable harness (Claude Code, Codex, Cursor, ...) can use
 forge in **any repo**, with no memory file explaining how. The server introduces
-itself as Reliant Forge (not Atlassian Forge, not Foundry's `forge`), then says
-what forge does for the repo the agent is in, and sends the model to the
-`benefits` tool and the `adopt` skill.
+itself as Reliant Forge (not Atlassian Forge, not Foundry's `forge`) and sends
+the model to the `adopt` skill (the `forge` skill in a forge project). Started
+with `--tools all`, it also says what forge does for the repo the agent is in,
+and points at the `benefits` tool, which the default server enables through
+`forge_tools` (below).
 
 Each tool runs the same command the CLI does, in-process. There is no forge
 binary to shell out to and nothing to keep in sync with the CLI.
@@ -107,6 +109,31 @@ do from a shell.
 A project pinned to another forge version is not handed over to that forge (the
 exec would replace the server). `generate` refuses with the usual skew message
 and the reinstall hint instead.
+
+### Choosing tools: `--tools`
+
+A client resends every listed tool's name, description and input schema to the
+model on every call, so a tool the agent never calls still costs tokens each
+turn. `--tools` picks the groups the server lists: `core` (the default), a
+comma-separated list of groups, or `all`.
+
+| Group     | Tools                                                                                        |
+| --------- | -------------------------------------------------------------------------------------------- |
+| `core`    | `audit`, `shapes`, `skill_search`, `skill_load`, `lint`, `generate`                          |
+| `catalog` | `benefits`, `why`, `capabilities`, `schema`, `annotations`, `libraries`, `skill_list`        |
+| `support` | `explain_error`, `report_bug`                                                                |
+| `ops`     | `blast_radius`, `db_query`, `obs_status`, `obs_issues`, `obs_issue`, `obs_logs`, `obs_check` |
+| `deploy`  | `deploy_claimable`, `deploy_status`                                                          |
+
+`core`, the default, is the smallest useful server: its tool list is about a
+fifth the size of the full one. When a group is left out the server also
+lists `forge_tools`, which lists the groups and enables more in the session
+(the client gets `notifications/tools/list_changed`; one that ignores it needs a
+restart with `--tools all`), and its instructions shrink to a few lines. So no
+tool is gone: every one is a `forge_tools` call away. `--tools all` lists every
+tool up front, as `forge mcp` did before `core` became the default, and stays
+accepted permanently; pass it (or name the groups, `--tools core,deploy,ops`)
+when a client ignores `tools/list_changed` and needs more than core.
 
 ## Deploying with no account
 

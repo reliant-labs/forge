@@ -12,14 +12,15 @@ import (
 )
 
 // forge:section MockService
-// forge:hash=5f93e1aea09a07086e0bf1cdd46053f65bff2fca7ff02b59046d6b30a20b6ce4
+// forge:hash=e9154b199e10c6ea0fd0eac177ef7253bc938df085f3fbaa848ec91ab810f4f7
 
 // MockService is a test mock for the Service interface.
 //
 // The embedded contractkit.Recorder records every call so tests can
-// assert call counts and captured arguments. Set XxxFunc fields to
-// override per-method behaviour; unset methods return the canonical
-// "MockService.<Method>Func not set" error.
+// assert call counts and captured arguments; each method's <Method>Calls
+// returns its calls with every argument as a named, typed field. Set
+// XxxFunc fields to override per-method behaviour; unset methods return the
+// canonical "MockService.<Method>Func not set" error.
 type MockService struct {
 	contractkit.Recorder
 	RenderCategoryFunc            func(string, string, any) ([]byte, error)
@@ -52,6 +53,70 @@ func (m *MockService) RenderInternalPackageKind(kind string, name string, data a
 		return m.RenderInternalPackageKindFunc(kind, name, data)
 	}
 	return nil, contractkit.MockNotSet("MockService", "RenderInternalPackageKind")
+}
+
+// MockServiceRenderCategoryCall is one recorded call of MockService.RenderCategory, one
+// field per parameter.
+type MockServiceRenderCategoryCall struct {
+	Category string
+	Name     string
+	Data     any
+}
+
+// RenderCategoryCalls returns every recorded RenderCategory call, oldest first, with
+// its arguments typed. It reads the same log as Calls("RenderCategory").
+func (m *MockService) RenderCategoryCalls() []MockServiceRenderCategoryCall {
+	var out []MockServiceRenderCategoryCall
+	for _, c := range m.Recorder.Calls("RenderCategory") {
+		var r MockServiceRenderCategoryCall
+		r.Category, _ = c.Args[0].(string)
+		r.Name, _ = c.Args[1].(string)
+		r.Data, _ = c.Args[2].(any)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceListCategoryCall is one recorded call of MockService.ListCategory, one
+// field per parameter.
+type MockServiceListCategoryCall struct {
+	Category string
+	Subdir   string
+}
+
+// ListCategoryCalls returns every recorded ListCategory call, oldest first, with
+// its arguments typed. It reads the same log as Calls("ListCategory").
+func (m *MockService) ListCategoryCalls() []MockServiceListCategoryCall {
+	var out []MockServiceListCategoryCall
+	for _, c := range m.Recorder.Calls("ListCategory") {
+		var r MockServiceListCategoryCall
+		r.Category, _ = c.Args[0].(string)
+		r.Subdir, _ = c.Args[1].(string)
+		out = append(out, r)
+	}
+	return out
+}
+
+// MockServiceRenderInternalPackageKindCall is one recorded call of MockService.RenderInternalPackageKind, one
+// field per parameter.
+type MockServiceRenderInternalPackageKindCall struct {
+	Kind string
+	Name string
+	Data any
+}
+
+// RenderInternalPackageKindCalls returns every recorded RenderInternalPackageKind call, oldest first, with
+// its arguments typed. It reads the same log as Calls("RenderInternalPackageKind").
+func (m *MockService) RenderInternalPackageKindCalls() []MockServiceRenderInternalPackageKindCall {
+	var out []MockServiceRenderInternalPackageKindCall
+	for _, c := range m.Recorder.Calls("RenderInternalPackageKind") {
+		var r MockServiceRenderInternalPackageKindCall
+		r.Kind, _ = c.Args[0].(string)
+		r.Name, _ = c.Args[1].(string)
+		r.Data, _ = c.Args[2].(any)
+		out = append(out, r)
+	}
+	return out
 }
 
 // Compile-time check.

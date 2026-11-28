@@ -81,7 +81,7 @@ _workloads = [
 
 | Env | Binders | Notes |
 |---|---|---|
-| `dev` | `_on_host` / `_on_host_job` (services, workers, jobs), `_on_k3d` (operators, crons: a host process cannot be one) | host-run postgres (and dev IdP, NATS, a Temporal dev server) via `forge.HostInfra` |
+| `dev` | `_on_host` / `_on_host_job` (services, workers, jobs), `_on_k3d` (operators, crons: a host process cannot be one) | host-run postgres (and dev IdP, NATS, a Temporal dev server, Mailpit, MinIO) via `forge.HostInfra` |
 | `staging`, `prod` | `_hosted`, `_hosted_frontend`; `_on_cluster`, `_on_bucket` unused — each delegating to `deploy/kcl/base/env.k` | **hosted on Reliant**: a `forge.ManagedDatabase`, `forge.HostedSecrets` |
 
 **Hosting elsewhere is a one-line rebind**: declare `_cluster` / `_bucket`
@@ -157,7 +157,7 @@ unit at a time. See deploy/shape; `applier = "flux"`: deploy/flux/self-hosted.
   worker kinds; `maxReplicas` at most 10; refused beside `replicas`,
   `storageGiB` and `strategy = "Recreate"`, and on host, compose and
   build-only. The cluster needs metrics-server (k3d, GKE, EKS and AKS ship
-  it).
+  it). Depth: `deploy/autoscale`.
 - **`strategy`**: unset is `RollingUpdate`, which surges a new pod before
   the old one stops, so `replicas = 1` still runs two during a rollout.
   When the count is a correctness bound (a sweeper not idempotent under

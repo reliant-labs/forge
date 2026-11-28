@@ -248,6 +248,13 @@ Signed in to Reliant means signed in to the control plane: there is no second
 `$FORGE_CREDENTIAL_HELPER`, which mints forge a short-lived token from your
 Reliant session. Your own hostname: load `deploy/domains`.
 
+## SEO and accessibility
+
+A new site starts with the head tags, social card, structured data and
+jsx-a11y lint its first audit checks. Its canonical origin is `SITE_URL`, a
+build-time `forge.FrontendURL` each env declares. Load
+`deploy/static-site/seo` for what is scaffolded and how to keep it right.
+
 ## Runtime config
 
 A static bundle cannot read env vars at runtime, so per-env values (an API URL,
@@ -358,3 +365,6 @@ instead of the SPA fallback), `_headers` (response headers) and
 `/docs/* https://docs.example.com/:splat 301`). Their formats and limits,
 how a path resolves to a file, and the cache policy are in
 `deploy/static-site/serving`. A bad `_redirects` line fails the deploy.
+Markdown twins (`<route>.md`) can be served to agents that ask for
+`text/markdown` with `markdown_negotiation = True` on the frontend (hosting
+only; `deploy/static-site/serving`, "Markdown negotiation").

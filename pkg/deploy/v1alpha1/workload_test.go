@@ -269,6 +269,26 @@ func TestProbesDefaultsAndLivenessDerivation(t *testing.T) {
 	if tcp := (Probes{TCP: true}).WithDefaults(); tcp.ReadinessPath != "" || tcp.LivenessPath != "" {
 		t.Errorf("a TCP probe must not gain paths: %+v", tcp)
 	}
+	// An unset liveness path is /healthz only beside serverkit's own
+	// readiness path. An app that names some other health path (an adopted
+	// image) serves that one, not /healthz: probing /healthz restart-looped
+	// it every minute (forge obs c5974695).
+	for name, c := range map[string]struct{ in, wantReady, wantLive string }{
+		"neither declared":         {"", "/readyz", "/healthz"},
+		"serverkit readiness only": {"/readyz", "/readyz", "/healthz"},
+		"own readiness only":       {"/_health", "/_health", "/_health"},
+	} {
+		got := (Probes{ReadinessPath: c.in}).WithDefaults()
+		if got.ReadinessPath != c.wantReady || got.LivenessPath != c.wantLive {
+			t.Errorf("%s: paths = %q/%q, want %q/%q", name, got.ReadinessPath, got.LivenessPath, c.wantReady, c.wantLive)
+		}
+	}
+	if got := (Probes{ReadinessPath: "/ready", LivenessPath: "/live"}).WithDefaults(); got.ReadinessPath != "/ready" || got.LivenessPath != "/live" {
+		t.Errorf("declared paths must be kept, got %q/%q", got.ReadinessPath, got.LivenessPath)
+	}
+	if got := (Probes{LivenessPath: "/live"}).WithDefaults(); got.ReadinessPath != "/readyz" || got.LivenessPath != "/live" {
+		t.Errorf("liveness only: paths = %q/%q, want /readyz and /live", got.ReadinessPath, got.LivenessPath)
+	}
 	// The timeout must exceed serverkit's 2s readiness deadline, or the
 	// probe races the handler.
 	if DefaultProbeTimeoutSeconds <= 2 {

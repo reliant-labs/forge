@@ -67,7 +67,7 @@ func TestHandOff_StdoutIsExactlyThePinnedForgesStdout(t *testing.T) {
 			if got := stdout.String(); got != handOffChildStdout {
 				t.Errorf("stdout is not exactly the pinned forge's output:\ngot:  %q\nwant: %q\nstderr:\n%s", got, handOffChildStdout, stderr.Bytes())
 			}
-			if !strings.Contains(stderr.String(), "running the project's .tools/bin/forge instead") {
+			if !strings.Contains(stderr.String(), "running forge_version "+skewTestPin+", which forge.yaml pins (the project's .tools/bin/forge") {
 				t.Errorf("the hand-off notice is not on stderr:\n%s", stderr.Bytes())
 			}
 			if !strings.Contains(stderr.String(), "pinned forge: a notice of its own") {

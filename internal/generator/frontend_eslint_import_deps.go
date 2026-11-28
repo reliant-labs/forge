@@ -79,10 +79,12 @@ func eslintConfigImports(feDir string) map[string]bool {
 				},
 			}},
 		})
-		if len(result.Errors) == 0 {
-			for pkg := range imports {
-				out[pkg] = true
-			}
+		if len(result.Errors) != 0 {
+			fmt.Fprintf(os.Stderr, "warning: could not determine eslint imports in %s: %s; required packages may be missing from package.json\n", filepath.Join(feDir, name), result.Errors[0].Text)
+			continue
+		}
+		for pkg := range imports {
+			out[pkg] = true
 		}
 	}
 	return out

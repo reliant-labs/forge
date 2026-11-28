@@ -263,6 +263,37 @@ func TestEnsureESLintImportDependencies_OnlyTheImportedOnes(t *testing.T) {
 	}
 }
 
+func TestEnsureESLintImportDependencies_MalformedConfigWarns(t *testing.T) {
+	projectDir, feRel, pkgPath := eslintImportFixture(t, preImportXManifest,
+		eslintImportXConfig+"\nexport const broken = ;\n")
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStderr := os.Stderr
+	os.Stderr = stderr
+	defer func() {
+		os.Stderr = originalStderr
+		_ = stderr.Close()
+	}()
+
+	if EnsureESLintImportDependencies(projectDir, feRel, "web") {
+		t.Error("reported a change despite an unparseable config")
+	}
+	// The read-only path must also indicate that imports could not be determined.
+	eslintImportDependencyNotices(filepath.Join(projectDir, feRel), preImportXManifest)
+	warnings := readManifestText(t, stderr.Name())
+	if want := "warning: could not determine eslint imports in " + filepath.Join(projectDir, feRel, "eslint.config.mjs"); strings.Count(warnings, want) != 2 {
+		t.Errorf("both reconciliation paths must warn about the malformed config; got:\n%s", warnings)
+	}
+	if !strings.Contains(warnings, "required packages may be missing from package.json") {
+		t.Errorf("warning does not explain missing dependencies:\n%s", warnings)
+	}
+	if got := readManifestText(t, pkgPath); got != preImportXManifest {
+		t.Errorf("manifest changed despite an unparseable config:\n%s", got)
+	}
+}
+
 // A manifest with no devDependencies object gets one.
 func TestEnsureESLintImportDependencies_CreatesDevDependencies(t *testing.T) {
 	manifest := `{

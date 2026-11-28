@@ -216,6 +216,9 @@ type pipelineContext struct {
 	// project from compiling without failing the run (a user-owned
 	// _test.go that does not compile), for the closing line.
 	validateCaveats validateCaveats
+	// preRun is the work tree as it was before the first step wrote: the
+	// compile check reads what changed since (writeScopeOf).
+	preRun *workTreeSnapshot
 	// foreignChanges are the files that changed during the run that forge
 	// neither owns nor wrote (completeWriteSummary): not counted as the
 	// run's output, but the tree moved, so it is no fixed point.
@@ -3176,8 +3179,13 @@ func stepPostGenValidate(ctx *pipelineContext) error {
 // migration whose hand-written code is ported AFTER generating — connect-go
 // v2 is the case that asked for it — where the default rollback would undo
 // the very output the next step needs to read.
+//
+// A compile error the run did not cause — in a package it did not write,
+// failing the same way against the pre-run tree — fails nothing: the run
+// keeps its files, exits 0 and names it as a caveat
+// (generate_validate_scope.go). --strict turns that attribution off.
 func stepGoBuildValidate(ctx *pipelineContext) error {
-	caveats, err := goBuildValidate(ctx.ProjectDir)
+	caveats, err := goBuildValidate(ctx.ProjectDir, writeScopeOf(ctx))
 	ctx.validateCaveats = caveats
 	if err == nil || !ctx.KeepOnBuildFailure {
 		return err
@@ -3195,11 +3203,11 @@ const goBuildValidateStep = "go build (validate generated code)"
 //
 // A pass with caveats is not memoized: the next run checks again, so it
 // names them again instead of replaying "unchanged since it last compiled".
-var goBuildValidate = func(projectDir string) (validateCaveats, error) {
+var goBuildValidate = func(projectDir string, scope *generateWriteScope) (validateCaveats, error) {
 	var caveats validateCaveats
 	err := memoizedGoValidate(projectDir, func() (bool, error) {
 		var err error
-		caveats, err = checkGoBuild(projectDir)
+		caveats, err = checkGoBuildScoped(projectDir, scope)
 		return !caveats.any(), err
 	})
 	return caveats, err

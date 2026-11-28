@@ -475,6 +475,33 @@ func ChangedJournalPaths(root string) []string {
 	return out
 }
 
+// PreRunState is a path's state before this run first wrote it, as the
+// journal captured it.
+type PreRunState struct {
+	// Existed is false when the path was absent before the run.
+	Existed bool
+	// Content is the path's pre-run bytes when it existed.
+	Content []byte
+	// Unverifiable is set when the journal could not capture the path
+	// faithfully (unreadable, or not a regular file): its pre-run bytes are
+	// unknown.
+	Unverifiable bool
+}
+
+// JournaledPreRun returns the pre-run state the journal holds for relPath
+// (slash form, as ChangedJournalPaths returns it). ok is false when the
+// journal holds no entry for it — for a path ChangedJournalPaths returned,
+// that is a file an external tool created under a captured directory, which
+// did not exist before the run. Read it BEFORE RestoreRollback or
+// CommitRollback, which clear the journal.
+func JournaledPreRun(relPath string) (state PreRunState, ok bool) {
+	entry, ok := rollbackJournal[relPath]
+	if !ok {
+		return PreRunState{}, false
+	}
+	return PreRunState{Existed: entry.existed, Content: entry.content, Unverifiable: entry.unverifiable}, true
+}
+
 // entryChanged reports whether full is no longer in the state entry
 // captured. A path that was absent and is now a directory is not itself a
 // change: the files inside it are, and createdUnderTrees names them.

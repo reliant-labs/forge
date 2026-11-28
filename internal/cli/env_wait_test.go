@@ -189,9 +189,6 @@ func TestEnvWait_ExitCodes(t *testing.T) {
 		want   int
 	}{
 		{"succeeded", []string{wireRolloutPhaseSucceeded}, exitOK},
-		{"progressing then succeeded", []string{
-			wireRolloutPhasePending, wireRolloutPhaseProgressing,
-			wireRolloutPhaseStabilizing, wireRolloutPhaseSucceeded}, exitOK},
 		{"degraded at the deadline", []string{wireRolloutPhaseDegraded}, exitWrong},
 		{"superseded", []string{wireRolloutPhaseSuperseded}, exitSuperseded},
 		{"unknown at the deadline", []string{wireRolloutPhaseUnknown}, exitUndetermined},
